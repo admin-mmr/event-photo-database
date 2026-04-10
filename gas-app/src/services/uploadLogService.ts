@@ -1,0 +1,142 @@
+import { ResultStatus, UploadSource } from '../types/enums';
+import { UploadLogRecord } from '../types/models';
+import { ServiceResult } from '../types/responses';
+import { getConfig } from '../config/constants';
+import { getAllRows, appendRow } from './sheetService';
+import { toUploadLogRecord, fromUploadLogRecord } from '../utils/sheetMapper';
+import { generateUuid } from '../utils/uuid';
+import { nowIsoTimestamp } from '../utils/dateFormatter';
+
+/**
+ * UploadLogService — read/write operations for the Upload_Log sheet.
+ *
+ * Writes one record per completed upload session. Each record captures:
+ *   - Who uploaded (email + club)
+ *   - Which event and batch folder
+ *   - File counts and sizes
+ *   - How many were skipped (duplicates / non-photos)
+ *   - Upload source (web_app vs api)
+ *
+ * This service is only ever written to — records are never updated or deleted.
+ * All log IDs are UUID v4 to support future cross-system reconciliation.
+ */
+
+// ─── Input type ───────────────────────────────────────────────────────────────
+
+/**
+ * Input to create an Upload_Log entry.
+ * Differs from UploadLogRecord in that logId and uploadTimestamp
+ * are generated here, not passed by the caller.
+ */
+export interface CreateUploadLogInput {
+  readonly eventId: string;
+  readonly clubName: string;
+  readonly uploadedBy: string;
+  readonly batchFolderName: string;
+  readonly batchFolderId: string;
+  readonly fileCount: number;
+  readonly totalSizeMb: number;
+  readonly skippedDuplicates: number;
+  readonly skippedNonPhoto: number;
+  readonly source: UploadSource;
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Appends a new row to the Upload_Log sheet for a completed upload session.
+ *
+ * Generates logId (UUID) and uploadTimestamp (ISO 8601) automatically.
+ * Returns the fully-formed UploadLogRecord on success.
+ *
+ * @param input  Upload session summary from the upload service
+ */
+export function appendUploadLog(
+  input: CreateUploadLogInput
+): ServiceResult<UploadLogRecord> {
+  try {
+    const record: UploadLogRecord = {
+      logId:             generateUuid(),
+      eventId:           input.eventId,
+      clubName:          input.clubName,
+      uploadedBy:        input.uploadedBy.trim().toLowerCase(),
+      batchFolderName:   input.batchFolderName,
+      batchFolderId:     input.batchFolderId,
+      fileCount:         input.fileCount,
+      totalSizeMb:       Math.round(input.totalSizeMb * 100) / 100, // 2 dp
+      skippedDuplicates: input.skippedDuplicates,
+      skippedNonPhoto:   input.skippedNonPhoto,
+      uploadTimestamp:   nowIsoTimestamp(),
+      source:            input.source,
+    };
+
+    const config = getConfig();
+    appendRow(config.SHEET_NAMES.UPLOAD_LOG, fromUploadLogRecord(record));
+
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `Upload log written (logId: ${record.logId})`,
+      data: record,
+    };
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Failed to write upload log: ${String(err)}`,
+    };
+  }
+}
+
+/**
+ * Returns all upload log records for a specific event.
+ * Useful for the Phase 4 reconciliation summary.
+ *
+ * @param eventId  UUID from the Events sheet
+ */
+export function getLogsForEvent(eventId: string): ServiceResult<UploadLogRecord[]> {
+  try {
+    const config = getConfig();
+    const rows = getAllRows(config.SHEET_NAMES.UPLOAD_LOG);
+    const records = rows
+      .map(toUploadLogRecord)
+      .filter((r): r is UploadLogRecord => r !== null && r.eventId === eventId);
+
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `Found ${records.length} log(s) for event ${eventId}`,
+      data: records,
+    };
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Failed to read upload logs: ${String(err)}`,
+    };
+  }
+}
+
+/**
+ * Returns all upload log records across all events.
+ * Used by the Phase 4 system-wide summary dashboard.
+ */
+export function getAllUploadLogs(): ServiceResult<UploadLogRecord[]> {
+  try {
+    const config = getConfig();
+    const rows = getAllRows(config.SHEET_NAMES.UPLOAD_LOG);
+    const records = rows
+      .map(toUploadLogRecord)
+      .filter((r): r is UploadLogRecord => r !== null);
+
+    // Sort newest first
+    records.sort((a, b) => b.uploadTimestamp.localeCompare(a.uploadTimestamp));
+
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `Found ${records.length} total upload log(s)`,
+      data: records,
+    };
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Failed to read all upload logs: ${String(err)}`,
+    };
+  }
+}

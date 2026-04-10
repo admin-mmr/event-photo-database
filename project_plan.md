@@ -238,10 +238,10 @@ flowchart TD
 - [x] User UI: Show file tree for club subfolder (read-only view)
 - [x] Browser file picker: multi-select, client-side type filter (jpg/png/heic/raw)
 - [x] Drive service: `createBatchFolder(clubFolderId, timestamp, username)`
-- [ ] Duplicate check service: compare filename + size + modified time vs existing files in club folder
-- [ ] Upload service: chunked upload to Drive (GAS 50MB limit per file, warn user)
-- [ ] Sheets service: write Upload_Log on completion
-- [ ] Summary screen: upload results (counts, skips, sizes)
+- [x] Duplicate check service: compare filename + size vs existing files in club folder
+- [x] Upload service: sequential file-by-file upload to Drive (GAS 50MB limit per file, warn user)
+- [x] Sheets service: write Upload_Log on completion
+- [x] Summary screen: upload results (counts, skips, sizes)
 
 ---
 

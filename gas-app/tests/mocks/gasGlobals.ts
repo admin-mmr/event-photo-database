@@ -134,6 +134,16 @@ const mockPropertiesService = {
 
 // ─── Mock DriveApp ────────────────────────────────────────────────────────────
 
+/** Mock file object returned by folder.createFile() */
+export function makeMockDriveFile(name: string, id: string, size = 1024) {
+  return {
+    getId: jest.fn().mockReturnValue(id),
+    getName: jest.fn().mockReturnValue(name),
+    getSize: jest.fn().mockReturnValue(size),
+    getLastUpdated: jest.fn().mockReturnValue(new Date('2025-11-03T10:00:00Z')),
+  };
+}
+
 export const mockFolder = {
   getId: jest.fn().mockReturnValue('mock-folder-id'),
   getName: jest.fn().mockReturnValue('Test_Folder'),
@@ -141,6 +151,10 @@ export const mockFolder = {
     getId: jest.fn().mockReturnValue(`new-folder-${name}`),
     getName: jest.fn().mockReturnValue(name),
   })),
+  createFile: jest.fn().mockImplementation((blob: { getName?: () => string }) => {
+    const name = blob && typeof blob.getName === 'function' ? blob.getName() : 'uploaded-file';
+    return makeMockDriveFile(name, `file-${name}-id`);
+  }),
   getFolders: jest.fn().mockReturnValue({ hasNext: jest.fn().mockReturnValue(false) }),
   getFoldersByName: jest.fn().mockReturnValue({ hasNext: jest.fn().mockReturnValue(false) }),
   getFiles: jest.fn().mockReturnValue({ hasNext: jest.fn().mockReturnValue(false) }),
@@ -157,6 +171,22 @@ let _uuidCounter = 0;
 const mockUtilities = {
   getUuid: jest.fn().mockImplementation(
     () => `00000000-0000-4000-8000-${String(_uuidCounter++).padStart(12, '0')}`
+  ),
+  /**
+   * base64Decode mock — returns a minimal byte array.
+   * Tests that exercise actual content should provide their own mock value.
+   */
+  base64Decode: jest.fn().mockReturnValue(new Uint8Array([0x00])),
+  /**
+   * newBlob mock — returns a minimal object shaped like a GAS Blob.
+   * The createFile mock on mockFolder reads `.getName()` from this.
+   */
+  newBlob: jest.fn().mockImplementation(
+    (_bytes: unknown, mimeType: string, name: string) => ({
+      getName: jest.fn().mockReturnValue(name),
+      getContentType: jest.fn().mockReturnValue(mimeType),
+      getBytes: jest.fn().mockReturnValue([]),
+    })
   ),
 };
 
@@ -224,4 +254,5 @@ export {
   mockContentService,
   mockHtmlService,
   mockLogger,
+  // makeMockDriveFile is already a named export via the function declaration above
 };

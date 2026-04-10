@@ -8,15 +8,23 @@
  * They all authenticate the caller and enforce admin-only access where needed.
  */
 
-import { ResultStatus, UserRole, UserStatus } from './types/enums';
+import { ResultStatus, UserRole, UserStatus, UploadSource } from './types/enums';
 import { authenticateRequest } from './middleware/authMiddleware';
 import { requireRole } from './middleware/roleGuard';
 import { handleGet as routerHandleGet, handlePost as routerHandlePost } from './routes/router';
 import { createUser, deactivateUser, reactivateUser, updateUser } from './services/userService';
-import { createEvent, updateEvent, listAll as listAllEvents } from './services/eventService';
-import { scanAllViolations, getOrCreateClubFolder, getClubFolderTree } from './services/driveService';
+import { createEvent, updateEvent, listAll as listAllEvents, findById as findEventById } from './services/eventService';
+import {
+  scanAllViolations,
+  getOrCreateClubFolder,
+  getClubFolderTree,
+  createBatchFolder,
+} from './services/driveService';
+import { appendUploadLog } from './services/uploadLogService';
+import { buildLayer3FolderName } from './utils/folderNameValidator';
+import { toBatchTimestamp } from './utils/dateFormatter';
 
-/* global Logger */
+/* global Logger, DriveApp, Utilities */
 
 // ─── Web App entry points ─────────────────────────────────────────────────────
 
@@ -338,6 +346,178 @@ function serverEnsureClubFolder(
   } catch (err) {
     Logger.log(`serverEnsureClubFolder error: ${String(err)}`);
     return { status: 'error', message: 'Internal error ensuring club folder' };
+  }
+}
+
+// ─── Phase 3 — Upload execution server functions ──────────────────────────────
+
+/**
+ * google.script.run entry point: creates the upload batch folder.
+ *
+ * Called once when the user confirms their file list and clicks "Upload".
+ * Creates (or retrieves) the club folder, then creates a new timestamped
+ * batch folder inside it. The returned IDs are used by subsequent
+ * serverUploadFile calls.
+ *
+ * Payload: { eventFolderId, clubFolderName, usernameHint }
+ * Returns: { batchFolderId, batchFolderName, clubFolderId }
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverStartUploadSession(payload: {
+  eventFolderId: string;
+  clubFolderName: string;
+  usernameHint: string;   // Email local-part used in the batch folder name
+}): ServerResponse {
+  try {
+    const authResult = authenticateRequest();
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      return { status: 'error', message: 'Authentication required' };
+    }
+
+    const { eventFolderId, clubFolderName, usernameHint } = payload;
+    if (!eventFolderId || !clubFolderName) {
+      return { status: 'error', message: 'eventFolderId and clubFolderName are required' };
+    }
+
+    // Ensure club folder exists (Layer 2)
+    const clubResult = getOrCreateClubFolder(eventFolderId, clubFolderName);
+    if (clubResult.status !== ResultStatus.SUCCESS || !clubResult.data) {
+      return { status: 'error', message: clubResult.message };
+    }
+
+    // Build batch folder name: YYYYMMDD-HHMMSS_username
+    const timestamp = toBatchTimestamp(new Date());
+    const safeUsername = (usernameHint || authResult.data.email)
+      .split('@')[0]
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]/g, '');
+    const batchFolderName = buildLayer3FolderName(timestamp, safeUsername);
+
+    // Create batch folder (Layer 3) — always new (unique timestamp)
+    const batchResult = createBatchFolder(clubResult.data.folderId, batchFolderName);
+    if (batchResult.status !== ResultStatus.SUCCESS || !batchResult.data) {
+      return { status: 'error', message: batchResult.message };
+    }
+
+    return {
+      status: 'success',
+      message: `Upload session started: ${batchFolderName}`,
+      data: {
+        batchFolderId: batchResult.data.folderId,
+        batchFolderName: batchResult.data.folderName,
+        clubFolderId: clubResult.data.folderId,
+      },
+    };
+  } catch (err) {
+    Logger.log(`serverStartUploadSession error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error starting upload session' };
+  }
+}
+
+/**
+ * google.script.run entry point: uploads a single file to Drive.
+ *
+ * Receives the file as a base64-encoded string and writes it into the
+ * given batch folder using DriveApp.createFile(blob). Called once per
+ * file, sequentially, from the browser-side upload loop.
+ *
+ * GAS constraint: max ~50 MB per google.script.run argument.
+ * Files larger than this are pre-filtered client-side and never sent.
+ *
+ * Payload: { batchFolderId, fileName, mimeType, base64Data }
+ * Returns: { fileId, fileName, sizeBytes }
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverUploadFile(payload: {
+  batchFolderId: string;
+  fileName: string;
+  mimeType: string;
+  base64Data: string;  // base64-encoded file content (no data URL prefix)
+}): ServerResponse {
+  try {
+    const authResult = authenticateRequest();
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      return { status: 'error', message: 'Authentication required' };
+    }
+
+    const { batchFolderId, fileName, mimeType, base64Data } = payload;
+    if (!batchFolderId || !fileName || !base64Data) {
+      return { status: 'error', message: 'batchFolderId, fileName, and base64Data are required' };
+    }
+
+    // Decode base64 → byte array → Drive Blob
+    const bytes = Utilities.base64Decode(base64Data);
+    const blob = Utilities.newBlob(bytes, mimeType || 'application/octet-stream', fileName);
+
+    const folder = DriveApp.getFolderById(batchFolderId);
+    const file = folder.createFile(blob);
+
+    return {
+      status: 'success',
+      message: `File "${fileName}" uploaded`,
+      data: {
+        fileId: file.getId(),
+        fileName: file.getName(),
+        sizeBytes: file.getSize(),
+      },
+    };
+  } catch (err) {
+    Logger.log(`serverUploadFile error: ${String(err)}`);
+    return { status: 'error', message: `Failed to upload file: ${String(err)}` };
+  }
+}
+
+/**
+ * google.script.run entry point: finalises the upload session.
+ *
+ * Called after all files have been uploaded (or attempted). Writes one
+ * row to the Upload_Log sheet summarising the session. Returns the log
+ * record so the UI can display the final summary screen.
+ *
+ * Payload: {
+ *   eventId, clubFolderName, batchFolderName, batchFolderId,
+ *   fileCount, totalSizeMb, skippedDuplicates, skippedNonPhoto
+ * }
+ * Returns: UploadLogRecord
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverCompleteUpload(payload: {
+  eventId: string;
+  clubFolderName: string;
+  batchFolderName: string;
+  batchFolderId: string;
+  fileCount: number;
+  totalSizeMb: number;
+  skippedDuplicates: number;
+  skippedNonPhoto: number;
+}): ServerResponse {
+  try {
+    const authResult = authenticateRequest();
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      return { status: 'error', message: 'Authentication required' };
+    }
+
+    const result = appendUploadLog({
+      eventId:           payload.eventId,
+      clubName:          payload.clubFolderName,
+      uploadedBy:        authResult.data.email,
+      batchFolderName:   payload.batchFolderName,
+      batchFolderId:     payload.batchFolderId,
+      fileCount:         Number(payload.fileCount) || 0,
+      totalSizeMb:       Number(payload.totalSizeMb) || 0,
+      skippedDuplicates: Number(payload.skippedDuplicates) || 0,
+      skippedNonPhoto:   Number(payload.skippedNonPhoto) || 0,
+      source:            UploadSource.WEB_APP,
+    });
+
+    return {
+      status: result.status,
+      message: result.message,
+      data: result.data,
+    };
+  } catch (err) {
+    Logger.log(`serverCompleteUpload error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error completing upload session' };
   }
 }
 

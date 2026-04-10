@@ -13,323 +13,176 @@
     /* ── Upload-specific styles ─────────────────────────────────────────────── */
 
     /* Step indicator */
-    .stepper {
-      display: flex;
-      align-items: center;
-      margin-bottom: 28px;
-      gap: 0;
-    }
-    .step {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex: 1;
-      position: relative;
-    }
+    .stepper { display:flex; align-items:center; margin-bottom:28px; }
+    .step { display:flex; align-items:center; gap:8px; position:relative; }
+    .step:not(:last-child) { flex:1; }
     .step:not(:last-child)::after {
-      content: '';
-      flex: 1;
-      height: 2px;
-      background: #e0e0e0;
-      margin: 0 8px;
+      content:''; flex:1; height:2px; background:#e0e0e0; margin:0 8px;
     }
-    .step.done::after { background: #3f51b5; }
+    .step.done::after { background:#3f51b5; }
     .step-circle {
-      width: 28px;
-      height: 28px;
-      border-radius: 50%;
-      background: #e0e0e0;
-      color: #757575;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 13px;
-      font-weight: 600;
-      flex-shrink: 0;
-      transition: background 0.2s, color 0.2s;
+      width:28px; height:28px; border-radius:50%; background:#e0e0e0; color:#757575;
+      display:flex; align-items:center; justify-content:center;
+      font-size:13px; font-weight:600; flex-shrink:0; transition:background .2s,color .2s;
     }
-    .step.active .step-circle  { background: #3f51b5; color: #fff; }
-    .step.done .step-circle    { background: #388e3c; color: #fff; }
-    .step-label {
-      font-size: 13px;
-      font-weight: 500;
-      color: #757575;
-      white-space: nowrap;
-    }
-    .step.active .step-label { color: #3f51b5; }
-    .step.done .step-label   { color: #388e3c; }
+    .step.active .step-circle { background:#3f51b5; color:#fff; }
+    .step.done .step-circle   { background:#388e3c; color:#fff; }
+    .step-label { font-size:13px; font-weight:500; color:#757575; white-space:nowrap; }
+    .step.active .step-label  { color:#3f51b5; }
+    .step.done .step-label    { color:#388e3c; }
 
     /* Event picker */
     .event-filter-row {
-      display: flex;
-      gap: 16px;
-      align-items: flex-end;
-      flex-wrap: wrap;
-      margin-bottom: 16px;
+      display:flex; gap:16px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px;
     }
-    .event-filter-row .mdl-textfield {
-      padding: 0;
-      margin: 0;
-      width: auto;
-    }
+    .event-filter-row .mdl-textfield { padding:0; margin:0; width:auto; }
     .event-list {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 10px;
-      max-height: 340px;
-      overflow-y: auto;
-      padding-right: 4px;
+      display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr));
+      gap:10px; max-height:340px; overflow-y:auto; padding-right:4px;
     }
     .event-card {
-      border: 2px solid #e0e0e0;
-      border-radius: 6px;
-      padding: 12px 14px;
-      cursor: pointer;
-      transition: border-color 0.15s, background 0.15s;
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
+      border:2px solid #e0e0e0; border-radius:6px; padding:12px 14px;
+      cursor:pointer; transition:border-color .15s,background .15s;
+      display:flex; align-items:flex-start; gap:10px;
     }
-    .event-card:hover {
-      border-color: #9fa8da;
-      background: #f8f9ff;
-    }
-    .event-card.selected {
-      border-color: #3f51b5;
-      background: #e8eaf6;
-    }
-    .event-card-icon {
-      color: #3f51b5;
-      margin-top: 2px;
-      font-size: 22px;
-    }
-    .event-card-name {
-      font-weight: 500;
-      font-size: 14px;
-      color: #333;
-    }
-    .event-card-date {
-      font-size: 12px;
-      color: #777;
-      margin-top: 2px;
-    }
-    .event-card-folder {
-      font-size: 11px;
-      color: #9e9e9e;
-      font-family: monospace;
-      margin-top: 4px;
-      word-break: break-all;
-    }
-    .no-events-msg {
-      color: #9e9e9e;
-      font-size: 14px;
-      text-align: center;
-      padding: 32px 0;
-      grid-column: 1 / -1;
-    }
+    .event-card:hover { border-color:#9fa8da; background:#f8f9ff; }
+    .event-card.selected { border-color:#3f51b5; background:#e8eaf6; }
+    .event-card-icon { color:#3f51b5; margin-top:2px; font-size:22px; }
+    .event-card-name { font-weight:500; font-size:14px; color:#333; }
+    .event-card-date { font-size:12px; color:#777; margin-top:2px; }
+    .event-card-folder { font-size:11px; color:#9e9e9e; font-family:monospace; margin-top:4px; word-break:break-all; }
+    .no-events-msg { color:#9e9e9e; font-size:14px; text-align:center; padding:32px 0; grid-column:1/-1; }
 
     /* File tree */
-    .file-tree-loading {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      color: #757575;
-      padding: 16px 0;
-    }
-    .batch-group {
-      margin-bottom: 12px;
-    }
+    .file-tree-loading { display:flex; align-items:center; gap:10px; color:#757575; padding:16px 0; }
+    .batch-group { margin-bottom:12px; }
     .batch-header {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 10px;
-      background: #f5f5f5;
-      border-radius: 4px;
-      cursor: pointer;
-      user-select: none;
-      font-size: 13px;
-      font-weight: 500;
-      color: #555;
+      display:flex; align-items:center; gap:6px; padding:6px 10px;
+      background:#f5f5f5; border-radius:4px; cursor:pointer; user-select:none;
+      font-size:13px; font-weight:500; color:#555;
     }
-    .batch-header:hover { background: #eeeeee; }
-    .batch-header .material-icons { font-size: 18px; color: #757575; }
-    .batch-files {
-      padding-left: 24px;
-      margin-top: 4px;
-    }
-    .file-row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 3px 0;
-      font-size: 13px;
-      color: #444;
-    }
-    .file-row .material-icons { font-size: 16px; color: #9e9e9e; }
-    .file-size {
-      color: #9e9e9e;
-      font-size: 12px;
-      margin-left: auto;
-      white-space: nowrap;
-    }
-    .file-tree-empty {
-      color: #9e9e9e;
-      font-style: italic;
-      font-size: 13px;
-      padding: 16px 0;
-    }
+    .batch-header:hover { background:#eeeeee; }
+    .batch-header .material-icons { font-size:18px; color:#757575; }
+    .batch-files { padding-left:24px; margin-top:4px; }
+    .file-row { display:flex; align-items:center; gap:6px; padding:3px 0; font-size:13px; color:#444; }
+    .file-row .material-icons { font-size:16px; color:#9e9e9e; }
+    .file-size { color:#9e9e9e; font-size:12px; margin-left:auto; white-space:nowrap; }
+    .file-tree-empty { color:#9e9e9e; font-style:italic; font-size:13px; padding:16px 0; text-align:center; }
     .tree-summary {
-      font-size: 13px;
-      color: #555;
-      margin-bottom: 10px;
-      padding: 6px 10px;
-      background: #f9fbe7;
-      border-left: 3px solid #c5ca00;
-      border-radius: 2px;
+      font-size:13px; color:#555; margin-bottom:10px; padding:6px 10px;
+      background:#f9fbe7; border-left:3px solid #c5ca00; border-radius:2px;
     }
 
     /* File picker */
     .drop-zone {
-      border: 2px dashed #9fa8da;
-      border-radius: 8px;
-      padding: 36px 24px;
-      text-align: center;
-      cursor: pointer;
-      transition: background 0.15s, border-color 0.15s;
-      background: #fafafa;
-      position: relative;
+      border:2px dashed #9fa8da; border-radius:8px; padding:36px 24px;
+      text-align:center; cursor:pointer; transition:background .15s,border-color .15s;
+      background:#fafafa; position:relative;
     }
-    .drop-zone:hover, .drop-zone.drag-over {
-      background: #e8eaf6;
-      border-color: #3f51b5;
-    }
+    .drop-zone:hover,.drop-zone.drag-over { background:#e8eaf6; border-color:#3f51b5; }
     .drop-zone input[type="file"] {
-      position: absolute;
-      inset: 0;
-      opacity: 0;
-      width: 100%;
-      height: 100%;
-      cursor: pointer;
+      position:absolute; inset:0; opacity:0; width:100%; height:100%; cursor:pointer;
     }
-    .drop-zone-icon {
-      font-size: 48px;
-      color: #9fa8da;
-      display: block;
-      margin-bottom: 8px;
+    .drop-zone-icon { font-size:48px; color:#9fa8da; display:block; margin-bottom:8px; }
+    .drop-zone-text { font-size:16px; font-weight:500; color:#555; margin-bottom:6px; }
+    .drop-zone-sub { font-size:13px; color:#9e9e9e; }
+    .accepted-types { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; justify-content:center; }
+    .type-badge {
+      background:#e8eaf6; color:#3f51b5; border-radius:12px; padding:2px 10px;
+      font-size:12px; font-weight:600; letter-spacing:.04em;
     }
-    .drop-zone-text {
-      font-size: 16px;
-      font-weight: 500;
-      color: #555;
-      margin-bottom: 6px;
-    }
-    .drop-zone-sub {
-      font-size: 13px;
-      color: #9e9e9e;
-    }
-    .file-warnings {
-      margin-top: 10px;
-    }
-    .file-warning-item {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      color: #e65100;
-      padding: 2px 0;
-    }
-    .file-warning-item .material-icons { font-size: 16px; }
-    .selected-files-list {
-      margin-top: 16px;
-    }
-    .selected-files-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 8px;
-    }
-    .selected-files-count {
-      font-size: 14px;
-      font-weight: 500;
-      color: #333;
-    }
-    .selected-files-size {
-      font-size: 13px;
-      color: #777;
-    }
+    .selected-files-list { margin-top:16px; }
+    .selected-files-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+    .selected-files-count { font-size:14px; font-weight:500; color:#333; }
+    .selected-files-size { font-size:13px; color:#777; }
     .selected-file-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 5px 8px;
-      border-bottom: 1px solid #f0f0f0;
-      font-size: 13px;
-      color: #444;
+      display:flex; align-items:center; gap:8px; padding:5px 8px;
+      border-bottom:1px solid #f0f0f0; font-size:13px; color:#444;
     }
-    .selected-file-row:last-child { border-bottom: none; }
-    .selected-file-row .material-icons { font-size: 18px; color: #3f51b5; }
-    .selected-file-row .file-name { flex: 1; word-break: break-all; }
-    .selected-file-row .file-size-badge {
-      font-size: 11px;
-      color: #9e9e9e;
-      white-space: nowrap;
-    }
-    .selected-file-row .file-warn {
-      color: #e65100;
-      font-size: 11px;
-      white-space: nowrap;
-    }
+    .selected-file-row:last-child { border-bottom:none; }
+    .selected-file-row .material-icons { font-size:18px; color:#3f51b5; }
+    .selected-file-row .file-name { flex:1; word-break:break-all; }
+    .selected-file-row .file-size-badge { font-size:11px; color:#9e9e9e; white-space:nowrap; }
+    .selected-file-row .file-warn { color:#e65100; font-size:11px; white-space:nowrap; }
     .selected-file-row .btn-remove {
-      background: none;
-      border: none;
-      cursor: pointer;
-      color: #bdbdbd;
-      padding: 0;
-      display: flex;
-      align-items: center;
-      border-radius: 50%;
+      background:none; border:none; cursor:pointer; color:#bdbdbd;
+      padding:0; display:flex; align-items:center; border-radius:50%;
     }
-    .selected-file-row .btn-remove:hover { color: #d32f2f; }
+    .selected-file-row .btn-remove:hover { color:#d32f2f; }
     .size-limit-warning {
-      margin-top: 10px;
-      padding: 10px 14px;
-      background: #fff3e0;
-      border-left: 3px solid #f57c00;
-      border-radius: 2px;
-      font-size: 13px;
-      color: #e65100;
-      display: flex;
-      align-items: center;
-      gap: 8px;
+      margin-top:10px; padding:10px 14px; background:#fff3e0;
+      border-left:3px solid #f57c00; border-radius:2px; font-size:13px;
+      color:#e65100; display:flex; align-items:center; gap:8px;
+    }
+
+    /* Duplicate dialog */
+    .dup-panel {
+      border:2px solid #ffa726; border-radius:8px; padding:16px;
+      background:#fff8e1; margin-top:16px;
+    }
+    .dup-panel-header {
+      display:flex; align-items:center; gap:8px; font-weight:500;
+      font-size:15px; color:#e65100; margin-bottom:10px;
+    }
+    .dup-row {
+      display:flex; align-items:center; gap:10px; padding:6px 0;
+      border-bottom:1px solid #ffe082; font-size:13px;
+    }
+    .dup-row:last-child { border-bottom:none; }
+    .dup-row label { display:flex; align-items:center; gap:6px; cursor:pointer; flex:1; }
+    .dup-match-info { color:#9e9e9e; font-size:12px; margin-left:auto; white-space:nowrap; }
+
+    /* Upload progress */
+    .progress-panel { margin-top:16px; }
+    .progress-header { font-size:15px; font-weight:500; color:#333; margin-bottom:12px; }
+    .progress-file-row {
+      display:flex; align-items:center; gap:10px; padding:6px 0;
+      border-bottom:1px solid #f0f0f0; font-size:13px;
+    }
+    .progress-file-row:last-child { border-bottom:none; }
+    .progress-file-name { flex:1; word-break:break-all; color:#444; }
+    .progress-status { font-size:12px; white-space:nowrap; }
+    .progress-status.pending   { color:#9e9e9e; }
+    .progress-status.uploading { color:#1565c0; }
+    .progress-status.done      { color:#388e3c; }
+    .progress-status.failed    { color:#d32f2f; }
+    .overall-progress-bar {
+      height:6px; background:#e0e0e0; border-radius:3px; margin:12px 0 6px;
+      overflow:hidden;
+    }
+    .overall-progress-fill {
+      height:100%; background:#3f51b5; border-radius:3px;
+      transition:width .3s ease;
+    }
+    .progress-counter { font-size:13px; color:#555; text-align:right; }
+
+    /* Summary screen */
+    .summary-banner {
+      background:linear-gradient(135deg,#388e3c,#43a047); color:#fff;
+      border-radius:8px; padding:24px; margin-bottom:20px;
+    }
+    .summary-banner h4 { margin:0 0 6px; font-size:22px; }
+    .summary-stat-grid {
+      display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+      gap:12px; margin-bottom:16px;
+    }
+    .summary-stat {
+      background:#fff; border-radius:6px;
+      box-shadow:0 1px 4px rgba(0,0,0,.1);
+      padding:14px 16px; text-align:center;
+    }
+    .summary-stat-icon { font-size:28px; margin-bottom:4px; }
+    .summary-stat-value { font-size:22px; font-weight:700; color:#333; }
+    .summary-stat-label { font-size:12px; color:#777; margin-top:2px; }
+    .summary-batch-info {
+      font-size:13px; color:#555; background:#f5f5f5;
+      border-radius:4px; padding:10px 14px; margin-top:12px;
+      display:flex; align-items:center; gap:6px; font-family:monospace;
     }
 
     /* Navigation buttons */
-    .step-nav {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-top: 20px;
-    }
-    .step-nav-right { display: flex; gap: 10px; align-items: center; }
-
-    /* Accepted types badge */
-    .accepted-types {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-      margin-top: 10px;
-      justify-content: center;
-    }
-    .type-badge {
-      background: #e8eaf6;
-      color: #3f51b5;
-      border-radius: 12px;
-      padding: 2px 10px;
-      font-size: 12px;
-      font-weight: 600;
-      letter-spacing: 0.04em;
-    }
+    .step-nav { display:flex; justify-content:space-between; align-items:center; margin-top:20px; }
+    .step-nav-right { display:flex; gap:10px; align-items:center; }
   </style>
 </head>
 <body>
@@ -344,17 +197,14 @@
       <nav class="mdl-navigation">
         <? if (isAdmin) { ?>
         <a class="mdl-navigation__link" href="?action=admin_users">
-          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>
-          Users
+          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>Users
         </a>
         <a class="mdl-navigation__link" href="?action=admin_events">
-          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
-          Events
+          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>Events
         </a>
         <? } ?>
         <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=upload">
-          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">cloud_upload</i>
-          Upload
+          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">cloud_upload</i>Upload
         </a>
       </nav>
       <span class="mdl-chip" style="margin-left:12px;">
@@ -374,17 +224,15 @@
         </p>
       </div>
 
-      <!-- Step indicator -->
+      <!-- Step indicator (hidden on summary) -->
       <div class="stepper" id="stepper">
         <div class="step active" id="step-indicator-1">
           <div class="step-circle">1</div>
           <span class="step-label">Select Event</span>
-          <span></span>
         </div>
         <div class="step" id="step-indicator-2">
           <div class="step-circle">2</div>
           <span class="step-label">View Folder</span>
-          <span></span>
         </div>
         <div class="step" id="step-indicator-3">
           <div class="step-circle">3</div>
@@ -399,7 +247,6 @@
           Step 1 — Select an Event
         </h5>
 
-        <!-- Date range filter -->
         <div class="event-filter-row">
           <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
             <input type="date" id="filter-from" class="mdl-textfield__input"
@@ -412,27 +259,22 @@
                    onchange="filterEventList()" style="width:150px;">
             <label class="mdl-textfield__label" for="filter-to">To</label>
           </div>
-          <button class="mdl-button mdl-js-button"
-                  onclick="clearEventFilter()"
+          <button class="mdl-button mdl-js-button" onclick="clearEventFilter()"
                   style="margin-bottom:4px;color:#757575;">
             <i class="material-icons" style="font-size:18px;vertical-align:middle;">clear</i>
             Clear filter
           </button>
           <span id="event-count-badge"
-                style="margin-left:auto;font-size:13px;color:#9e9e9e;align-self:center;margin-bottom:4px;">
-          </span>
+                style="margin-left:auto;font-size:13px;color:#9e9e9e;align-self:center;margin-bottom:4px;"></span>
         </div>
 
-        <!-- Event cards -->
         <div class="event-list" id="event-list">
           <div class="no-events-msg">Loading events…</div>
         </div>
 
         <div class="step-nav">
-          <a href="?action=dashboard"
-             class="mdl-button mdl-js-button">
-            <i class="material-icons" style="vertical-align:middle;font-size:18px;">arrow_back</i>
-            Back
+          <a href="?action=dashboard" class="mdl-button mdl-js-button">
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;">arrow_back</i> Back
           </a>
           <div class="step-nav-right">
             <span id="step1-error" style="color:#d32f2f;font-size:13px;"></span>
@@ -452,24 +294,21 @@
           Step 2 — Current Uploads for Your Club
         </h5>
         <p style="font-size:13px;color:#777;margin:0 0 14px;">
-          These are photos already uploaded by <strong id="tree-club-name"></strong>
-          for <strong id="tree-event-name"></strong>. Read-only view.
+          Read-only view of photos already uploaded by
+          <strong id="tree-club-name"></strong> for
+          <strong id="tree-event-name"></strong>.
         </p>
 
-        <!-- Loading state -->
         <div class="file-tree-loading" id="tree-loading">
           <div class="mdl-spinner mdl-spinner--single-color mdl-js-spinner is-active"
                style="width:22px;height:22px;"></div>
           <span>Loading folder contents…</span>
         </div>
-
-        <!-- Tree content -->
         <div id="tree-content" style="display:none;"></div>
 
         <div class="step-nav">
           <button class="mdl-button mdl-js-button" onclick="goToStep1()">
-            <i class="material-icons" style="vertical-align:middle;font-size:18px;">arrow_back</i>
-            Back
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;">arrow_back</i> Back
           </button>
           <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
                   id="btn-step2-next" onclick="goToStep3()" disabled>
@@ -479,7 +318,7 @@
         </div>
       </div>
 
-      <!-- ── Step 3: File picker ─────────────────────────────────────────── -->
+      <!-- ── Step 3: File picker + duplicate check ───────────────────────── -->
       <div class="card" id="step-3" style="display:none;">
         <h5>
           <i class="material-icons" style="vertical-align:middle;margin-right:6px;font-size:20px;">photo_library</i>
@@ -490,7 +329,7 @@
           &nbsp;·&nbsp; Club: <strong id="picker-club-name"></strong>
         </p>
 
-        <!-- Drop zone / file picker -->
+        <!-- Drop zone -->
         <div class="drop-zone" id="drop-zone"
              ondragover="handleDragOver(event)"
              ondragleave="handleDragLeave(event)"
@@ -510,7 +349,7 @@
           </div>
         </div>
 
-        <!-- Size limit notice -->
+        <!-- Size warning -->
         <div class="size-limit-warning" id="size-limit-notice" style="display:none;">
           <i class="material-icons">warning</i>
           <span id="size-limit-msg"></span>
@@ -523,16 +362,14 @@
             <div style="display:flex;gap:12px;align-items:center;">
               <span class="selected-files-size" id="selected-total-size"></span>
               <button class="mdl-button mdl-js-button" onclick="clearAllFiles()"
-                      style="font-size:12px;color:#757575;">
-                Clear all
-              </button>
+                      style="font-size:12px;color:#757575;">Clear all</button>
             </div>
           </div>
           <div id="file-rows-container"
-               style="max-height:260px;overflow-y:auto;border:1px solid #eee;border-radius:4px;"></div>
+               style="max-height:240px;overflow-y:auto;border:1px solid #eee;border-radius:4px;"></div>
         </div>
 
-        <!-- Skipped files notice -->
+        <!-- Skipped notice -->
         <div id="skipped-notice" style="display:none;margin-top:10px;">
           <div style="font-size:13px;color:#e65100;display:flex;align-items:center;gap:6px;">
             <i class="material-icons" style="font-size:16px;">info</i>
@@ -540,19 +377,101 @@
           </div>
         </div>
 
+        <!-- Duplicate resolution panel (shown after checking) -->
+        <div class="dup-panel" id="dup-panel" style="display:none;">
+          <div class="dup-panel-header">
+            <i class="material-icons">content_copy</i>
+            <span id="dup-header-msg"></span>
+          </div>
+          <p style="font-size:13px;color:#666;margin:0 0 10px;">
+            These files already exist in your club folder. Check the ones you want to upload anyway (overwrite). Unchecked files will be skipped.
+          </p>
+          <div id="dup-rows"></div>
+        </div>
+
         <div class="step-nav">
           <button class="mdl-button mdl-js-button" onclick="goToStep2()">
-            <i class="material-icons" style="vertical-align:middle;font-size:18px;">arrow_back</i>
-            Back
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;">arrow_back</i> Back
           </button>
           <div class="step-nav-right">
             <span id="step3-error" style="color:#d32f2f;font-size:13px;"></span>
+            <div class="spinner hidden" id="check-spinner"></div>
             <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
-                    id="btn-upload" onclick="startUpload()" disabled>
+                    id="btn-check-dupes" onclick="runDuplicateCheckAndUpload()" disabled>
               <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;">cloud_upload</i>
               Upload Photos
             </button>
           </div>
+        </div>
+      </div>
+
+      <!-- ── Upload progress ─────────────────────────────────────────────── -->
+      <div class="card" id="upload-progress-panel" style="display:none;">
+        <h5>
+          <i class="material-icons" style="vertical-align:middle;margin-right:6px;font-size:20px;">cloud_upload</i>
+          Uploading…
+        </h5>
+        <div class="overall-progress-bar">
+          <div class="overall-progress-fill" id="overall-progress-fill" style="width:0%;"></div>
+        </div>
+        <div class="progress-counter" id="progress-counter">0 / 0</div>
+        <div id="upload-file-rows" style="margin-top:12px;max-height:300px;overflow-y:auto;"></div>
+      </div>
+
+      <!-- ── Summary screen ─────────────────────────────────────────────── -->
+      <div id="summary-panel" style="display:none;">
+        <div class="summary-banner">
+          <h4>
+            <i class="material-icons" style="vertical-align:middle;margin-right:8px;">check_circle</i>
+            Upload Complete!
+          </h4>
+          <p style="margin:6px 0 0;opacity:.88;font-size:14px;">
+            <span id="summary-event-name"></span> &nbsp;·&nbsp; <span id="summary-club-name"></span>
+          </p>
+        </div>
+
+        <div class="summary-stat-grid">
+          <div class="summary-stat">
+            <div class="summary-stat-icon">✅</div>
+            <div class="summary-stat-value" id="stat-uploaded">0</div>
+            <div class="summary-stat-label">Photos uploaded</div>
+          </div>
+          <div class="summary-stat">
+            <div class="summary-stat-icon">📦</div>
+            <div class="summary-stat-value" id="stat-size">0 MB</div>
+            <div class="summary-stat-label">Total size</div>
+          </div>
+          <div class="summary-stat">
+            <div class="summary-stat-icon">⏭</div>
+            <div class="summary-stat-value" id="stat-skipped-dup">0</div>
+            <div class="summary-stat-label">Duplicates skipped</div>
+          </div>
+          <div class="summary-stat">
+            <div class="summary-stat-icon">🚫</div>
+            <div class="summary-stat-value" id="stat-skipped-type">0</div>
+            <div class="summary-stat-label">Non-photos skipped</div>
+          </div>
+        </div>
+
+        <!-- Batch folder info -->
+        <div class="summary-batch-info" id="summary-batch-info">
+          <i class="material-icons" style="font-size:16px;color:#9e9e9e;">folder</i>
+          <span id="summary-batch-name"></span>
+        </div>
+
+        <!-- Errors during upload, if any -->
+        <div id="summary-errors" style="display:none;margin-top:12px;"></div>
+
+        <div style="margin-top:20px;display:flex;gap:12px;flex-wrap:wrap;">
+          <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                  onclick="startNewUpload()">
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;">add_photo_alternate</i>
+            Upload More Photos
+          </button>
+          <a class="mdl-button mdl-js-button" href="?action=dashboard">
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;">home</i>
+            Dashboard
+          </a>
         </div>
       </div>
 
@@ -566,21 +485,29 @@
 <?!= HtmlService.createHtmlOutputFromFile('ui/js/app').getContent() ?>
 
 <script>
-// ── State ──────────────────────────────────────────────────────────────────────
+// ── Constants & state ──────────────────────────────────────────────────────────
 
 var ALL_EVENTS = <?!= events ?>;
 var RUNNING_CLUB = '<?= runningClub ?>';
-var ACCEPTED_EXTS = ['.jpg', '.jpeg', '.png', '.heic', '.cr2', '.arw', '.nef'];
-var ACCEPTED_MIME_PREFIXES = ['image/'];
+var USER_EMAIL = '<?= userEmail ?>';
+var ACCEPTED_EXTS = ['.jpg','.jpeg','.png','.heic','.cr2','.arw','.nef'];
 var MAX_FILE_SIZE_MB = 50;
 var MAX_BATCH_MB = 200;
 
 var state = {
   currentStep: 1,
-  selectedEvent: null,   // { eventId, eventName, eventDate, folderName, driveFolderId }
-  clubFolderId: null,    // set after serverGetClubFolderTree resolves
-  selectedFiles: [],     // array of File objects (after client-side filter)
+  selectedEvent: null,
+  existingFiles: [],      // ClubFolderFileEntry[] from serverGetClubFolderTree
+  clubFolderId: null,
   treeLoaded: false,
+  selectedFiles: [],      // File[] after client-side type filter
+  // Duplicate check results
+  acceptedFiles: [],      // IncomingFileInfo[] (no match)
+  duplicateMatches: [],   // DuplicateMatch[]
+  // Upload session
+  batchFolderId: null,
+  batchFolderName: null,
+  uploadResults: null,    // summary after completion
 };
 
 // ── Init ───────────────────────────────────────────────────────────────────────
@@ -592,11 +519,18 @@ var state = {
 
 // ── Step navigation ────────────────────────────────────────────────────────────
 
+function showOnly(panelId) {
+  var panels = ['step-1','step-2','step-3','upload-progress-panel','summary-panel'];
+  panels.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.style.display = (id === panelId) ? '' : 'none';
+  });
+}
+
 function goToStep1() {
   state.currentStep = 1;
-  document.getElementById('step-1').style.display = '';
-  document.getElementById('step-2').style.display = 'none';
-  document.getElementById('step-3').style.display = 'none';
+  showOnly('step-1');
+  document.getElementById('stepper').style.display = '';
   updateStepIndicator(1);
 }
 
@@ -606,31 +540,28 @@ function goToStep2() {
     return;
   }
   document.getElementById('step1-error').textContent = '';
-  document.getElementById('step-1').style.display = 'none';
-  document.getElementById('step-2').style.display = '';
-  document.getElementById('step-3').style.display = 'none';
   state.currentStep = 2;
+  showOnly('step-2');
   updateStepIndicator(2);
   loadClubFolderTree();
 }
 
 function goToStep3() {
-  document.getElementById('step-2').style.display = 'none';
-  document.getElementById('step-3').style.display = '';
   state.currentStep = 3;
+  showOnly('step-3');
   updateStepIndicator(3);
-  // Populate context labels
   document.getElementById('picker-event-name').textContent = state.selectedEvent.eventName;
   document.getElementById('picker-club-name').textContent = RUNNING_CLUB;
+  // Reset dup panel
+  hideDupPanel();
 }
 
 function updateStepIndicator(active) {
   for (var i = 1; i <= 3; i++) {
     var el = document.getElementById('step-indicator-' + i);
-    el.classList.remove('active', 'done');
+    el.classList.remove('active','done');
     if (i < active) el.classList.add('done');
     else if (i === active) el.classList.add('active');
-    // Update circle icon for done steps
     var circle = el.querySelector('.step-circle');
     if (i < active) {
       circle.innerHTML = '<i class="material-icons" style="font-size:16px;">check</i>';
@@ -644,10 +575,10 @@ function updateStepIndicator(active) {
 
 function filterEventList() {
   var from = document.getElementById('filter-from').value;
-  var to = document.getElementById('filter-to').value;
+  var to   = document.getElementById('filter-to').value;
   var filtered = ALL_EVENTS.filter(function(e) {
     if (from && e.eventDate < from) return false;
-    if (to && e.eventDate > to) return false;
+    if (to   && e.eventDate > to)   return false;
     return true;
   });
   renderEventList(filtered);
@@ -656,7 +587,6 @@ function filterEventList() {
 function clearEventFilter() {
   document.getElementById('filter-from').value = '';
   document.getElementById('filter-to').value = '';
-  // Trigger MDL label reset
   if (window.componentHandler) componentHandler.upgradeDom();
   renderEventList(ALL_EVENTS);
 }
@@ -670,19 +600,15 @@ function renderEventList(events) {
     container.innerHTML = '<div class="no-events-msg">No events match the selected date range.</div>';
     return;
   }
-
   container.innerHTML = events.map(function(e) {
-    var selectedClass = (state.selectedEvent && state.selectedEvent.eventId === e.eventId)
-      ? ' selected' : '';
-    return '<div class="event-card' + selectedClass + '" ' +
-           'onclick="selectEvent(' + JSON.stringify(e).replace(/'/g, '&#39;') + ')">' +
+    var sel = (state.selectedEvent && state.selectedEvent.eventId === e.eventId) ? ' selected' : '';
+    return '<div class="event-card' + sel + '" onclick=\'selectEvent(' + JSON.stringify(e) + ')\'>' +
            '<i class="material-icons event-card-icon">event</i>' +
            '<div>' +
            '<div class="event-card-name">' + escapeHtml(e.eventName) + '</div>' +
            '<div class="event-card-date">' + escapeHtml(e.eventDate) + '</div>' +
            '<div class="event-card-folder">' + escapeHtml(e.folderName) + '</div>' +
-           '</div>' +
-           '</div>';
+           '</div></div>';
   }).join('');
 }
 
@@ -690,7 +616,7 @@ function selectEvent(event) {
   state.selectedEvent = event;
   state.treeLoaded = false;
   state.clubFolderId = null;
-  // Re-render to highlight selection
+  state.existingFiles = [];
   filterEventList();
   document.getElementById('btn-step1-next').disabled = false;
   document.getElementById('step1-error').textContent = '';
@@ -706,43 +632,39 @@ function loadClubFolderTree() {
   document.getElementById('btn-step2-next').disabled = true;
 
   if (state.treeLoaded) {
-    // Already loaded for this event selection — skip the server call
     document.getElementById('tree-loading').style.display = 'none';
     document.getElementById('tree-content').style.display = '';
     document.getElementById('btn-step2-next').disabled = false;
     return;
   }
 
-  callServer(
-    'serverGetClubFolderTree',
-    { eventFolderId: state.selectedEvent.driveFolderId, clubFolderName: RUNNING_CLUB }
-  ).then(function(result) {
+  callServer('serverGetClubFolderTree', {
+    eventFolderId: state.selectedEvent.driveFolderId,
+    clubFolderName: RUNNING_CLUB,
+  }).then(function(result) {
     document.getElementById('tree-loading').style.display = 'none';
     document.getElementById('tree-content').style.display = '';
     document.getElementById('btn-step2-next').disabled = false;
     state.treeLoaded = true;
 
     if (result && result.status === 'success' && result.data) {
-      var folderData = result.data;
-      state.clubFolderId = folderData.folderId;
-      renderFileTree(folderData.files || []);
+      state.clubFolderId = result.data.folderId || null;
+      state.existingFiles = result.data.files || [];
     } else {
-      // No club folder yet — show empty state
-      state.clubFolderId = null;
-      renderFileTree([]);
+      state.existingFiles = [];
     }
+    renderFileTree(state.existingFiles);
   }).catch(function(err) {
     document.getElementById('tree-loading').style.display = 'none';
     document.getElementById('tree-content').innerHTML =
-      '<div class="file-tree-empty">⚠ Could not load folder contents. ' + escapeHtml(String(err)) + '</div>';
+      '<div class="file-tree-empty">⚠ Could not load folder: ' + escapeHtml(String(err)) + '</div>';
     document.getElementById('tree-content').style.display = '';
-    document.getElementById('btn-step2-next').disabled = false; // Allow continuing anyway
+    document.getElementById('btn-step2-next').disabled = false;
   });
 }
 
 function renderFileTree(files) {
   var container = document.getElementById('tree-content');
-
   if (!files.length) {
     container.innerHTML =
       '<div class="file-tree-empty">' +
@@ -752,66 +674,46 @@ function renderFileTree(files) {
     return;
   }
 
-  // Group files by batch folder
-  var batches = {};
-  var batchOrder = [];
+  var batches = {}, batchOrder = [];
   files.forEach(function(f) {
-    if (!batches[f.batchFolderName]) {
-      batches[f.batchFolderName] = { id: f.batchFolderId, files: [] };
-      batchOrder.push(f.batchFolderName);
-    }
-    batches[f.batchFolderName].files.push(f);
+    if (!batches[f.batchFolderName]) { batches[f.batchFolderName] = []; batchOrder.push(f.batchFolderName); }
+    batches[f.batchFolderName].push(f);
   });
 
   var totalSize = files.reduce(function(s, f) { return s + f.sizeBytes; }, 0);
   var html = '<div class="tree-summary">' +
     '<i class="material-icons" style="vertical-align:middle;font-size:16px;margin-right:4px;">insert_drive_file</i>' +
     files.length + ' photo' + (files.length !== 1 ? 's' : '') +
-    ' across ' + batchOrder.length + ' upload session' + (batchOrder.length !== 1 ? 's' : '') +
-    ' · ' + formatBytes(totalSize) + ' total' +
-    '</div>';
+    ' · ' + batchOrder.length + ' session' + (batchOrder.length !== 1 ? 's' : '') +
+    ' · ' + formatBytes(totalSize) + '</div>';
 
   batchOrder.forEach(function(batchName) {
-    var batch = batches[batchName];
-    var batchSize = batch.files.reduce(function(s, f) { return s + f.sizeBytes; }, 0);
-    var batchHtml = '<div class="batch-group">' +
+    var bFiles = batches[batchName];
+    var bSize = bFiles.reduce(function(s, f) { return s + f.sizeBytes; }, 0);
+    html += '<div class="batch-group">' +
       '<div class="batch-header" onclick="toggleBatch(this)">' +
-      '<i class="material-icons">folder</i>' +
-      '<span>' + escapeHtml(batchName) + '</span>' +
+      '<i class="material-icons">folder</i><span>' + escapeHtml(batchName) + '</span>' +
       '<span style="margin-left:auto;font-size:12px;color:#9e9e9e;">' +
-        batch.files.length + ' file' + (batch.files.length !== 1 ? 's' : '') +
-        ' · ' + formatBytes(batchSize) +
+        bFiles.length + ' files · ' + formatBytes(bSize) +
       '</span>' +
       '<i class="material-icons" style="font-size:18px;color:#bdbdbd;margin-left:4px;">expand_less</i>' +
-      '</div>' +
-      '<div class="batch-files">';
-
-    batch.files.forEach(function(f) {
-      batchHtml +=
-        '<div class="file-row">' +
-        '<i class="material-icons">image</i>' +
-        '<span style="word-break:break-all;">' + escapeHtml(f.name) + '</span>' +
-        '<span class="file-size">' + formatBytes(f.sizeBytes) + '</span>' +
-        '</div>';
+      '</div><div class="batch-files">';
+    bFiles.forEach(function(f) {
+      html += '<div class="file-row"><i class="material-icons">image</i>' +
+              '<span style="word-break:break-all;">' + escapeHtml(f.name) + '</span>' +
+              '<span class="file-size">' + formatBytes(f.sizeBytes) + '</span></div>';
     });
-
-    batchHtml += '</div></div>';
-    html += batchHtml;
+    html += '</div></div>';
   });
-
   container.innerHTML = html;
 }
 
 function toggleBatch(header) {
   var filesDiv = header.nextElementSibling;
   var icon = header.querySelector('.material-icons:last-child');
-  if (filesDiv.style.display === 'none') {
-    filesDiv.style.display = '';
-    icon.textContent = 'expand_less';
-  } else {
-    filesDiv.style.display = 'none';
-    icon.textContent = 'expand_more';
-  }
+  var collapsed = filesDiv.style.display === 'none';
+  filesDiv.style.display = collapsed ? '' : 'none';
+  icon.textContent = collapsed ? 'expand_less' : 'expand_more';
 }
 
 // ── Step 3: File picker ────────────────────────────────────────────────────────
@@ -822,61 +724,45 @@ function isAcceptedFile(file) {
 }
 
 function handleFileSelection(fileList) {
-  var accepted = [];
-  var skipped = 0;
-
+  var accepted = [], skipped = 0;
   for (var i = 0; i < fileList.length; i++) {
-    if (isAcceptedFile(fileList[i])) {
-      accepted.push(fileList[i]);
-    } else {
-      skipped++;
-    }
+    isAcceptedFile(fileList[i]) ? accepted.push(fileList[i]) : skipped++;
   }
-
-  // Merge with existing selection (avoid exact duplicates by name+size)
-  var existing = state.selectedFiles;
+  // Merge (no exact duplicates by name+size)
   accepted.forEach(function(f) {
-    var isDup = existing.some(function(e) {
-      return e.name === f.name && e.size === f.size;
-    });
-    if (!isDup) existing.push(f);
+    if (!state.selectedFiles.some(function(e) { return e.name === f.name && e.size === f.size; })) {
+      state.selectedFiles.push(f);
+    }
   });
-
-  state.selectedFiles = existing;
   renderSelectedFiles();
   updateUploadButton();
-
+  document.getElementById('skipped-notice').style.display = skipped > 0 ? '' : 'none';
   if (skipped > 0) {
-    var msg = skipped + ' file' + (skipped > 1 ? 's were' : ' was') +
-              ' skipped (not a supported photo type: JPG, PNG, HEIC, CR2, ARW, NEF).';
-    document.getElementById('skipped-notice').style.display = '';
-    document.getElementById('skipped-count-msg').textContent = msg;
-  } else {
-    document.getElementById('skipped-notice').style.display = 'none';
+    document.getElementById('skipped-count-msg').textContent =
+      skipped + ' file' + (skipped > 1 ? 's were' : ' was') +
+      ' skipped (not a supported photo type).';
   }
+  hideDupPanel();
 }
 
 function handleDragOver(e) {
   e.preventDefault();
   document.getElementById('drop-zone').classList.add('drag-over');
 }
-
 function handleDragLeave(e) {
   document.getElementById('drop-zone').classList.remove('drag-over');
 }
-
 function handleDrop(e) {
   e.preventDefault();
   document.getElementById('drop-zone').classList.remove('drag-over');
-  if (e.dataTransfer && e.dataTransfer.files) {
-    handleFileSelection(e.dataTransfer.files);
-  }
+  if (e.dataTransfer && e.dataTransfer.files) handleFileSelection(e.dataTransfer.files);
 }
 
 function removeFile(index) {
   state.selectedFiles.splice(index, 1);
   renderSelectedFiles();
   updateUploadButton();
+  hideDupPanel();
 }
 
 function clearAllFiles() {
@@ -885,74 +771,355 @@ function clearAllFiles() {
   renderSelectedFiles();
   updateUploadButton();
   document.getElementById('skipped-notice').style.display = 'none';
+  hideDupPanel();
 }
 
 function renderSelectedFiles() {
   var files = state.selectedFiles;
   var listEl = document.getElementById('selected-files-list');
   var container = document.getElementById('file-rows-container');
-
   if (!files.length) {
     listEl.style.display = 'none';
     document.getElementById('size-limit-notice').style.display = 'none';
     return;
   }
-
   listEl.style.display = '';
   document.getElementById('selected-count').textContent =
     files.length + ' photo' + (files.length !== 1 ? 's' : '') + ' selected';
-
   var totalBytes = files.reduce(function(s, f) { return s + f.size; }, 0);
   document.getElementById('selected-total-size').textContent = formatBytes(totalBytes);
 
   var oversized = files.filter(function(f) { return f.size > MAX_FILE_SIZE_MB * 1024 * 1024; });
   var batchTooLarge = totalBytes > MAX_BATCH_MB * 1024 * 1024;
   var sizeNotice = document.getElementById('size-limit-notice');
-
-  if (oversized.length > 0 || batchTooLarge) {
+  if (oversized.length || batchTooLarge) {
     sizeNotice.style.display = '';
     var msgs = [];
-    if (oversized.length > 0) {
-      msgs.push(oversized.length + ' file' + (oversized.length > 1 ? 's exceed' : ' exceeds') +
-                ' the 50 MB per-file limit — they will be skipped on upload.');
-    }
-    if (batchTooLarge) {
-      msgs.push('Total batch size (' + formatBytes(totalBytes) + ') exceeds the recommended ' +
-                MAX_BATCH_MB + ' MB session limit — consider splitting into multiple uploads.');
-    }
+    if (oversized.length) msgs.push(oversized.length + ' file' + (oversized.length > 1 ? 's exceed' : ' exceeds') + ' the 50 MB per-file limit and will be skipped.');
+    if (batchTooLarge) msgs.push('Total batch (' + formatBytes(totalBytes) + ') exceeds the recommended ' + MAX_BATCH_MB + ' MB — consider splitting into multiple uploads.');
     document.getElementById('size-limit-msg').textContent = msgs.join(' ');
   } else {
     sizeNotice.style.display = 'none';
   }
 
   container.innerHTML = files.map(function(f, i) {
-    var isOversized = f.size > MAX_FILE_SIZE_MB * 1024 * 1024;
-    return '<div class="selected-file-row">' +
-      '<i class="material-icons">image</i>' +
+    var over = f.size > MAX_FILE_SIZE_MB * 1024 * 1024;
+    return '<div class="selected-file-row"><i class="material-icons">image</i>' +
       '<span class="file-name">' + escapeHtml(f.name) + '</span>' +
-      (isOversized
-        ? '<span class="file-warn">⚠ &gt;50 MB</span>'
-        : '<span class="file-size-badge">' + formatBytes(f.size) + '</span>') +
+      (over ? '<span class="file-warn">⚠ &gt;50 MB</span>'
+             : '<span class="file-size-badge">' + formatBytes(f.size) + '</span>') +
       '<button class="btn-remove" onclick="removeFile(' + i + ')" title="Remove">' +
-        '<i class="material-icons" style="font-size:18px;">close</i>' +
-      '</button>' +
-      '</div>';
+      '<i class="material-icons" style="font-size:18px;">close</i></button></div>';
   }).join('');
 }
 
 function updateUploadButton() {
-  var validFiles = state.selectedFiles.filter(function(f) {
+  var valid = state.selectedFiles.filter(function(f) {
     return f.size <= MAX_FILE_SIZE_MB * 1024 * 1024;
   });
-  document.getElementById('btn-upload').disabled = validFiles.length === 0;
+  document.getElementById('btn-check-dupes').disabled = valid.length === 0;
   document.getElementById('step3-error').textContent = '';
 }
 
-function startUpload() {
-  // Phase 3 Week 2 — upload service (chunked upload to Drive)
-  // For now, show a placeholder message.
-  document.getElementById('step3-error').textContent =
-    'Upload service coming in Phase 3 Week 2.';
+// ── Duplicate check ────────────────────────────────────────────────────────────
+
+function checkForDuplicates(incomingFiles, existingFiles) {
+  var accepted = [], duplicates = [];
+  incomingFiles.forEach(function(f) {
+    var nameLower = f.name.toLowerCase();
+    var match = null;
+    for (var i = 0; i < existingFiles.length; i++) {
+      if (existingFiles[i].name.toLowerCase() === nameLower && existingFiles[i].sizeBytes === f.size) {
+        match = existingFiles[i];
+        break;
+      }
+    }
+    if (match) {
+      duplicates.push({ incomingFile: { name: f.name, sizeBytes: f.size }, matchedFile: match, _file: f });
+    } else {
+      accepted.push(f);
+    }
+  });
+  return { accepted: accepted, duplicates: duplicates };
+}
+
+function hideDupPanel() {
+  document.getElementById('dup-panel').style.display = 'none';
+  state.acceptedFiles = [];
+  state.duplicateMatches = [];
+}
+
+function showDupPanel(duplicates) {
+  var panel = document.getElementById('dup-panel');
+  document.getElementById('dup-header-msg').textContent =
+    duplicates.length + ' duplicate' + (duplicates.length > 1 ? 's' : '') + ' found';
+
+  var rows = duplicates.map(function(d, i) {
+    return '<div class="dup-row">' +
+      '<label>' +
+        '<input type="checkbox" class="dup-checkbox" data-idx="' + i + '">' +
+        '<span>' + escapeHtml(d.incomingFile.name) + ' (' + formatBytes(d.incomingFile.sizeBytes) + ')</span>' +
+      '</label>' +
+      '<span class="dup-match-info">already in: ' + escapeHtml(d.matchedFile.batchFolderName) + '</span>' +
+      '</div>';
+  }).join('');
+  document.getElementById('dup-rows').innerHTML = rows;
+  panel.style.display = '';
+}
+
+// ── Main upload flow ───────────────────────────────────────────────────────────
+
+function runDuplicateCheckAndUpload() {
+  // Filter out oversized files first
+  var validFiles = state.selectedFiles.filter(function(f) {
+    return f.size <= MAX_FILE_SIZE_MB * 1024 * 1024;
+  });
+  if (!validFiles.length) {
+    document.getElementById('step3-error').textContent = 'No valid files to upload.';
+    return;
+  }
+
+  var checkResult = checkForDuplicates(validFiles, state.existingFiles);
+
+  if (checkResult.duplicates.length > 0) {
+    state.acceptedFiles = checkResult.accepted;
+    state.duplicateMatches = checkResult.duplicates;
+    showDupPanel(checkResult.duplicates);
+
+    // Change button to "Confirm & Upload"
+    var btn = document.getElementById('btn-check-dupes');
+    btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;">send</i> Confirm & Upload';
+    btn.onclick = confirmAndUpload;
+  } else {
+    // No duplicates — proceed immediately
+    state.acceptedFiles = checkResult.accepted;
+    state.duplicateMatches = [];
+    startUploadFlow(state.acceptedFiles, 0);
+  }
+}
+
+function confirmAndUpload() {
+  // Read duplicate checkboxes
+  var overwriteNames = new Set();
+  var checkboxes = document.querySelectorAll('.dup-checkbox');
+  checkboxes.forEach(function(cb) {
+    if (cb.checked) {
+      var idx = parseInt(cb.getAttribute('data-idx'), 10);
+      overwriteNames.add(state.duplicateMatches[idx].incomingFile.name);
+    }
+  });
+
+  var skippedDuplicates = 0;
+  var toUpload = state.acceptedFiles.slice();
+  state.duplicateMatches.forEach(function(d) {
+    if (overwriteNames.has(d.incomingFile.name)) {
+      toUpload.push(d._file);
+    } else {
+      skippedDuplicates++;
+    }
+  });
+
+  startUploadFlow(toUpload, skippedDuplicates);
+}
+
+function startUploadFlow(filesToUpload, skippedDuplicates) {
+  // skippedNonPhoto = total selected - oversized - (accepted + dupes) is already implicit.
+  // We count files that were originally in selectedFiles but filtered out as oversized.
+  var oversizedCount = state.selectedFiles.filter(function(f) {
+    return f.size > MAX_FILE_SIZE_MB * 1024 * 1024;
+  }).length;
+
+  // Show progress panel
+  showOnly('upload-progress-panel');
+  document.getElementById('stepper').style.display = 'none';
+  renderUploadProgress(filesToUpload, []);
+
+  // Step 1: create batch folder
+  var usernameHint = USER_EMAIL.split('@')[0];
+  callServer('serverStartUploadSession', {
+    eventFolderId: state.selectedEvent.driveFolderId,
+    clubFolderName: RUNNING_CLUB,
+    usernameHint: usernameHint,
+  }).then(function(sessionResult) {
+    if (!sessionResult || sessionResult.status !== 'success') {
+      showUploadError('Failed to create upload session: ' + (sessionResult ? sessionResult.message : 'unknown error'));
+      return;
+    }
+
+    state.batchFolderId = sessionResult.data.batchFolderId;
+    state.batchFolderName = sessionResult.data.batchFolderName;
+
+    // Step 2: upload files one by one
+    uploadFilesSequentially(filesToUpload, 0, [], skippedDuplicates, oversizedCount);
+  }).catch(function(err) {
+    showUploadError('Session error: ' + String(err));
+  });
+}
+
+function uploadFilesSequentially(files, index, results, skippedDuplicates, skippedNonPhoto) {
+  updateOverallProgress(index, files.length);
+
+  if (index >= files.length) {
+    // All done — finalize
+    finalizeUpload(files, results, skippedDuplicates, skippedNonPhoto);
+    return;
+  }
+
+  var file = files[index];
+  setFileStatus(index, 'uploading', 'Uploading…');
+
+  // Read file as base64
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var dataUrl = e.target.result;
+    // Strip the data URL prefix: "data:image/jpeg;base64,..."
+    var base64Data = dataUrl.indexOf(',') >= 0 ? dataUrl.split(',')[1] : dataUrl;
+
+    callServer('serverUploadFile', {
+      batchFolderId: state.batchFolderId,
+      fileName: file.name,
+      mimeType: file.type || 'application/octet-stream',
+      base64Data: base64Data,
+    }).then(function(uploadResult) {
+      if (uploadResult && uploadResult.status === 'success') {
+        setFileStatus(index, 'done', '✓ Done');
+        results.push({ file: file, success: true, data: uploadResult.data });
+      } else {
+        setFileStatus(index, 'failed', '✗ Failed');
+        results.push({ file: file, success: false, error: uploadResult ? uploadResult.message : 'Unknown' });
+      }
+      uploadFilesSequentially(files, index + 1, results, skippedDuplicates, skippedNonPhoto);
+    }).catch(function(err) {
+      setFileStatus(index, 'failed', '✗ Error');
+      results.push({ file: file, success: false, error: String(err) });
+      uploadFilesSequentially(files, index + 1, results, skippedDuplicates, skippedNonPhoto);
+    });
+  };
+  reader.onerror = function() {
+    setFileStatus(index, 'failed', '✗ Read error');
+    results.push({ file: file, success: false, error: 'FileReader error' });
+    uploadFilesSequentially(files, index + 1, results, skippedDuplicates, skippedNonPhoto);
+  };
+  reader.readAsDataURL(file);
+}
+
+function finalizeUpload(files, results, skippedDuplicates, skippedNonPhoto) {
+  updateOverallProgress(files.length, files.length);
+
+  var successCount = results.filter(function(r) { return r.success; }).length;
+  var totalSizeBytes = results
+    .filter(function(r) { return r.success && r.data; })
+    .reduce(function(s, r) { return s + (r.data.sizeBytes || 0); }, 0);
+  var totalSizeMb = totalSizeBytes / (1024 * 1024);
+
+  // Log to sheets
+  callServer('serverCompleteUpload', {
+    eventId:           state.selectedEvent.eventId,
+    clubFolderName:    RUNNING_CLUB,
+    batchFolderName:   state.batchFolderName,
+    batchFolderId:     state.batchFolderId,
+    fileCount:         successCount,
+    totalSizeMb:       totalSizeMb,
+    skippedDuplicates: skippedDuplicates,
+    skippedNonPhoto:   skippedNonPhoto,
+  }).catch(function() { /* Log failure is non-fatal */ });
+
+  // Show summary
+  var failedResults = results.filter(function(r) { return !r.success; });
+  showSummary({
+    eventName:         state.selectedEvent.eventName,
+    clubName:          RUNNING_CLUB,
+    batchFolderName:   state.batchFolderName,
+    fileCount:         successCount,
+    totalSizeMb:       totalSizeMb,
+    skippedDuplicates: skippedDuplicates,
+    skippedNonPhoto:   skippedNonPhoto,
+    failedFiles:       failedResults,
+  });
+}
+
+// ── Upload progress UI ─────────────────────────────────────────────────────────
+
+function renderUploadProgress(files) {
+  var container = document.getElementById('upload-file-rows');
+  container.innerHTML = files.map(function(f, i) {
+    return '<div class="progress-file-row" id="prow-' + i + '">' +
+      '<i class="material-icons" style="font-size:18px;color:#9fa8da;">image</i>' +
+      '<span class="progress-file-name">' + escapeHtml(f.name) + '</span>' +
+      '<span class="progress-status pending" id="pstatus-' + i + '">Waiting…</span>' +
+      '</div>';
+  }).join('');
+  updateOverallProgress(0, files.length);
+}
+
+function setFileStatus(index, cssClass, text) {
+  var el = document.getElementById('pstatus-' + index);
+  if (el) {
+    el.className = 'progress-status ' + cssClass;
+    el.textContent = text;
+    // Auto-scroll to keep current file visible
+    el.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function updateOverallProgress(done, total) {
+  var pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  document.getElementById('overall-progress-fill').style.width = pct + '%';
+  document.getElementById('progress-counter').textContent = done + ' / ' + total;
+}
+
+function showUploadError(msg) {
+  document.getElementById('upload-progress-panel').innerHTML +=
+    '<div class="size-limit-warning" style="margin-top:16px;">' +
+    '<i class="material-icons">error</i>' + escapeHtml(msg) + '</div>' +
+    '<div style="margin-top:12px;">' +
+    '<button class="mdl-button mdl-js-button" onclick="goToStep3()">' +
+    '← Back to file selection</button></div>';
+}
+
+// ── Summary screen ─────────────────────────────────────────────────────────────
+
+function showSummary(s) {
+  showOnly('summary-panel');
+  document.getElementById('stepper').style.display = 'none';
+  document.getElementById('summary-event-name').textContent = s.eventName;
+  document.getElementById('summary-club-name').textContent = s.clubName;
+  document.getElementById('stat-uploaded').textContent = s.fileCount;
+  document.getElementById('stat-size').textContent = formatMb(s.totalSizeMb);
+  document.getElementById('stat-skipped-dup').textContent = s.skippedDuplicates;
+  document.getElementById('stat-skipped-type').textContent = s.skippedNonPhoto;
+  document.getElementById('summary-batch-name').textContent = s.batchFolderName;
+
+  if (s.failedFiles && s.failedFiles.length) {
+    var errEl = document.getElementById('summary-errors');
+    errEl.style.display = '';
+    errEl.innerHTML = '<div class="size-limit-warning"><i class="material-icons">warning</i>' +
+      s.failedFiles.length + ' file' + (s.failedFiles.length > 1 ? 's' : '') +
+      ' failed to upload: ' +
+      s.failedFiles.map(function(r) { return escapeHtml(r.file.name); }).join(', ') +
+      '</div>';
+  }
+}
+
+function startNewUpload() {
+  // Reset state for another upload to the same or different event
+  state.selectedFiles = [];
+  state.acceptedFiles = [];
+  state.duplicateMatches = [];
+  state.batchFolderId = null;
+  state.batchFolderName = null;
+  state.treeLoaded = false;
+  state.existingFiles = [];
+  // Reset file input
+  var fi = document.getElementById('file-input');
+  if (fi) fi.value = '';
+  hideDupPanel();
+
+  document.getElementById('stepper').style.display = '';
+  showOnly('step-1');
+  updateStepIndicator(1);
+  renderEventList(ALL_EVENTS);
+  renderSelectedFiles();
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
@@ -964,11 +1131,14 @@ function escapeHtml(str) {
 }
 
 function formatBytes(bytes) {
-  if (bytes === 0) return '0 B';
-  var units = ['B', 'KB', 'MB', 'GB'];
-  var i = Math.floor(Math.log(bytes) / Math.log(1024));
-  i = Math.min(i, units.length - 1);
+  if (!bytes) return '0 B';
+  var units = ['B','KB','MB','GB'];
+  var i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+function formatMb(mb) {
+  return mb >= 1 ? mb.toFixed(1) + ' MB' : (mb * 1024).toFixed(0) + ' KB';
 }
 </script>
 </body>
