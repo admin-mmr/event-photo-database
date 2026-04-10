@@ -26,8 +26,12 @@ function renderTemplate(
   templateName: string,
   data: Record<string, unknown>
 ): GoogleAppsScript.HTML.HtmlOutput {
+  /* global ScriptApp */
   const template = HtmlService.createTemplateFromFile(`ui/templates/${templateName}`);
-  Object.assign(template, data);
+  // Inject the deployment URL so client-side navigate() can route correctly.
+  // window.top navigation requires the real script.google.com URL, not the
+  // googleusercontent.com iframe URL that window.location gives.
+  Object.assign(template, { scriptUrl: ScriptApp.getService().getUrl(), ...data });
   return template
     .evaluate()
     .setTitle('湘舍动公益文件系统')

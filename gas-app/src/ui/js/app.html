@@ -104,22 +104,21 @@
   // all action links and navigate window.top to the correct deployment URL,
   // which google.script.url.getLocation() provides reliably.
 
-  var _APP_BASE_URL = null;
-
-  /** Resolves and caches the deployment's base URL, then calls cb(url). */
-  function _getAppBase(cb) {
-    if (_APP_BASE_URL) { cb(_APP_BASE_URL); return; }
-    google.script.url.getLocation(function (loc) {
-      _APP_BASE_URL = loc.href.split('?')[0];
-      cb(_APP_BASE_URL);
-    });
-  }
-
-  /** Navigates to a route action via the outer (script.google.com) frame. */
+  /**
+   * Navigates the outer (script.google.com) frame to a route action.
+   *
+   * window.APP_URL is injected by the server via ScriptApp.getService().getUrl()
+   * in renderTemplate(). It holds the canonical deployment URL and is set in
+   * each template as <script>window.APP_URL = '<?= scriptUrl ?>';</script>
+   * just before the app.html include.
+   *
+   * We navigate window.top (not window) because the GAS web app renders inside
+   * an iframe on googleusercontent.com; only the outer script.google.com frame
+   * properly routes query-parameter changes back through doGet.
+   */
   function navigate(action) {
-    _getAppBase(function (base) {
-      window.top.location.href = base + '?action=' + action;
-    });
+    var base = (window.APP_URL || window.location.href).split('?')[0];
+    window.top.location.href = base + '?action=' + action;
   }
 
   // Intercept all href="?action=..." links so they go through navigate()
