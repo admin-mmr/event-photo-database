@@ -18,12 +18,19 @@ import { ServiceResult } from '../types/responses';
 /**
  * Role hierarchy for permission checking.
  * Higher number = more permissive.
+ *
+ * Returned by a function (not a top-level const) to avoid GAS file load-order
+ * issues: clasp pushes files alphabetically, so `types/enums` (t) is evaluated
+ * after `middleware/roleGuard` (m). A top-level const referencing UserRole would
+ * read `undefined` at init time; a function call defers evaluation until runtime.
  */
-const ROLE_LEVEL: Record<UserRole, number> = {
-  [UserRole.API_CLIENT]: 1,
-  [UserRole.USER]: 2,
-  [UserRole.ADMIN]: 3,
-};
+function getRoleLevels(): Record<UserRole, number> {
+  return {
+    [UserRole.API_CLIENT]: 1,
+    [UserRole.USER]: 2,
+    [UserRole.ADMIN]: 3,
+  };
+}
 
 /**
  * Returns SUCCESS if the user's role meets or exceeds the required role.
@@ -36,6 +43,7 @@ export function requireRole(
   userRole: UserRole,
   requiredRole: UserRole
 ): ServiceResult<void> {
+  const ROLE_LEVEL = getRoleLevels();
   if (ROLE_LEVEL[userRole] >= ROLE_LEVEL[requiredRole]) {
     return { status: ResultStatus.SUCCESS, message: 'Access granted' };
   }
