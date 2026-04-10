@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>湘舍动公益文件系统 — Flowcharts</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.6.1/mermaid.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 40px 24px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 52px;
+    }
+
+    header h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #60a5fa, #a78bfa, #34d399);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 8px;
+    }
+
+    header p {
+      color: #94a3b8;
+      font-size: 0.95rem;
+    }
+
+    .nav {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 48px;
+    }
+
+    .nav a {
+      padding: 8px 18px;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 500;
+      text-decoration: none;
+      border: 1px solid #334155;
+      color: #94a3b8;
+      transition: all 0.2s;
+      background: #1e293b;
+    }
+
+    .nav a:hover {
+      background: #334155;
+      color: #e2e8f0;
+    }
+
+    .chart-section {
+      max-width: 960px;
+      margin: 0 auto 60px;
+      background: #1e293b;
+      border-radius: 16px;
+      border: 1px solid #334155;
+      overflow: hidden;
+    }
+
+    .chart-header {
+      padding: 20px 28px 16px;
+      border-bottom: 1px solid #334155;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .chart-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      font-size: 1rem;
+      flex-shrink: 0;
+    }
+
+    .badge-admin   { background: #1d4ed8; }
+    .badge-upload  { background: #065f46; }
+    .badge-summary { background: #7c3aed; }
+    .badge-api     { background: #92400e; }
+
+    .chart-header h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #f1f5f9;
+    }
+
+    .chart-header p {
+      font-size: 0.8rem;
+      color: #64748b;
+      margin-top: 2px;
+    }
+
+    .chart-body {
+      padding: 32px 24px;
+      display: flex;
+      justify-content: center;
+      overflow-x: auto;
+    }
+
+    .chart-body .mermaid {
+      min-width: 400px;
+    }
+
+    .folder-structure {
+      max-width: 960px;
+      margin: 0 auto 60px;
+      background: #1e293b;
+      border-radius: 16px;
+      border: 1px solid #334155;
+      overflow: hidden;
+    }
+
+    .folder-structure .chart-header {
+      border-bottom: 1px solid #334155;
+    }
+
+    .tree {
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.85rem;
+      line-height: 1.9;
+      padding: 28px 32px;
+      color: #cbd5e1;
+    }
+
+    .tree .folder  { color: #60a5fa; font-weight: 600; }
+    .tree .controlled { color: #34d399; }
+    .tree .user    { color: #fbbf24; }
+    .tree .label   { color: #64748b; font-style: italic; margin-left: 6px; }
+
+    footer {
+      text-align: center;
+      color: #475569;
+      font-size: 0.78rem;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>湘舍动公益文件系统</h1>
+  <p>System Architecture & Process Flowcharts · v1.0 GAS</p>
+</header>
+
+<nav class="nav">
+  <a href="#folder">Folder Structure</a>
+  <a href="#create-event">Admin: Create Event</a>
+  <a href="#upload">User: Upload Photos</a>
+  <a href="#summary">Admin: Summary Report</a>
+  <a href="#api">Cross-Org API</a>
+</nav>
+
+<!-- FOLDER STRUCTURE -->
+<section class="folder-structure" id="folder">
+  <div class="chart-header">
+    <div class="chart-badge" style="background:#1e3a5f; font-size:1.1rem">📁</div>
+    <div>
+      <h2>Drive Folder Structure</h2>
+      <p>3 system-controlled layers · unlimited user files below</p>
+    </div>
+  </div>
+  <div class="tree">
+    <span class="folder">📁 湘舍动公益文件系统</span> <span class="label">← ROOT (湘舍动 Drive)</span><br>
+    &nbsp;&nbsp;│<br>
+    &nbsp;&nbsp;├── <span class="folder controlled">📁 2025-11-03_NYC_Marathon</span> <span class="label">← Layer 1: Master Event · Admin creates · YYYY-MM-DD_EventName</span><br>
+    &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│<br>
+    &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── <span class="folder controlled">📁 New_Bee</span> <span class="label">← Layer 2: Club Folder · auto-created on first upload · must match approved list</span><br>
+    &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│<br>
+    &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── <span class="folder controlled">📁 20251103-093500_cathylin</span> <span class="label">← Layer 3: Upload Batch · auto · YYYYMMDD-HHMMSS_username</span><br>
+    &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── <span class="user">📷 photo1.jpg</span><br>
+    &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── <span class="user">📷 photo2.jpg</span> <span class="label">← user files, flat, original names kept</span><br>
+    &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── <span class="user">📷 photo3.heic</span><br>
+    &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│<br>
+    &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── <span class="folder controlled">📁 20251104-143022_liming</span><br>
+    &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── <span class="user">📷 ...</span><br>
+    &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;│<br>
+    &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── <span class="folder controlled">📁 Misty_Mountain</span><br>
+    &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── <span class="folder controlled">📁 20251103-095500_wangfang</span><br>
+    &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── <span class="user">📷 ...</span><br>
+    &nbsp;&nbsp;│<br>
+    &nbsp;&nbsp;└── <span class="folder controlled">📁 2025-10-30_Chicago_Marathon</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── <span class="label">...</span>
+  </div>
+</section>
+
+<!-- FLOWCHART 1: ADMIN CREATE EVENT -->
+<section class="chart-section" id="create-event">
+  <div class="chart-header">
+    <div class="chart-badge badge-admin">🛠</div>
+    <div>
+      <h2>Admin: Create Event</h2>
+      <p>Admin logs in → fills event form → master folder created in Drive</p>
+    </div>
+  </div>
+  <div class="chart-body">
+    <div class="mermaid">
+%%{init: {"theme": "dark", "themeVariables": {"primaryColor":"#1d4ed8","primaryTextColor":"#f1f5f9","primaryBorderColor":"#3b82f6","lineColor":"#64748b","secondaryColor":"#0f172a","tertiaryColor":"#1e293b","edgeLabelBackground":"#1e293b","fontSize":"14px"}}}%%
+flowchart TD
+    A([👤 Admin logs in via Google OAuth]) --> B[Dashboard: Admin Panel]
+    B --> C[Fill form:\nEvent Name + Race Date]
+    C --> D{Validate inputs}
+    D -- ❌ Invalid --> E[Show error\nfix and resubmit]
+    E --> C
+    D -- ✅ Valid --> F[Generate folder name\nYYYY-MM-DD_EventName]
+    F --> G{Folder already\nexists in Drive?}
+    G -- ⚠️ Yes --> H[Show warning:\nduplicate event detected]
+    H --> B
+    G -- ✅ No --> I[Create master folder\nin Drive]
+    I --> J[Write record to\nEvents sheet]
+    J --> K[✅ Show success\n+ Drive folder link]
+    K --> B
+
+    style A fill:#1d4ed8,stroke:#3b82f6,color:#fff
+    style K fill:#065f46,stroke:#10b981,color:#fff
+    style H fill:#7f1d1d,stroke:#ef4444,color:#fff
+    style E fill:#7f1d1d,stroke:#ef4444,color:#fff
+    </div>
+  </div>
+</section>
+
+<!-- FLOWCHART 2: USER UPLOAD -->
+<section class="chart-section" id="upload">
+  <div class="chart-header">
+    <div class="chart-badge badge-upload">📤</div>
+    <div>
+      <h2>User: Upload Photos (5-Step Flow)</h2>
+      <p>Select event → browse club folder → pick files → duplicate check → upload → summary</p>
+    </div>
+  </div>
+  <div class="chart-body">
+    <div class="mermaid">
+%%{init: {"theme": "dark", "themeVariables": {"primaryColor":"#065f46","primaryTextColor":"#f1f5f9","primaryBorderColor":"#10b981","lineColor":"#64748b","secondaryColor":"#0f172a","tertiaryColor":"#1e293b","edgeLabelBackground":"#1e293b","fontSize":"14px"}}}%%
+flowchart TD
+    A([👤 User logs in\nvia Google OAuth]) --> B{User in\nUsers sheet?}
+    B -- ❌ No --> C[🚫 Access Denied\nContact admin]
+    B -- ✅ Yes --> D[Dashboard\nMy Club = ClubName]
+    D --> E[STEP 1\nSelect Event\noptional date filter]
+    E --> F[Show list of events]
+    F --> G[User selects an event]
+    G --> H{Club subfolder\nexists in event?}
+    H -- ❌ No --> I[Auto-create\nclub folder in Drive]
+    I --> J[Show: empty\nfile tree for club]
+    H -- ✅ Yes --> K[Show: current\nfile tree for club]
+    J --> L
+    K --> L[STEP 2\nFile picker\njpg · png · heic · raw only]
+    L --> M[Client-side filter:\nskip videos + unsupported types]
+    M --> N[STEP 3: Duplicate Check\nfilename + size + modified time\nvs all files in club folder]
+    N --> O{Duplicates\nfound?}
+    O -- ⚠️ Yes --> P[Flag duplicates\nSkip or Overwrite?]
+    P --> Q[User decides]
+    Q --> R
+    O -- ✅ None --> R[STEP 4: Upload\nauto-create batch folder\nYYYYMMDD-HHMMSS_username]
+    R --> S[Upload accepted files\nflat into batch folder\npreserve original filenames]
+    S --> T[Write to Upload_Log sheet]
+    T --> U[STEP 5: Summary\n✅ Uploaded: N photos · X MB\n⏭ Skipped duplicates: N\n🚫 Skipped non-photos: N]
+    U --> V([✅ Done])
+
+    style A fill:#065f46,stroke:#10b981,color:#fff
+    style C fill:#7f1d1d,stroke:#ef4444,color:#fff
+    style V fill:#065f46,stroke:#10b981,color:#fff
+    style P fill:#78350f,stroke:#f59e0b,color:#fff
+    </div>
+  </div>
+</section>
+
+<!-- FLOWCHART 3: ADMIN SUMMARY -->
+<section class="chart-section" id="summary">
+  <div class="chart-header">
+    <div class="chart-badge badge-summary">📊</div>
+    <div>
+      <h2>Admin: Reconciliation & Summary Report</h2>
+      <p>Whole system or date-range · events, clubs, photo counts, naming exceptions</p>
+    </div>
+  </div>
+  <div class="chart-body">
+    <div class="mermaid">
+%%{init: {"theme": "dark", "themeVariables": {"primaryColor":"#4c1d95","primaryTextColor":"#f1f5f9","primaryBorderColor":"#8b5cf6","lineColor":"#64748b","secondaryColor":"#0f172a","tertiaryColor":"#1e293b","edgeLabelBackground":"#1e293b","fontSize":"14px"}}}%%
+flowchart TD
+    A([🛠 Admin opens Summary]) --> B[Select scope:\nWhole system OR Date range]
+    B --> C[Query Upload_Log\nfiltered by date range]
+    C --> D[Group by Event]
+    D --> E[For each Event:\nlist clubs · photo count · total size]
+    E --> F{Events with\nzero uploads?}
+    F -- ⚠️ Yes --> G[Flag: events\nwith no activity]
+    G --> H
+    F -- ✅ No --> H[Scan Layer 1–2 folder names\nfor convention violations]
+    H --> I{Naming\nviolations found?}
+    I -- ⚠️ Yes --> J[List exceptions:\nfolder name · violation type\nSend admin email alert]
+    J --> K
+    I -- ✅ None --> K[Render Summary Report\nin app]
+    K --> L[Option: Export as CSV]
+    L --> M([✅ Done])
+
+    style A fill:#4c1d95,stroke:#8b5cf6,color:#fff
+    style M fill:#065f46,stroke:#10b981,color:#fff
+    style G fill:#78350f,stroke:#f59e0b,color:#fff
+    style J fill:#78350f,stroke:#f59e0b,color:#fff
+    </div>
+  </div>
+</section>
+
+<!-- FLOWCHART 4: CROSS-ORG API -->
+<section class="chart-section" id="api">
+  <div class="chart-header">
+    <div class="chart-badge badge-api">🔌</div>
+    <div>
+      <h2>Cross-Org REST API (External GAS → 湘舍动)</h2>
+      <p>Partner org's GAS calls 湘舍动 Web App via HTTP · API key auth · doGet / doPost</p>
+    </div>
+  </div>
+  <div class="chart-body">
+    <div class="mermaid">
+%%{init: {"theme": "dark", "themeVariables": {"primaryColor":"#78350f","primaryTextColor":"#f1f5f9","primaryBorderColor":"#f59e0b","lineColor":"#64748b","secondaryColor":"#0f172a","tertiaryColor":"#1e293b","edgeLabelBackground":"#1e293b","fontSize":"14px"}}}%%
+flowchart TD
+    A([🏃 External GAS\nPartner Org]) --> B[HTTP call to\n湘舍动 Web App URL\naction param + API key header]
+    B --> C{API key valid?\ncheck Users sheet\nrole = api_client}
+    C -- ❌ Invalid --> D[Return 403\nJSON error]
+    C -- ✅ Valid --> E{action?}
+    E -- check_folder --> F[Return: exists T/F\n+ folder ID if yes]
+    E -- list_files --> G[Return JSON:\nname · size · modified date\nfor given folder ID]
+    E -- upload_file --> H[Receive: base64 file\n+ event_id · club_name metadata]
+    H --> I[Type check\n+ Duplicate check\nfilename + size + modified time]
+    I --> J{Pass\nvalidation?}
+    J -- ❌ Fail --> K[Return 409 duplicate\nor 415 unsupported type]
+    J -- ✅ Pass --> L[Write file to Drive\ncorrect batch folder]
+    L --> M[Log to Upload_Log\nsource = api]
+    M --> N[Return 200\n+ file ID + batch folder]
+
+    style A fill:#1e3a5f,stroke:#3b82f6,color:#fff
+    style D fill:#7f1d1d,stroke:#ef4444,color:#fff
+    style K fill:#7f1d1d,stroke:#ef4444,color:#fff
+    style N fill:#065f46,stroke:#10b981,color:#fff
+    </div>
+  </div>
+</section>
+
+<footer>
+  湘舍动公益文件系统 · v1.0 GAS · v2.0 Node.js/Firebase planned · Generated 2026-03-17
+</footer>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    flowchart: { curve: 'basis', padding: 20 },
+    securityLevel: 'loose'
+  });
+</script>
+</body>
+</html>

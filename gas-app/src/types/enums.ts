@@ -1,0 +1,79 @@
+/**
+ * User roles within the system.
+ *
+ * - ADMIN:      Full access — event management, user CRUD, reports.
+ * - USER:       Can view events and upload photos for their club.
+ * - API_CLIENT: Machine-to-machine access for partner orgs (Phase 5).
+ */
+export enum UserRole {
+  ADMIN = 'admin',
+  USER = 'user',
+  API_CLIENT = 'api_client',
+}
+
+/**
+ * Account lifecycle status.
+ * Inactive users are blocked from login and all operations.
+ */
+export enum UserStatus {
+  ACTIVE = 'active',
+  INACTIVE = 'inactive',
+}
+
+/**
+ * Tracks how an upload was initiated for audit purposes.
+ */
+export enum UploadSource {
+  WEB_APP = 'web_app',
+  API = 'api',
+}
+
+/**
+ * MIME types accepted by the photo upload pipeline.
+ * All other MIME types are silently skipped and counted in skipped_non_photo.
+ */
+export enum PhotoMimeType {
+  JPEG = 'image/jpeg',
+  PNG = 'image/png',
+  HEIC = 'image/heic',
+}
+
+/**
+ * Route actions recognized by doGet (page routes) and doPost (API actions).
+ * The `action` parameter in the HTTP request must match one of these values.
+ */
+export enum RouteAction {
+  // Page routes (doGet)
+  DASHBOARD = 'dashboard',
+  LOGIN = 'login',
+  ADMIN_USERS = 'admin_users',
+  ADMIN_EVENTS = 'admin_events',
+  UPLOAD = 'upload',
+
+  // API actions (doPost)
+  CREATE_USER = 'create_user',
+  UPDATE_USER = 'update_user',
+  DEACTIVATE_USER = 'deactivate_user',
+  VALIDATE_FOLDER_NAME = 'validate_folder_name',
+}
+
+/**
+ * Standardized result status for all service operations.
+ * Every ServiceResult carries one of these values so callers
+ * can handle outcomes without try/catch.
+ */
+export enum ResultStatus {
+  SUCCESS = 'success',
+  ERROR = 'error',
+  WARNING = 'warning',
+}
+
+/**
+ * Folder layer within the Drive hierarchy.
+ * Used by the folder name validator to apply the correct regex rule.
+ *
+ * Layer 1: YYYY-MM-DD_EventName  (master event folder)
+ * Layer 2: ClubName              (per-club subfolder)
+ * Layer 3: YYYYMMDD-HHMMSS_user  (per-upload batch folder, auto-generated)
+ */
+export type FolderLayer = 1 | 2 | 3;

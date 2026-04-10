@@ -1,0 +1,14 @@
+tests/**
+docs/**
+coverage/**
+build/**
+node_modules/**
+*.test.ts
+*.spec.ts
+jest.config.ts
+tsconfig.json
+package.json
+package-lock.json
+README.md
+.env
+.gitignore
