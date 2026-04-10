@@ -57,6 +57,20 @@
   }
 
   /* ── Forms ───────────────────────────────────────────────────────────────── */
+
+  /*
+   * MDL floating labels don't work with type="date" or <select>: the browser
+   * renders its own native placeholder/value on top of the un-floated label.
+   * Fix: always keep these labels in the floated position via CSS, independent
+   * of MDL's JS state (which strips is-dirty when the input has no value).
+   */
+  .mdl-textfield > input[type="date"] ~ .mdl-textfield__label,
+  .mdl-textfield > select ~ .mdl-textfield__label {
+    top: 4px !important;
+    font-size: 12px !important;
+    color: rgba(0, 0, 0, 0.54);
+  }
+
   .field-error {
     color: #d32f2f;
     font-size: 12px;

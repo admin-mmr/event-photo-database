@@ -20,6 +20,10 @@
         </a>
         <div class="mdl-layout-spacer"></div>
         <nav class="mdl-navigation">
+          <a class="mdl-navigation__link" href="?action=dashboard">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">home</i>
+            Home
+          </a>
           <a class="mdl-navigation__link" href="?action=admin_users">
             <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>
             Users
@@ -205,8 +209,12 @@
         eventDate: document.getElementById('event-date').value,
       };
 
-      callServer('serverCreateEvent', [payload], 'btn-create-event', 'create-event-spinner')
-        .then(function(result) {
+      callServer(
+        'serverCreateEvent',
+        payload,
+        document.getElementById('btn-create-event'),
+        document.getElementById('create-event-spinner')
+      ).then(function(result) {
           if (result.status === 'success') {
             showToast('Event created: ' + result.data.eventName, 'success');
             events.unshift(result.data);
@@ -294,7 +302,7 @@
       var newName = prompt('Edit event name:', ev.eventName);
       if (newName === null || newName.trim() === ev.eventName) return;
 
-      callServer('serverUpdateEvent', [{ eventId: eventId, eventName: newName.trim() }])
+      callServer('serverUpdateEvent', { eventId: eventId, eventName: newName.trim() })
         .then(function(result) {
           if (result.status === 'success') {
             var idx = events.findIndex(function(e) { return e.eventId === eventId; });
