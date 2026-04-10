@@ -5,8 +5,10 @@
   "description": "湘舍动公益文件系统 — Google Apps Script v1",
   "scripts": {
     "login": "clasp login",
-    "push": "clasp push",
-    "push:watch": "clasp push --watch",
+    "build": "node esbuild.mjs",
+    "build:watch": "node esbuild.mjs --watch",
+    "push": "npm run build && clasp push",
+    "push:watch": "npm run build:watch",
     "pull": "clasp pull",
     "deploy": "clasp deploy",
     "open": "clasp open",
@@ -17,9 +19,11 @@
     "lint": "tsc --noEmit"
   },
   "devDependencies": {
-    "@google/clasp": "^2.4.2",
+    "@google/clasp": "^3.3.0",
     "@types/google-apps-script": "^1.0.83",
     "@types/jest": "^29.5.12",
+    "esbuild": "^0.28.0",
+    "esbuild-gas-plugin": "^0.6.0",
     "jest": "^29.7.0",
     "ts-jest": "^29.1.4",
     "typescript": "^5.4.5"

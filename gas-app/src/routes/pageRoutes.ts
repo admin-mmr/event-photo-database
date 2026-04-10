@@ -31,7 +31,7 @@ function renderTemplate(
   return template
     .evaluate()
     .setTitle('湘舍动公益文件系统')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DENY);
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT);
 }
 
 // ─── Page handlers ────────────────────────────────────────────────────────────

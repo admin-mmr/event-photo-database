@@ -3,10 +3,14 @@ docs/**
 coverage/**
 build/**
 node_modules/**
+src/**
 *.test.ts
 *.spec.ts
+*.mjs
+jest.config.js
 jest.config.ts
 tsconfig.json
+esbuild.mjs
 package.json
 package-lock.json
 README.md
