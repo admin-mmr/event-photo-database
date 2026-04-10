@@ -97,16 +97,45 @@
   }
 
   // ── Navigation ─────────────────────────────────────────────────────────────
+  //
+  // GAS serves the app inside an iframe on googleusercontent.com, but the
+  // real doGet endpoint lives on script.google.com. Relative href="?action=..."
+  // links resolve against the iframe URL and never reach GAS. Fix: intercept
+  // all action links and navigate window.top to the correct deployment URL,
+  // which google.script.url.getLocation() provides reliably.
 
-  /** Returns the base URL of the current web app deployment. */
-  function appUrl() {
-    return window.location.href.split('?')[0];
+  var _APP_BASE_URL = null;
+
+  /** Resolves and caches the deployment's base URL, then calls cb(url). */
+  function _getAppBase(cb) {
+    if (_APP_BASE_URL) { cb(_APP_BASE_URL); return; }
+    google.script.url.getLocation(function (loc) {
+      _APP_BASE_URL = loc.href.split('?')[0];
+      cb(_APP_BASE_URL);
+    });
   }
 
-  /** Navigates to a route action. */
+  /** Navigates to a route action via the outer (script.google.com) frame. */
   function navigate(action) {
-    window.location.href = appUrl() + '?action=' + action;
+    _getAppBase(function (base) {
+      window.top.location.href = base + '?action=' + action;
+    });
   }
+
+  // Intercept all href="?action=..." links so they go through navigate()
+  // instead of trying to load a googleusercontent.com URL directly.
+  document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('a[href]').forEach(function (link) {
+      var href = link.getAttribute('href') || '';
+      if (!href.includes('action=')) return;
+      link.addEventListener('click', function (e) {
+        e.preventDefault();
+        var qs = href.startsWith('?') ? href.slice(1) : (href.split('?')[1] || '');
+        var action = new URLSearchParams(qs).get('action');
+        if (action) navigate(action);
+      });
+    });
+  });
 
   // ── Confirmation helper ────────────────────────────────────────────────────
 

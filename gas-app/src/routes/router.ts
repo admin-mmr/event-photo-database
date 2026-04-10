@@ -93,9 +93,11 @@ export function handleGet(
   try {
     const action = (e.parameter['action'] as RouteAction | undefined) ?? RouteAction.DASHBOARD;
     const params = e.parameter as Record<string, string>;
+    Logger.log(`[Router.handleGet] action="${action}" params=${JSON.stringify(params)}`);
 
     // ── Phase 5: API client requests (machine-to-machine) ─────────────────────
     if (params['api_key']) {
+      Logger.log(`[Router.handleGet] API key present — routing to API handler`);
       return dispatchApiGetHandler(action, params);
     }
 
@@ -103,30 +105,40 @@ export function handleGet(
 
     // Login page doesn't require auth
     if (action === RouteAction.LOGIN) {
+      Logger.log(`[Router.handleGet] Serving login page (no auth required)`);
       return loginPage();
     }
 
     // Authenticate
+    Logger.log(`[Router.handleGet] Authenticating request…`);
     const authResult = authenticateRequest();
+    Logger.log(`[Router.handleGet] Auth result: status=${authResult.status} message="${authResult.message}" email=${authResult.data?.email ?? 'n/a'} role=${authResult.data?.role ?? 'n/a'}`);
+
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      Logger.log(`[Router.handleGet] Auth failed — redirecting to login`);
       return loginPage(authResult.message);
     }
 
     const user = authResult.data;
     const route = getGetRoutes()[action];
+    Logger.log(`[Router.handleGet] Route lookup for "${action}": ${route ? `requiredRole=${String(route.requiredRole)}` : 'NOT FOUND'}`);
 
     if (!route) {
+      Logger.log(`[Router.handleGet] Unknown action "${action}" — returning 404`);
       return notFoundPage(action);
     }
 
     // Role check
     if (route.requiredRole) {
       const guard = requireRole(user.role, route.requiredRole);
+      Logger.log(`[Router.handleGet] Role check: userRole=${user.role} required=${route.requiredRole} result=${guard.status} msg="${guard.message}"`);
       if (guard.status !== ResultStatus.SUCCESS) {
+        Logger.log(`[Router.handleGet] Role check failed — returning access denied`);
         return accessDeniedPage(guard.message);
       }
     }
 
+    Logger.log(`[Router.handleGet] Dispatching to handler for action="${action}"`);
     return dispatchGetHandler(action, user);
   } catch (err) {
     Logger.log(`[Router.handleGet] Unhandled error: ${String(err)}`);
@@ -191,28 +203,38 @@ export function handlePost(
 ): GoogleAppsScript.Content.TextOutput {
   try {
     const action = e.parameter['action'] as RouteAction | undefined;
+    Logger.log(`[Router.handlePost] action="${String(action)}"`);
 
     if (!action) {
+      Logger.log(`[Router.handlePost] Missing action parameter`);
       return jsonError('Missing required parameter: action', 400);
     }
 
     // Authenticate
+    Logger.log(`[Router.handlePost] Authenticating request…`);
     const authResult = authenticateRequest();
+    Logger.log(`[Router.handlePost] Auth result: status=${authResult.status} email=${authResult.data?.email ?? 'n/a'} role=${authResult.data?.role ?? 'n/a'}`);
+
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      Logger.log(`[Router.handlePost] Auth failed: ${authResult.message}`);
       return jsonError(authResult.message, 403);
     }
 
     const user = authResult.data;
     const route = getPostRoutes()[action];
+    Logger.log(`[Router.handlePost] Route lookup for "${action}": ${route ? `requiredRole=${String(route.requiredRole)}` : 'NOT FOUND'}`);
 
     if (!route) {
+      Logger.log(`[Router.handlePost] Unknown action "${action}"`);
       return handleUnknownAction(action);
     }
 
     // Role check
     if (route.requiredRole) {
       const guard = requireRole(user.role, route.requiredRole);
+      Logger.log(`[Router.handlePost] Role check: userRole=${user.role} required=${route.requiredRole} result=${guard.status}`);
       if (guard.status !== ResultStatus.SUCCESS) {
+        Logger.log(`[Router.handlePost] Role check failed: ${guard.message}`);
         return handleForbidden(guard.message);
       }
     }
@@ -222,11 +244,14 @@ export function handlePost(
     if (e.postData?.contents) {
       try {
         payload = JSON.parse(e.postData.contents) as Record<string, unknown>;
+        Logger.log(`[Router.handlePost] Parsed payload keys: ${Object.keys(payload).join(', ')}`);
       } catch {
+        Logger.log(`[Router.handlePost] Failed to parse request body`);
         return jsonError('Request body must be valid JSON', 400);
       }
     }
 
+    Logger.log(`[Router.handlePost] Dispatching to handler for action="${action}"`);
     return dispatchPostHandler(action, payload, user);
   } catch (err) {
     Logger.log(`[Router.handlePost] Unhandled error: ${String(err)}`);
