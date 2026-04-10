@@ -14,7 +14,7 @@ import { requireRole } from './middleware/roleGuard';
 import { handleGet as routerHandleGet, handlePost as routerHandlePost } from './routes/router';
 import { createUser, deactivateUser, reactivateUser, updateUser } from './services/userService';
 import { createEvent, updateEvent, listAll as listAllEvents } from './services/eventService';
-import { scanAllViolations } from './services/driveService';
+import { scanAllViolations, getOrCreateClubFolder, getClubFolderTree } from './services/driveService';
 
 /* global Logger */
 
@@ -227,6 +227,117 @@ function serverScanViolations(): ServerResponse {
   } catch (err) {
     Logger.log(`serverScanViolations error: ${String(err)}`);
     return { status: 'error', message: 'Internal error scanning violations' };
+  }
+}
+
+// ─── Phase 3 — Upload flow server functions ───────────────────────────────────
+
+/**
+ * google.script.run entry point for the upload page's event picker.
+ * Returns all events (with optional date-range filter) available for upload.
+ * Identical to serverListEvents but named separately for clarity in the UI.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverListEventsForUpload(
+  payload: { dateFrom?: string; dateTo?: string; sort?: string }
+): ServerResponse {
+  try {
+    const authResult = authenticateRequest();
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      return { status: 'error', message: 'Authentication required' };
+    }
+
+    const sort = (payload.sort === 'asc' ? 'asc' : 'desc') as 'asc' | 'desc';
+    const result = listAllEvents(1, 200, sort);
+
+    let filtered = result.items as typeof result.items;
+    if (payload.dateFrom) {
+      filtered = filtered.filter((e) => e.eventDate >= payload.dateFrom!);
+    }
+    if (payload.dateTo) {
+      filtered = filtered.filter((e) => e.eventDate <= payload.dateTo!);
+    }
+
+    return {
+      status: 'success',
+      message: `Found ${filtered.length} event(s)`,
+      data: { items: filtered, total: filtered.length },
+    };
+  } catch (err) {
+    Logger.log(`serverListEventsForUpload error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error listing events for upload' };
+  }
+}
+
+/**
+ * google.script.run entry point for reading the club's current folder tree.
+ *
+ * Called after the user selects an event. Returns the existing file list for
+ * the club subfolder (so the UI can show what's already uploaded).
+ * Does NOT create the club folder — that happens only when uploading.
+ *
+ * Payload: { eventFolderId: string, clubFolderName: string }
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverGetClubFolderTree(
+  payload: { eventFolderId: string; clubFolderName: string }
+): ServerResponse {
+  try {
+    const authResult = authenticateRequest();
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      return { status: 'error', message: 'Authentication required' };
+    }
+
+    const { eventFolderId, clubFolderName } = payload;
+    if (!eventFolderId || !clubFolderName) {
+      return { status: 'error', message: 'eventFolderId and clubFolderName are required' };
+    }
+
+    const result = getClubFolderTree(eventFolderId, clubFolderName);
+    return {
+      status: result.status,
+      message: result.message,
+      data: result.data,
+    };
+  } catch (err) {
+    Logger.log(`serverGetClubFolderTree error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error fetching club folder tree' };
+  }
+}
+
+/**
+ * google.script.run entry point to ensure the club folder exists before upload.
+ * Gets or creates the Layer 2 club folder inside the selected event folder.
+ *
+ * Called just before the actual file upload begins (Step 3 → Step 4 transition).
+ *
+ * Payload: { eventFolderId: string, clubFolderName: string }
+ * Returns: { folderId: string, folderName: string }
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverEnsureClubFolder(
+  payload: { eventFolderId: string; clubFolderName: string }
+): ServerResponse {
+  try {
+    const authResult = authenticateRequest();
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      return { status: 'error', message: 'Authentication required' };
+    }
+
+    const { eventFolderId, clubFolderName } = payload;
+    if (!eventFolderId || !clubFolderName) {
+      return { status: 'error', message: 'eventFolderId and clubFolderName are required' };
+    }
+
+    const result = getOrCreateClubFolder(eventFolderId, clubFolderName);
+    return {
+      status: result.status,
+      message: result.message,
+      data: result.data,
+    };
+  } catch (err) {
+    Logger.log(`serverEnsureClubFolder error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error ensuring club folder' };
   }
 }
 

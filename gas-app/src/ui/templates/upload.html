@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Upload Photos — 湘舍动公益文件系统</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet"
+    href="https://code.getmdl.io/1.3.0/material.indigo-pink.min.css">
+  <?!= HtmlService.createHtmlOutputFromFile('ui/css/styles').getContent() ?>
+  <style>
+    /* ── Upload-specific styles ─────────────────────────────────────────────── */
+
+    /* Step indicator */
+    .stepper {
+      display: flex;
+      align-items: center;
+      margin-bottom: 28px;
+      gap: 0;
+    }
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+      position: relative;
+    }
+    .step:not(:last-child)::after {
+      content: '';
+      flex: 1;
+      height: 2px;
+      background: #e0e0e0;
+      margin: 0 8px;
+    }
+    .step.done::after { background: #3f51b5; }
+    .step-circle {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: #e0e0e0;
+      color: #757575;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 600;
+      flex-shrink: 0;
+      transition: background 0.2s, color 0.2s;
+    }
+    .step.active .step-circle  { background: #3f51b5; color: #fff; }
+    .step.done .step-circle    { background: #388e3c; color: #fff; }
+    .step-label {
+      font-size: 13px;
+      font-weight: 500;
+      color: #757575;
+      white-space: nowrap;
+    }
+    .step.active .step-label { color: #3f51b5; }
+    .step.done .step-label   { color: #388e3c; }
+
+    /* Event picker */
+    .event-filter-row {
+      display: flex;
+      gap: 16px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    .event-filter-row .mdl-textfield {
+      padding: 0;
+      margin: 0;
+      width: auto;
+    }
+    .event-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 10px;
+      max-height: 340px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    .event-card {
+      border: 2px solid #e0e0e0;
+      border-radius: 6px;
+      padding: 12px 14px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .event-card:hover {
+      border-color: #9fa8da;
+      background: #f8f9ff;
+    }
+    .event-card.selected {
+      border-color: #3f51b5;
+      background: #e8eaf6;
+    }
+    .event-card-icon {
+      color: #3f51b5;
+      margin-top: 2px;
+      font-size: 22px;
+    }
+    .event-card-name {
+      font-weight: 500;
+      font-size: 14px;
+      color: #333;
+    }
+    .event-card-date {
+      font-size: 12px;
+      color: #777;
+      margin-top: 2px;
+    }
+    .event-card-folder {
+      font-size: 11px;
+      color: #9e9e9e;
+      font-family: monospace;
+      margin-top: 4px;
+      word-break: break-all;
+    }
+    .no-events-msg {
+      color: #9e9e9e;
+      font-size: 14px;
+      text-align: center;
+      padding: 32px 0;
+      grid-column: 1 / -1;
+    }
+
+    /* File tree */
+    .file-tree-loading {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #757575;
+      padding: 16px 0;
+    }
+    .batch-group {
+      margin-bottom: 12px;
+    }
+    .batch-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      background: #f5f5f5;
+      border-radius: 4px;
+      cursor: pointer;
+      user-select: none;
+      font-size: 13px;
+      font-weight: 500;
+      color: #555;
+    }
+    .batch-header:hover { background: #eeeeee; }
+    .batch-header .material-icons { font-size: 18px; color: #757575; }
+    .batch-files {
+      padding-left: 24px;
+      margin-top: 4px;
+    }
+    .file-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 0;
+      font-size: 13px;
+      color: #444;
+    }
+    .file-row .material-icons { font-size: 16px; color: #9e9e9e; }
+    .file-size {
+      color: #9e9e9e;
+      font-size: 12px;
+      margin-left: auto;
+      white-space: nowrap;
+    }
+    .file-tree-empty {
+      color: #9e9e9e;
+      font-style: italic;
+      font-size: 13px;
+      padding: 16px 0;
+    }
+    .tree-summary {
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 10px;
+      padding: 6px 10px;
+      background: #f9fbe7;
+      border-left: 3px solid #c5ca00;
+      border-radius: 2px;
+    }
+
+    /* File picker */
+    .drop-zone {
+      border: 2px dashed #9fa8da;
+      border-radius: 8px;
+      padding: 36px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+      background: #fafafa;
+      position: relative;
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      background: #e8eaf6;
+      border-color: #3f51b5;
+    }
+    .drop-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      width: 100%;
+      height: 100%;
+      cursor: pointer;
+    }
+    .drop-zone-icon {
+      font-size: 48px;
+      color: #9fa8da;
+      display: block;
+      margin-bottom: 8px;
+    }
+    .drop-zone-text {
+      font-size: 16px;
+      font-weight: 500;
+      color: #555;
+      margin-bottom: 6px;
+    }
+    .drop-zone-sub {
+      font-size: 13px;
+      color: #9e9e9e;
+    }
+    .file-warnings {
+      margin-top: 10px;
+    }
+    .file-warning-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #e65100;
+      padding: 2px 0;
+    }
+    .file-warning-item .material-icons { font-size: 16px; }
+    .selected-files-list {
+      margin-top: 16px;
+    }
+    .selected-files-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .selected-files-count {
+      font-size: 14px;
+      font-weight: 500;
+      color: #333;
+    }
+    .selected-files-size {
+      font-size: 13px;
+      color: #777;
+    }
+    .selected-file-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 8px;
+      border-bottom: 1px solid #f0f0f0;
+      font-size: 13px;
+      color: #444;
+    }
+    .selected-file-row:last-child { border-bottom: none; }
+    .selected-file-row .material-icons { font-size: 18px; color: #3f51b5; }
+    .selected-file-row .file-name { flex: 1; word-break: break-all; }
+    .selected-file-row .file-size-badge {
+      font-size: 11px;
+      color: #9e9e9e;
+      white-space: nowrap;
+    }
+    .selected-file-row .file-warn {
+      color: #e65100;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .selected-file-row .btn-remove {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #bdbdbd;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      border-radius: 50%;
+    }
+    .selected-file-row .btn-remove:hover { color: #d32f2f; }
+    .size-limit-warning {
+      margin-top: 10px;
+      padding: 10px 14px;
+      background: #fff3e0;
+      border-left: 3px solid #f57c00;
+      border-radius: 2px;
+      font-size: 13px;
+      color: #e65100;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Navigation buttons */
+    .step-nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 20px;
+    }
+    .step-nav-right { display: flex; gap: 10px; align-items: center; }
+
+    /* Accepted types badge */
+    .accepted-types {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+      justify-content: center;
+    }
+    .type-badge {
+      background: #e8eaf6;
+      color: #3f51b5;
+      border-radius: 12px;
+      padding: 2px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+  </style>
+</head>
+<body>
+<div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
+  <header class="mdl-layout__header">
+    <div class="mdl-layout__header-row">
+      <a href="?action=dashboard" class="mdl-layout-title"
+         style="color:inherit;text-decoration:none;">
+        湘舍动公益文件系统
+      </a>
+      <div class="mdl-layout-spacer"></div>
+      <nav class="mdl-navigation">
+        <? if (isAdmin) { ?>
+        <a class="mdl-navigation__link" href="?action=admin_users">
+          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>
+          Users
+        </a>
+        <a class="mdl-navigation__link" href="?action=admin_events">
+          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
+          Events
+        </a>
+        <? } ?>
+        <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=upload">
+          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">cloud_upload</i>
+          Upload
+        </a>
+      </nav>
+      <span class="mdl-chip" style="margin-left:12px;">
+        <span class="mdl-chip__text"><?= userEmail ?></span>
+      </span>
+    </div>
+  </header>
+
+  <main class="mdl-layout__content">
+    <div class="page-content">
+
+      <!-- Page header -->
+      <div style="margin-bottom:20px;">
+        <h4 style="margin:0 0 4px;">Upload Photos</h4>
+        <p style="margin:0;color:#777;font-size:14px;">
+          Club: <strong><?= runningClub ?></strong>
+        </p>
+      </div>
+
+      <!-- Step indicator -->
+      <div class="stepper" id="stepper">
+        <div class="step active" id="step-indicator-1">
+          <div class="step-circle">1</div>
+          <span class="step-label">Select Event</span>
+          <span></span>
+        </div>
+        <div class="step" id="step-indicator-2">
+          <div class="step-circle">2</div>
+          <span class="step-label">View Folder</span>
+          <span></span>
+        </div>
+        <div class="step" id="step-indicator-3">
+          <div class="step-circle">3</div>
+          <span class="step-label">Choose Files</span>
+        </div>
+      </div>
+
+      <!-- ── Step 1: Event picker ─────────────────────────────────────────── -->
+      <div class="card" id="step-1">
+        <h5>
+          <i class="material-icons" style="vertical-align:middle;margin-right:6px;font-size:20px;">event</i>
+          Step 1 — Select an Event
+        </h5>
+
+        <!-- Date range filter -->
+        <div class="event-filter-row">
+          <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
+            <input type="date" id="filter-from" class="mdl-textfield__input"
+                   onchange="filterEventList()" style="width:150px;">
+            <label class="mdl-textfield__label" for="filter-from">From</label>
+          </div>
+          <span style="color:#bdbdbd;align-self:center;margin-bottom:4px;">—</span>
+          <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
+            <input type="date" id="filter-to" class="mdl-textfield__input"
+                   onchange="filterEventList()" style="width:150px;">
+            <label class="mdl-textfield__label" for="filter-to">To</label>
+          </div>
+          <button class="mdl-button mdl-js-button"
+                  onclick="clearEventFilter()"
+                  style="margin-bottom:4px;color:#757575;">
+            <i class="material-icons" style="font-size:18px;vertical-align:middle;">clear</i>
+            Clear filter
+          </button>
+          <span id="event-count-badge"
+                style="margin-left:auto;font-size:13px;color:#9e9e9e;align-self:center;margin-bottom:4px;">
+          </span>
+        </div>
+
+        <!-- Event cards -->
+        <div class="event-list" id="event-list">
+          <div class="no-events-msg">Loading events…</div>
+        </div>
+
+        <div class="step-nav">
+          <a href="?action=dashboard"
+             class="mdl-button mdl-js-button">
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;">arrow_back</i>
+            Back
+          </a>
+          <div class="step-nav-right">
+            <span id="step1-error" style="color:#d32f2f;font-size:13px;"></span>
+            <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                    id="btn-step1-next" onclick="goToStep2()" disabled>
+              Next — View Folder
+              <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-left:4px;">arrow_forward</i>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Step 2: Club folder tree ────────────────────────────────────── -->
+      <div class="card" id="step-2" style="display:none;">
+        <h5>
+          <i class="material-icons" style="vertical-align:middle;margin-right:6px;font-size:20px;">folder_open</i>
+          Step 2 — Current Uploads for Your Club
+        </h5>
+        <p style="font-size:13px;color:#777;margin:0 0 14px;">
+          These are photos already uploaded by <strong id="tree-club-name"></strong>
+          for <strong id="tree-event-name"></strong>. Read-only view.
+        </p>
+
+        <!-- Loading state -->
+        <div class="file-tree-loading" id="tree-loading">
+          <div class="mdl-spinner mdl-spinner--single-color mdl-js-spinner is-active"
+               style="width:22px;height:22px;"></div>
+          <span>Loading folder contents…</span>
+        </div>
+
+        <!-- Tree content -->
+        <div id="tree-content" style="display:none;"></div>
+
+        <div class="step-nav">
+          <button class="mdl-button mdl-js-button" onclick="goToStep1()">
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;">arrow_back</i>
+            Back
+          </button>
+          <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                  id="btn-step2-next" onclick="goToStep3()" disabled>
+            Next — Choose Files
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-left:4px;">arrow_forward</i>
+          </button>
+        </div>
+      </div>
+
+      <!-- ── Step 3: File picker ─────────────────────────────────────────── -->
+      <div class="card" id="step-3" style="display:none;">
+        <h5>
+          <i class="material-icons" style="vertical-align:middle;margin-right:6px;font-size:20px;">photo_library</i>
+          Step 3 — Choose Photos to Upload
+        </h5>
+        <p style="font-size:13px;color:#777;margin:0 0 14px;">
+          Uploading to: <strong id="picker-event-name"></strong>
+          &nbsp;·&nbsp; Club: <strong id="picker-club-name"></strong>
+        </p>
+
+        <!-- Drop zone / file picker -->
+        <div class="drop-zone" id="drop-zone"
+             ondragover="handleDragOver(event)"
+             ondragleave="handleDragLeave(event)"
+             ondrop="handleDrop(event)">
+          <input type="file" id="file-input" multiple accept=".jpg,.jpeg,.png,.heic,.cr2,.arw,.nef"
+                 onchange="handleFileSelection(this.files)">
+          <i class="material-icons drop-zone-icon">cloud_upload</i>
+          <div class="drop-zone-text">Drag &amp; drop photos here, or click to browse</div>
+          <div class="drop-zone-sub">or click anywhere in this box</div>
+          <div class="accepted-types">
+            <span class="type-badge">JPG</span>
+            <span class="type-badge">PNG</span>
+            <span class="type-badge">HEIC</span>
+            <span class="type-badge">CR2</span>
+            <span class="type-badge">ARW</span>
+            <span class="type-badge">NEF</span>
+          </div>
+        </div>
+
+        <!-- Size limit notice -->
+        <div class="size-limit-warning" id="size-limit-notice" style="display:none;">
+          <i class="material-icons">warning</i>
+          <span id="size-limit-msg"></span>
+        </div>
+
+        <!-- Selected files list -->
+        <div class="selected-files-list" id="selected-files-list" style="display:none;">
+          <div class="selected-files-header">
+            <span class="selected-files-count" id="selected-count"></span>
+            <div style="display:flex;gap:12px;align-items:center;">
+              <span class="selected-files-size" id="selected-total-size"></span>
+              <button class="mdl-button mdl-js-button" onclick="clearAllFiles()"
+                      style="font-size:12px;color:#757575;">
+                Clear all
+              </button>
+            </div>
+          </div>
+          <div id="file-rows-container"
+               style="max-height:260px;overflow-y:auto;border:1px solid #eee;border-radius:4px;"></div>
+        </div>
+
+        <!-- Skipped files notice -->
+        <div id="skipped-notice" style="display:none;margin-top:10px;">
+          <div style="font-size:13px;color:#e65100;display:flex;align-items:center;gap:6px;">
+            <i class="material-icons" style="font-size:16px;">info</i>
+            <span id="skipped-count-msg"></span>
+          </div>
+        </div>
+
+        <div class="step-nav">
+          <button class="mdl-button mdl-js-button" onclick="goToStep2()">
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;">arrow_back</i>
+            Back
+          </button>
+          <div class="step-nav-right">
+            <span id="step3-error" style="color:#d32f2f;font-size:13px;"></span>
+            <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                    id="btn-upload" onclick="startUpload()" disabled>
+              <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;">cloud_upload</i>
+              Upload Photos
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /page-content -->
+  </main>
+
+  <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
+</div>
+
+<script defer src="https://code.getmdl.io/1.3.0/material.min.js"></script>
+<?!= HtmlService.createHtmlOutputFromFile('ui/js/app').getContent() ?>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+
+var ALL_EVENTS = <?!= events ?>;
+var RUNNING_CLUB = '<?= runningClub ?>';
+var ACCEPTED_EXTS = ['.jpg', '.jpeg', '.png', '.heic', '.cr2', '.arw', '.nef'];
+var ACCEPTED_MIME_PREFIXES = ['image/'];
+var MAX_FILE_SIZE_MB = 50;
+var MAX_BATCH_MB = 200;
+
+var state = {
+  currentStep: 1,
+  selectedEvent: null,   // { eventId, eventName, eventDate, folderName, driveFolderId }
+  clubFolderId: null,    // set after serverGetClubFolderTree resolves
+  selectedFiles: [],     // array of File objects (after client-side filter)
+  treeLoaded: false,
+};
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+
+(function init() {
+  renderEventList(ALL_EVENTS);
+  updateStepIndicator(1);
+})();
+
+// ── Step navigation ────────────────────────────────────────────────────────────
+
+function goToStep1() {
+  state.currentStep = 1;
+  document.getElementById('step-1').style.display = '';
+  document.getElementById('step-2').style.display = 'none';
+  document.getElementById('step-3').style.display = 'none';
+  updateStepIndicator(1);
+}
+
+function goToStep2() {
+  if (!state.selectedEvent) {
+    document.getElementById('step1-error').textContent = 'Please select an event first.';
+    return;
+  }
+  document.getElementById('step1-error').textContent = '';
+  document.getElementById('step-1').style.display = 'none';
+  document.getElementById('step-2').style.display = '';
+  document.getElementById('step-3').style.display = 'none';
+  state.currentStep = 2;
+  updateStepIndicator(2);
+  loadClubFolderTree();
+}
+
+function goToStep3() {
+  document.getElementById('step-2').style.display = 'none';
+  document.getElementById('step-3').style.display = '';
+  state.currentStep = 3;
+  updateStepIndicator(3);
+  // Populate context labels
+  document.getElementById('picker-event-name').textContent = state.selectedEvent.eventName;
+  document.getElementById('picker-club-name').textContent = RUNNING_CLUB;
+}
+
+function updateStepIndicator(active) {
+  for (var i = 1; i <= 3; i++) {
+    var el = document.getElementById('step-indicator-' + i);
+    el.classList.remove('active', 'done');
+    if (i < active) el.classList.add('done');
+    else if (i === active) el.classList.add('active');
+    // Update circle icon for done steps
+    var circle = el.querySelector('.step-circle');
+    if (i < active) {
+      circle.innerHTML = '<i class="material-icons" style="font-size:16px;">check</i>';
+    } else {
+      circle.textContent = String(i);
+    }
+  }
+}
+
+// ── Step 1: Event picker ───────────────────────────────────────────────────────
+
+function filterEventList() {
+  var from = document.getElementById('filter-from').value;
+  var to = document.getElementById('filter-to').value;
+  var filtered = ALL_EVENTS.filter(function(e) {
+    if (from && e.eventDate < from) return false;
+    if (to && e.eventDate > to) return false;
+    return true;
+  });
+  renderEventList(filtered);
+}
+
+function clearEventFilter() {
+  document.getElementById('filter-from').value = '';
+  document.getElementById('filter-to').value = '';
+  // Trigger MDL label reset
+  if (window.componentHandler) componentHandler.upgradeDom();
+  renderEventList(ALL_EVENTS);
+}
+
+function renderEventList(events) {
+  var container = document.getElementById('event-list');
+  var badge = document.getElementById('event-count-badge');
+  badge.textContent = events.length + ' event' + (events.length !== 1 ? 's' : '');
+
+  if (!events.length) {
+    container.innerHTML = '<div class="no-events-msg">No events match the selected date range.</div>';
+    return;
+  }
+
+  container.innerHTML = events.map(function(e) {
+    var selectedClass = (state.selectedEvent && state.selectedEvent.eventId === e.eventId)
+      ? ' selected' : '';
+    return '<div class="event-card' + selectedClass + '" ' +
+           'onclick="selectEvent(' + JSON.stringify(e).replace(/'/g, '&#39;') + ')">' +
+           '<i class="material-icons event-card-icon">event</i>' +
+           '<div>' +
+           '<div class="event-card-name">' + escapeHtml(e.eventName) + '</div>' +
+           '<div class="event-card-date">' + escapeHtml(e.eventDate) + '</div>' +
+           '<div class="event-card-folder">' + escapeHtml(e.folderName) + '</div>' +
+           '</div>' +
+           '</div>';
+  }).join('');
+}
+
+function selectEvent(event) {
+  state.selectedEvent = event;
+  state.treeLoaded = false;
+  state.clubFolderId = null;
+  // Re-render to highlight selection
+  filterEventList();
+  document.getElementById('btn-step1-next').disabled = false;
+  document.getElementById('step1-error').textContent = '';
+}
+
+// ── Step 2: Club folder tree ───────────────────────────────────────────────────
+
+function loadClubFolderTree() {
+  document.getElementById('tree-club-name').textContent = RUNNING_CLUB;
+  document.getElementById('tree-event-name').textContent = state.selectedEvent.eventName;
+  document.getElementById('tree-loading').style.display = '';
+  document.getElementById('tree-content').style.display = 'none';
+  document.getElementById('btn-step2-next').disabled = true;
+
+  if (state.treeLoaded) {
+    // Already loaded for this event selection — skip the server call
+    document.getElementById('tree-loading').style.display = 'none';
+    document.getElementById('tree-content').style.display = '';
+    document.getElementById('btn-step2-next').disabled = false;
+    return;
+  }
+
+  callServer(
+    'serverGetClubFolderTree',
+    { eventFolderId: state.selectedEvent.driveFolderId, clubFolderName: RUNNING_CLUB }
+  ).then(function(result) {
+    document.getElementById('tree-loading').style.display = 'none';
+    document.getElementById('tree-content').style.display = '';
+    document.getElementById('btn-step2-next').disabled = false;
+    state.treeLoaded = true;
+
+    if (result && result.status === 'success' && result.data) {
+      var folderData = result.data;
+      state.clubFolderId = folderData.folderId;
+      renderFileTree(folderData.files || []);
+    } else {
+      // No club folder yet — show empty state
+      state.clubFolderId = null;
+      renderFileTree([]);
+    }
+  }).catch(function(err) {
+    document.getElementById('tree-loading').style.display = 'none';
+    document.getElementById('tree-content').innerHTML =
+      '<div class="file-tree-empty">⚠ Could not load folder contents. ' + escapeHtml(String(err)) + '</div>';
+    document.getElementById('tree-content').style.display = '';
+    document.getElementById('btn-step2-next').disabled = false; // Allow continuing anyway
+  });
+}
+
+function renderFileTree(files) {
+  var container = document.getElementById('tree-content');
+
+  if (!files.length) {
+    container.innerHTML =
+      '<div class="file-tree-empty">' +
+      '<i class="material-icons" style="font-size:40px;color:#e0e0e0;display:block;margin-bottom:8px;">folder_open</i>' +
+      'No photos uploaded yet for ' + escapeHtml(RUNNING_CLUB) + ' in this event.' +
+      '</div>';
+    return;
+  }
+
+  // Group files by batch folder
+  var batches = {};
+  var batchOrder = [];
+  files.forEach(function(f) {
+    if (!batches[f.batchFolderName]) {
+      batches[f.batchFolderName] = { id: f.batchFolderId, files: [] };
+      batchOrder.push(f.batchFolderName);
+    }
+    batches[f.batchFolderName].files.push(f);
+  });
+
+  var totalSize = files.reduce(function(s, f) { return s + f.sizeBytes; }, 0);
+  var html = '<div class="tree-summary">' +
+    '<i class="material-icons" style="vertical-align:middle;font-size:16px;margin-right:4px;">insert_drive_file</i>' +
+    files.length + ' photo' + (files.length !== 1 ? 's' : '') +
+    ' across ' + batchOrder.length + ' upload session' + (batchOrder.length !== 1 ? 's' : '') +
+    ' · ' + formatBytes(totalSize) + ' total' +
+    '</div>';
+
+  batchOrder.forEach(function(batchName) {
+    var batch = batches[batchName];
+    var batchSize = batch.files.reduce(function(s, f) { return s + f.sizeBytes; }, 0);
+    var batchHtml = '<div class="batch-group">' +
+      '<div class="batch-header" onclick="toggleBatch(this)">' +
+      '<i class="material-icons">folder</i>' +
+      '<span>' + escapeHtml(batchName) + '</span>' +
+      '<span style="margin-left:auto;font-size:12px;color:#9e9e9e;">' +
+        batch.files.length + ' file' + (batch.files.length !== 1 ? 's' : '') +
+        ' · ' + formatBytes(batchSize) +
+      '</span>' +
+      '<i class="material-icons" style="font-size:18px;color:#bdbdbd;margin-left:4px;">expand_less</i>' +
+      '</div>' +
+      '<div class="batch-files">';
+
+    batch.files.forEach(function(f) {
+      batchHtml +=
+        '<div class="file-row">' +
+        '<i class="material-icons">image</i>' +
+        '<span style="word-break:break-all;">' + escapeHtml(f.name) + '</span>' +
+        '<span class="file-size">' + formatBytes(f.sizeBytes) + '</span>' +
+        '</div>';
+    });
+
+    batchHtml += '</div></div>';
+    html += batchHtml;
+  });
+
+  container.innerHTML = html;
+}
+
+function toggleBatch(header) {
+  var filesDiv = header.nextElementSibling;
+  var icon = header.querySelector('.material-icons:last-child');
+  if (filesDiv.style.display === 'none') {
+    filesDiv.style.display = '';
+    icon.textContent = 'expand_less';
+  } else {
+    filesDiv.style.display = 'none';
+    icon.textContent = 'expand_more';
+  }
+}
+
+// ── Step 3: File picker ────────────────────────────────────────────────────────
+
+function isAcceptedFile(file) {
+  var name = file.name.toLowerCase();
+  return ACCEPTED_EXTS.some(function(ext) { return name.endsWith(ext); });
+}
+
+function handleFileSelection(fileList) {
+  var accepted = [];
+  var skipped = 0;
+
+  for (var i = 0; i < fileList.length; i++) {
+    if (isAcceptedFile(fileList[i])) {
+      accepted.push(fileList[i]);
+    } else {
+      skipped++;
+    }
+  }
+
+  // Merge with existing selection (avoid exact duplicates by name+size)
+  var existing = state.selectedFiles;
+  accepted.forEach(function(f) {
+    var isDup = existing.some(function(e) {
+      return e.name === f.name && e.size === f.size;
+    });
+    if (!isDup) existing.push(f);
+  });
+
+  state.selectedFiles = existing;
+  renderSelectedFiles();
+  updateUploadButton();
+
+  if (skipped > 0) {
+    var msg = skipped + ' file' + (skipped > 1 ? 's were' : ' was') +
+              ' skipped (not a supported photo type: JPG, PNG, HEIC, CR2, ARW, NEF).';
+    document.getElementById('skipped-notice').style.display = '';
+    document.getElementById('skipped-count-msg').textContent = msg;
+  } else {
+    document.getElementById('skipped-notice').style.display = 'none';
+  }
+}
+
+function handleDragOver(e) {
+  e.preventDefault();
+  document.getElementById('drop-zone').classList.add('drag-over');
+}
+
+function handleDragLeave(e) {
+  document.getElementById('drop-zone').classList.remove('drag-over');
+}
+
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById('drop-zone').classList.remove('drag-over');
+  if (e.dataTransfer && e.dataTransfer.files) {
+    handleFileSelection(e.dataTransfer.files);
+  }
+}
+
+function removeFile(index) {
+  state.selectedFiles.splice(index, 1);
+  renderSelectedFiles();
+  updateUploadButton();
+}
+
+function clearAllFiles() {
+  state.selectedFiles = [];
+  document.getElementById('file-input').value = '';
+  renderSelectedFiles();
+  updateUploadButton();
+  document.getElementById('skipped-notice').style.display = 'none';
+}
+
+function renderSelectedFiles() {
+  var files = state.selectedFiles;
+  var listEl = document.getElementById('selected-files-list');
+  var container = document.getElementById('file-rows-container');
+
+  if (!files.length) {
+    listEl.style.display = 'none';
+    document.getElementById('size-limit-notice').style.display = 'none';
+    return;
+  }
+
+  listEl.style.display = '';
+  document.getElementById('selected-count').textContent =
+    files.length + ' photo' + (files.length !== 1 ? 's' : '') + ' selected';
+
+  var totalBytes = files.reduce(function(s, f) { return s + f.size; }, 0);
+  document.getElementById('selected-total-size').textContent = formatBytes(totalBytes);
+
+  var oversized = files.filter(function(f) { return f.size > MAX_FILE_SIZE_MB * 1024 * 1024; });
+  var batchTooLarge = totalBytes > MAX_BATCH_MB * 1024 * 1024;
+  var sizeNotice = document.getElementById('size-limit-notice');
+
+  if (oversized.length > 0 || batchTooLarge) {
+    sizeNotice.style.display = '';
+    var msgs = [];
+    if (oversized.length > 0) {
+      msgs.push(oversized.length + ' file' + (oversized.length > 1 ? 's exceed' : ' exceeds') +
+                ' the 50 MB per-file limit — they will be skipped on upload.');
+    }
+    if (batchTooLarge) {
+      msgs.push('Total batch size (' + formatBytes(totalBytes) + ') exceeds the recommended ' +
+                MAX_BATCH_MB + ' MB session limit — consider splitting into multiple uploads.');
+    }
+    document.getElementById('size-limit-msg').textContent = msgs.join(' ');
+  } else {
+    sizeNotice.style.display = 'none';
+  }
+
+  container.innerHTML = files.map(function(f, i) {
+    var isOversized = f.size > MAX_FILE_SIZE_MB * 1024 * 1024;
+    return '<div class="selected-file-row">' +
+      '<i class="material-icons">image</i>' +
+      '<span class="file-name">' + escapeHtml(f.name) + '</span>' +
+      (isOversized
+        ? '<span class="file-warn">⚠ &gt;50 MB</span>'
+        : '<span class="file-size-badge">' + formatBytes(f.size) + '</span>') +
+      '<button class="btn-remove" onclick="removeFile(' + i + ')" title="Remove">' +
+        '<i class="material-icons" style="font-size:18px;">close</i>' +
+      '</button>' +
+      '</div>';
+  }).join('');
+}
+
+function updateUploadButton() {
+  var validFiles = state.selectedFiles.filter(function(f) {
+    return f.size <= MAX_FILE_SIZE_MB * 1024 * 1024;
+  });
+  document.getElementById('btn-upload').disabled = validFiles.length === 0;
+  document.getElementById('step3-error').textContent = '';
+}
+
+function startUpload() {
+  // Phase 3 Week 2 — upload service (chunked upload to Drive)
+  // For now, show a placeholder message.
+  document.getElementById('step3-error').textContent =
+    'Upload service coming in Phase 3 Week 2.';
+}
+
+// ── Utilities ──────────────────────────────────────────────────────────────────
+
+function escapeHtml(str) {
+  var div = document.createElement('div');
+  div.appendChild(document.createTextNode(String(str)));
+  return div.innerHTML;
+}
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  var units = ['B', 'KB', 'MB', 'GB'];
+  var i = Math.floor(Math.log(bytes) / Math.log(1024));
+  i = Math.min(i, units.length - 1);
+  return (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+</script>
+</body>
+</html>

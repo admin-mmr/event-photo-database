@@ -406,6 +406,127 @@ export function scanAllViolations(): ServiceResult<FolderViolation[]> {
   };
 }
 
+// ─── Phase 3: Upload flow ─────────────────────────────────────────────────────
+
+/**
+ * Represents a single file entry found within a club folder.
+ * Used by the file tree view and the duplicate check service.
+ */
+export interface ClubFolderFileEntry {
+  readonly name: string;
+  readonly fileId: string;
+  readonly sizeBytes: number;
+  readonly modifiedAt: string;       // ISO 8601 timestamp
+  readonly batchFolderName: string;  // Layer 3 folder containing this file
+  readonly batchFolderId: string;
+}
+
+/**
+ * Lists all files within a club folder, one level deep (club → batch → files).
+ *
+ * Iterates each Layer 3 batch subfolder inside the given club folder and
+ * collects every file entry. Returns a flat array sorted by batch folder name
+ * (which is also chronological, since names start with YYYYMMDD-HHMMSS).
+ *
+ * Used by:
+ *   - Phase 3 file tree UI (read-only preview of what's already uploaded)
+ *   - Phase 3 duplicate check service (compare incoming file vs existing)
+ *
+ * Performance note: makes 1 Drive API call per batch folder. For a club with
+ * 10 upload sessions of 50 files each, this is ~10 API calls — fine for GAS.
+ *
+ * @param clubFolderId  Drive ID of the Layer 2 club folder
+ */
+export function listFilesInClubFolder(
+  clubFolderId: string
+): ServiceResult<ClubFolderFileEntry[]> {
+  const parentResult = getFolderById(clubFolderId);
+  if (parentResult.status !== ResultStatus.SUCCESS || !parentResult.data) {
+    return { status: ResultStatus.ERROR, message: parentResult.message };
+  }
+
+  const clubFolder = parentResult.data;
+  const entries: ClubFolderFileEntry[] = [];
+
+  try {
+    const batchIter = clubFolder.getFolders();
+    while (batchIter.hasNext()) {
+      const batchFolder = batchIter.next();
+      const batchName = batchFolder.getName();
+      const batchId = batchFolder.getId();
+
+      const fileIter = batchFolder.getFiles();
+      while (fileIter.hasNext()) {
+        const file = fileIter.next();
+        entries.push({
+          name: file.getName(),
+          fileId: file.getId(),
+          sizeBytes: file.getSize(),
+          modifiedAt: file.getLastUpdated().toISOString(),
+          batchFolderName: batchName,
+          batchFolderId: batchId,
+        });
+      }
+    }
+
+    // Sort by batch folder name (YYYYMMDD-HHMMSS prefix ensures chronological order)
+    entries.sort((a, b) => a.batchFolderName.localeCompare(b.batchFolderName));
+
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `Found ${entries.length} file(s) in club folder`,
+      data: entries,
+    };
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Failed to list files in club folder "${clubFolderId}": ${String(err)}`,
+    };
+  }
+}
+
+/**
+ * Gets the club folder for a specific event (Layer 2), returning its ID
+ * and a file listing for the UI tree view. Does NOT create the folder —
+ * creation happens only at upload time (getOrCreateClubFolder).
+ *
+ * Returns null data if no club folder exists yet (user hasn't uploaded before).
+ *
+ * @param eventFolderId   Drive ID of the Layer 1 event folder
+ * @param clubFolderName  Normalized club name (e.g. "New_Bee")
+ */
+export function getClubFolderTree(
+  eventFolderId: string,
+  clubFolderName: string
+): ServiceResult<{ folderId: string; files: ClubFolderFileEntry[] } | null> {
+  const parentResult = getFolderById(eventFolderId);
+  if (parentResult.status !== ResultStatus.SUCCESS || !parentResult.data) {
+    return { status: ResultStatus.ERROR, message: parentResult.message };
+  }
+
+  const eventFolder = parentResult.data;
+  const existing = findSubfolder(eventFolder, clubFolderName);
+
+  if (!existing) {
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `No club folder "${clubFolderName}" found — will be created on first upload`,
+      data: null,
+    };
+  }
+
+  const filesResult = listFilesInClubFolder(existing.getId());
+  if (filesResult.status !== ResultStatus.SUCCESS || !filesResult.data) {
+    return { status: ResultStatus.ERROR, message: filesResult.message };
+  }
+
+  return {
+    status: ResultStatus.SUCCESS,
+    message: `Club folder found with ${filesResult.data.length} file(s)`,
+    data: { folderId: existing.getId(), files: filesResult.data },
+  };
+}
+
 // ─── Contract test helpers ────────────────────────────────────────────────────
 
 /**

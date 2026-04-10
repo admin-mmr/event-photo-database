@@ -234,10 +234,10 @@ flowchart TD
 ### Phase 3 — Upload Flow (Week 3–5)
 **Goal**: Users can select an event and upload photos end-to-end.
 
-- [ ] User UI: Event picker with date range filter
-- [ ] User UI: Show file tree for club subfolder (read-only view)
-- [ ] Browser file picker: multi-select, client-side type filter (jpg/png/heic/raw)
-- [ ] Drive service: `createBatchFolder(clubFolderId, timestamp, username)`
+- [x] User UI: Event picker with date range filter
+- [x] User UI: Show file tree for club subfolder (read-only view)
+- [x] Browser file picker: multi-select, client-side type filter (jpg/png/heic/raw)
+- [x] Drive service: `createBatchFolder(clubFolderId, timestamp, username)`
 - [ ] Duplicate check service: compare filename + size + modified time vs existing files in club folder
 - [ ] Upload service: chunked upload to Drive (GAS 50MB limit per file, warn user)
 - [ ] Sheets service: write Upload_Log on completion

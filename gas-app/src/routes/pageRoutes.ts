@@ -2,7 +2,7 @@ import { UserRecord } from '../types/models';
 import { UserRole } from '../types/enums';
 import { getConfig, APPROVED_CLUBS } from '../config/constants';
 import { listAll } from '../services/userService';
-import { listAll as listAllEvents } from '../services/eventService';
+import { listAll as listAllEvents, findById as findEventById } from '../services/eventService';
 
 /* global HtmlService */
 
@@ -115,5 +115,32 @@ export function adminEventsPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOut
     isAdmin: user.role === UserRole.ADMIN,
     events: JSON.stringify(events.items),
     totalEvents: events.total,
+  });
+}
+
+/**
+ * Upload page — Phase 3 entry point for regular users.
+ *
+ * Pre-loads the full event list for instant rendering of the event picker.
+ * Events are sorted newest-first so the most recent races appear at the top.
+ * The club folder tree is loaded on-demand (after event selection) via
+ * google.script.run to avoid Drive API calls on every page load.
+ *
+ * Available to all authenticated users (admins can upload too).
+ */
+export function uploadPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
+  const events = listAllEvents(1, 200, 'desc');
+  const approvedClubs = APPROVED_CLUBS.map((c) => ({
+    display: c.displayName,
+    value: c.normalizedName,
+  }));
+
+  return renderTemplate('upload', {
+    userEmail: user.email,
+    userRole: user.role,
+    runningClub: user.runningClub,
+    isAdmin: user.role === UserRole.ADMIN,
+    events: JSON.stringify(events.items),
+    approvedClubs: JSON.stringify(approvedClubs),
   });
 }

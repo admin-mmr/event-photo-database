@@ -10,6 +10,7 @@ import {
   dashboardPage,
   adminUsersPage,
   adminEventsPage,
+  uploadPage,
 } from './pageRoutes';
 import {
   handleCreateUser,
@@ -49,6 +50,7 @@ const GET_ROUTES: Readonly<Record<string, RouteConfig>> = {
   [RouteAction.LOGIN]:        { requiredRole: null },
   [RouteAction.ADMIN_USERS]:  { requiredRole: UserRole.ADMIN },
   [RouteAction.ADMIN_EVENTS]: { requiredRole: UserRole.ADMIN },
+  [RouteAction.UPLOAD]:       { requiredRole: null }, // all authenticated users
 };
 
 const POST_ROUTES: Readonly<Record<string, RouteConfig>> = {
@@ -120,6 +122,8 @@ function dispatchGetHandler(
       return adminUsersPage(user);
     case RouteAction.ADMIN_EVENTS:
       return adminEventsPage(user);
+    case RouteAction.UPLOAD:
+      return uploadPage(user);
     default:
       return notFoundPage(action);
   }

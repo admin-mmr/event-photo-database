@@ -8,6 +8,8 @@ import {
   getOrCreateClubFolder,
   createBatchFolder,
   verifyRootFolderAccess,
+  listFilesInClubFolder,
+  getClubFolderTree,
 } from '../../src/services/driveService';
 import {
   mockFolder,
@@ -262,6 +264,177 @@ describe('driveService', () => {
       const result = verifyRootFolderAccess();
       expect(result.status).toBe(ResultStatus.ERROR);
       expect(result.message).toContain('Cannot access root folder');
+    });
+  });
+
+  // ── Phase 3: listFilesInClubFolder ───────────────────────────────────────
+
+  describe('listFilesInClubFolder()', () => {
+    /** Creates a mock file with name, size, and a fixed last-updated date. */
+    function makeMockFile(name: string, sizeBytes: number) {
+      return {
+        getName: jest.fn().mockReturnValue(name),
+        getId: jest.fn().mockReturnValue(`file-${name}-id`),
+        getSize: jest.fn().mockReturnValue(sizeBytes),
+        getLastUpdated: jest.fn().mockReturnValue(new Date('2025-11-03T10:00:00Z')),
+      };
+    }
+
+    /** Returns an iterator mock that yields items in sequence. */
+    function makeIterator<T>(items: T[]) {
+      let i = 0;
+      return {
+        hasNext: jest.fn().mockImplementation(() => i < items.length),
+        next: jest.fn().mockImplementation(() => items[i++]),
+      };
+    }
+
+    it('returns SUCCESS with empty array when club folder has no batch subfolders', () => {
+      const clubFolder = makeMockFolder('New_Bee', 'club-id');
+      clubFolder.getFolders.mockReturnValue(makeIterator([]));
+      mockDriveApp.getFolderById.mockReturnValue(clubFolder);
+
+      const result = listFilesInClubFolder('club-id');
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toEqual([]);
+      expect(result.message).toContain('0 file');
+    });
+
+    it('returns all files from a single batch folder', () => {
+      const file1 = makeMockFile('photo1.jpg', 1024 * 1024);
+      const file2 = makeMockFile('photo2.png', 2 * 1024 * 1024);
+
+      const batchFolder = makeMockFolder('20251103-093500_cathylin', 'batch-id-1');
+      batchFolder.getFiles.mockReturnValue(makeIterator([file1, file2]));
+      batchFolder.getFolders.mockReturnValue(makeIterator([]));
+
+      const clubFolder = makeMockFolder('New_Bee', 'club-id');
+      clubFolder.getFolders.mockReturnValue(makeIterator([batchFolder]));
+
+      mockDriveApp.getFolderById.mockReturnValue(clubFolder);
+
+      const result = listFilesInClubFolder('club-id');
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toHaveLength(2);
+      expect(result.data![0].name).toBe('photo1.jpg');
+      expect(result.data![0].batchFolderName).toBe('20251103-093500_cathylin');
+      expect(result.data![0].sizeBytes).toBe(1024 * 1024);
+      expect(result.data![1].name).toBe('photo2.png');
+    });
+
+    it('aggregates files from multiple batch folders and sorts by batch name', () => {
+      const fileA = makeMockFile('early.jpg', 500);
+      const fileB = makeMockFile('late.jpg', 600);
+
+      // batch2 sorts after batch1 alphabetically
+      const batch1 = makeMockFolder('20251103-080000_alice', 'batch-id-a');
+      batch1.getFiles.mockReturnValue(makeIterator([fileA]));
+      batch1.getFolders.mockReturnValue(makeIterator([]));
+
+      const batch2 = makeMockFolder('20251103-150000_bob', 'batch-id-b');
+      batch2.getFiles.mockReturnValue(makeIterator([fileB]));
+      batch2.getFolders.mockReturnValue(makeIterator([]));
+
+      const clubFolder = makeMockFolder('New_Bee', 'club-id');
+      // Return batch2 first to verify sort
+      clubFolder.getFolders.mockReturnValue(makeIterator([batch2, batch1]));
+
+      mockDriveApp.getFolderById.mockReturnValue(clubFolder);
+
+      const result = listFilesInClubFolder('club-id');
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toHaveLength(2);
+      // batch1 (earlier timestamp) should come first after sorting
+      expect(result.data![0].batchFolderName).toBe('20251103-080000_alice');
+      expect(result.data![1].batchFolderName).toBe('20251103-150000_bob');
+    });
+
+    it('returns ERROR when the club folder ID is invalid', () => {
+      mockDriveApp.getFolderById.mockImplementationOnce(() => {
+        throw new Error('Folder not found');
+      });
+
+      const result = listFilesInClubFolder('bad-club-id');
+
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.message).toContain('bad-club-id');
+    });
+
+    it('includes file metadata: fileId, modifiedAt, batchFolderId', () => {
+      const file = makeMockFile('race.heic', 3 * 1024 * 1024);
+      const batch = makeMockFolder('20251103-093500_cathylin', 'batch-99');
+      batch.getFiles.mockReturnValue(makeIterator([file]));
+      batch.getFolders.mockReturnValue(makeIterator([]));
+
+      const clubFolder = makeMockFolder('New_Bee', 'club-id');
+      clubFolder.getFolders.mockReturnValue(makeIterator([batch]));
+      mockDriveApp.getFolderById.mockReturnValue(clubFolder);
+
+      const result = listFilesInClubFolder('club-id');
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      const entry = result.data![0];
+      expect(entry.fileId).toBe('file-race.heic-id');
+      expect(entry.batchFolderId).toBe('batch-99');
+      expect(entry.modifiedAt).toBe('2025-11-03T10:00:00.000Z');
+    });
+  });
+
+  // ── Phase 3: getClubFolderTree ───────────────────────────────────────────
+
+  describe('getClubFolderTree()', () => {
+    function makeIterator<T>(items: T[]) {
+      let i = 0;
+      return {
+        hasNext: jest.fn().mockImplementation(() => i < items.length),
+        next: jest.fn().mockImplementation(() => items[i++]),
+      };
+    }
+
+    it('returns null data when the club subfolder does not exist', () => {
+      const eventFolder = makeMockFolder('2025-11-03_NYC_Marathon', 'evt-folder-id');
+      eventFolder.getFoldersByName.mockReturnValue(makeIterator([]));
+      mockDriveApp.getFolderById.mockReturnValue(eventFolder);
+
+      const result = getClubFolderTree('evt-folder-id', 'New_Bee');
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toBeNull();
+      expect(result.message).toContain('will be created on first upload');
+    });
+
+    it('returns folderId and files when the club subfolder exists', () => {
+      const clubFolder = makeMockFolder('New_Bee', 'club-id-123');
+      // Simulate an empty club folder (no batch folders yet)
+      clubFolder.getFolders.mockReturnValue(makeIterator([]));
+
+      const eventFolder = makeMockFolder('2025-11-03_NYC_Marathon', 'evt-folder-id');
+      eventFolder.getFoldersByName.mockReturnValue(makeIterator([clubFolder]));
+
+      // getFolderById is called twice: once for event folder, once for club folder
+      mockDriveApp.getFolderById
+        .mockReturnValueOnce(eventFolder)
+        .mockReturnValueOnce(clubFolder);
+
+      const result = getClubFolderTree('evt-folder-id', 'New_Bee');
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).not.toBeNull();
+      expect(result.data!.folderId).toBe('club-id-123');
+      expect(result.data!.files).toHaveLength(0);
+    });
+
+    it('returns ERROR when the event folder cannot be fetched', () => {
+      mockDriveApp.getFolderById.mockImplementationOnce(() => {
+        throw new Error('Access denied');
+      });
+
+      const result = getClubFolderTree('bad-evt-id', 'New_Bee');
+
+      expect(result.status).toBe(ResultStatus.ERROR);
     });
   });
 });
