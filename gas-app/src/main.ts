@@ -1,156 +1,122 @@
 /**
- * main.ts — GAS Web App entry points.
+ * main.ts — GAS Web App entry points and google.script.run server functions.
  *
- * doGet(e)  → serves HTML pages (dashboard, login, admin panels)
- * doPost(e) → handles API actions (user CRUD, validation) — returns JSON
+ * doGet(e)  → delegates to Router.handleGet (page routing)
+ * doPost(e) → delegates to Router.handlePost (JSON API routing)
  *
- * Both functions follow the same pipeline:
- *   1. Authenticate (session → email)
- *   2. Resolve user (email → UserRecord with role)
- *   3. Check route and role
- *   4. Dispatch to handler
- *
- * Error handling strategy:
- *   - Auth failures → show login/access-denied page (doGet) or 403 JSON (doPost)
- *   - Unknown routes → 404
- *   - Unhandled exceptions → logged to Stackdriver, 500 returned to client
+ * serverXxx functions are exposed to the browser via google.script.run.
+ * They all authenticate the caller and enforce admin-only access where needed.
  */
 
-import { ResultStatus, RouteAction } from './types/enums';
+import { ResultStatus, UserRole, UserStatus } from './types/enums';
 import { authenticateRequest } from './middleware/authMiddleware';
 import { requireRole } from './middleware/roleGuard';
+import { handleGet as routerHandleGet, handlePost as routerHandlePost } from './routes/router';
+import { createUser, deactivateUser, reactivateUser, updateUser } from './services/userService';
 
-/* global HtmlService, ContentService, Logger */
+/* global Logger */
 
-// ─── doGet ────────────────────────────────────────────────────────────────────
+// ─── Web App entry points ─────────────────────────────────────────────────────
 
-/**
- * Entry point for all HTTP GET requests to the Web App.
- * Returns an HtmlOutput page appropriate to the user's role and the action param.
- */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function doGet(
   e: GoogleAppsScript.Events.DoGet
 ): GoogleAppsScript.HTML.HtmlOutput {
-  try {
-    const action = (e.parameter['action'] as RouteAction | undefined) ?? RouteAction.DASHBOARD;
-
-    // Authenticate
-    const authResult = authenticateRequest();
-    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
-      return renderPage('login', { errorMessage: authResult.message });
-    }
-
-    const user = authResult.data;
-
-    // Route dispatch
-    switch (action) {
-      case RouteAction.DASHBOARD:
-        return renderPage('dashboard', { user });
-
-      case RouteAction.ADMIN_USERS: {
-        const guard = requireRole(user.role, 'admin' as typeof user.role);
-        if (guard.status !== ResultStatus.SUCCESS) {
-          return renderPage('access_denied', { message: guard.message });
-        }
-        return renderPage('admin_users', { user });
-      }
-
-      case RouteAction.LOGIN:
-        return renderPage('login', { errorMessage: '' });
-
-      default:
-        return renderPage('not_found', { action });
-    }
-  } catch (err) {
-    Logger.log(`doGet error: ${String(err)}`);
-    return renderPage('error', { message: 'An unexpected error occurred. Please try again.' });
-  }
+  return routerHandleGet(e);
 }
 
-// ─── doPost ───────────────────────────────────────────────────────────────────
-
-/**
- * Entry point for all HTTP POST requests to the Web App.
- * Returns a JSON TextOutput using the ApiResponse envelope.
- */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function doPost(
   e: GoogleAppsScript.Events.DoPost
 ): GoogleAppsScript.Content.TextOutput {
+  return routerHandlePost(e);
+}
+
+// ─── google.script.run server functions ──────────────────────────────────────
+
+type ServerResponse = { status: string; message: string; data?: unknown; errors?: unknown };
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverCreateUser(
+  payload: { email: string; runningClub: string; role: string }
+): ServerResponse {
   try {
-    const action = e.parameter['action'] as RouteAction | undefined;
-    if (!action) {
-      return jsonResponse({ status: ResultStatus.ERROR, code: 400, message: 'Missing action parameter' });
-    }
-
-    // Authenticate
-    const authResult = authenticateRequest();
-    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
-      return jsonResponse({ status: ResultStatus.ERROR, code: 403, message: authResult.message });
-    }
-
-    const user = authResult.data;
-
-    // Parse JSON body if present
-    let payload: Record<string, unknown> = {};
-    if (e.postData && e.postData.contents) {
-      try {
-        payload = JSON.parse(e.postData.contents) as Record<string, unknown>;
-      } catch {
-        return jsonResponse({ status: ResultStatus.ERROR, code: 400, message: 'Invalid JSON body' });
-      }
-    }
-
-    // Route dispatch (admin-only actions for Phase 1)
-    switch (action) {
-      case RouteAction.VALIDATE_FOLDER_NAME: {
-        // Available to all authenticated users (useful for upload UI validation)
-        const { folderName, layer } = payload as { folderName?: string; layer?: number };
-        if (!folderName || !layer) {
-          return jsonResponse({ status: ResultStatus.ERROR, code: 400, message: 'folderName and layer are required' });
-        }
-        // Import inline to avoid circular dependency in future refactors
-        const { validateFolderName } = require('./utils/folderNameValidator') as typeof import('./utils/folderNameValidator');
-        const result = validateFolderName({ folderName, layer: layer as 1 | 2 | 3 });
-        return jsonResponse({ status: ResultStatus.SUCCESS, code: 200, message: 'Validation complete', data: result });
-      }
-
-      default:
-        return jsonResponse({ status: ResultStatus.ERROR, code: 404, message: `Unknown action: ${String(action)}` });
-    }
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+    const result = createUser(
+      { email: payload.email, runningClub: payload.runningClub, role: payload.role as UserRole },
+      auth.adminEmail
+    );
+    return { status: result.status, message: result.message, data: result.data, errors: result.errors };
   } catch (err) {
-    Logger.log(`doPost error: ${String(err)}`);
-    return jsonResponse({ status: ResultStatus.ERROR, code: 500, message: 'Internal server error' });
+    Logger.log(`serverCreateUser error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error creating user' };
   }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Renders an HtmlOutput from a template file in src/ui/templates/.
- * templateName maps to the .html file without extension.
- */
-function renderPage(
-  templateName: string,
-  templateData: Record<string, unknown>
-): GoogleAppsScript.HTML.HtmlOutput {
-  const template = HtmlService.createTemplateFromFile(
-    `ui/templates/${templateName}`
-  );
-  // Inject data into template scope
-  Object.assign(template, templateData);
-  return template
-    .evaluate()
-    .setTitle('湘舍动公益文件系统')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DENY);
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverUpdateUser(
+  payload: { email: string; runningClub?: string; role?: string; status?: string }
+): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+    const result = updateUser(
+      {
+        email: payload.email,
+        ...(payload.runningClub !== undefined && { runningClub: payload.runningClub }),
+        ...(payload.role !== undefined && { role: payload.role as UserRole }),
+        ...(payload.status !== undefined && { status: payload.status as UserStatus }),
+      },
+      auth.adminEmail
+    );
+    return { status: result.status, message: result.message, data: result.data, errors: result.errors };
+  } catch (err) {
+    Logger.log(`serverUpdateUser error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error updating user' };
+  }
 }
 
-/**
- * Wraps a response object in a JSON TextOutput.
- */
-function jsonResponse(response: Record<string, unknown>): GoogleAppsScript.Content.TextOutput {
-  return ContentService
-    .createTextOutput(JSON.stringify(response))
-    .setMimeType(ContentService.MimeType.JSON);
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverDeactivateUser(payload: { email: string }): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+    const result = deactivateUser(payload.email);
+    return { status: result.status, message: result.message, data: result.data };
+  } catch (err) {
+    Logger.log(`serverDeactivateUser error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error deactivating user' };
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverReactivateUser(payload: { email: string }): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+    const result = reactivateUser(payload.email);
+    return { status: result.status, message: result.message, data: result.data };
+  } catch (err) {
+    Logger.log(`serverReactivateUser error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error reactivating user' };
+  }
+}
+
+// ─── Internal auth helper ─────────────────────────────────────────────────────
+
+type AdminCheckResult =
+  | { ok: true; adminEmail: string }
+  | { ok: false; response: ServerResponse };
+
+function requireAdminOrFail(): AdminCheckResult {
+  const authResult = authenticateRequest();
+  if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+    return { ok: false, response: { status: 'error', message: 'Authentication required' } };
+  }
+  const guard = requireRole(authResult.data.role, UserRole.ADMIN);
+  if (guard.status !== ResultStatus.SUCCESS) {
+    return { ok: false, response: { status: 'error', message: guard.message } };
+  }
+  return { ok: true, adminEmail: authResult.data.email };
 }

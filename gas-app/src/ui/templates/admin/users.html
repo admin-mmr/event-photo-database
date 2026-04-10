@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>User Management — 湘舍动公益文件系统</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet"
+    href="https://code.getmdl.io/1.3.0/material.indigo-pink.min.css">
+  <?!= HtmlService.createHtmlOutputFromFile('ui/css/styles').getContent() ?>
+</head>
+<body>
+  <div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
+    <header class="mdl-layout__header">
+      <div class="mdl-layout__header-row">
+        <a href="?action=dashboard" class="mdl-layout-title"
+           style="color:inherit;text-decoration:none;">
+          湘舍动公益文件系统
+        </a>
+        <div class="mdl-layout-spacer"></div>
+        <nav class="mdl-navigation">
+          <a class="mdl-navigation__link" href="?action=admin_users" style="color:#fff;">Users</a>
+          <a class="mdl-navigation__link" href="?action=admin_events">Events</a>
+        </nav>
+        <span class="mdl-chip" style="margin-left:12px;">
+          <span class="mdl-chip__text"><?= userEmail ?></span>
+        </span>
+      </div>
+    </header>
+
+    <main class="mdl-layout__content">
+      <div class="page-content">
+
+        <!-- Page header row -->
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+          <h4 style="margin:0;font-size:20px;">
+            <i class="material-icons" style="vertical-align:middle;margin-right:8px;color:#3f51b5;">group</i>
+            User Management
+            <span style="font-size:14px;font-weight:400;color:#777;margin-left:8px;">
+              (<?= total ?> total)
+            </span>
+          </h4>
+          <button id="btn-show-add-form"
+                  class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                  onclick="toggleAddForm()">
+            <i class="material-icons">person_add</i>
+            Add User
+          </button>
+        </div>
+
+        <!-- Add user form (hidden by default) -->
+        <div id="add-user-form" class="card collapsed">
+          <h5>Add New User</h5>
+          <form id="form-create-user" onsubmit="handleCreateUser(event)">
+            <div class="form-row">
+              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
+                <input type="email" id="new-email" name="email"
+                       class="mdl-textfield__input" required autocomplete="off">
+                <label class="mdl-textfield__label" for="new-email">Email address</label>
+                <span class="field-error" id="error-email" aria-live="polite"></span>
+              </div>
+
+              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
+                <select id="new-club" name="runningClub" class="mdl-textfield__input" required>
+                  <option value="" disabled selected>Select club</option>
+                  <? for (var i = 0; i < approvedClubs.length; i++) { ?>
+                  <option value="<?= approvedClubs[i].value ?>"><?= approvedClubs[i].display ?></option>
+                  <? } ?>
+                </select>
+                <label class="mdl-textfield__label" for="new-club">Running Club</label>
+                <span class="field-error" id="error-runningClub" aria-live="polite"></span>
+              </div>
+
+              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
+                <select id="new-role" name="role" class="mdl-textfield__input">
+                  <? for (var j = 0; j < roleOptions.length; j++) { ?>
+                  <option value="<?= roleOptions[j] ?>"><?= roleOptions[j] ?></option>
+                  <? } ?>
+                </select>
+                <label class="mdl-textfield__label" for="new-role">Role</label>
+                <span class="field-error" id="error-role" aria-live="polite"></span>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" id="btn-create-user"
+                      class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored">
+                Create User
+              </button>
+              <div class="mdl-spinner mdl-js-spinner spinner hidden" id="create-spinner"></div>
+              <button type="button"
+                      class="mdl-button mdl-js-button"
+                      onclick="toggleAddForm()">
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+        <!-- /add-user-form -->
+
+        <!-- User table -->
+        <div class="card" style="padding:0;overflow:hidden;">
+          <table class="mdl-data-table mdl-js-data-table full-width" id="users-table"
+                 aria-label="User list">
+            <thead>
+              <tr>
+                <th class="mdl-data-table__cell--non-numeric">Email</th>
+                <th class="mdl-data-table__cell--non-numeric">Club</th>
+                <th class="mdl-data-table__cell--non-numeric">Role</th>
+                <th class="mdl-data-table__cell--non-numeric">Status</th>
+                <th class="mdl-data-table__cell--non-numeric">Added</th>
+                <th class="mdl-data-table__cell--non-numeric">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="users-table-body">
+              <!-- Rendered server-side (initial load) + updated client-side after CRUD -->
+              <? for (var k = 0; k < users.length; k++) {
+                   var u = users[k];
+                   var isInactive = u.status === 'inactive';
+              ?>
+              <tr id="row-<?= u.email ?>"
+                  style="<?= isInactive ? 'opacity:0.6;' : '' ?>">
+                <td class="mdl-data-table__cell--non-numeric">
+                  <?= u.email ?>
+                </td>
+                <td class="mdl-data-table__cell--non-numeric">
+                  <?= u.runningClub ?>
+                </td>
+                <td class="mdl-data-table__cell--non-numeric">
+                  <span class="role-chip <?= u.role ?>"><?= u.role ?></span>
+                </td>
+                <td class="mdl-data-table__cell--non-numeric">
+                  <span class="status-<?= u.status ?>"><?= u.status ?></span>
+                </td>
+                <td class="mdl-data-table__cell--non-numeric"
+                    style="font-size:12px;color:#777;">
+                  <?= u.addedDate ?>
+                </td>
+                <td class="mdl-data-table__cell--non-numeric">
+                  <div class="row-actions-<?= u.email ?>">
+                    <? if (!isInactive) { ?>
+                    <button class="mdl-button mdl-js-button mdl-button--icon btn-danger"
+                            title="Deactivate <?= u.email ?>"
+                            onclick="handleDeactivate('<?= u.email ?>')">
+                      <i class="material-icons">person_off</i>
+                    </button>
+                    <? } else { ?>
+                    <button class="mdl-button mdl-js-button mdl-button--icon"
+                            title="Reactivate <?= u.email ?>"
+                            onclick="handleReactivate('<?= u.email ?>')">
+                      <i class="material-icons">person_add_alt_1</i>
+                    </button>
+                    <? } ?>
+                  </div>
+                </td>
+              </tr>
+              <? } ?>
+            </tbody>
+          </table>
+
+          <? if (users.length === 0) { ?>
+          <p style="text-align:center;color:#999;padding:32px;">
+            No users found. Use "Add User" to create the first one.
+          </p>
+          <? } ?>
+        </div>
+        <!-- /user table card -->
+
+      </div>
+    </main>
+
+    <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
+  </div>
+
+  <script defer src="https://code.getmdl.io/1.3.0/material.min.js"></script>
+  <?!= HtmlService.createHtmlOutputFromFile('ui/js/app').getContent() ?>
+
+  <script>
+    // ── Toggle add form ──────────────────────────────────────────────────────
+    function toggleAddForm() {
+      var form = document.getElementById('add-user-form');
+      var isCollapsed = form.classList.contains('collapsed');
+      form.classList.toggle('collapsed', !isCollapsed);
+      if (!isCollapsed) {
+        document.getElementById('form-create-user').reset();
+        clearErrors(document.getElementById('form-create-user'));
+      }
+    }
+
+    // ── Create user ──────────────────────────────────────────────────────────
+    function handleCreateUser(event) {
+      event.preventDefault();
+      var form = event.target;
+      clearErrors(form);
+
+      var payload = {
+        email: document.getElementById('new-email').value,
+        runningClub: document.getElementById('new-club').value,
+        role: document.getElementById('new-role').value,
+      };
+
+      var btn = document.getElementById('btn-create-user');
+      var spinner = document.getElementById('create-spinner');
+
+      callServer('serverCreateUser', payload, btn, spinner)
+        .then(function (result) {
+          if (result.status === 'error') {
+            showToast(result.message, 'error');
+            if (result.errors) showFieldErrors(result.errors, 'form-create-user');
+            return;
+          }
+          showToast('User ' + result.data.email + ' created successfully', 'success');
+          toggleAddForm();
+          // Reload table row (simple: reload page after short delay)
+          setTimeout(function () { window.location.reload(); }, 800);
+        })
+        .catch(function (err) {
+          showToast('Unexpected error: ' + String(err), 'error');
+        });
+    }
+
+    // ── Deactivate user ──────────────────────────────────────────────────────
+    function handleDeactivate(email) {
+      var container = document.querySelector('.row-actions-' + CSS.escape(email));
+      confirmInline(container.querySelector('button'), 'Deactivate ' + email + '?')
+        .then(function (confirmed) {
+          if (!confirmed) return;
+          callServer('serverDeactivateUser', { email: email })
+            .then(function (result) {
+              if (result.status === 'error') {
+                showToast(result.message, 'error');
+                return;
+              }
+              showToast(email + ' deactivated', 'success');
+              setTimeout(function () { window.location.reload(); }, 800);
+            })
+            .catch(function (err) {
+              showToast('Error: ' + String(err), 'error');
+            });
+        });
+    }
+
+    // ── Reactivate user ──────────────────────────────────────────────────────
+    function handleReactivate(email) {
+      callServer('serverReactivateUser', { email: email })
+        .then(function (result) {
+          if (result.status === 'error') {
+            showToast(result.message, 'error');
+            return;
+          }
+          showToast(email + ' reactivated', 'success');
+          setTimeout(function () { window.location.reload(); }, 800);
+        })
+        .catch(function (err) {
+          showToast('Error: ' + String(err), 'error');
+        });
+    }
+  </script>
+</body>
+</html>

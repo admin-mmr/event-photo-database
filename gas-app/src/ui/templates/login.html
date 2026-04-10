@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 — 湘舍动公益文件系统</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet"
+    href="https://code.getmdl.io/1.3.0/material.indigo-pink.min.css">
+  <?!= HtmlService.createHtmlOutputFromFile('ui/css/styles').getContent() ?>
+  <style>
+    .login-container {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f5f5f5;
+    }
+    .login-card {
+      background: #fff;
+      border-radius: 4px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.16);
+      padding: 40px 48px;
+      max-width: 420px;
+      width: 100%;
+      text-align: center;
+    }
+    .login-logo {
+      font-size: 48px;
+      color: #3f51b5;
+      margin-bottom: 8px;
+    }
+    .login-card h4 {
+      margin: 0 0 8px;
+      font-size: 20px;
+      color: #333;
+    }
+    .login-card p.subtitle {
+      color: #777;
+      font-size: 14px;
+      margin: 0 0 28px;
+    }
+    .login-card .error-msg {
+      color: #d32f2f;
+      font-size: 13px;
+      margin-bottom: 16px;
+      background: #ffebee;
+      padding: 8px 12px;
+      border-radius: 4px;
+      display: <?= (typeof errorMessage !== 'undefined' && errorMessage) ? 'block' : 'none' ?>;
+    }
+    .login-info {
+      margin-top: 24px;
+      font-size: 13px;
+      color: #999;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-container">
+    <div class="login-card">
+      <div class="login-logo">
+        <i class="material-icons" style="font-size:inherit;">folder_open</i>
+      </div>
+      <h4>湘舍动公益文件系统</h4>
+      <p class="subtitle">事件照片管理平台</p>
+
+      <? if (typeof errorMessage !== 'undefined' && errorMessage) { ?>
+      <div class="error-msg" role="alert">
+        <i class="material-icons" style="font-size:16px;vertical-align:middle;">error_outline</i>
+        <?= errorMessage ?>
+      </div>
+      <? } ?>
+
+      <p style="color:#555;font-size:14px;margin-bottom:20px;">
+        This system is restricted to registered members.<br>
+        Sign in with your organization Google account to continue.
+      </p>
+
+      <a href="<?= ScriptApp.getService().getUrl() ?>"
+         class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+         style="width:100%;padding:12px 0;font-size:15px;">
+        <i class="material-icons" style="vertical-align:middle;margin-right:8px;">login</i>
+        Sign in with Google
+      </a>
+
+      <p class="login-info">
+        Not a member?
+        <a href="mailto:cathy.lin@mmrunners.org">Contact the administrator</a>
+        to request access.
+      </p>
+    </div>
+  </div>
+  <script defer src="https://code.getmdl.io/1.3.0/material.min.js"></script>
+</body>
+</html>

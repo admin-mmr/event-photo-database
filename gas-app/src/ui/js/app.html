@@ -1,0 +1,149 @@
+<script>
+  /**
+   * app.html — Client-side utilities loaded on every page.
+   *
+   * Responsibilities:
+   *   - Toast notifications
+   *   - Generic server call wrapper (google.script.run)
+   *   - Button loading state helpers
+   *   - Navigation rendering
+   */
+
+  // ── Toast ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Shows a dismissable toast message.
+   * @param {string} message  Text to display
+   * @param {'success'|'error'|'warning'} type
+   * @param {number} [duration=4000]  Auto-dismiss after this many ms (0 = no auto-dismiss)
+   */
+  function showToast(message, type, duration) {
+    duration = duration === undefined ? 4000 : duration;
+    var container = document.getElementById('toast-container');
+    var toast = document.createElement('div');
+    toast.className = 'toast ' + (type || 'success');
+    toast.textContent = message;
+    toast.setAttribute('role', 'alert');
+    container.appendChild(toast);
+
+    if (duration > 0) {
+      setTimeout(function () {
+        toast.classList.add('fading');
+        setTimeout(function () {
+          if (toast.parentNode) toast.parentNode.removeChild(toast);
+        }, 400);
+      }, duration);
+    }
+  }
+
+  // ── Server call wrapper ────────────────────────────────────────────────────
+
+  /**
+   * Wraps google.script.run with Promise semantics and button loading states.
+   *
+   * @param {string}   functionName  Name of the server-side function to call
+   * @param {*}        args          Arguments to pass
+   * @param {Element}  [btn]         Submit button to disable during the call
+   * @param {Element}  [spinner]     Spinner element to show during the call
+   * @returns {Promise<*>}
+   */
+  function callServer(functionName, args, btn, spinner) {
+    return new Promise(function (resolve, reject) {
+      if (btn) {
+        btn.disabled = true;
+        btn.setAttribute('aria-busy', 'true');
+      }
+      if (spinner) spinner.classList.remove('hidden');
+
+      google.script.run
+        .withSuccessHandler(function (result) {
+          if (btn) {
+            btn.disabled = false;
+            btn.removeAttribute('aria-busy');
+          }
+          if (spinner) spinner.classList.add('hidden');
+          resolve(result);
+        })
+        .withFailureHandler(function (err) {
+          if (btn) {
+            btn.disabled = false;
+            btn.removeAttribute('aria-busy');
+          }
+          if (spinner) spinner.classList.add('hidden');
+          reject(err);
+        })
+        [functionName](args);
+    });
+  }
+
+  // ── Form helpers ───────────────────────────────────────────────────────────
+
+  /** Clears all field-level error messages in a form. */
+  function clearErrors(form) {
+    var errors = form.querySelectorAll('.field-error');
+    errors.forEach(function (el) { el.textContent = ''; });
+  }
+
+  /**
+   * Displays field-level errors returned by the server.
+   * @param {Array<{field:string, message:string}>} errors
+   * @param {string} formId
+   */
+  function showFieldErrors(errors, formId) {
+    errors.forEach(function (err) {
+      var el = document.getElementById('error-' + err.field);
+      if (el) el.textContent = err.message;
+    });
+  }
+
+  // ── Navigation ─────────────────────────────────────────────────────────────
+
+  /** Returns the base URL of the current web app deployment. */
+  function appUrl() {
+    return window.location.href.split('?')[0];
+  }
+
+  /** Navigates to a route action. */
+  function navigate(action) {
+    window.location.href = appUrl() + '?action=' + action;
+  }
+
+  // ── Confirmation helper ────────────────────────────────────────────────────
+
+  /**
+   * Replaces a button with an inline confirmation prompt.
+   * Returns a Promise that resolves true (confirmed) or false (cancelled).
+   *
+   * @param {Element} triggerBtn   The button that was clicked
+   * @param {string}  promptText   e.g. "Deactivate Jane Doe?"
+   */
+  function confirmInline(triggerBtn, promptText) {
+    return new Promise(function (resolve) {
+      var parent = triggerBtn.parentNode;
+      var saved = triggerBtn.outerHTML;
+
+      var prompt = document.createElement('span');
+      prompt.className = 'confirm-prompt';
+      prompt.innerHTML =
+        promptText + ' ' +
+        '<button class="mdl-button mdl-js-button mdl-button--raised mdl-button--accent" ' +
+        'style="min-width:0;padding:0 8px;height:28px;font-size:12px">Yes</button> ' +
+        '<button class="mdl-button mdl-js-button" style="min-width:0;padding:0 8px;height:28px;font-size:12px">Cancel</button>';
+
+      parent.replaceChild(prompt, triggerBtn);
+
+      prompt.querySelector('button:first-of-type').addEventListener('click', function () {
+        parent.innerHTML = saved;
+        // Re-upgrade MDL on restored elements
+        if (window.componentHandler) componentHandler.upgradeDom();
+        resolve(true);
+      });
+
+      prompt.querySelector('button:last-of-type').addEventListener('click', function () {
+        parent.innerHTML = saved;
+        if (window.componentHandler) componentHandler.upgradeDom();
+        resolve(false);
+      });
+    });
+  }
+</script>

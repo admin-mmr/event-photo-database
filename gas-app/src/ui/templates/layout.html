@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>湘舍动公益文件系统</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet"
+    href="https://code.getmdl.io/1.3.0/material.indigo-pink.min.css">
+  <?!= HtmlService.createHtmlOutputFromFile('ui/css/styles').getContent() ?>
+</head>
+<body>
+  <div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
+
+    <!-- Header nav bar -->
+    <header class="mdl-layout__header">
+      <div class="mdl-layout__header-row">
+        <a href="?action=dashboard" class="mdl-layout-title"
+           style="color:inherit;text-decoration:none;">
+          湘舍动公益文件系统
+        </a>
+        <div class="mdl-layout-spacer"></div>
+        <nav class="mdl-navigation" id="nav-links">
+          <!-- Role-based links rendered by page template -->
+        </nav>
+        <?
+          if (typeof userEmail !== 'undefined' && userEmail) {
+        ?>
+        <span class="mdl-chip" style="margin-left:12px;">
+          <span class="mdl-chip__text"><?= userEmail ?></span>
+        </span>
+        <? } ?>
+      </div>
+    </header>
+
+    <!-- Main content -->
+    <main class="mdl-layout__content">
+      <div class="page-content" id="app-root">
+        <?!= content ?>
+      </div>
+    </main>
+
+    <!-- Toast container (aria-live for screen readers) -->
+    <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
+  </div>
+
+  <!-- MDL JavaScript -->
+  <script defer src="https://code.getmdl.io/1.3.0/material.min.js"></script>
+  <?!= HtmlService.createHtmlOutputFromFile('ui/js/app').getContent() ?>
+</body>
+</html>

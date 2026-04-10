@@ -1,0 +1,282 @@
+import { ResultStatus } from '../types/enums';
+import { ServiceResult } from '../types/responses';
+import { getConfig } from '../config/constants';
+
+/* global DriveApp */
+
+/**
+ * DriveService — Google Drive folder operations for the file system.
+ *
+ * Folder hierarchy managed by this service:
+ *
+ *   <ROOT_FOLDER>                        ← set via Script Property ROOT_FOLDER_ID
+ *   └── YYYY-MM-DD_Event_Name/           ← Layer 1: event folder (created by admin)
+ *       └── Club_Name/                   ← Layer 2: club folder (auto-created on upload)
+ *           └── YYYYMMDD-HHMMSS_user/    ← Layer 3: batch folder (auto-created per upload)
+ *               └── photo.jpg
+ *
+ * All folder names must pass FolderNameValidator before reaching this service.
+ *
+ * Design notes:
+ *   - All operations return ServiceResult<T> — never throw across service boundaries
+ *   - Folder existence is always checked before creation to avoid duplicates
+ *   - IDs (not names) are stored in the Events/Upload_Log sheets for resilience
+ *     to folder renames
+ */
+
+// ─── Root folder ──────────────────────────────────────────────────────────────
+
+/**
+ * Returns the configured root folder.
+ * Throws if ROOT_FOLDER_ID is not set or the folder cannot be accessed.
+ */
+export function getRootFolder(): GoogleAppsScript.Drive.Folder {
+  const config = getConfig();
+  return DriveApp.getFolderById(config.ROOT_FOLDER_ID);
+}
+
+// ─── Folder operations ────────────────────────────────────────────────────────
+
+/**
+ * Gets a folder by its Drive ID.
+ * Returns ERROR if the folder does not exist or cannot be accessed.
+ */
+export function getFolderById(
+  folderId: string
+): ServiceResult<GoogleAppsScript.Drive.Folder> {
+  try {
+    const folder = DriveApp.getFolderById(folderId);
+    return { status: ResultStatus.SUCCESS, message: 'Folder found', data: folder };
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Folder not found or access denied for ID "${folderId}": ${String(err)}`,
+    };
+  }
+}
+
+/**
+ * Checks whether a folder with the given name exists directly inside a parent folder.
+ * Returns the first matching folder, or null.
+ *
+ * Note: Google Drive allows multiple folders with the same name. This returns
+ * the first match — folder names in this system must be unique by convention.
+ */
+export function findSubfolder(
+  parent: GoogleAppsScript.Drive.Folder,
+  name: string
+): GoogleAppsScript.Drive.Folder | null {
+  const iter = parent.getFoldersByName(name);
+  return iter.hasNext() ? iter.next() : null;
+}
+
+/**
+ * Creates a new subfolder inside the given parent folder.
+ * Returns ERROR if a folder with that name already exists (prevents duplicates).
+ *
+ * @param parent    The parent Drive folder
+ * @param name      The folder name (must already be validated)
+ */
+export function createSubfolder(
+  parent: GoogleAppsScript.Drive.Folder,
+  name: string
+): ServiceResult<GoogleAppsScript.Drive.Folder> {
+  try {
+    const existing = findSubfolder(parent, name);
+    if (existing) {
+      return {
+        status: ResultStatus.ERROR,
+        message: `A folder named "${name}" already exists in "${parent.getName()}"`,
+      };
+    }
+    const newFolder = parent.createFolder(name);
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `Folder "${name}" created`,
+      data: newFolder,
+    };
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Failed to create folder "${name}": ${String(err)}`,
+    };
+  }
+}
+
+/**
+ * Gets or creates a subfolder — idempotent variant used for club and batch folders.
+ * If the folder exists, returns it. If not, creates and returns it.
+ */
+export function getOrCreateSubfolder(
+  parent: GoogleAppsScript.Drive.Folder,
+  name: string
+): ServiceResult<GoogleAppsScript.Drive.Folder> {
+  try {
+    const existing = findSubfolder(parent, name);
+    if (existing) {
+      return {
+        status: ResultStatus.SUCCESS,
+        message: `Folder "${name}" already exists`,
+        data: existing,
+      };
+    }
+    const newFolder = parent.createFolder(name);
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `Folder "${name}" created`,
+      data: newFolder,
+    };
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Failed to get or create folder "${name}": ${String(err)}`,
+    };
+  }
+}
+
+// ─── Layer 1: Event folders ───────────────────────────────────────────────────
+
+/**
+ * Creates a new Layer 1 event folder in the root.
+ * The folderName must be pre-validated by FolderNameValidator (layer: 1).
+ *
+ * @param folderName  Validated name: YYYY-MM-DD_Event_Name
+ */
+export function createEventFolder(
+  folderName: string
+): ServiceResult<{ folderId: string; folderName: string }> {
+  try {
+    const root = getRootFolder();
+    const result = createSubfolder(root, folderName);
+    if (result.status !== ResultStatus.SUCCESS || !result.data) {
+      return { status: ResultStatus.ERROR, message: result.message };
+    }
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `Event folder "${folderName}" created`,
+      data: { folderId: result.data.getId(), folderName },
+    };
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Failed to create event folder "${folderName}": ${String(err)}`,
+    };
+  }
+}
+
+/**
+ * Lists all Layer 1 event folders in the root.
+ * Returns an array of { name, id } objects sorted alphabetically by name.
+ */
+export function listEventFolders(): ServiceResult<Array<{ name: string; id: string }>> {
+  try {
+    const root = getRootFolder();
+    const iter = root.getFolders();
+    const folders: Array<{ name: string; id: string }> = [];
+
+    while (iter.hasNext()) {
+      const f = iter.next();
+      folders.push({ name: f.getName(), id: f.getId() });
+    }
+
+    folders.sort((a, b) => a.name.localeCompare(b.name));
+
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `Found ${folders.length} event folder(s)`,
+      data: folders,
+    };
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Failed to list event folders: ${String(err)}`,
+    };
+  }
+}
+
+// ─── Layer 2: Club folders ────────────────────────────────────────────────────
+
+/**
+ * Gets or creates a Layer 2 club folder inside an event folder.
+ * The clubFolderName must be pre-validated (layer: 2).
+ *
+ * @param eventFolderId   Drive ID of the Layer 1 event folder
+ * @param clubFolderName  Validated club folder name (e.g. "New_Bee")
+ */
+export function getOrCreateClubFolder(
+  eventFolderId: string,
+  clubFolderName: string
+): ServiceResult<{ folderId: string; folderName: string }> {
+  const parentResult = getFolderById(eventFolderId);
+  if (parentResult.status !== ResultStatus.SUCCESS || !parentResult.data) {
+    return { status: ResultStatus.ERROR, message: parentResult.message };
+  }
+
+  const result = getOrCreateSubfolder(parentResult.data, clubFolderName);
+  if (result.status !== ResultStatus.SUCCESS || !result.data) {
+    return { status: ResultStatus.ERROR, message: result.message };
+  }
+
+  return {
+    status: ResultStatus.SUCCESS,
+    message: result.message,
+    data: { folderId: result.data.getId(), folderName: clubFolderName },
+  };
+}
+
+// ─── Layer 3: Upload batch folders ────────────────────────────────────────────
+
+/**
+ * Creates a Layer 3 upload batch folder inside a club folder.
+ * The batchFolderName must be pre-validated (layer: 3).
+ *
+ * Batch folders are always newly created (never re-used) since each
+ * upload session gets a unique timestamp-based name.
+ *
+ * @param clubFolderId     Drive ID of the Layer 2 club folder
+ * @param batchFolderName  Validated batch folder name: YYYYMMDD-HHMMSS_username
+ */
+export function createBatchFolder(
+  clubFolderId: string,
+  batchFolderName: string
+): ServiceResult<{ folderId: string; folderName: string }> {
+  const parentResult = getFolderById(clubFolderId);
+  if (parentResult.status !== ResultStatus.SUCCESS || !parentResult.data) {
+    return { status: ResultStatus.ERROR, message: parentResult.message };
+  }
+
+  const result = createSubfolder(parentResult.data, batchFolderName);
+  if (result.status !== ResultStatus.SUCCESS || !result.data) {
+    return { status: ResultStatus.ERROR, message: result.message };
+  }
+
+  return {
+    status: ResultStatus.SUCCESS,
+    message: `Batch folder "${batchFolderName}" created`,
+    data: { folderId: result.data.getId(), folderName: batchFolderName },
+  };
+}
+
+// ─── Contract test helpers ────────────────────────────────────────────────────
+
+/**
+ * Verifies that the configured root folder can be accessed.
+ * Intended for use in contract tests (clasp run contractTestDriveRoot).
+ */
+export function verifyRootFolderAccess(): ServiceResult<{ name: string; id: string }> {
+  try {
+    const root = getRootFolder();
+    const name = root.getName();
+    const id = root.getId();
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `Root folder accessible: "${name}"`,
+      data: { name, id },
+    };
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Cannot access root folder: ${String(err)}`,
+    };
+  }
+}
