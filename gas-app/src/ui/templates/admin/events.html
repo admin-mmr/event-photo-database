@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Events — 湘舍动公益文件系统</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet"
+    href="https://code.getmdl.io/1.3.0/material.indigo-pink.min.css">
+  <?!= HtmlService.createHtmlOutputFromFile('ui/css/styles').getContent() ?>
+</head>
+<body>
+  <div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
+    <header class="mdl-layout__header">
+      <div class="mdl-layout__header-row">
+        <a href="?action=dashboard" class="mdl-layout-title"
+           style="color:inherit;text-decoration:none;">
+          湘舍动公益文件系统
+        </a>
+        <div class="mdl-layout-spacer"></div>
+        <nav class="mdl-navigation">
+          <a class="mdl-navigation__link" href="?action=admin_users">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>
+            Users
+          </a>
+          <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=admin_events">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
+            Events
+          </a>
+        </nav>
+        <span class="mdl-chip" style="margin-left:12px;">
+          <span class="mdl-chip__text"><?= userEmail ?></span>
+        </span>
+      </div>
+    </header>
+
+    <main class="mdl-layout__content">
+      <div class="page-content">
+
+        <!-- Page header -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h4 style="margin:0;">Event Management</h4>
+          <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                  id="btn-toggle-create"
+                  onclick="toggleCreateForm()">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">add</i>
+            New Event
+          </button>
+        </div>
+
+        <!-- Create event form (collapsed by default) -->
+        <div id="create-event-form" class="card" style="display:none;margin-bottom:24px;">
+          <h5 style="margin:0 0 16px;">Create New Event</h5>
+          <form onsubmit="handleCreateEvent(event)">
+            <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label"
+                 style="width:100%;max-width:400px;">
+              <input type="text" id="event-name" class="mdl-textfield__input"
+                     pattern="[A-Za-z0-9\s]+" maxlength="100" required>
+              <label class="mdl-textfield__label" for="event-name">Event Name</label>
+              <span class="field-error" id="error-eventName"></span>
+            </div>
+            <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label"
+                 style="width:100%;max-width:200px;">
+              <input type="date" id="event-date" class="mdl-textfield__input" required>
+              <label class="mdl-textfield__label" for="event-date">Event Date</label>
+              <span class="field-error" id="error-eventDate"></span>
+            </div>
+            <div id="folder-preview" class="folder-preview" style="display:none;margin:12px 0;">
+              <i class="material-icons" style="vertical-align:middle;color:#666;">folder</i>
+              <span id="folder-preview-text" style="font-family:monospace;margin-left:4px;"></span>
+            </div>
+            <div style="margin-top:16px;">
+              <button type="submit"
+                      class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                      id="btn-create-event">
+                Create Event
+              </button>
+              <button type="button" class="mdl-button mdl-js-button"
+                      onclick="toggleCreateForm()">
+                Cancel
+              </button>
+              <div class="spinner hidden" id="create-event-spinner"></div>
+            </div>
+          </form>
+        </div>
+
+        <!-- Filter bar -->
+        <div class="card"
+             style="padding:12px 16px;margin-bottom:16px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+          <div class="mdl-textfield mdl-js-textfield" style="width:auto;padding:0;">
+            <input type="date" id="filter-date-from" class="mdl-textfield__input"
+                   onchange="filterEvents()" style="width:150px;">
+            <label class="mdl-textfield__label" for="filter-date-from">From</label>
+          </div>
+          <span style="color:#999;">—</span>
+          <div class="mdl-textfield mdl-js-textfield" style="width:auto;padding:0;">
+            <input type="date" id="filter-date-to" class="mdl-textfield__input"
+                   onchange="filterEvents()" style="width:150px;">
+            <label class="mdl-textfield__label" for="filter-date-to">To</label>
+          </div>
+          <button class="mdl-button mdl-js-button mdl-button--icon"
+                  onclick="clearFilters()" title="Clear filters">
+            <i class="material-icons">clear</i>
+          </button>
+          <div class="mdl-layout-spacer"></div>
+          <span id="event-count" class="mdl-color-text--grey-600" style="font-size:14px;">
+            <?= totalEvents ?> event(s)
+          </span>
+        </div>
+
+        <!-- Violations banner (hidden by default, shown if scan finds issues) -->
+        <div id="violations-banner" class="card"
+             style="display:none;background:#FFF3E0;border-left:4px solid #FF9800;margin-bottom:16px;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <i class="material-icons" style="color:#FF9800;">warning</i>
+            <span id="violations-text" style="font-size:14px;"></span>
+            <button class="mdl-button mdl-js-button mdl-button--accent"
+                    onclick="showViolationDetails()"
+                    style="margin-left:auto;">
+              View Details
+            </button>
+          </div>
+        </div>
+
+        <!-- Events table -->
+        <table class="mdl-data-table mdl-js-data-table mdl-shadow--2dp full-width">
+          <thead>
+            <tr>
+              <th class="mdl-data-table__cell--non-numeric sortable"
+                  onclick="toggleSort('eventDate')" style="cursor:pointer;">
+                Date
+                <i class="material-icons sort-icon" id="sort-icon-date"
+                   style="font-size:16px;vertical-align:middle;">arrow_downward</i>
+              </th>
+              <th class="mdl-data-table__cell--non-numeric">Event Name</th>
+              <th class="mdl-data-table__cell--non-numeric">Folder Name</th>
+              <th class="mdl-data-table__cell--non-numeric">Created By</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="events-table-body">
+            <!-- Populated by JavaScript from pre-loaded data -->
+          </tbody>
+        </table>
+        <div class="pagination" id="events-pagination"></div>
+
+      </div>
+    </main>
+
+    <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
+  </div>
+
+  <script defer src="https://code.getmdl.io/1.3.0/material.min.js"></script>
+  <?!= HtmlService.createHtmlOutputFromFile('ui/js/app').getContent() ?>
+
+  <script>
+    // ─── State ────────────────────────────────────────────────────────────────
+    var events = JSON.parse('<?!= events ?>');
+    var currentSort = 'desc';
+    var currentPage = 1;
+    var PAGE_SIZE = 20;
+
+    // ─── Init ─────────────────────────────────────────────────────────────────
+    document.addEventListener('DOMContentLoaded', function() {
+      renderEvents(events);
+      runViolationScan();
+      setupFolderPreview();
+    });
+
+    // ─── Create form ──────────────────────────────────────────────────────────
+    function toggleCreateForm() {
+      var form = document.getElementById('create-event-form');
+      form.style.display = form.style.display === 'none' ? 'block' : 'none';
+    }
+
+    function setupFolderPreview() {
+      var nameInput = document.getElementById('event-name');
+      var dateInput = document.getElementById('event-date');
+      function update() {
+        var name = nameInput.value.trim().replace(/\s+/g, '_');
+        var date = dateInput.value;
+        var preview = document.getElementById('folder-preview');
+        var text = document.getElementById('folder-preview-text');
+        if (name && date) {
+          text.textContent = date + '_' + name;
+          preview.style.display = 'block';
+        } else {
+          preview.style.display = 'none';
+        }
+      }
+      nameInput.addEventListener('input', update);
+      dateInput.addEventListener('input', update);
+    }
+
+    function handleCreateEvent(e) {
+      e.preventDefault();
+      clearErrors(document.getElementById('create-event-form'));
+
+      var payload = {
+        eventName: document.getElementById('event-name').value.trim(),
+        eventDate: document.getElementById('event-date').value,
+      };
+
+      callServer('serverCreateEvent', [payload], 'btn-create-event', 'create-event-spinner')
+        .then(function(result) {
+          if (result.status === 'success') {
+            showToast('Event created: ' + result.data.eventName, 'success');
+            events.unshift(result.data);
+            renderEvents(events);
+            toggleCreateForm();
+            document.getElementById('event-name').value = '';
+            document.getElementById('event-date').value = '';
+            document.getElementById('folder-preview').style.display = 'none';
+          } else {
+            showToast(result.message, 'error');
+            if (result.errors) showFieldErrors(result.errors, 'create-event-form');
+          }
+        });
+    }
+
+    // ─── Table rendering ──────────────────────────────────────────────────────
+    function renderEvents(list) {
+      var tbody = document.getElementById('events-table-body');
+      if (list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="mdl-data-table__cell--non-numeric"' +
+          ' style="text-align:center;color:#999;padding:32px;">No events yet.' +
+          ' Click "New Event" to create one.</td></tr>';
+        document.getElementById('event-count').textContent = '0 event(s)';
+        return;
+      }
+      tbody.innerHTML = list.map(function(ev) {
+        var driveUrl = 'https://drive.google.com/drive/folders/' + ev.driveFolderId;
+        return '<tr>' +
+          '<td class="mdl-data-table__cell--non-numeric">' + ev.eventDate + '</td>' +
+          '<td class="mdl-data-table__cell--non-numeric"><strong>' + escHtml(ev.eventName) + '</strong></td>' +
+          '<td class="mdl-data-table__cell--non-numeric"><code>' + escHtml(ev.folderName) + '</code></td>' +
+          '<td class="mdl-data-table__cell--non-numeric">' + escHtml(ev.createdBy) + '</td>' +
+          '<td>' +
+            '<a href="' + driveUrl + '" target="_blank" rel="noopener"' +
+              ' class="mdl-button mdl-js-button mdl-button--icon" title="Open in Drive">' +
+              '<i class="material-icons">folder_open</i></a>' +
+            '<button class="mdl-button mdl-js-button mdl-button--icon" title="Edit"' +
+              ' onclick="editEvent(\'' + ev.eventId + '\')">' +
+              '<i class="material-icons">edit</i></button>' +
+          '</td></tr>';
+      }).join('');
+      document.getElementById('event-count').textContent = list.length + ' event(s)';
+    }
+
+    function escHtml(s) {
+      var d = document.createElement('div');
+      d.textContent = String(s);
+      return d.innerHTML;
+    }
+
+    // ─── Sorting ──────────────────────────────────────────────────────────────
+    function toggleSort(field) {
+      currentSort = currentSort === 'desc' ? 'asc' : 'desc';
+      var icon = document.getElementById('sort-icon-date');
+      icon.textContent = currentSort === 'desc' ? 'arrow_downward' : 'arrow_upward';
+      events.sort(function(a, b) {
+        var cmp = String(a[field]).localeCompare(String(b[field]));
+        return currentSort === 'desc' ? -cmp : cmp;
+      });
+      renderEvents(events);
+    }
+
+    // ─── Filtering ────────────────────────────────────────────────────────────
+    function filterEvents() {
+      var from = document.getElementById('filter-date-from').value;
+      var to = document.getElementById('filter-date-to').value;
+      var filtered = events.filter(function(ev) {
+        if (from && ev.eventDate < from) return false;
+        if (to && ev.eventDate > to) return false;
+        return true;
+      });
+      renderEvents(filtered);
+    }
+
+    function clearFilters() {
+      document.getElementById('filter-date-from').value = '';
+      document.getElementById('filter-date-to').value = '';
+      renderEvents(events);
+    }
+
+    // ─── Edit (inline prompt) ─────────────────────────────────────────────────
+    function editEvent(eventId) {
+      var ev = events.find(function(e) { return e.eventId === eventId; });
+      if (!ev) return;
+      var newName = prompt('Edit event name:', ev.eventName);
+      if (newName === null || newName.trim() === ev.eventName) return;
+
+      callServer('serverUpdateEvent', [{ eventId: eventId, eventName: newName.trim() }])
+        .then(function(result) {
+          if (result.status === 'success') {
+            var idx = events.findIndex(function(e) { return e.eventId === eventId; });
+            if (idx >= 0) events[idx] = result.data;
+            renderEvents(events);
+            showToast('Event updated', 'success');
+          } else {
+            showToast(result.message, 'error');
+          }
+        });
+    }
+
+    // ─── Violation scan (background, non-blocking) ────────────────────────────
+    function runViolationScan() {
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result && result.status === 'success' && result.data && result.data.length > 0) {
+            var banner = document.getElementById('violations-banner');
+            var text = document.getElementById('violations-text');
+            text.textContent = result.data.length +
+              ' naming violation(s) detected in the Drive folder hierarchy.';
+            banner.style.display = 'block';
+            window._violations = result.data;
+          }
+        })
+        .withFailureHandler(function() { /* Silently ignore — scan is best-effort */ })
+        .serverScanViolations();
+    }
+
+    function showViolationDetails() {
+      if (!window._violations) return;
+      var msg = window._violations.map(function(v) {
+        return 'Layer ' + v.layer + ': "' + v.folderName + '" — ' + v.violationType;
+      }).join('\n');
+      alert('Naming Violations:\n\n' + msg);
+    }
+  </script>
+</body>
+</html>

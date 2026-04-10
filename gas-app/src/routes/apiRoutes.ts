@@ -5,9 +5,12 @@ import {
   validateCreateUserPayload,
   validateUpdateUserPayload,
   validateFolderNamePayload,
+  validateCreateEventPayload,
+  validateUpdateEventPayload,
   sanitizePayload,
 } from '../middleware/inputValidator';
 import { createUser, updateUser, deactivateUser, reactivateUser, findByEmail } from '../services/userService';
+import { createEvent, updateEvent, listAll as listAllEvents } from '../services/eventService';
 import { validateFolderName } from '../utils/folderNameValidator';
 
 /* global ContentService */
@@ -160,6 +163,70 @@ export function handleValidateFolderName(
 
   const result = validateFolderName(validation.data);
   return jsonOk(result, 'Validation complete');
+}
+
+// ─── Event handlers ───────────────────────────────────────────────────────────
+
+/**
+ * POST action=create_event
+ * Admin-only. Creates a new event with a Drive folder.
+ */
+export function handleCreateEvent(
+  payload: Record<string, unknown>,
+  adminUser: UserRecord
+): GoogleAppsScript.Content.TextOutput {
+  const clean = sanitizePayload(payload);
+  const validation = validateCreateEventPayload(clean);
+  if (validation.status !== ResultStatus.SUCCESS || !validation.data) {
+    return jsonError('Validation failed', 400, validation.errors);
+  }
+
+  const result = createEvent(validation.data, adminUser.email);
+  if (result.status !== ResultStatus.SUCCESS) {
+    const code = result.message.includes('already exists') ? 409 : 400;
+    return jsonError(result.message, code, result.errors);
+  }
+
+  return jsonOk(result.data, result.message);
+}
+
+/**
+ * POST action=update_event
+ * Admin-only. Updates event metadata (name, date).
+ */
+export function handleUpdateEvent(
+  payload: Record<string, unknown>,
+  adminUser: UserRecord
+): GoogleAppsScript.Content.TextOutput {
+  const clean = sanitizePayload(payload);
+  const validation = validateUpdateEventPayload(clean);
+  if (validation.status !== ResultStatus.SUCCESS || !validation.data) {
+    return jsonError('Validation failed', 400, validation.errors);
+  }
+
+  const result = updateEvent(validation.data, adminUser.email);
+  if (result.status !== ResultStatus.SUCCESS) {
+    const code = result.message.includes('not found') ? 404 : 400;
+    return jsonError(result.message, code, result.errors);
+  }
+
+  return jsonOk(result.data, result.message);
+}
+
+/**
+ * POST action=list_events
+ * Available to all authenticated users.
+ * Accepts optional { page, pageSize, sort } parameters.
+ */
+export function handleListEvents(
+  payload: Record<string, unknown>
+): GoogleAppsScript.Content.TextOutput {
+  const page = Number(payload['page']) || 1;
+  const pageSize = Math.min(Number(payload['pageSize']) || 20, 100);
+  const sort = (payload['sort'] === 'asc' ? 'asc' : 'desc') as 'asc' | 'desc';
+
+  const result = listAllEvents(page, pageSize, sort);
+  return jsonOk(result, `Found ${result.total} event(s)`);
 }
 
 /**

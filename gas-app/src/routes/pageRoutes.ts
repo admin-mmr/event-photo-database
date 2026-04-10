@@ -2,6 +2,7 @@ import { UserRecord } from '../types/models';
 import { UserRole } from '../types/enums';
 import { getConfig, APPROVED_CLUBS } from '../config/constants';
 import { listAll } from '../services/userService';
+import { listAll as listAllEvents } from '../services/eventService';
 
 /* global HtmlService */
 
@@ -96,5 +97,23 @@ export function adminUsersPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutp
     total: result.total,
     approvedClubs,
     roleOptions,
+  });
+}
+
+/**
+ * Admin — Event Management page.
+ * Pre-loads the first page of events for instant display.
+ * Subsequent interactions (create, filter, paginate) use google.script.run.
+ * Admin-only; role is enforced at the router level before this is called.
+ */
+export function adminEventsPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
+  const events = listAllEvents(1, 20, 'desc');
+
+  return renderTemplate('admin/events', {
+    userEmail: user.email,
+    userRole: user.role,
+    isAdmin: user.role === UserRole.ADMIN,
+    events: JSON.stringify(events.items),
+    totalEvents: events.total,
   });
 }

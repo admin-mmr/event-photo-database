@@ -1,6 +1,8 @@
 import { ResultStatus } from '../types/enums';
-import { ServiceResult } from '../types/responses';
-import { getConfig } from '../config/constants';
+import { ServiceResult, FolderViolation } from '../types/responses';
+import { getConfig, APPROVED_CLUBS } from '../config/constants';
+import { validateFolderName } from '../utils/folderNameValidator';
+import { nowIsoTimestamp } from '../utils/dateFormatter';
 
 /* global DriveApp */
 
@@ -254,6 +256,153 @@ export function createBatchFolder(
     status: ResultStatus.SUCCESS,
     message: `Batch folder "${batchFolderName}" created`,
     data: { folderId: result.data.getId(), folderName: batchFolderName },
+  };
+}
+
+// ─── Exception detection ──────────────────────────────────────────────────────
+
+/**
+ * Scans the root folder for Layer 1 naming violations.
+ * Returns an array of violations (empty = all clean).
+ *
+ * Checks:
+ *   - Folder name matches YYYY-MM-DD_Title_Case_Name pattern
+ *   - Date portion is a valid calendar date
+ *
+ * Performance: makes one Drive API call (list root's children).
+ * For a system with <100 events, this completes well within GAS 6-min limit.
+ */
+export function scanLayer1Violations(): ServiceResult<FolderViolation[]> {
+  try {
+    const root = getRootFolder();
+    const iter = root.getFolders();
+    const violations: FolderViolation[] = [];
+    const rootName = root.getName();
+    const now = nowIsoTimestamp();
+
+    while (iter.hasNext()) {
+      const folder = iter.next();
+      const name = folder.getName();
+      const result = validateFolderName({ folderName: name, layer: 1 });
+
+      if (!result.isValid) {
+        violations.push({
+          folderName: name,
+          folderId: folder.getId(),
+          parentFolderName: rootName,
+          layer: 1,
+          violationType: result.violations.join('; '),
+          detectedAt: now,
+        });
+      }
+    }
+
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `Scanned Layer 1: ${violations.length} violation(s) found`,
+      data: violations,
+    };
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Layer 1 scan failed: ${String(err)}`,
+    };
+  }
+}
+
+/**
+ * Scans all club subfolders within a specific event folder for Layer 2 violations.
+ * Checks that each subfolder name matches an approved club name.
+ *
+ * @param eventFolderId  Drive ID of the Layer 1 event folder to scan
+ */
+export function scanLayer2Violations(
+  eventFolderId: string
+): ServiceResult<FolderViolation[]> {
+  try {
+    const parentResult = getFolderById(eventFolderId);
+    if (parentResult.status !== ResultStatus.SUCCESS || !parentResult.data) {
+      return { status: ResultStatus.ERROR, message: parentResult.message };
+    }
+
+    const eventFolder = parentResult.data;
+    const eventFolderName = eventFolder.getName();
+    const iter = eventFolder.getFolders();
+    const violations: FolderViolation[] = [];
+    const approvedNames = APPROVED_CLUBS.map((c) => c.normalizedName);
+    const now = nowIsoTimestamp();
+
+    while (iter.hasNext()) {
+      const folder = iter.next();
+      const name = folder.getName();
+
+      const nameValid = validateFolderName({ folderName: name, layer: 2 });
+      const isApproved = approvedNames.includes(name);
+
+      if (!nameValid.isValid || !isApproved) {
+        const reasons: string[] = [];
+        if (!nameValid.isValid) {
+          reasons.push(...nameValid.violations);
+        }
+        if (!isApproved) {
+          reasons.push(`"${name}" is not in the approved clubs list`);
+        }
+        violations.push({
+          folderName: name,
+          folderId: folder.getId(),
+          parentFolderName: eventFolderName,
+          layer: 2,
+          violationType: reasons.join('; '),
+          detectedAt: now,
+        });
+      }
+    }
+
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `Scanned Layer 2 in "${eventFolderName}": ${violations.length} violation(s)`,
+      data: violations,
+    };
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Layer 2 scan failed: ${String(err)}`,
+    };
+  }
+}
+
+/**
+ * Runs a full scan of Layer 1 + Layer 2 across all event folders.
+ * Combines results from scanLayer1Violations and scanLayer2Violations.
+ *
+ * WARNING: This makes N+1 Drive API calls (1 for root + 1 per event folder).
+ * For large systems, consider caching or running this on a schedule.
+ * Phase 4 will add scheduled scans and email alerts.
+ */
+export function scanAllViolations(): ServiceResult<FolderViolation[]> {
+  const allViolations: FolderViolation[] = [];
+
+  // Layer 1 scan
+  const layer1Result = scanLayer1Violations();
+  if (layer1Result.status === ResultStatus.SUCCESS && layer1Result.data) {
+    allViolations.push(...layer1Result.data);
+  }
+
+  // Layer 2 scan for each event folder
+  const foldersResult = listEventFolders();
+  if (foldersResult.status === ResultStatus.SUCCESS && foldersResult.data) {
+    for (const folder of foldersResult.data) {
+      const layer2Result = scanLayer2Violations(folder.id);
+      if (layer2Result.status === ResultStatus.SUCCESS && layer2Result.data) {
+        allViolations.push(...layer2Result.data);
+      }
+    }
+  }
+
+  return {
+    status: ResultStatus.SUCCESS,
+    message: `Full scan complete: ${allViolations.length} total violation(s)`,
+    data: allViolations,
   };
 }
 

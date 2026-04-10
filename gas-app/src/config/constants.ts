@@ -2,6 +2,22 @@ import { PhotoMimeType } from '../types/enums';
 import { AppConfig, SheetColumnMap } from '../types/config';
 import { ClubEntry } from '../types/models';
 
+// ─── Event configuration ──────────────────────────────────────────────────────
+
+/** Maximum characters for an event name before folder name generation */
+export const MAX_EVENT_NAME_LENGTH = 100;
+
+/** Characters allowed in event names (pre-underscore conversion) */
+export const EVENT_NAME_PATTERN = /^[A-Za-z0-9\s]+$/;
+
+/** Default page size for event listing */
+export const DEFAULT_EVENT_PAGE_SIZE = 20;
+
+/** Maximum page size to prevent abuse */
+export const MAX_EVENT_PAGE_SIZE = 100;
+
+// ─── Club configuration ───────────────────────────────────────────────────────
+
 /**
  * Approved running clubs.
  * displayName is shown in the UI; normalizedName is used as the Drive folder name.

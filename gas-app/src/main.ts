@@ -13,6 +13,8 @@ import { authenticateRequest } from './middleware/authMiddleware';
 import { requireRole } from './middleware/roleGuard';
 import { handleGet as routerHandleGet, handlePost as routerHandlePost } from './routes/router';
 import { createUser, deactivateUser, reactivateUser, updateUser } from './services/userService';
+import { createEvent, updateEvent, listAll as listAllEvents } from './services/eventService';
+import { scanAllViolations } from './services/driveService';
 
 /* global Logger */
 
@@ -100,6 +102,131 @@ function serverReactivateUser(payload: { email: string }): ServerResponse {
   } catch (err) {
     Logger.log(`serverReactivateUser error: ${String(err)}`);
     return { status: 'error', message: 'Internal error reactivating user' };
+  }
+}
+
+// ─── Event server functions ───────────────────────────────────────────────────
+
+/**
+ * google.script.run entry point for creating an event from the admin UI.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverCreateEvent(
+  payload: { eventName: string; eventDate: string }
+): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+
+    const result = createEvent(
+      { eventName: payload.eventName, eventDate: payload.eventDate },
+      auth.adminEmail
+    );
+    return {
+      status: result.status,
+      message: result.message,
+      data: result.data,
+      errors: result.errors,
+    };
+  } catch (err) {
+    Logger.log(`serverCreateEvent error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error creating event' };
+  }
+}
+
+/**
+ * google.script.run entry point for updating an event from the admin UI.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverUpdateEvent(
+  payload: { eventId: string; eventName?: string; eventDate?: string }
+): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+
+    const result = updateEvent(
+      {
+        eventId: payload.eventId,
+        ...(payload.eventName !== undefined && { eventName: payload.eventName }),
+        ...(payload.eventDate !== undefined && { eventDate: payload.eventDate }),
+      },
+      auth.adminEmail
+    );
+    return {
+      status: result.status,
+      message: result.message,
+      data: result.data,
+      errors: result.errors,
+    };
+  } catch (err) {
+    Logger.log(`serverUpdateEvent error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error updating event' };
+  }
+}
+
+/**
+ * google.script.run entry point for listing events.
+ * Available to all authenticated users (needed by Phase 3 upload flow).
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverListEvents(
+  payload: { page?: number; pageSize?: number; sort?: string; dateFrom?: string; dateTo?: string }
+): ServerResponse {
+  try {
+    const authResult = authenticateRequest();
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      return { status: 'error', message: 'Authentication required' };
+    }
+
+    const page = payload.page ?? 1;
+    const pageSize = Math.min(payload.pageSize ?? 20, 100);
+    const sort = (payload.sort === 'asc' ? 'asc' : 'desc') as 'asc' | 'desc';
+
+    const result = listAllEvents(page, pageSize, sort);
+
+    // Optional client-side date range filter
+    let filtered = result.items as typeof result.items;
+    if (payload.dateFrom) {
+      filtered = filtered.filter((e) => e.eventDate >= payload.dateFrom!);
+    }
+    if (payload.dateTo) {
+      filtered = filtered.filter((e) => e.eventDate <= payload.dateTo!);
+    }
+
+    return {
+      status: 'success',
+      message: `Found ${filtered.length} event(s)`,
+      data: { items: filtered, total: filtered.length, page, pageSize },
+    };
+  } catch (err) {
+    Logger.log(`serverListEvents error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error listing events' };
+  }
+}
+
+/**
+ * google.script.run entry point that triggers a full Drive folder scan.
+ * Returns all naming violations found across Layer 1 and Layer 2.
+ * Called from the admin events page on load (background, non-blocking).
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverScanViolations(): ServerResponse {
+  try {
+    const authResult = authenticateRequest();
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      return { status: 'error', message: 'Authentication required' };
+    }
+
+    const result = scanAllViolations();
+    return {
+      status: result.status,
+      message: result.message,
+      data: result.data,
+    };
+  } catch (err) {
+    Logger.log(`serverScanViolations error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error scanning violations' };
   }
 }
 

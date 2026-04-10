@@ -9,13 +9,16 @@ import {
   errorPage,
   dashboardPage,
   adminUsersPage,
+  adminEventsPage,
 } from './pageRoutes';
 import {
   handleCreateUser,
   handleUpdateUser,
   handleDeactivateUser,
-  handleReactivateUser,
   handleValidateFolderName,
+  handleCreateEvent,
+  handleUpdateEvent,
+  handleListEvents,
   handleUnknownAction,
   handleForbidden,
 } from './apiRoutes';
@@ -42,9 +45,10 @@ interface RouteConfig {
 }
 
 const GET_ROUTES: Readonly<Record<string, RouteConfig>> = {
-  [RouteAction.DASHBOARD]:   { requiredRole: null },
-  [RouteAction.LOGIN]:       { requiredRole: null },
-  [RouteAction.ADMIN_USERS]: { requiredRole: UserRole.ADMIN },
+  [RouteAction.DASHBOARD]:    { requiredRole: null },
+  [RouteAction.LOGIN]:        { requiredRole: null },
+  [RouteAction.ADMIN_USERS]:  { requiredRole: UserRole.ADMIN },
+  [RouteAction.ADMIN_EVENTS]: { requiredRole: UserRole.ADMIN },
 };
 
 const POST_ROUTES: Readonly<Record<string, RouteConfig>> = {
@@ -52,6 +56,9 @@ const POST_ROUTES: Readonly<Record<string, RouteConfig>> = {
   [RouteAction.UPDATE_USER]:           { requiredRole: UserRole.ADMIN },
   [RouteAction.DEACTIVATE_USER]:       { requiredRole: UserRole.ADMIN },
   [RouteAction.VALIDATE_FOLDER_NAME]:  { requiredRole: null },
+  [RouteAction.CREATE_EVENT]:          { requiredRole: UserRole.ADMIN },
+  [RouteAction.UPDATE_EVENT]:          { requiredRole: UserRole.ADMIN },
+  [RouteAction.LIST_EVENTS]:           { requiredRole: null }, // all users can list events
 };
 
 // ─── doGet dispatcher ─────────────────────────────────────────────────────────
@@ -111,6 +118,8 @@ function dispatchGetHandler(
       return dashboardPage(user);
     case RouteAction.ADMIN_USERS:
       return adminUsersPage(user);
+    case RouteAction.ADMIN_EVENTS:
+      return adminEventsPage(user);
     default:
       return notFoundPage(action);
   }
@@ -187,6 +196,12 @@ function dispatchPostHandler(
       return handleDeactivateUser(payload, user);
     case RouteAction.VALIDATE_FOLDER_NAME:
       return handleValidateFolderName(payload);
+    case RouteAction.CREATE_EVENT:
+      return handleCreateEvent(payload, user);
+    case RouteAction.UPDATE_EVENT:
+      return handleUpdateEvent(payload, user);
+    case RouteAction.LIST_EVENTS:
+      return handleListEvents(payload);
     default:
       return handleUnknownAction(action);
   }
