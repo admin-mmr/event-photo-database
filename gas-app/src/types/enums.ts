@@ -55,6 +55,11 @@ export enum RouteAction {
   UPDATE_USER = 'update_user',
   DEACTIVATE_USER = 'deactivate_user',
   VALIDATE_FOLDER_NAME = 'validate_folder_name',
+
+  // Phase 2 — Event Management
+  CREATE_EVENT = 'create_event',
+  UPDATE_EVENT = 'update_event',
+  LIST_EVENTS = 'list_events',
 }
 
 /**

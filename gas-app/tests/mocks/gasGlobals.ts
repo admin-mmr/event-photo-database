@@ -27,12 +27,22 @@ export const DEFAULT_USERS_ROWS: unknown[][] = [
   [TEST_INACTIVE_EMAIL, 'Nankai',     'user',  'inactive', '2025-01-15', TEST_ADMIN_EMAIL],
 ];
 
-/** Default Events sheet rows */
+/** Default Events sheet rows — 3 events for sort/pagination/duplicate testing */
 export const DEFAULT_EVENTS_ROWS: unknown[][] = [
   [
     'evt-uuid-001', 'NYC Marathon', '2025-11-03',
     '2025-11-03_NYC_Marathon', 'drive-folder-id-001',
     TEST_ADMIN_EMAIL, '2025-10-01T09:00:00.000Z',
+  ],
+  [
+    'evt-uuid-002', 'Boston Marathon', '2025-04-21',
+    '2025-04-21_Boston_Marathon', 'drive-folder-id-002',
+    TEST_ADMIN_EMAIL, '2025-03-01T09:00:00.000Z',
+  ],
+  [
+    'evt-uuid-003', 'Christmas Fun Run', '2025-12-25',
+    '2025-12-25_Christmas_Fun_Run', 'drive-folder-id-003',
+    TEST_ADMIN_EMAIL, '2025-12-01T14:00:00.000Z',
   ],
 ];
 
@@ -127,7 +137,10 @@ const mockPropertiesService = {
 export const mockFolder = {
   getId: jest.fn().mockReturnValue('mock-folder-id'),
   getName: jest.fn().mockReturnValue('Test_Folder'),
-  createFolder: jest.fn().mockReturnValue({ getId: jest.fn().mockReturnValue('new-folder-id') }),
+  createFolder: jest.fn().mockImplementation((name: string) => ({
+    getId: jest.fn().mockReturnValue(`new-folder-${name}`),
+    getName: jest.fn().mockReturnValue(name),
+  })),
   getFolders: jest.fn().mockReturnValue({ hasNext: jest.fn().mockReturnValue(false) }),
   getFoldersByName: jest.fn().mockReturnValue({ hasNext: jest.fn().mockReturnValue(false) }),
   getFiles: jest.fn().mockReturnValue({ hasNext: jest.fn().mockReturnValue(false) }),

@@ -60,6 +60,38 @@ export interface ApiResponse<T = undefined> {
   readonly errors?: ReadonlyArray<ValidationError>;
 }
 
+/**
+ * Extended event info returned in list views.
+ * Combines EventRecord with derived data from Drive.
+ */
+export interface EventListItem {
+  readonly event: import('./models').EventRecord;
+  readonly clubFolderCount: number;    // How many clubs have folders under this event
+  readonly driveUrl: string;           // Direct link to the Drive folder
+}
+
+/**
+ * Response shape for the list_events API.
+ */
+export interface EventListResult {
+  readonly events: ReadonlyArray<EventListItem>;
+  readonly total: number;
+}
+
+/**
+ * A naming violation detected in the Drive folder hierarchy.
+ * Stored in memory per scan — not persisted to a sheet in Phase 2.
+ * Phase 4 will add a dedicated Violations sheet.
+ */
+export interface FolderViolation {
+  readonly folderName: string;
+  readonly folderId: string;
+  readonly parentFolderName: string;
+  readonly layer: 1 | 2;
+  readonly violationType: string;    // Human-readable description
+  readonly detectedAt: string;       // ISO 8601 timestamp
+}
+
 /** Convenience constructors for ApiResponse */
 export const ApiResponse = {
   ok<T>(data: T, message = 'OK'): ApiResponse<T> {

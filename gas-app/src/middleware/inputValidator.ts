@@ -1,5 +1,5 @@
 import { ResultStatus, UserRole, UserStatus } from '../types/enums';
-import { CreateUserInput, UpdateUserInput, ValidateFolderNameInput } from '../types/requests';
+import { CreateUserInput, UpdateUserInput, ValidateFolderNameInput, CreateEventInput, UpdateEventInput } from '../types/requests';
 import { ServiceResult, ValidationError } from '../types/responses';
 import { APPROVED_CLUBS } from '../config/constants';
 
@@ -220,6 +220,70 @@ export function validateFolderNamePayload(
     message: 'Valid',
     data: { folderName, layer: layer as 1 | 2 | 3 },
   };
+}
+
+// ─── Event validators ─────────────────────────────────────────────────────────
+
+/**
+ * Validates and extracts a CreateEventInput from a sanitized payload.
+ * Returns SUCCESS with the validated input, or ERROR with field-level errors.
+ */
+export function validateCreateEventPayload(
+  payload: Record<string, unknown>
+): ServiceResult<CreateEventInput> {
+  const errors: ValidationError[] = [];
+
+  const eventName = typeof payload['eventName'] === 'string'
+    ? payload['eventName'].trim()
+    : '';
+  const eventDate = typeof payload['eventDate'] === 'string'
+    ? payload['eventDate'].trim()
+    : '';
+
+  if (!eventName) {
+    errors.push({ field: 'eventName', message: 'Event name is required' });
+  }
+  if (!eventDate) {
+    errors.push({ field: 'eventDate', message: 'Event date is required' });
+  }
+
+  if (errors.length > 0) {
+    return { status: ResultStatus.ERROR, message: 'Validation failed', errors };
+  }
+
+  return {
+    status: ResultStatus.SUCCESS,
+    message: 'Valid',
+    data: { eventName, eventDate },
+  };
+}
+
+/**
+ * Validates and extracts an UpdateEventInput from a sanitized payload.
+ * eventId is required; eventName and eventDate are optional.
+ */
+export function validateUpdateEventPayload(
+  payload: Record<string, unknown>
+): ServiceResult<UpdateEventInput> {
+  const eventId = typeof payload['eventId'] === 'string'
+    ? payload['eventId'].trim()
+    : '';
+
+  if (!eventId) {
+    return {
+      status: ResultStatus.ERROR,
+      message: 'Validation failed',
+      errors: [{ field: 'eventId', message: 'Event ID is required' }],
+    };
+  }
+
+  const result: UpdateEventInput = {
+    eventId,
+    ...(typeof payload['eventName'] === 'string' && { eventName: payload['eventName'] }),
+    ...(typeof payload['eventDate'] === 'string' && { eventDate: payload['eventDate'] }),
+  };
+
+  return { status: ResultStatus.SUCCESS, message: 'Valid', data: result };
 }
 
 /**

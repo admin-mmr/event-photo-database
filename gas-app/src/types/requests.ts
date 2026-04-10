@@ -48,3 +48,14 @@ export interface CreateEventInput {
   readonly eventName: string;
   readonly eventDate: string; // "YYYY-MM-DD"
 }
+
+/**
+ * Input DTO for updating an existing event (admin-only, Phase 2).
+ * Only eventName and eventDate can be modified — the folder name
+ * and Drive folder are immutable once created.
+ */
+export interface UpdateEventInput {
+  readonly eventId: string;        // Lookup key — UUID from Events sheet
+  readonly eventName?: string;     // New display name (does NOT rename Drive folder)
+  readonly eventDate?: string;     // New date string "YYYY-MM-DD"
+}

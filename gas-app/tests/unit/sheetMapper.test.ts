@@ -147,11 +147,20 @@ describe('sheetMapper — Events', () => {
       expect(record).not.toBeNull();
       expect(record!.eventId).toBe('evt-uuid-001');
       expect(record!.eventName).toBe('NYC Marathon');
+      expect(record!.eventDate).toBe('2025-11-03');
+      expect(record!.folderName).toBe('2025-11-03_NYC_Marathon');
       expect(record!.driveFolderId).toBe('drive-folder-id-001');
+      expect(record!.createdBy).toBe('admin@mmrunners.org');
+      expect(record!.createdAt).toBe('2025-10-01T09:00:00.000Z');
     });
 
     it('returns null when eventId is missing', () => {
       const row = ['', 'NYC Marathon', '2025-11-03', 'folder', 'drive-id', 'admin@x.com', 'ts'];
+      expect(toEventRecord(row)).toBeNull();
+    });
+
+    it('returns null when eventName is missing', () => {
+      const row = ['uuid', '', '2025-11-03', 'folder', 'drive-id', 'admin@x.com', 'ts'];
       expect(toEventRecord(row)).toBeNull();
     });
 
@@ -160,15 +169,108 @@ describe('sheetMapper — Events', () => {
       expect(toEventRecord(row)).toBeNull();
     });
 
-    it('returns null for short rows', () => {
+    it('returns null for row with fewer than 7 columns', () => {
       expect(toEventRecord(['uuid', 'name'])).toBeNull();
+      expect(toEventRecord([])).toBeNull();
+    });
+
+    it('trims whitespace from all fields', () => {
+      const row: unknown[] = [
+        '  evt-uuid-001  ', '  NYC Marathon  ', '2025-11-03',
+        '  2025-11-03_NYC_Marathon  ', '  drive-folder-id-001  ',
+        '  admin@mmrunners.org  ', '  2025-10-01T09:00:00.000Z  ',
+      ];
+      const record = toEventRecord(row);
+      expect(record!.eventId).toBe('evt-uuid-001');
+      expect(record!.eventName).toBe('NYC Marathon');
+      expect(record!.folderName).toBe('2025-11-03_NYC_Marathon');
+      expect(record!.driveFolderId).toBe('drive-folder-id-001');
+      expect(record!.createdBy).toBe('admin@mmrunners.org');
+    });
+
+    it('normalizes createdBy to lowercase', () => {
+      const row = ['uuid', 'Event', '2025-01-01', 'folder', 'drive-id', 'Admin@MMRUNNERS.ORG', 'ts'];
+      const record = toEventRecord(row);
+      expect(record!.createdBy).toBe('admin@mmrunners.org');
+    });
+
+    it('returns null when eventId is whitespace-only', () => {
+      const row = ['   ', 'NYC Marathon', '2025-11-03', 'folder', 'drive-id', 'admin@x.com', 'ts'];
+      expect(toEventRecord(row)).toBeNull();
+    });
+
+    it('returns null when eventName is whitespace-only', () => {
+      const row = ['uuid', '   ', '2025-11-03', 'folder', 'drive-id', 'admin@x.com', 'ts'];
+      expect(toEventRecord(row)).toBeNull();
+    });
+
+    it('returns null when driveFolderId is whitespace-only', () => {
+      const row = ['uuid', 'Event', '2025-11-03', 'folder', '   ', 'admin@x.com', 'ts'];
+      expect(toEventRecord(row)).toBeNull();
+    });
+
+    it('handles numeric cell values via String() coercion', () => {
+      const row: unknown[] = [123, 'NYC Marathon', '2025-11-03', 'folder', 'drive-id', 'admin@x.com', 'ts'];
+      const record = toEventRecord(row);
+      expect(record!.eventId).toBe('123');
+    });
+  });
+
+  describe('fromEventRecord()', () => {
+    it('produces an array of 7 elements', () => {
+      const record = toEventRecord(validRow)!;
+      const row = fromEventRecord(record);
+      expect(row).toHaveLength(7);
+    });
+
+    it('preserves all field values in correct column order', () => {
+      const record = toEventRecord(validRow)!;
+      const row = fromEventRecord(record);
+      expect(row[0]).toBe('evt-uuid-001');     // eventId
+      expect(row[1]).toBe('NYC Marathon');     // eventName
+      expect(row[2]).toBe('2025-11-03');       // eventDate
+      expect(row[3]).toBe('2025-11-03_NYC_Marathon'); // folderName
+      expect(row[4]).toBe('drive-folder-id-001');     // driveFolderId
+      expect(row[5]).toBe('admin@mmrunners.org');      // createdBy
+      expect(row[6]).toBe('2025-10-01T09:00:00.000Z'); // createdAt
     });
   });
 
   describe('roundtrip: toEventRecord → fromEventRecord → toEventRecord', () => {
-    it('produces an identical record', () => {
+    it('produces an identical record after roundtrip', () => {
       const original = toEventRecord(validRow)!;
-      const restored = toEventRecord(fromEventRecord(original));
+      const row = fromEventRecord(original);
+      const restored = toEventRecord(row);
+      expect(restored).toEqual(original);
+    });
+
+    it('roundtrip preserves all fields for a manually constructed record', () => {
+      const original = {
+        eventId: 'evt-uuid-002',
+        eventName: 'Boston Marathon',
+        eventDate: '2025-04-21',
+        folderName: '2025-04-21_Boston_Marathon',
+        driveFolderId: 'drive-id-002',
+        createdBy: 'admin@mmrunners.org',
+        createdAt: '2025-03-01T09:00:00Z',
+      };
+      const row = fromEventRecord(original);
+      const restored = toEventRecord(row);
+      expect(restored).toEqual(original);
+    });
+
+    it('roundtrip handles event name with multiple spaces converted to underscores', () => {
+      const original = {
+        eventId: 'evt-uuid-003',
+        eventName: 'Christmas Fun Run',
+        eventDate: '2025-12-25',
+        folderName: '2025-12-25_Christmas_Fun_Run',
+        driveFolderId: 'drive-id-003',
+        createdBy: 'admin@mmrunners.org',
+        createdAt: '2025-12-01T14:00:00Z',
+      };
+      const row = fromEventRecord(original);
+      const restored = toEventRecord(row);
       expect(restored).toEqual(original);
     });
   });
