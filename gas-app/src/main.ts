@@ -11,7 +11,7 @@
 import { ResultStatus, UserRole, UserStatus, UploadSource } from './types/enums';
 import { authenticateRequest } from './middleware/authMiddleware';
 import { requireRole } from './middleware/roleGuard';
-import { handleGet as routerHandleGet, handlePost as routerHandlePost } from './routes/router';
+import { handleGet, handlePost } from './routes/router';
 import { createUser, deactivateUser, reactivateUser, updateUser } from './services/userService';
 import { createEvent, updateEvent, listAll as listAllEvents, findById as findEventById } from './services/eventService';
 import {
@@ -33,14 +33,14 @@ import { toBatchTimestamp } from './utils/dateFormatter';
 function doGet(
   e: GoogleAppsScript.Events.DoGet
 ): GoogleAppsScript.HTML.HtmlOutput {
-  return routerHandleGet(e);
+  return handleGet(e);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function doPost(
   e: GoogleAppsScript.Events.DoPost
 ): GoogleAppsScript.Content.TextOutput {
-  return routerHandlePost(e);
+  return handlePost(e);
 }
 
 // ─── google.script.run server functions ──────────────────────────────────────
