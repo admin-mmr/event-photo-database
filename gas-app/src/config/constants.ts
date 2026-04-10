@@ -24,9 +24,12 @@ export const MAX_EVENT_PAGE_SIZE = 100;
  * To add a new club: append here and update the Drive folder if it already exists.
  */
 export const APPROVED_CLUBS: ReadonlyArray<ClubEntry> = [
-  { displayName: 'New Bee',        normalizedName: 'New_Bee' },
-  { displayName: 'Misty Mountain', normalizedName: 'Misty_Mountain' },
-  { displayName: 'Nankai',         normalizedName: 'Nankai' },
+  { displayName: '驰跑团',        normalizedName: 'CHI' },
+  { displayName: '岚山',        normalizedName: 'Misty_Mountain' },
+  { displayName: '南开',         normalizedName: 'Nankai' },
+  { displayName: '新蜂',        normalizedName: 'New_Bee' },
+  { displayName: '百骏',        normalizedName: 'Bergen_Runners' },
+  { displayName: '爱跑',        normalizedName: 'Love_to_Run' },
   { displayName: 'Admin',          normalizedName: 'Admin' },
 ];
 
