@@ -15,6 +15,7 @@ const config = {
   transform: {
     '^.+\\.ts$': ['ts-jest', {
       tsconfig: {
+        module: 'commonjs',   // override: Jest needs CommonJS; root tsconfig uses "none" for GAS
         strict: true,
         esModuleInterop: true,
       },

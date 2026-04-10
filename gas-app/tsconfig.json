@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2019",
-    "module": "commonjs",
+    "module": "none",
     "lib": ["ES2019"],
     "strict": true,
     "noImplicitAny": true,

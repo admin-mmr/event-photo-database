@@ -51,24 +51,31 @@ interface RouteConfig {
   readonly requiredRole: UserRole | null; // null = any authenticated user
 }
 
-const GET_ROUTES: Readonly<Record<string, RouteConfig>> = {
-  [RouteAction.DASHBOARD]:     { requiredRole: null },
-  [RouteAction.LOGIN]:         { requiredRole: null },
-  [RouteAction.ADMIN_USERS]:   { requiredRole: UserRole.ADMIN },
-  [RouteAction.ADMIN_EVENTS]:  { requiredRole: UserRole.ADMIN },
-  [RouteAction.ADMIN_SUMMARY]: { requiredRole: UserRole.ADMIN },
-  [RouteAction.UPLOAD]:        { requiredRole: null }, // all authenticated users
-};
+// Wrapped in functions to avoid GAS file load-order issues:
+// clasp pushes alphabetically, so routes/router (r) loads before types/enums (t).
+// A module-level const referencing RouteAction/UserRole would read `undefined`.
+function getGetRoutes(): Readonly<Record<string, RouteConfig>> {
+  return {
+    [RouteAction.DASHBOARD]:     { requiredRole: null },
+    [RouteAction.LOGIN]:         { requiredRole: null },
+    [RouteAction.ADMIN_USERS]:   { requiredRole: UserRole.ADMIN },
+    [RouteAction.ADMIN_EVENTS]:  { requiredRole: UserRole.ADMIN },
+    [RouteAction.ADMIN_SUMMARY]: { requiredRole: UserRole.ADMIN },
+    [RouteAction.UPLOAD]:        { requiredRole: null }, // all authenticated users
+  };
+}
 
-const POST_ROUTES: Readonly<Record<string, RouteConfig>> = {
-  [RouteAction.CREATE_USER]:           { requiredRole: UserRole.ADMIN },
-  [RouteAction.UPDATE_USER]:           { requiredRole: UserRole.ADMIN },
-  [RouteAction.DEACTIVATE_USER]:       { requiredRole: UserRole.ADMIN },
-  [RouteAction.VALIDATE_FOLDER_NAME]:  { requiredRole: null },
-  [RouteAction.CREATE_EVENT]:          { requiredRole: UserRole.ADMIN },
-  [RouteAction.UPDATE_EVENT]:          { requiredRole: UserRole.ADMIN },
-  [RouteAction.LIST_EVENTS]:           { requiredRole: null }, // all users can list events
-};
+function getPostRoutes(): Readonly<Record<string, RouteConfig>> {
+  return {
+    [RouteAction.CREATE_USER]:           { requiredRole: UserRole.ADMIN },
+    [RouteAction.UPDATE_USER]:           { requiredRole: UserRole.ADMIN },
+    [RouteAction.DEACTIVATE_USER]:       { requiredRole: UserRole.ADMIN },
+    [RouteAction.VALIDATE_FOLDER_NAME]:  { requiredRole: null },
+    [RouteAction.CREATE_EVENT]:          { requiredRole: UserRole.ADMIN },
+    [RouteAction.UPDATE_EVENT]:          { requiredRole: UserRole.ADMIN },
+    [RouteAction.LIST_EVENTS]:           { requiredRole: null }, // all users can list events
+  };
+}
 
 // ─── doGet dispatcher ─────────────────────────────────────────────────────────
 
@@ -106,7 +113,7 @@ export function handleGet(
     }
 
     const user = authResult.data;
-    const route = GET_ROUTES[action];
+    const route = getGetRoutes()[action];
 
     if (!route) {
       return notFoundPage(action);
@@ -196,7 +203,7 @@ export function handlePost(
     }
 
     const user = authResult.data;
-    const route = POST_ROUTES[action];
+    const route = getPostRoutes()[action];
 
     if (!route) {
       return handleUnknownAction(action);
