@@ -21,10 +21,11 @@ import {
   createBatchFolder,
 } from './services/driveService';
 import { appendUploadLog } from './services/uploadLogService';
+import { generateSummary, summaryToCsv, buildExceptionEmailBody } from './services/summaryService';
 import { buildLayer3FolderName } from './utils/folderNameValidator';
 import { toBatchTimestamp } from './utils/dateFormatter';
 
-/* global Logger, DriveApp, Utilities */
+/* global Logger, DriveApp, Utilities, MailApp */
 
 // ─── Web App entry points ─────────────────────────────────────────────────────
 
@@ -518,6 +519,134 @@ function serverCompleteUpload(payload: {
   } catch (err) {
     Logger.log(`serverCompleteUpload error: ${String(err)}`);
     return { status: 'error', message: 'Internal error completing upload session' };
+  }
+}
+
+// ─── Phase 4 — Admin Summary server functions ─────────────────────────────────
+
+/**
+ * google.script.run entry point: generates a system summary report.
+ *
+ * Admin-only. Loads all events and upload logs, applies optional date filter,
+ * groups uploads by event and club, and scans Drive for naming violations.
+ *
+ * Payload: { dateFrom?: string; dateTo?: string }   (ISO "YYYY-MM-DD")
+ * Returns: SystemSummary
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverGetSummary(payload: {
+  dateFrom?: string;
+  dateTo?: string;
+}): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+
+    const result = generateSummary(payload.dateFrom, payload.dateTo);
+    return {
+      status: result.status,
+      message: result.message,
+      data: result.data,
+    };
+  } catch (err) {
+    Logger.log(`serverGetSummary error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error generating summary' };
+  }
+}
+
+/**
+ * google.script.run entry point: generates a CSV string for download.
+ *
+ * Admin-only. Calls generateSummary() with the same date filters,
+ * then serialises the result to a UTF-8 BOM CSV and returns the raw string.
+ * The client receives this string and triggers a browser download via Blob.
+ *
+ * Payload: { dateFrom?: string; dateTo?: string }
+ * Returns: { csv: string }   (the full CSV text)
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverExportSummaryCsv(payload: {
+  dateFrom?: string;
+  dateTo?: string;
+}): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+
+    const result = generateSummary(payload.dateFrom, payload.dateTo);
+    if (!result.data) {
+      return { status: 'error', message: result.message };
+    }
+
+    const csv = summaryToCsv(result.data);
+    return {
+      status: 'success',
+      message: 'CSV generated',
+      data: { csv },
+    };
+  } catch (err) {
+    Logger.log(`serverExportSummaryCsv error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error exporting CSV' };
+  }
+}
+
+/**
+ * google.script.run entry point: sends exception notification emails.
+ *
+ * Admin-only. Generates a fresh summary and emails the body to the
+ * requesting admin (and any additional recipients). Only sends if there
+ * are actual violations or inactive events; returns SUCCESS with a "nothing
+ * to report" message otherwise.
+ *
+ * Payload: { additionalRecipients?: string[] }
+ * Returns: { recipientCount: number }
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverSendExceptionEmail(payload: {
+  additionalRecipients?: string[];
+}): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+
+    const result = generateSummary();
+    if (!result.data) {
+      return { status: 'error', message: result.message };
+    }
+
+    const summary = result.data;
+    const hasExceptions =
+      summary.violations.length > 0 || summary.eventsWithoutUploads.length > 0;
+
+    if (!hasExceptions) {
+      return {
+        status: 'success',
+        message: 'No exceptions found — email not sent',
+        data: { recipientCount: 0 },
+      };
+    }
+
+    const body = buildExceptionEmailBody(summary);
+    const subject = `湘舍动公益文件系统 — Exception Alert (${new Date().toISOString().slice(0, 10)})`;
+
+    // Always include the requesting admin
+    const recipients = [auth.adminEmail, ...(payload.additionalRecipients ?? [])];
+    // Deduplicate and normalise
+    const uniqueRecipients = [...new Set(recipients.map((r) => r.toLowerCase().trim()))];
+
+    for (const recipient of uniqueRecipients) {
+      MailApp.sendEmail(recipient, subject, body);
+    }
+
+    Logger.log(`[serverSendExceptionEmail] Sent to ${uniqueRecipients.join(', ')}`);
+    return {
+      status: 'success',
+      message: `Exception email sent to ${uniqueRecipients.length} recipient(s)`,
+      data: { recipientCount: uniqueRecipients.length },
+    };
+  } catch (err) {
+    Logger.log(`serverSendExceptionEmail error: ${String(err)}`);
+    return { status: 'error', message: `Failed to send exception email: ${String(err)}` };
   }
 }
 

@@ -3,6 +3,7 @@ import { UserRole } from '../types/enums';
 import { getConfig, APPROVED_CLUBS } from '../config/constants';
 import { listAll } from '../services/userService';
 import { listAll as listAllEvents, findById as findEventById } from '../services/eventService';
+import { generateSummary } from '../services/summaryService';
 
 /* global HtmlService */
 
@@ -142,5 +143,29 @@ export function uploadPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
     isAdmin: user.role === UserRole.ADMIN,
     events: JSON.stringify(events.items),
     approvedClubs: JSON.stringify(approvedClubs),
+  });
+}
+
+/**
+ * Admin — Summary & Reconciliation dashboard (Phase 4).
+ *
+ * Pre-loads the full system summary on page load (no date filter applied).
+ * The admin can then re-run with a date range from the UI, which calls
+ * serverGetSummary via google.script.run for a filtered view.
+ *
+ * Admin-only; role is enforced at the router level before this is called.
+ */
+export function adminSummaryPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
+  // Load initial summary with no date filter
+  const summaryResult = generateSummary();
+  const hasSummary = summaryResult.data !== undefined;
+
+  return renderTemplate('admin/summary', {
+    userEmail: user.email,
+    userRole: user.role,
+    isAdmin: user.role === UserRole.ADMIN,
+    // Pass the initial summary as JSON; null if generation failed
+    initialSummary: hasSummary ? JSON.stringify(summaryResult.data) : 'null',
+    initialError: hasSummary ? '' : (summaryResult.message ?? 'Failed to load summary'),
   });
 }

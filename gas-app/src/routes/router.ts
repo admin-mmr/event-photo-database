@@ -10,6 +10,7 @@ import {
   dashboardPage,
   adminUsersPage,
   adminEventsPage,
+  adminSummaryPage,
   uploadPage,
 } from './pageRoutes';
 import {
@@ -46,11 +47,12 @@ interface RouteConfig {
 }
 
 const GET_ROUTES: Readonly<Record<string, RouteConfig>> = {
-  [RouteAction.DASHBOARD]:    { requiredRole: null },
-  [RouteAction.LOGIN]:        { requiredRole: null },
-  [RouteAction.ADMIN_USERS]:  { requiredRole: UserRole.ADMIN },
-  [RouteAction.ADMIN_EVENTS]: { requiredRole: UserRole.ADMIN },
-  [RouteAction.UPLOAD]:       { requiredRole: null }, // all authenticated users
+  [RouteAction.DASHBOARD]:     { requiredRole: null },
+  [RouteAction.LOGIN]:         { requiredRole: null },
+  [RouteAction.ADMIN_USERS]:   { requiredRole: UserRole.ADMIN },
+  [RouteAction.ADMIN_EVENTS]:  { requiredRole: UserRole.ADMIN },
+  [RouteAction.ADMIN_SUMMARY]: { requiredRole: UserRole.ADMIN },
+  [RouteAction.UPLOAD]:        { requiredRole: null }, // all authenticated users
 };
 
 const POST_ROUTES: Readonly<Record<string, RouteConfig>> = {
@@ -122,6 +124,8 @@ function dispatchGetHandler(
       return adminUsersPage(user);
     case RouteAction.ADMIN_EVENTS:
       return adminEventsPage(user);
+    case RouteAction.ADMIN_SUMMARY:
+      return adminSummaryPage(user);
     case RouteAction.UPLOAD:
       return uploadPage(user);
     default:

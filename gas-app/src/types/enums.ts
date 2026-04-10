@@ -60,6 +60,9 @@ export enum RouteAction {
   CREATE_EVENT = 'create_event',
   UPDATE_EVENT = 'update_event',
   LIST_EVENTS = 'list_events',
+
+  // Phase 4 — Admin Summary & Reconciliation
+  ADMIN_SUMMARY = 'admin_summary',
 }
 
 /**

@@ -248,12 +248,12 @@ flowchart TD
 ### Phase 4 — Admin Summary & Reconciliation (Week 5–6)
 **Goal**: Admins can generate system-wide and event-level reports.
 
-- [ ] Admin UI: Summary dashboard with date range picker
-- [ ] Report: events with uploads (club, count, size)
-- [ ] Report: events with *no* uploads (attention list)
-- [ ] Report: Layer 1–2 naming exceptions
-- [ ] Export: summary as CSV (Google Sheets export)
-- [ ] Email notification to admin when exceptions are detected
+- [x] Admin UI: Summary dashboard with date range picker
+- [x] Report: events with uploads (club, count, size)
+- [x] Report: events with *no* uploads (attention list)
+- [x] Report: Layer 1–2 naming exceptions
+- [x] Export: summary as CSV (Google Sheets export)
+- [x] Email notification to admin when exceptions are detected
 
 ---
 

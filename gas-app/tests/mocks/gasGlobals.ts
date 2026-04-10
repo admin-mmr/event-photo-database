@@ -228,6 +228,12 @@ const mockLogger = {
   log: jest.fn(),
 };
 
+// ─── Mock MailApp ─────────────────────────────────────────────────────────────
+
+const mockMailApp = {
+  sendEmail: jest.fn(),
+};
+
 // ─── Install globals ──────────────────────────────────────────────────────────
 
 const g = global as Record<string, unknown>;
@@ -239,6 +245,7 @@ g['Utilities']           = mockUtilities;
 g['ContentService']      = mockContentService;
 g['HtmlService']         = mockHtmlService;
 g['Logger']              = mockLogger;
+g['MailApp']             = mockMailApp;
 
 // ─── Exports for use in test files ───────────────────────────────────────────
 
@@ -254,5 +261,6 @@ export {
   mockContentService,
   mockHtmlService,
   mockLogger,
+  mockMailApp,
   // makeMockDriveFile is already a named export via the function declaration above
 };

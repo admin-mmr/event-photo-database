@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Summary — 湘舍动公益文件系统</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet"
+    href="https://code.getmdl.io/1.3.0/material.indigo-pink.min.css">
+  <?!= HtmlService.createHtmlOutputFromFile('ui/css/styles').getContent() ?>
+  <style>
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      background: #fff;
+      border-radius: 4px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.15);
+      padding: 20px 16px;
+      text-align: center;
+    }
+    .stat-card__value {
+      font-size: 2rem;
+      font-weight: 700;
+      color: #3f51b5;
+      line-height: 1;
+      margin-bottom: 6px;
+    }
+    .stat-card__label {
+      font-size: .78rem;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+    .section-card {
+      background: #fff;
+      border-radius: 4px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.15);
+      padding: 16px;
+      margin-bottom: 24px;
+    }
+    .section-card h5 {
+      margin: 0 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge-count {
+      background: #3f51b5;
+      color: #fff;
+      border-radius: 12px;
+      padding: 2px 8px;
+      font-size: .78rem;
+      font-weight: 600;
+    }
+    .badge-warn {
+      background: #f57c00;
+    }
+    .club-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 0;
+      border-bottom: 1px solid #f0f0f0;
+      font-size: .9rem;
+    }
+    .club-row:last-child { border-bottom: none; }
+    .club-name { font-weight: 500; }
+    .club-meta { color: #666; font-size: .82rem; }
+    .event-block { margin-bottom: 16px; }
+    .event-block-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .event-block-clubs { padding-left: 8px; }
+    .inactive-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 0;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .inactive-row:last-child { border-bottom: none; }
+    .violation-row {
+      padding: 8px 0;
+      border-bottom: 1px solid #f0f0f0;
+      font-size: .88rem;
+    }
+    .violation-row:last-child { border-bottom: none; }
+    .violation-type { color: #c62828; font-style: italic; }
+    .violation-path { font-family: monospace; font-size: .83rem; color: #555; }
+    .filter-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: flex-end;
+      margin-bottom: 24px;
+    }
+    .empty-state {
+      color: #999;
+      font-size: .9rem;
+      padding: 16px 0;
+      text-align: center;
+    }
+    #loading-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(255,255,255,.7);
+      z-index: 999;
+      align-items: center;
+      justify-content: center;
+    }
+    #loading-overlay.active { display: flex; }
+  </style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loading-overlay">
+  <div style="text-align:center;">
+    <div class="mdl-spinner mdl-js-spinner is-active" style="width:48px;height:48px;"></div>
+    <p style="margin-top:12px;color:#555;">Generating summary…</p>
+  </div>
+</div>
+
+<div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
+  <header class="mdl-layout__header">
+    <div class="mdl-layout__header-row">
+      <a href="?action=dashboard" class="mdl-layout-title"
+         style="color:inherit;text-decoration:none;">
+        湘舍动公益文件系统
+      </a>
+      <div class="mdl-layout-spacer"></div>
+      <nav class="mdl-navigation">
+        <a class="mdl-navigation__link" href="?action=admin_users">
+          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>Users
+        </a>
+        <a class="mdl-navigation__link" href="?action=admin_events">
+          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>Events
+        </a>
+        <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=admin_summary">
+          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">assessment</i>Summary
+        </a>
+      </nav>
+      <span class="mdl-chip" style="margin-left:12px;">
+        <span class="mdl-chip__text"><?= userEmail ?></span>
+      </span>
+    </div>
+  </header>
+
+  <main class="mdl-layout__content">
+    <div class="page-content">
+
+      <!-- Page header -->
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h4 style="margin:0;">Summary &amp; Reconciliation</h4>
+        <div style="display:flex;gap:8px;">
+          <button class="mdl-button mdl-js-button mdl-button--raised"
+                  id="btn-export-csv" onclick="exportCsv()" disabled>
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">download</i>
+            Export CSV
+          </button>
+          <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                  id="btn-send-email" onclick="sendExceptionEmail()" disabled>
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">email</i>
+            Email Exceptions
+          </button>
+        </div>
+      </div>
+
+      <!-- Filter bar -->
+      <div class="section-card filter-bar">
+        <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
+          <input type="date" id="filter-from" class="mdl-textfield__input">
+          <label class="mdl-textfield__label" for="filter-from">Event Date From</label>
+        </div>
+        <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
+          <input type="date" id="filter-to" class="mdl-textfield__input">
+          <label class="mdl-textfield__label" for="filter-to">Event Date To</label>
+        </div>
+        <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                onclick="loadSummary()">
+          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">refresh</i>
+          Run Report
+        </button>
+        <button class="mdl-button mdl-js-button" onclick="clearFilters()">
+          Clear
+        </button>
+      </div>
+
+      <!-- Error banner -->
+      <div id="error-banner" class="card"
+           style="display:none;background:#ffebee;border-left:4px solid #c62828;margin-bottom:16px;">
+        <p id="error-text" style="margin:0;color:#c62828;"></p>
+      </div>
+
+      <!-- Stat cards -->
+      <div class="stat-grid" id="stat-grid">
+        <div class="stat-card">
+          <div class="stat-card__value" id="stat-photos">—</div>
+          <div class="stat-card__label">Total Photos</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card__value" id="stat-size">—</div>
+          <div class="stat-card__label">Total Size (MB)</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card__value" id="stat-clubs">—</div>
+          <div class="stat-card__label">Distinct Clubs</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card__value" id="stat-active">—</div>
+          <div class="stat-card__label">Active Events</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card__value" id="stat-inactive" style="color:#f57c00;">—</div>
+          <div class="stat-card__label">Inactive Events</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card__value" id="stat-violations" style="color:#c62828;">—</div>
+          <div class="stat-card__label">Violations</div>
+        </div>
+      </div>
+
+      <!-- Section 1: Events with uploads -->
+      <div class="section-card">
+        <h5>
+          <i class="material-icons" style="color:#388e3c;">cloud_done</i>
+          Events with Uploads
+          <span class="badge-count" id="badge-active">0</span>
+        </h5>
+        <div id="section-active">
+          <p class="empty-state">No data yet. Click "Run Report" to generate the summary.</p>
+        </div>
+      </div>
+
+      <!-- Section 2: Events without uploads -->
+      <div class="section-card">
+        <h5>
+          <i class="material-icons" style="color:#f57c00;">warning</i>
+          Events with No Uploads
+          <span class="badge-count badge-warn" id="badge-inactive">0</span>
+        </h5>
+        <div id="section-inactive">
+          <p class="empty-state">—</p>
+        </div>
+      </div>
+
+      <!-- Section 3: Naming violations -->
+      <div class="section-card">
+        <h5>
+          <i class="material-icons" style="color:#c62828;">report_problem</i>
+          Naming Violations
+          <span class="badge-count" style="background:#c62828;" id="badge-violations">0</span>
+        </h5>
+        <div id="section-violations">
+          <p class="empty-state">—</p>
+        </div>
+      </div>
+
+      <!-- Generated-at footer -->
+      <p id="generated-at" style="color:#aaa;font-size:.8rem;text-align:right;"></p>
+
+    </div><!-- /page-content -->
+  </main>
+</div><!-- /mdl-layout -->
+
+<!-- Toast snackbar -->
+<div id="toast" class="mdl-js-snackbar mdl-snackbar" aria-live="assertive" aria-atomic="true">
+  <div class="mdl-snackbar__text"></div>
+  <button class="mdl-snackbar__action" type="button"></button>
+</div>
+
+<script src="https://code.getmdl.io/1.3.0/material.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // ── State ────────────────────────────────────────────────────────────────────
+
+  var currentSummary = null;
+
+  // ── Bootstrap ────────────────────────────────────────────────────────────────
+
+  var initialSummary = <?!= initialSummary ?>;
+  var initialError   = <?!= JSON.stringify(initialError) ?>;
+
+  document.addEventListener('DOMContentLoaded', function () {
+    if (initialSummary) {
+      renderSummary(initialSummary);
+    } else if (initialError) {
+      showError(initialError);
+    }
+  });
+
+  // ── Filter controls ───────────────────────────────────────────────────────────
+
+  window.clearFilters = function () {
+    document.getElementById('filter-from').value = '';
+    document.getElementById('filter-to').value   = '';
+    loadSummary();
+  };
+
+  // ── Summary loading ───────────────────────────────────────────────────────────
+
+  window.loadSummary = function () {
+    var dateFrom = document.getElementById('filter-from').value || undefined;
+    var dateTo   = document.getElementById('filter-to').value   || undefined;
+
+    showLoading(true);
+    hideError();
+
+    google.script.run
+      .withSuccessHandler(function (res) {
+        showLoading(false);
+        if (res.status === 'success' && res.data) {
+          renderSummary(res.data);
+        } else {
+          showError(res.message || 'Failed to generate summary.');
+        }
+      })
+      .withFailureHandler(function (err) {
+        showLoading(false);
+        showError(String(err));
+      })
+      .serverGetSummary({ dateFrom: dateFrom, dateTo: dateTo });
+  };
+
+  // ── CSV export ────────────────────────────────────────────────────────────────
+
+  window.exportCsv = function () {
+    if (!currentSummary) return;
+    var dateFrom = document.getElementById('filter-from').value || undefined;
+    var dateTo   = document.getElementById('filter-to').value   || undefined;
+
+    showLoading(true);
+
+    google.script.run
+      .withSuccessHandler(function (res) {
+        showLoading(false);
+        if (res.status === 'success' && res.data && res.data.csv) {
+          downloadCsv(res.data.csv);
+        } else {
+          showError(res.message || 'CSV export failed.');
+        }
+      })
+      .withFailureHandler(function (err) {
+        showLoading(false);
+        showError(String(err));
+      })
+      .serverExportSummaryCsv({ dateFrom: dateFrom, dateTo: dateTo });
+  };
+
+  function downloadCsv(csvText) {
+    var blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+    var url  = URL.createObjectURL(blob);
+    var a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'upload-summary-' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast('CSV downloaded.');
+  }
+
+  // ── Email exceptions ──────────────────────────────────────────────────────────
+
+  window.sendExceptionEmail = function () {
+    if (!currentSummary) return;
+
+    var hasExceptions =
+      currentSummary.violations.length > 0 ||
+      currentSummary.eventsWithoutUploads.length > 0;
+
+    if (!hasExceptions) {
+      toast('No exceptions found — nothing to email.');
+      return;
+    }
+
+    showLoading(true);
+
+    google.script.run
+      .withSuccessHandler(function (res) {
+        showLoading(false);
+        toast(res.message || 'Done.');
+      })
+      .withFailureHandler(function (err) {
+        showLoading(false);
+        showError(String(err));
+      })
+      .serverSendExceptionEmail({ additionalRecipients: [] });
+  };
+
+  // ── Render helpers ────────────────────────────────────────────────────────────
+
+  function renderSummary(summary) {
+    currentSummary = summary;
+
+    // Stat cards
+    document.getElementById('stat-photos').textContent      = summary.totalPhotos.toLocaleString();
+    document.getElementById('stat-size').textContent        = summary.totalSizeMb.toFixed(1);
+    document.getElementById('stat-clubs').textContent       = summary.totalClubs;
+    document.getElementById('stat-active').textContent      = summary.eventsWithUploads.length;
+    document.getElementById('stat-inactive').textContent    = summary.eventsWithoutUploads.length;
+    document.getElementById('stat-violations').textContent  = summary.violations.length;
+
+    // Badges
+    document.getElementById('badge-active').textContent     = summary.eventsWithUploads.length;
+    document.getElementById('badge-inactive').textContent   = summary.eventsWithoutUploads.length;
+    document.getElementById('badge-violations').textContent = summary.violations.length;
+
+    // Section 1: Events with uploads
+    renderActiveEvents(summary.eventsWithUploads);
+
+    // Section 2: Events without uploads
+    renderInactiveEvents(summary.eventsWithoutUploads);
+
+    // Section 3: Violations
+    renderViolations(summary.violations);
+
+    // Footer
+    var genAt = document.getElementById('generated-at');
+    genAt.textContent = 'Generated: ' + new Date(summary.generatedAt).toLocaleString();
+    if (summary.dateFrom || summary.dateTo) {
+      genAt.textContent += '  |  Filter: ' +
+        (summary.dateFrom || 'start') + ' → ' + (summary.dateTo || 'end');
+    }
+
+    // Enable action buttons
+    document.getElementById('btn-export-csv').removeAttribute('disabled');
+    document.getElementById('btn-send-email').removeAttribute('disabled');
+  }
+
+  function renderActiveEvents(events) {
+    var container = document.getElementById('section-active');
+    if (events.length === 0) {
+      container.innerHTML = '<p class="empty-state">No events with uploads in this date range.</p>';
+      return;
+    }
+
+    var html = '';
+    events.forEach(function (es) {
+      html += '<div class="event-block">';
+      html += '<div class="event-block-header" onclick="toggleBlock(this)">';
+      html += '<i class="material-icons" style="font-size:1.1rem;color:#3f51b5;">expand_more</i>';
+      html += '<span>' + esc(es.event.eventName) + '</span>';
+      html += '<span style="color:#888;font-size:.82rem;font-weight:400;">' + esc(es.event.eventDate) + '</span>';
+      html += '<span style="margin-left:auto;font-size:.82rem;color:#555;">';
+      html += es.totalFiles.toLocaleString() + ' photos &nbsp;·&nbsp; ' + es.totalSizeMb.toFixed(1) + ' MB';
+      html += '</span></div>';
+
+      html += '<div class="event-block-clubs">';
+      es.clubs.forEach(function (club) {
+        html += '<div class="club-row">';
+        html += '<span class="club-name">' + esc(club.clubName) + '</span>';
+        html += '<span class="club-meta">';
+        html += club.fileCount.toLocaleString() + ' photos &nbsp;·&nbsp; ';
+        html += club.totalSizeMb.toFixed(1) + ' MB &nbsp;·&nbsp; ';
+        html += club.sessionCount + ' session' + (club.sessionCount !== 1 ? 's' : '') + ' &nbsp;·&nbsp; ';
+        html += 'Last: ' + new Date(club.lastUploadAt).toLocaleDateString();
+        html += '</span></div>';
+      });
+      html += '</div></div>';
+    });
+
+    container.innerHTML = html;
+  }
+
+  function renderInactiveEvents(events) {
+    var container = document.getElementById('section-inactive');
+    if (events.length === 0) {
+      container.innerHTML = '<p class="empty-state" style="color:#388e3c;">✓ All events have uploads.</p>';
+      return;
+    }
+
+    var html = '';
+    events.forEach(function (e) {
+      html += '<div class="inactive-row">';
+      html += '<i class="material-icons" style="color:#f57c00;font-size:1.1rem;">warning</i>';
+      html += '<span>' + esc(e.eventName) + '</span>';
+      html += '<span style="margin-left:auto;color:#888;font-size:.82rem;">' + esc(e.eventDate) + '</span>';
+      html += '</div>';
+    });
+    container.innerHTML = html;
+  }
+
+  function renderViolations(violations) {
+    var container = document.getElementById('section-violations');
+    if (violations.length === 0) {
+      container.innerHTML = '<p class="empty-state" style="color:#388e3c;">✓ No naming violations detected.</p>';
+      return;
+    }
+
+    var html = '';
+    violations.forEach(function (v) {
+      html += '<div class="violation-row">';
+      html += '<div>';
+      html += '<strong>' + esc(v.folderName) + '</strong>';
+      html += ' <span style="color:#888;font-size:.8rem;">[Layer ' + v.layer + ']</span>';
+      html += '</div>';
+      html += '<div class="violation-path">';
+      html += esc(v.parentFolderName) + ' / <strong>' + esc(v.folderName) + '</strong>';
+      html += '</div>';
+      html += '<div class="violation-type">' + esc(v.violationType) + '</div>';
+      html += '<div style="font-size:.78rem;color:#aaa;">Detected: ' + new Date(v.detectedAt).toLocaleString() + '</div>';
+      html += '</div>';
+    });
+    container.innerHTML = html;
+  }
+
+  // ── Block toggle (collapsible event rows) ─────────────────────────────────────
+
+  window.toggleBlock = function (header) {
+    var icon = header.querySelector('.material-icons');
+    var clubs = header.nextElementSibling;
+    if (clubs.style.display === 'none') {
+      clubs.style.display = '';
+      icon.textContent = 'expand_more';
+    } else {
+      clubs.style.display = 'none';
+      icon.textContent = 'chevron_right';
+    }
+  };
+
+  // ── Utilities ─────────────────────────────────────────────────────────────────
+
+  function showLoading(on) {
+    document.getElementById('loading-overlay').classList.toggle('active', on);
+  }
+
+  function showError(msg) {
+    var banner = document.getElementById('error-banner');
+    document.getElementById('error-text').textContent = msg;
+    banner.style.display = '';
+  }
+
+  function hideError() {
+    document.getElementById('error-banner').style.display = 'none';
+  }
+
+  function toast(msg) {
+    var snackbar = document.getElementById('toast');
+    snackbar['MaterialSnackbar'].showSnackbar({ message: msg, timeout: 3000 });
+  }
+
+  function esc(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+})();
+</script>
+</body>
+</html>
