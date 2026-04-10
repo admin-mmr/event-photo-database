@@ -100,17 +100,17 @@
   //
   // GAS serves the app inside an iframe on googleusercontent.com, but the
   // real doGet endpoint lives on script.google.com. Relative href="?action=..."
-  // links resolve against the iframe URL and never reach GAS. Fix: intercept
-  // all action links and navigate window.top to the correct deployment URL,
-  // which google.script.url.getLocation() provides reliably.
+  // links resolve against the iframe URL and never reach GAS. We intercept
+  // every action link and navigate window.top using window.APP_URL, which is
+  // the canonical script.google.com deployment URL injected server-side.
 
   /**
    * Navigates the outer (script.google.com) frame to a route action.
    *
-   * window.APP_URL is injected by the server via ScriptApp.getService().getUrl()
-   * in renderTemplate(). It holds the canonical deployment URL and is set in
-   * each template as <script>window.APP_URL = '<?= scriptUrl ?>';</script>
-   * just before the app.html include.
+   * window.APP_URL is injected server-side by ScriptApp.getService().getUrl()
+   * via renderTemplate() in pageRoutes.ts, and output into each template as
+   *   window.APP_URL = '<deployment url>';
+   * just before this file is included.
    *
    * We navigate window.top (not window) because the GAS web app renders inside
    * an iframe on googleusercontent.com; only the outer script.google.com frame

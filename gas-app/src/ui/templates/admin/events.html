@@ -53,18 +53,20 @@
         <div id="create-event-form" class="card" style="display:none;margin-bottom:24px;">
           <h5 style="margin:0 0 16px;">Create New Event</h5>
           <form onsubmit="handleCreateEvent(event)">
-            <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label"
-                 style="width:100%;max-width:400px;">
-              <input type="text" id="event-name" class="mdl-textfield__input"
-                     pattern="[A-Za-z0-9\s]+" maxlength="100" required>
-              <label class="mdl-textfield__label" for="event-name">Event Name</label>
-              <span class="field-error" id="error-eventName"></span>
-            </div>
-            <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label"
-                 style="width:100%;max-width:200px;">
-              <input type="date" id="event-date" class="mdl-textfield__input" required>
-              <label class="mdl-textfield__label" for="event-date">Event Date</label>
-              <span class="field-error" id="error-eventDate"></span>
+            <div class="form-row" style="align-items:flex-start;">
+              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label"
+                   style="min-width:260px;flex:2;">
+                <input type="text" id="event-name" class="mdl-textfield__input"
+                       pattern="[A-Za-z0-9\s]+" maxlength="100" required>
+                <label class="mdl-textfield__label" for="event-name">Event Name</label>
+                <span class="field-error" id="error-eventName"></span>
+              </div>
+              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label is-dirty"
+                   style="min-width:160px;flex:1;">
+                <input type="date" id="event-date" class="mdl-textfield__input" required>
+                <label class="mdl-textfield__label" for="event-date">Event Date</label>
+                <span class="field-error" id="error-eventDate"></span>
+              </div>
             </div>
             <div id="folder-preview" class="folder-preview" style="display:none;margin:12px 0;">
               <i class="material-icons" style="vertical-align:middle;color:#666;">folder</i>
@@ -88,13 +90,13 @@
         <!-- Filter bar -->
         <div class="card"
              style="padding:12px 16px;margin-bottom:16px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
-          <div class="mdl-textfield mdl-js-textfield" style="width:auto;padding:0;">
+          <div class="mdl-textfield mdl-js-textfield is-dirty" style="width:auto;padding:0;">
             <input type="date" id="filter-date-from" class="mdl-textfield__input"
                    onchange="filterEvents()" style="width:150px;">
             <label class="mdl-textfield__label" for="filter-date-from">From</label>
           </div>
           <span style="color:#999;">—</span>
-          <div class="mdl-textfield mdl-js-textfield" style="width:auto;padding:0;">
+          <div class="mdl-textfield mdl-js-textfield is-dirty" style="width:auto;padding:0;">
             <input type="date" id="filter-date-to" class="mdl-textfield__input"
                    onchange="filterEvents()" style="width:150px;">
             <label class="mdl-textfield__label" for="filter-date-to">To</label>

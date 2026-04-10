@@ -61,7 +61,7 @@
                 <span class="field-error" id="error-email" aria-live="polite"></span>
               </div>
 
-              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
+              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label is-dirty">
                 <select id="new-club" name="runningClub" class="mdl-textfield__input" required>
                   <option value="" disabled selected>Select club</option>
                   <? for (var i = 0; i < approvedClubs.length; i++) { ?>
@@ -72,7 +72,7 @@
                 <span class="field-error" id="error-runningClub" aria-live="polite"></span>
               </div>
 
-              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
+              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label is-dirty">
                 <select id="new-role" name="role" class="mdl-textfield__input">
                   <? for (var j = 0; j < roleOptions.length; j++) { ?>
                   <option value="<?= roleOptions[j] ?>"><?= roleOptions[j] ?></option>
