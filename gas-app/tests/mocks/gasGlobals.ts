@@ -14,17 +14,19 @@
 
 // ─── Default test data ────────────────────────────────────────────────────────
 
-export const TEST_ADMIN_EMAIL = 'admin@mmrunners.org';
-export const TEST_USER_EMAIL  = 'user1@example.com';
-export const TEST_INACTIVE_EMAIL = 'inactive@example.com';
-export const TEST_SPREADSHEET_ID = 'mock-spreadsheet-id-12345';
-export const TEST_ROOT_FOLDER_ID = 'mock-root-folder-id-67890';
+export const TEST_ADMIN_EMAIL      = 'admin@mmrunners.org';
+export const TEST_USER_EMAIL       = 'user1@example.com';
+export const TEST_INACTIVE_EMAIL   = 'inactive@example.com';
+export const TEST_API_CLIENT_EMAIL = 'api-client@partnerorg.com';
+export const TEST_SPREADSHEET_ID   = 'mock-spreadsheet-id-12345';
+export const TEST_ROOT_FOLDER_ID   = 'mock-root-folder-id-67890';
 
 /** Default Users sheet rows (header excluded) */
 export const DEFAULT_USERS_ROWS: unknown[][] = [
-  [TEST_ADMIN_EMAIL,    'Admin',      'admin', 'active',   '2025-01-01', 'system'],
-  [TEST_USER_EMAIL,     'New_Bee',    'user',  'active',   '2025-02-01', TEST_ADMIN_EMAIL],
-  [TEST_INACTIVE_EMAIL, 'Nankai',     'user',  'inactive', '2025-01-15', TEST_ADMIN_EMAIL],
+  [TEST_ADMIN_EMAIL,      'Admin',   'admin',      'active',   '2025-01-01', 'system'],
+  [TEST_USER_EMAIL,       'New_Bee', 'user',       'active',   '2025-02-01', TEST_ADMIN_EMAIL],
+  [TEST_INACTIVE_EMAIL,   'Nankai',  'user',       'inactive', '2025-01-15', TEST_ADMIN_EMAIL],
+  [TEST_API_CLIENT_EMAIL, 'New_Bee', 'api_client', 'active',   '2025-06-01', TEST_ADMIN_EMAIL],
 ];
 
 /** Default Events sheet rows — 3 events for sort/pagination/duplicate testing */
@@ -76,6 +78,7 @@ export const mockSheets: Record<string, ReturnType<typeof createMockSheet>> = {
   Users:      createMockSheet(DEFAULT_USERS_ROWS),
   Events:     createMockSheet(DEFAULT_EVENTS_ROWS),
   Upload_Log: createMockSheet([]),
+  Rate_Limit: createMockSheet([]),
 };
 
 /** Resets all mock sheets to their default data */
@@ -84,12 +87,13 @@ export function resetMockSheets(): void {
     Users:      createMockSheet(DEFAULT_USERS_ROWS),
     Events:     createMockSheet(DEFAULT_EVENTS_ROWS),
     Upload_Log: createMockSheet([]),
+    Rate_Limit: createMockSheet([]),
   });
 }
 
 // ─── Mock SpreadsheetApp ──────────────────────────────────────────────────────
 
-const mockSpreadsheet = {
+export const mockSpreadsheet = {
   getSheetByName: jest.fn().mockImplementation((name: string) => {
     return mockSheets[name] ?? null;
   }),
@@ -252,7 +256,6 @@ g['MailApp']             = mockMailApp;
 export {
   mockSession,
   mockActiveUser,
-  mockSpreadsheet,
   mockSpreadsheetApp,
   mockScriptProperties,
   mockPropertiesService,
@@ -263,4 +266,5 @@ export {
   mockLogger,
   mockMailApp,
   // makeMockDriveFile is already a named export via the function declaration above
+  // mockSpreadsheet is now a named export via the `export const` declaration above
 };

@@ -1,4 +1,4 @@
-import { ResultStatus, UserStatus } from '../types/enums';
+import { ResultStatus, UserRole, UserStatus } from '../types/enums';
 import { UserRecord } from '../types/models';
 import { ServiceResult } from '../types/responses';
 import { getCurrentUserEmail } from '../services/authService';
@@ -91,4 +91,72 @@ export function authenticateRequest(): ServiceResult<UserRecord> {
     return { status: ResultStatus.ERROR, message: sessionResult.message };
   }
   return resolveUser(sessionResult.data.email);
+}
+
+/**
+ * Phase 5 — API key authentication.
+ *
+ * GAS web apps do not expose HTTP request headers to the script, so the API
+ * key is passed as a query-string parameter (`?api_key=<key>`) rather than
+ * an `X-Api-Key` header. The value is the registered email of an API_CLIENT
+ * user in the Users sheet.
+ *
+ * Authentication rules:
+ *   1. The key must be a non-empty string.
+ *   2. A Users row must exist with email === key AND role === API_CLIENT.
+ *   3. The user must be ACTIVE.
+ *
+ * Returns SUCCESS with the UserRecord on valid auth, ERROR otherwise.
+ * Callers must then perform rate-limit checking before executing the request.
+ */
+export function authenticateApiKey(apiKey: string): ServiceResult<UserRecord> {
+  const key = (apiKey ?? '').trim().toLowerCase();
+  if (!key) {
+    return {
+      status: ResultStatus.ERROR,
+      message: 'Missing api_key parameter. Include ?api_key=<your-key> in the request.',
+    };
+  }
+
+  const config = getConfig();
+  let rows: unknown[][];
+  try {
+    rows = getAllRows(config.SHEET_NAMES.USERS);
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Failed to read Users sheet: ${String(err)}`,
+    };
+  }
+
+  const user = rows
+    .map(toUserRecord)
+    .find((r): r is UserRecord => r !== null && r.email === key);
+
+  if (!user) {
+    return {
+      status: ResultStatus.ERROR,
+      message: 'Invalid API key. The key is not registered in this system.',
+    };
+  }
+
+  if (user.role !== UserRole.API_CLIENT) {
+    return {
+      status: ResultStatus.ERROR,
+      message: 'Forbidden. This key does not have API_CLIENT privileges.',
+    };
+  }
+
+  if (user.status === UserStatus.INACTIVE) {
+    return {
+      status: ResultStatus.ERROR,
+      message: 'API key is deactivated. Contact an administrator to restore access.',
+    };
+  }
+
+  return {
+    status: ResultStatus.SUCCESS,
+    message: 'API key authenticated',
+    data: user,
+  };
 }

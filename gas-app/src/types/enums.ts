@@ -63,6 +63,12 @@ export enum RouteAction {
 
   // Phase 4 — Admin Summary & Reconciliation
   ADMIN_SUMMARY = 'admin_summary',
+
+  // Phase 5 — Cross-Org REST API
+  // These are accessed by external GAS programs via HTTP, not the browser UI.
+  API_CHECK_FOLDER = 'api_check_folder',   // GET: resolve event name → folder ID
+  API_LIST_FILES   = 'api_list_files',     // GET: list files in a club folder
+  API_UPLOAD_FILE  = 'api_upload_file',    // POST: upload a single photo
 }
 
 /**

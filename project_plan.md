@@ -260,15 +260,15 @@ flowchart TD
 ### Phase 5 — Cross-Org REST API (Week 6–7)
 **Goal**: External GAS programs can check folders, list files, and upload photos via HTTP.
 
-- [ ] `doGet(e)` handler: route by `?action=` param
-  - `check_folder`: given event name → return folder ID or null
-  - `list_files`: given folder ID → return JSON file list
-- [ ] `doPost(e)` handler:
-  - `upload_file`: accept base64 encoded photo + metadata, run full validation pipeline
-- [ ] API key auth: check `x-api-key` header vs Users sheet (`role=api_client`)
-- [ ] Rate limiting: simple counter in Sheets (max N uploads per hour per key)
-- [ ] Error response standards: JSON `{status, code, message, data}`
-- [ ] Write API client example in GAS for partner orgs to copy
+- [x] `doGet(e)` handler: route by `?action=` param
+  - `api_check_folder`: given event name → return folder ID or null
+  - `api_list_files`: given folder ID → return JSON file list
+- [x] `doPost(e)` handler:
+  - `api_upload_file`: accept base64 encoded photo + metadata, run full validation pipeline
+- [x] API key auth: `?api_key=<registered-email>` (GAS has no header access); Users sheet role=api_client
+- [x] Rate limiting: simple counter in Rate_Limit sheet (max 60 requests per hour per key)
+- [x] Error response standards: JSON `{status, code, message, data}`
+- [x] Write API client example in GAS for partner orgs to copy (`example/partner-client.gs`)
 
 ---
 

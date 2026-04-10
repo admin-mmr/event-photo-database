@@ -1,5 +1,5 @@
 import { getAllRows, appendRow, findRowIndex, updateRow, getRowCount, ensureHeaders } from '../../src/services/sheetService';
-import { mockSheets, resetMockSheets, createMockSheet } from '../mocks/gasGlobals';
+import { mockSheets, resetMockSheets, createMockSheet, DEFAULT_USERS_ROWS } from '../mocks/gasGlobals';
 
 // We need to re-import SpreadsheetApp mock to override getSheetByName per test
 const mockSpreadsheetApp = (global as Record<string, unknown>)['SpreadsheetApp'] as {
@@ -20,8 +20,7 @@ describe('sheetService', () => {
   describe('getAllRows()', () => {
     it('returns all data rows (excluding header)', () => {
       const rows = getAllRows('Users');
-      // Default mock has 3 data rows
-      expect(rows).toHaveLength(3);
+      expect(rows).toHaveLength(DEFAULT_USERS_ROWS.length);
     });
 
     it('returns empty array when sheet has only header row', () => {
@@ -132,9 +131,8 @@ describe('sheetService', () => {
 
   describe('getRowCount()', () => {
     it('returns the number of data rows', () => {
-      // Default Users mock has lastRow = 4 (header + 3 data rows)
       const count = getRowCount('Users');
-      expect(count).toBe(3);
+      expect(count).toBe(DEFAULT_USERS_ROWS.length);
     });
 
     it('returns 0 for a sheet with only a header row', () => {

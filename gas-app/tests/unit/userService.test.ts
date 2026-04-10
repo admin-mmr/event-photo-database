@@ -84,12 +84,13 @@ describe('userService', () => {
     it('paginates correctly: page 1 of 2 items each', () => {
       const result = listAll(1, 2);
       expect(result.items).toHaveLength(2);
-      expect(result.total).toBe(3);
+      expect(result.total).toBe(DEFAULT_USERS_ROWS.length);
     });
 
     it('paginates correctly: page 2 of 2 items each', () => {
       const result = listAll(2, 2);
-      expect(result.items).toHaveLength(1);
+      // With 4 rows and pageSize=2, page 2 has 2 items
+      expect(result.items).toHaveLength(2);
     });
 
     it('returns empty items array beyond the last page', () => {

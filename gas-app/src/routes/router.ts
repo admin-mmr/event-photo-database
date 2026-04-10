@@ -24,6 +24,11 @@ import {
   handleUnknownAction,
   handleForbidden,
 } from './apiRoutes';
+import {
+  handleApiCheckFolder,
+  handleApiListFiles,
+  handleApiUploadFile,
+} from './apiClientHandlers';
 
 /* global Logger, ContentService */
 
@@ -68,14 +73,26 @@ const POST_ROUTES: Readonly<Record<string, RouteConfig>> = {
 // ─── doGet dispatcher ─────────────────────────────────────────────────────────
 
 /**
- * Handles all GET requests. Returns an HtmlOutput.
+ * Handles all GET requests. Returns an HtmlOutput (browser) or TextOutput (API).
  * Called from doGet() in main.ts.
+ *
+ * Phase 5: if an `api_key` query parameter is present the request is treated
+ * as a machine-to-machine API call and routed through the API client handlers,
+ * bypassing the GAS session auth flow entirely.
  */
 export function handleGet(
   e: GoogleAppsScript.Events.DoGet
-): GoogleAppsScript.HTML.HtmlOutput {
+): GoogleAppsScript.HTML.HtmlOutput | GoogleAppsScript.Content.TextOutput {
   try {
     const action = (e.parameter['action'] as RouteAction | undefined) ?? RouteAction.DASHBOARD;
+    const params = e.parameter as Record<string, string>;
+
+    // ── Phase 5: API client requests (machine-to-machine) ─────────────────────
+    if (params['api_key']) {
+      return dispatchApiGetHandler(action, params);
+    }
+
+    // ── Standard browser request ──────────────────────────────────────────────
 
     // Login page doesn't require auth
     if (action === RouteAction.LOGIN) {
@@ -107,6 +124,29 @@ export function handleGet(
   } catch (err) {
     Logger.log(`[Router.handleGet] Unhandled error: ${String(err)}`);
     return errorPage('An unexpected error occurred. Please try again or contact an administrator.');
+  }
+}
+
+/**
+ * Routes Phase 5 API GET requests (authenticated via api_key param).
+ * Returns a JSON TextOutput in all cases — never HTML.
+ */
+function dispatchApiGetHandler(
+  action: RouteAction,
+  params: Record<string, string>
+): GoogleAppsScript.Content.TextOutput {
+  switch (action) {
+    case RouteAction.API_CHECK_FOLDER:
+      return handleApiCheckFolder(params);
+    case RouteAction.API_LIST_FILES:
+      return handleApiListFiles(params);
+    default:
+      return ContentService
+        .createTextOutput(JSON.stringify({
+          status: 'error', code: 404,
+          message: `Unknown API action: "${action}"`,
+        }))
+        .setMimeType(ContentService.MimeType.JSON);
   }
 }
 
@@ -210,6 +250,9 @@ function dispatchPostHandler(
       return handleUpdateEvent(payload, user);
     case RouteAction.LIST_EVENTS:
       return handleListEvents(payload);
+    case RouteAction.API_UPLOAD_FILE:
+      // Phase 5: API upload; auth is inside the handler (api_key in body)
+      return handleApiUploadFile(payload);
     default:
       return handleUnknownAction(action);
   }

@@ -67,7 +67,20 @@ export const COLUMNS: SheetColumnMap = {
     UPLOAD_TIMESTAMP: 10,
     SOURCE: 11,
   },
+  RATE_LIMIT: {
+    API_KEY: 0,
+    WINDOW_START: 1,
+    REQUEST_COUNT: 2,
+  },
 };
+
+/**
+ * Phase 5 — API rate limiting.
+ * Each API client key is allowed at most this many requests per rolling hour.
+ * Exceeding the limit returns a 429 JSON response.
+ */
+export const MAX_API_REQUESTS_PER_HOUR = 60;
+export const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour in milliseconds
 
 /**
  * Builds the runtime AppConfig by reading sensitive IDs from GAS Script Properties.
@@ -101,10 +114,12 @@ export function getConfig(): AppConfig {
       USERS: 'Users',
       EVENTS: 'Events',
       UPLOAD_LOG: 'Upload_Log',
+      RATE_LIMIT: 'Rate_Limit',
     },
     APPROVED_CLUBS,
     PHOTO_MIME_TYPES: [PhotoMimeType.JPEG, PhotoMimeType.PNG, PhotoMimeType.HEIC],
     MAX_FILE_SIZE_MB: 50,   // GAS hard limit per UrlFetch payload
     MAX_BATCH_SIZE_MB: 200, // Soft limit per upload session to avoid timeouts
+    MAX_API_REQUESTS_PER_HOUR,
   };
 }

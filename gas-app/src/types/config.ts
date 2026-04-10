@@ -14,12 +14,14 @@ export interface AppConfig {
   readonly PHOTO_MIME_TYPES: ReadonlyArray<PhotoMimeType>;
   readonly MAX_FILE_SIZE_MB: number;     // Max size per individual file
   readonly MAX_BATCH_SIZE_MB: number;    // Max total size per upload session
+  readonly MAX_API_REQUESTS_PER_HOUR: number; // Rate limit for API clients
 }
 
 export interface SheetNames {
   readonly USERS: string;
   readonly EVENTS: string;
   readonly UPLOAD_LOG: string;
+  readonly RATE_LIMIT: string;
 }
 
 /**
@@ -31,6 +33,13 @@ export interface SheetColumnMap {
   readonly USERS: UserSheetColumns;
   readonly EVENTS: EventSheetColumns;
   readonly UPLOAD_LOG: UploadLogSheetColumns;
+  readonly RATE_LIMIT: RateLimitSheetColumns;
+}
+
+export interface RateLimitSheetColumns {
+  readonly API_KEY: 0;         // The api_key string (= registered email for api_clients)
+  readonly WINDOW_START: 1;    // ISO 8601 timestamp: start of the current 1-hour window
+  readonly REQUEST_COUNT: 2;   // Number of requests made in the current window
 }
 
 export interface UserSheetColumns {
