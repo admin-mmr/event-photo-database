@@ -195,12 +195,18 @@
       </a>
       <div class="mdl-layout-spacer"></div>
       <nav class="mdl-navigation">
+        <a class="mdl-navigation__link" href="?action=dashboard">
+          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">home</i>Home
+        </a>
         <? if (isAdmin) { ?>
         <a class="mdl-navigation__link" href="?action=admin_users">
           <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>Users
         </a>
         <a class="mdl-navigation__link" href="?action=admin_events">
           <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>Events
+        </a>
+        <a class="mdl-navigation__link" href="?action=admin_clubs">
+          <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>Clubs
         </a>
         <? } ?>
         <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=upload">

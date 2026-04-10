@@ -10,6 +10,7 @@ import {
   dashboardPage,
   adminUsersPage,
   adminEventsPage,
+  adminClubsPage,
   adminSummaryPage,
   uploadPage,
 } from './pageRoutes';
@@ -21,6 +22,10 @@ import {
   handleCreateEvent,
   handleUpdateEvent,
   handleListEvents,
+  handleCreateClub,
+  handleUpdateClub,
+  handleDeactivateClub,
+  handleListClubs,
   handleUnknownAction,
   handleForbidden,
 } from './apiRoutes';
@@ -60,6 +65,7 @@ function getGetRoutes(): Readonly<Record<string, RouteConfig>> {
     [RouteAction.LOGIN]:         { requiredRole: null },
     [RouteAction.ADMIN_USERS]:   { requiredRole: UserRole.ADMIN },
     [RouteAction.ADMIN_EVENTS]:  { requiredRole: UserRole.ADMIN },
+    [RouteAction.ADMIN_CLUBS]:   { requiredRole: UserRole.ADMIN },
     [RouteAction.ADMIN_SUMMARY]: { requiredRole: UserRole.ADMIN },
     [RouteAction.UPLOAD]:        { requiredRole: null }, // all authenticated users
   };
@@ -74,6 +80,10 @@ function getPostRoutes(): Readonly<Record<string, RouteConfig>> {
     [RouteAction.CREATE_EVENT]:          { requiredRole: UserRole.ADMIN },
     [RouteAction.UPDATE_EVENT]:          { requiredRole: UserRole.ADMIN },
     [RouteAction.LIST_EVENTS]:           { requiredRole: null }, // all users can list events
+    [RouteAction.CREATE_CLUB]:           { requiredRole: UserRole.ADMIN },
+    [RouteAction.UPDATE_CLUB]:           { requiredRole: UserRole.ADMIN },
+    [RouteAction.DEACTIVATE_CLUB]:       { requiredRole: UserRole.ADMIN },
+    [RouteAction.LIST_CLUBS]:            { requiredRole: null }, // all authenticated users
   };
 }
 
@@ -183,6 +193,8 @@ function dispatchGetHandler(
       return adminUsersPage(user);
     case RouteAction.ADMIN_EVENTS:
       return adminEventsPage(user);
+    case RouteAction.ADMIN_CLUBS:
+      return adminClubsPage(user);
     case RouteAction.ADMIN_SUMMARY:
       return adminSummaryPage(user);
     case RouteAction.UPLOAD:
@@ -282,6 +294,14 @@ function dispatchPostHandler(
       return handleUpdateEvent(payload, user);
     case RouteAction.LIST_EVENTS:
       return handleListEvents(payload);
+    case RouteAction.CREATE_CLUB:
+      return handleCreateClub(payload, user);
+    case RouteAction.UPDATE_CLUB:
+      return handleUpdateClub(payload, user);
+    case RouteAction.DEACTIVATE_CLUB:
+      return handleDeactivateClub(payload, user);
+    case RouteAction.LIST_CLUBS:
+      return handleListClubs(payload);
     case RouteAction.API_UPLOAD_FILE:
       // Phase 5: API upload; auth is inside the handler (api_key in body)
       return handleApiUploadFile(payload);

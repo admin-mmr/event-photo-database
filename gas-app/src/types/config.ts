@@ -1,5 +1,4 @@
 import { PhotoMimeType } from './enums';
-import { ClubEntry } from './models';
 
 /**
  * Full application configuration shape.
@@ -10,7 +9,6 @@ export interface AppConfig {
   readonly ROOT_FOLDER_ID: string;       // Google Drive root folder ID
   readonly SPREADSHEET_ID: string;       // Google Sheets database ID
   readonly SHEET_NAMES: SheetNames;
-  readonly APPROVED_CLUBS: ReadonlyArray<ClubEntry>;
   readonly PHOTO_MIME_TYPES: ReadonlyArray<PhotoMimeType>;
   readonly MAX_FILE_SIZE_MB: number;     // Max size per individual file
   readonly MAX_BATCH_SIZE_MB: number;    // Max total size per upload session
@@ -22,6 +20,7 @@ export interface SheetNames {
   readonly EVENTS: string;
   readonly UPLOAD_LOG: string;
   readonly RATE_LIMIT: string;
+  readonly CLUBS: string;
 }
 
 /**
@@ -34,6 +33,7 @@ export interface SheetColumnMap {
   readonly EVENTS: EventSheetColumns;
   readonly UPLOAD_LOG: UploadLogSheetColumns;
   readonly RATE_LIMIT: RateLimitSheetColumns;
+  readonly CLUBS: ClubSheetColumns;
 }
 
 export interface RateLimitSheetColumns {
@@ -74,4 +74,12 @@ export interface UploadLogSheetColumns {
   readonly SKIPPED_NON_PHOTO: 9;
   readonly UPLOAD_TIMESTAMP: 10;
   readonly SOURCE: 11;
+}
+
+export interface ClubSheetColumns {
+  readonly DISPLAY_NAME: 0;     // Human-readable display name (may include Chinese characters)
+  readonly NORMALIZED_NAME: 1;  // Drive-safe identifier (ASCII, underscores only)
+  readonly STATUS: 2;           // "active" | "inactive"
+  readonly ADDED_DATE: 3;       // ISO 8601 date "YYYY-MM-DD"
+  readonly ADDED_BY: 4;         // Admin email
 }

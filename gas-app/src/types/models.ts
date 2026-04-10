@@ -54,3 +54,16 @@ export interface ClubEntry {
   readonly displayName: string;      // "New Bee"
   readonly normalizedName: string;   // "New_Bee" — used as Drive folder name
 }
+
+/**
+ * A row in the "Clubs" sheet.
+ * Clubs managed here replace the static APPROVED_CLUBS constant.
+ * Admins can add/deactivate clubs via the admin UI without a code deploy.
+ */
+export interface ClubRecord {
+  readonly displayName: string;      // Chinese/display name shown in UI, e.g. "驰跑团"
+  readonly normalizedName: string;   // Folder-safe identifier, e.g. "CHI" or "New_Bee"
+  readonly status: 'active' | 'inactive';
+  readonly addedDate: string;        // ISO 8601 date: "YYYY-MM-DD"
+  readonly addedBy: string;          // Admin email who created the record
+}

@@ -48,6 +48,7 @@ export enum RouteAction {
   LOGIN = 'login',
   ADMIN_USERS = 'admin_users',
   ADMIN_EVENTS = 'admin_events',
+  ADMIN_CLUBS = 'admin_clubs',
   UPLOAD = 'upload',
 
   // API actions (doPost)
@@ -60,6 +61,12 @@ export enum RouteAction {
   CREATE_EVENT = 'create_event',
   UPDATE_EVENT = 'update_event',
   LIST_EVENTS = 'list_events',
+
+  // Club Management
+  CREATE_CLUB = 'create_club',
+  UPDATE_CLUB = 'update_club',
+  DEACTIVATE_CLUB = 'deactivate_club',
+  LIST_CLUBS = 'list_clubs',
 
   // Phase 4 — Admin Summary & Reconciliation
   ADMIN_SUMMARY = 'admin_summary',

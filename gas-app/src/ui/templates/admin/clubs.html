@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clubs — 湘舍动公益文件系统</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.indigo-pink.min.css">
+  <?!= HtmlService.createHtmlOutputFromFile('ui/css/styles').getContent() ?>
+</head>
+<body>
+  <div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
+    <header class="mdl-layout__header">
+      <div class="mdl-layout__header-row">
+        <a href="?action=dashboard" class="mdl-layout-title"
+           style="color:inherit;text-decoration:none;">
+          湘舍动公益文件系统
+        </a>
+        <div class="mdl-layout-spacer"></div>
+        <nav class="mdl-navigation">
+          <a class="mdl-navigation__link" href="?action=dashboard">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">home</i>
+            Home
+          </a>
+          <a class="mdl-navigation__link" href="?action=admin_users">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>
+            Users
+          </a>
+          <a class="mdl-navigation__link" href="?action=admin_events">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
+            Events
+          </a>
+          <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=admin_clubs">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>
+            Clubs
+          </a>
+        </nav>
+        <span class="mdl-chip" style="margin-left:12px;">
+          <span class="mdl-chip__text"><?= userEmail ?></span>
+        </span>
+      </div>
+    </header>
+
+    <main class="mdl-layout__content">
+      <div class="page-content">
+
+        <!-- Page header -->
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+          <h4 style="margin:0;">Club Management</h4>
+          <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                  id="btn-toggle-create"
+                  onclick="toggleCreateForm()">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">add</i>
+            New Club
+          </button>
+        </div>
+
+        <!-- Info banner -->
+        <div class="card" style="background:#E8EAF6;border-left:4px solid #3f51b5;padding:14px 16px;margin-bottom:16px;">
+          <div style="display:flex;align-items:flex-start;gap:10px;">
+            <i class="material-icons" style="color:#3f51b5;margin-top:2px;">info</i>
+            <div style="font-size:14px;color:#333;">
+              <strong>Clubs drive folder naming.</strong>
+              The <em>Normalized Name</em> is used as the Drive folder name for each club's photos — it must contain only letters, numbers, and underscores (e.g. <code>New_Bee</code>).
+              Once created, the Normalized Name <strong>cannot be changed</strong> (existing Drive folders depend on it).
+              The <em>Display Name</em> can be updated at any time.
+            </div>
+          </div>
+        </div>
+
+        <!-- Create club form (collapsed by default) -->
+        <div id="create-club-form" class="card" style="display:none;margin-bottom:24px;">
+          <h5 style="margin:0 0 16px;">Add New Club</h5>
+          <form onsubmit="handleCreateClub(event)">
+            <div class="form-row" style="align-items:flex-start;">
+              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label"
+                   style="flex:1;min-width:180px;">
+                <input type="text" id="club-display-name" class="mdl-textfield__input"
+                       maxlength="80" required>
+                <label class="mdl-textfield__label" for="club-display-name">
+                  Display Name (e.g. 驰跑团)
+                </label>
+                <span class="field-error" id="error-displayName"></span>
+              </div>
+              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label"
+                   style="flex:1;min-width:180px;">
+                <input type="text" id="club-normalized-name" class="mdl-textfield__input"
+                       pattern="[A-Za-z0-9_]+" maxlength="60" required
+                       oninput="updateNormalizedPreview()">
+                <label class="mdl-textfield__label" for="club-normalized-name">
+                  Normalized Name (e.g. CHI, New_Bee)
+                </label>
+                <span class="field-error" id="error-normalizedName"></span>
+              </div>
+            </div>
+            <div id="normalized-preview" style="display:none;margin:8px 0 4px;font-size:13px;color:#555;">
+              <i class="material-icons" style="font-size:16px;vertical-align:middle;color:#666;">folder</i>
+              Drive folder: <code id="normalized-preview-text" style="background:#f5f5f5;padding:2px 6px;border-radius:3px;"></code>
+            </div>
+            <div style="margin-top:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+              <button type="submit"
+                      class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                      id="btn-create-club">
+                Add Club
+              </button>
+              <button type="button" class="mdl-button mdl-js-button"
+                      onclick="toggleCreateForm()">
+                Cancel
+              </button>
+              <div class="spinner hidden" id="create-club-spinner"></div>
+            </div>
+          </form>
+        </div>
+
+        <!-- Clubs table -->
+        <div style="margin-bottom:8px;display:flex;align-items:center;gap:12px;">
+          <span id="club-count" class="mdl-color-text--grey-600" style="font-size:14px;">
+            <?= totalClubs ?> club(s)
+          </span>
+          <label style="display:flex;align-items:center;gap:6px;font-size:14px;color:#555;cursor:pointer;">
+            <input type="checkbox" id="show-inactive-toggle" onchange="renderClubs(allClubs)"
+                   style="cursor:pointer;">
+            Show inactive
+          </label>
+        </div>
+
+        <table class="mdl-data-table mdl-js-data-table mdl-shadow--2dp full-width">
+          <thead>
+            <tr>
+              <th class="mdl-data-table__cell--non-numeric">Display Name</th>
+              <th class="mdl-data-table__cell--non-numeric">Normalized Name</th>
+              <th class="mdl-data-table__cell--non-numeric">Status</th>
+              <th class="mdl-data-table__cell--non-numeric">Added</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="clubs-table-body">
+          </tbody>
+        </table>
+
+      </div>
+    </main>
+
+    <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
+  </div>
+
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.min.js"></script>
+  <script>window.APP_URL = '<?= scriptUrl ?>';</script>
+  <?!= HtmlService.createHtmlOutputFromFile('ui/js/app').getContent() ?>
+
+  <script>
+    // ─── State ────────────────────────────────────────────────────────────────
+    var allClubs = JSON.parse('<?!= clubs ?>');
+
+    // ─── Init ─────────────────────────────────────────────────────────────────
+    document.addEventListener('DOMContentLoaded', function() {
+      renderClubs(allClubs);
+    });
+
+    // ─── Create form ──────────────────────────────────────────────────────────
+    function toggleCreateForm() {
+      var form = document.getElementById('create-club-form');
+      form.style.display = form.style.display === 'none' ? 'block' : 'none';
+      if (form.style.display === 'block') {
+        setTimeout(function() {
+          document.getElementById('club-display-name').focus();
+        }, 50);
+      }
+    }
+
+    function updateNormalizedPreview() {
+      var val = document.getElementById('club-normalized-name').value.trim();
+      var preview = document.getElementById('normalized-preview');
+      var text = document.getElementById('normalized-preview-text');
+      if (val) {
+        text.textContent = val;
+        preview.style.display = 'block';
+      } else {
+        preview.style.display = 'none';
+      }
+    }
+
+    function handleCreateClub(e) {
+      e.preventDefault();
+      clearErrors(document.getElementById('create-club-form'));
+
+      var payload = {
+        displayName: document.getElementById('club-display-name').value.trim(),
+        normalizedName: document.getElementById('club-normalized-name').value.trim(),
+      };
+
+      callServer(
+        'serverCreateClub',
+        payload,
+        document.getElementById('btn-create-club'),
+        document.getElementById('create-club-spinner')
+      ).then(function(result) {
+        if (result.status === 'success') {
+          showToast('Club added: ' + result.data.displayName, 'success');
+          allClubs.unshift(result.data);
+          renderClubs(allClubs);
+          toggleCreateForm();
+          document.getElementById('club-display-name').value = '';
+          document.getElementById('club-normalized-name').value = '';
+          document.getElementById('normalized-preview').style.display = 'none';
+        } else {
+          showToast(result.message, 'error');
+          if (result.errors) showFieldErrors(result.errors, 'create-club-form');
+        }
+      });
+    }
+
+    // ─── Table rendering ──────────────────────────────────────────────────────
+    function renderClubs(list) {
+      var showInactive = document.getElementById('show-inactive-toggle').checked;
+      var filtered = showInactive ? list : list.filter(function(c) { return c.status === 'active'; });
+
+      var tbody = document.getElementById('clubs-table-body');
+      if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="mdl-data-table__cell--non-numeric"' +
+          ' style="text-align:center;color:#999;padding:32px;">' +
+          (showInactive ? 'No clubs yet. Click "New Club" to add one.' : 'No active clubs. Check "Show inactive" to see all.') +
+          '</td></tr>';
+        document.getElementById('club-count').textContent = '0 club(s) shown';
+        return;
+      }
+
+      tbody.innerHTML = filtered.map(function(club) {
+        var isActive = club.status === 'active';
+        return '<tr>' +
+          '<td class="mdl-data-table__cell--non-numeric"><strong>' + escHtml(club.displayName) + '</strong></td>' +
+          '<td class="mdl-data-table__cell--non-numeric"><code>' + escHtml(club.normalizedName) + '</code></td>' +
+          '<td class="mdl-data-table__cell--non-numeric">' +
+            '<span class="status-' + club.status + '">' + (isActive ? 'Active' : 'Inactive') + '</span>' +
+          '</td>' +
+          '<td class="mdl-data-table__cell--non-numeric" style="font-size:13px;color:#777;">' +
+            escHtml(club.addedDate || '—') +
+          '</td>' +
+          '<td>' +
+            '<button class="mdl-button mdl-js-button mdl-button--icon" title="Edit display name"' +
+              ' onclick="editClubDisplayName(\'' + escAttr(club.normalizedName) + '\')">' +
+              '<i class="material-icons">edit</i></button>' +
+            (isActive
+              ? '<button class="mdl-button mdl-js-button mdl-button--icon btn-danger" title="Deactivate"' +
+                  ' onclick="deactivateClub(\'' + escAttr(club.normalizedName) + '\')">' +
+                  '<i class="material-icons">block</i></button>'
+              : '<button class="mdl-button mdl-js-button mdl-button--icon" title="Reactivate" style="color:#388e3c"' +
+                  ' onclick="reactivateClub(\'' + escAttr(club.normalizedName) + '\')">' +
+                  '<i class="material-icons">check_circle</i></button>') +
+          '</td></tr>';
+      }).join('');
+
+      var activeCount = list.filter(function(c) { return c.status === 'active'; }).length;
+      document.getElementById('club-count').textContent =
+        filtered.length + ' shown (' + activeCount + ' active, ' + (list.length - activeCount) + ' inactive)';
+    }
+
+    function escHtml(s) {
+      var d = document.createElement('div');
+      d.textContent = String(s);
+      return d.innerHTML;
+    }
+
+    function escAttr(s) {
+      return String(s).replace(/'/g, "\\'");
+    }
+
+    // ─── Edit display name ────────────────────────────────────────────────────
+    function editClubDisplayName(normalizedName) {
+      var club = allClubs.find(function(c) { return c.normalizedName === normalizedName; });
+      if (!club) return;
+
+      var newName = prompt('Edit display name for "' + club.normalizedName + '":', club.displayName);
+      if (newName === null || newName.trim() === club.displayName) return;
+      if (!newName.trim()) {
+        showToast('Display name cannot be empty', 'error');
+        return;
+      }
+
+      callServer('serverUpdateClub', { normalizedName: normalizedName, displayName: newName.trim() })
+        .then(function(result) {
+          if (result.status === 'success') {
+            var idx = allClubs.findIndex(function(c) { return c.normalizedName === normalizedName; });
+            if (idx >= 0) allClubs[idx] = result.data;
+            renderClubs(allClubs);
+            showToast('Club updated', 'success');
+          } else {
+            showToast(result.message, 'error');
+          }
+        });
+    }
+
+    // ─── Deactivate / Reactivate ──────────────────────────────────────────────
+    function deactivateClub(normalizedName) {
+      var club = allClubs.find(function(c) { return c.normalizedName === normalizedName; });
+      if (!club) return;
+      if (!confirm('Deactivate club "' + club.displayName + '"?\n\nUsers in this club can still log in but the club will no longer appear in new upload forms.')) return;
+
+      callServer('serverDeactivateClub', { normalizedName: normalizedName })
+        .then(function(result) {
+          if (result.status === 'success') {
+            var idx = allClubs.findIndex(function(c) { return c.normalizedName === normalizedName; });
+            if (idx >= 0) allClubs[idx] = result.data;
+            renderClubs(allClubs);
+            showToast('Club deactivated', 'success');
+          } else {
+            showToast(result.message, 'error');
+          }
+        });
+    }
+
+    function reactivateClub(normalizedName) {
+      var club = allClubs.find(function(c) { return c.normalizedName === normalizedName; });
+      if (!club) return;
+
+      callServer('serverReactivateClub', { normalizedName: normalizedName })
+        .then(function(result) {
+          if (result.status === 'success') {
+            var idx = allClubs.findIndex(function(c) { return c.normalizedName === normalizedName; });
+            if (idx >= 0) allClubs[idx] = result.data;
+            renderClubs(allClubs);
+            showToast('Club reactivated', 'success');
+          } else {
+            showToast(result.message, 'error');
+          }
+        });
+    }
+  </script>
+</body>
+</html>

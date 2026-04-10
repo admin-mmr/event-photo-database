@@ -1,6 +1,7 @@
 import { ResultStatus } from '../types/enums';
 import { ServiceResult, FolderViolation } from '../types/responses';
-import { getConfig, APPROVED_CLUBS } from '../config/constants';
+import { getConfig } from '../config/constants';
+import { listAll as listAllClubs } from './clubService';
 import { validateFolderName } from '../utils/folderNameValidator';
 import { nowIsoTimestamp } from '../utils/dateFormatter';
 
@@ -329,7 +330,7 @@ export function scanLayer2Violations(
     const eventFolderName = eventFolder.getName();
     const iter = eventFolder.getFolders();
     const violations: FolderViolation[] = [];
-    const approvedNames = APPROVED_CLUBS.map((c) => c.normalizedName);
+    const approvedNames = listAllClubs(1, 200).items.map((c) => c.normalizedName);
     const now = nowIsoTimestamp();
 
     while (iter.hasNext()) {

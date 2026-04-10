@@ -1,7 +1,6 @@
 import { ResultStatus, UserRole, UserStatus } from '../types/enums';
-import { CreateUserInput, UpdateUserInput, ValidateFolderNameInput, CreateEventInput, UpdateEventInput } from '../types/requests';
+import { CreateUserInput, UpdateUserInput, ValidateFolderNameInput, CreateEventInput, UpdateEventInput, CreateClubInput, UpdateClubInput } from '../types/requests';
 import { ServiceResult, ValidationError } from '../types/responses';
-import { APPROVED_CLUBS } from '../config/constants';
 
 /**
  * InputValidator — sanitizes and validates all inputs entering the system.
@@ -82,11 +81,12 @@ export function isValidStatus(status: string): boolean {
   return Object.values(UserStatus).includes(status as UserStatus);
 }
 
-/** Returns true if the club name matches one of the approved clubs. */
+/**
+ * Returns true if the club name is a valid non-empty identifier.
+ * Actual club membership is now validated at the UI layer via the Clubs sheet.
+ */
 export function isApprovedClub(clubName: string): boolean {
-  return APPROVED_CLUBS.some(
-    (c) => c.normalizedName === clubName || c.displayName === clubName
-  );
+  return typeof clubName === 'string' && clubName.trim().length > 0;
 }
 
 // ─── Input validators ─────────────────────────────────────────────────────────
@@ -303,4 +303,68 @@ export function requireString(
     };
   }
   return { status: ResultStatus.SUCCESS, message: 'OK', data: value };
+}
+
+// ─── Club validators ──────────────────────────────────────────────────────────
+
+/** Returns true if a normalizedName is Drive-folder-safe (ASCII, no spaces). */
+export function isValidNormalizedName(name: string): boolean {
+  return /^[A-Za-z0-9_]+$/.test(name.trim());
+}
+
+/**
+ * Validates and sanitizes a CreateClubInput payload.
+ */
+export function validateCreateClubPayload(
+  raw: Record<string, unknown>
+): ServiceResult<CreateClubInput> {
+  const errors: ValidationError[] = [];
+
+  const displayName = sanitizeString(raw['displayName']);
+  const normalizedName = sanitizeString(raw['normalizedName']);
+
+  if (!displayName) {
+    errors.push({ field: 'displayName', message: 'Display name is required' });
+  }
+
+  if (!normalizedName) {
+    errors.push({ field: 'normalizedName', message: 'Normalized name is required' });
+  } else if (!isValidNormalizedName(normalizedName)) {
+    errors.push({
+      field: 'normalizedName',
+      message: 'Normalized name may only contain letters, numbers, and underscores (no spaces)',
+      value: normalizedName,
+    });
+  }
+
+  if (errors.length > 0) {
+    return { status: ResultStatus.ERROR, message: 'Validation failed', errors };
+  }
+
+  return { status: ResultStatus.SUCCESS, message: 'Valid', data: { displayName, normalizedName } };
+}
+
+/**
+ * Validates and sanitizes an UpdateClubInput payload.
+ * normalizedName is the lookup key and is required; displayName is optional.
+ */
+export function validateUpdateClubPayload(
+  raw: Record<string, unknown>
+): ServiceResult<UpdateClubInput> {
+  const normalizedName = sanitizeString(raw['normalizedName']);
+
+  if (!normalizedName) {
+    return {
+      status: ResultStatus.ERROR,
+      message: 'Validation failed',
+      errors: [{ field: 'normalizedName', message: 'normalizedName is required to identify the club' }],
+    };
+  }
+
+  const result: UpdateClubInput = {
+    normalizedName,
+    ...(typeof raw['displayName'] === 'string' && { displayName: sanitizeString(raw['displayName']) }),
+  };
+
+  return { status: ResultStatus.SUCCESS, message: 'Valid', data: result };
 }

@@ -20,6 +20,10 @@
         </a>
         <div class="mdl-layout-spacer"></div>
         <nav class="mdl-navigation">
+          <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=dashboard">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">home</i>
+            Home
+          </a>
           <? if (isAdmin) { ?>
           <a class="mdl-navigation__link" href="?action=admin_users">
             <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>
@@ -29,7 +33,15 @@
             <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
             Events
           </a>
+          <a class="mdl-navigation__link" href="?action=admin_clubs">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>
+            Clubs
+          </a>
           <? } ?>
+          <a class="mdl-navigation__link" href="?action=upload">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">cloud_upload</i>
+            Upload
+          </a>
         </nav>
         <span class="mdl-chip" style="margin-left:12px;">
           <span class="mdl-chip__text"><?= userEmail ?></span>
@@ -73,6 +85,14 @@
             <div>
               <div class="tile-label">Events</div>
               <div class="tile-sub">Create and manage event folders</div>
+            </div>
+          </a>
+
+          <a class="tile" href="?action=admin_clubs">
+            <i class="material-icons tile-icon">groups</i>
+            <div>
+              <div class="tile-label">Clubs</div>
+              <div class="tile-sub">Add or deactivate running clubs</div>
             </div>
           </a>
           <? } ?>

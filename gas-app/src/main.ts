@@ -14,6 +14,7 @@ import { requireRole } from './middleware/roleGuard';
 import { handleGet, handlePost } from './routes/router';
 import { createUser, deactivateUser, reactivateUser, updateUser } from './services/userService';
 import { createEvent, updateEvent, listAll as listAllEvents, findById as findEventById } from './services/eventService';
+import { createClub, updateClub, deactivateClub, reactivateClub, listAll as listAllClubs, listActive as listActiveClubs } from './services/clubService';
 import {
   scanAllViolations,
   getOrCreateClubFolder,
@@ -236,6 +237,113 @@ function serverScanViolations(): ServerResponse {
   } catch (err) {
     Logger.log(`serverScanViolations error: ${String(err)}`);
     return { status: 'error', message: 'Internal error scanning violations' };
+  }
+}
+
+// ─── Club server functions ────────────────────────────────────────────────────
+
+/**
+ * google.script.run entry point for listing clubs.
+ * Available to all authenticated users (used by upload page club dropdown).
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverListClubs(
+  payload: { activeOnly?: boolean }
+): ServerResponse {
+  try {
+    const authResult = authenticateRequest();
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      return { status: 'error', message: 'Authentication required' };
+    }
+
+    const clubs = payload.activeOnly ? listActiveClubs() : listAllClubs(1, 100).items;
+    return {
+      status: 'success',
+      message: `Found ${clubs.length} club(s)`,
+      data: { items: clubs, total: clubs.length },
+    };
+  } catch (err) {
+    Logger.log(`serverListClubs error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error listing clubs' };
+  }
+}
+
+/**
+ * google.script.run entry point for creating a club from the admin UI.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverCreateClub(
+  payload: { displayName: string; normalizedName: string }
+): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+
+    const result = createClub(
+      { displayName: payload.displayName, normalizedName: payload.normalizedName },
+      auth.adminEmail
+    );
+    return { status: result.status, message: result.message, data: result.data, errors: result.errors };
+  } catch (err) {
+    Logger.log(`serverCreateClub error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error creating club' };
+  }
+}
+
+/**
+ * google.script.run entry point for updating a club from the admin UI.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverUpdateClub(
+  payload: { normalizedName: string; displayName?: string }
+): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+
+    const result = updateClub(
+      {
+        normalizedName: payload.normalizedName,
+        ...(payload.displayName !== undefined && { displayName: payload.displayName }),
+      },
+      auth.adminEmail
+    );
+    return { status: result.status, message: result.message, data: result.data, errors: result.errors };
+  } catch (err) {
+    Logger.log(`serverUpdateClub error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error updating club' };
+  }
+}
+
+/**
+ * google.script.run entry point for deactivating a club from the admin UI.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverDeactivateClub(payload: { normalizedName: string }): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+    const result = deactivateClub(payload.normalizedName);
+    return { status: result.status, message: result.message, data: result.data };
+  } catch (err) {
+    Logger.log(`serverDeactivateClub error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error deactivating club' };
+  }
+}
+
+/**
+ * google.script.run entry point for reactivating a club from the admin UI.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverReactivateClub(payload: { normalizedName: string }): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+    const result = reactivateClub(payload.normalizedName);
+    return { status: result.status, message: result.message, data: result.data };
+  } catch (err) {
+    Logger.log(`serverReactivateClub error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error reactivating club' };
   }
 }
 

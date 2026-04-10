@@ -1,8 +1,8 @@
 import { UserRecord } from '../types/models';
 import { UserRole } from '../types/enums';
-import { getConfig, APPROVED_CLUBS } from '../config/constants';
 import { listAll } from '../services/userService';
-import { listAll as listAllEvents, findById as findEventById } from '../services/eventService';
+import { listAll as listAllEvents } from '../services/eventService';
+import { listAll as listAllClubs, listActive as listActiveClubs } from '../services/clubService';
 import { generateSummary } from '../services/summaryService';
 
 /* global HtmlService */
@@ -90,7 +90,8 @@ export function dashboardPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutpu
  */
 export function adminUsersPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
   const result = listAll(1, 200); // Load first 200 users for initial render
-  const approvedClubs = APPROVED_CLUBS.map((c) => ({
+  const activeClubs = listActiveClubs();
+  const approvedClubs = activeClubs.map((c) => ({
     display: c.displayName,
     value: c.normalizedName,
   }));
@@ -135,7 +136,8 @@ export function adminEventsPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOut
  */
 export function uploadPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
   const events = listAllEvents(1, 200, 'desc');
-  const approvedClubs = APPROVED_CLUBS.map((c) => ({
+  const activeClubs = listActiveClubs();
+  const approvedClubs = activeClubs.map((c) => ({
     display: c.displayName,
     value: c.normalizedName,
   }));
@@ -147,6 +149,24 @@ export function uploadPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
     isAdmin: user.role === UserRole.ADMIN,
     events: JSON.stringify(events.items),
     approvedClubs: JSON.stringify(approvedClubs),
+  });
+}
+
+/**
+ * Admin — Club Management page.
+ * Lists all clubs (active and inactive) with add/edit/deactivate controls.
+ * Clubs are loaded from the Clubs sheet, not the static constant.
+ * Admin-only; role is enforced at the router level before this is called.
+ */
+export function adminClubsPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
+  const result = listAllClubs(1, 100);
+
+  return renderTemplate('admin/clubs', {
+    userEmail: user.email,
+    userRole: user.role,
+    isAdmin: user.role === UserRole.ADMIN,
+    clubs: JSON.stringify(result.items),
+    totalClubs: result.total,
   });
 }
 

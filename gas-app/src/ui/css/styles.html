@@ -222,6 +222,21 @@
     margin-top: 2px;
   }
 
+  /* ── Header nav truncation ───────────────────────────────────────────────── */
+  /* Collapse nav link labels on narrow screens to keep the header tidy */
+  @media (max-width: 640px) {
+    .mdl-navigation__link span.nav-label {
+      display: none;
+    }
+    .mdl-navigation__link {
+      padding: 0 6px;
+      min-width: 36px;
+    }
+    .mdl-chip {
+      display: none; /* hide email chip on small screens */
+    }
+  }
+
   /* ── Responsive ──────────────────────────────────────────────────────────── */
   @media (max-width: 768px) {
     .page-content {
@@ -232,6 +247,11 @@
       flex-direction: column;
     }
 
+    .form-row > * {
+      width: 100% !important;
+      min-width: unset !important;
+    }
+
     .tile-grid {
       grid-template-columns: 1fr;
     }
@@ -239,6 +259,36 @@
     .mdl-data-table {
       display: block;
       overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* Stack page header buttons on mobile */
+    .page-header-row {
+      flex-direction: column;
+      align-items: flex-start !important;
+      gap: 8px;
+    }
+
+    /* Full-width buttons in forms on mobile */
+    .form-actions {
+      flex-wrap: wrap;
+    }
+
+    /* Reduce card padding on mobile */
+    .card {
+      padding: 16px;
+    }
+  }
+
+  @media (max-width: 480px) {
+    h4 {
+      font-size: 18px;
+    }
+
+    .mdl-data-table th,
+    .mdl-data-table td {
+      font-size: 13px;
+      padding: 8px 10px;
     }
   }
 </style>

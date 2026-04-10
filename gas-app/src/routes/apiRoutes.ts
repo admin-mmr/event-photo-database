@@ -7,10 +7,13 @@ import {
   validateFolderNamePayload,
   validateCreateEventPayload,
   validateUpdateEventPayload,
+  validateCreateClubPayload,
+  validateUpdateClubPayload,
   sanitizePayload,
 } from '../middleware/inputValidator';
 import { createUser, updateUser, deactivateUser, reactivateUser, findByEmail } from '../services/userService';
 import { createEvent, updateEvent, listAll as listAllEvents } from '../services/eventService';
+import { createClub, updateClub, deactivateClub, reactivateClub, listAll as listAllClubs } from '../services/clubService';
 import { validateFolderName } from '../utils/folderNameValidator';
 
 /* global ContentService */
@@ -227,6 +230,87 @@ export function handleListEvents(
 
   const result = listAllEvents(page, pageSize, sort);
   return jsonOk(result, `Found ${result.total} event(s)`);
+}
+
+// ─── Club handlers ────────────────────────────────────────────────────────────
+
+/**
+ * POST action=create_club
+ * Admin-only. Creates a new club in the Clubs sheet.
+ */
+export function handleCreateClub(
+  payload: Record<string, unknown>,
+  adminUser: UserRecord
+): GoogleAppsScript.Content.TextOutput {
+  const clean = sanitizePayload(payload);
+  const validation = validateCreateClubPayload(clean);
+  if (validation.status !== ResultStatus.SUCCESS || !validation.data) {
+    return jsonError('Validation failed', 400, validation.errors);
+  }
+
+  const result = createClub(validation.data, adminUser.email);
+  if (result.status !== ResultStatus.SUCCESS) {
+    const code = result.message.includes('already exists') ? 409 : 400;
+    return jsonError(result.message, code, result.errors);
+  }
+
+  return jsonOk(result.data, result.message);
+}
+
+/**
+ * POST action=update_club
+ * Admin-only. Updates a club's displayName (normalizedName is immutable).
+ */
+export function handleUpdateClub(
+  payload: Record<string, unknown>,
+  adminUser: UserRecord
+): GoogleAppsScript.Content.TextOutput {
+  const clean = sanitizePayload(payload);
+  const validation = validateUpdateClubPayload(clean);
+  if (validation.status !== ResultStatus.SUCCESS || !validation.data) {
+    return jsonError('Validation failed', 400, validation.errors);
+  }
+
+  const result = updateClub(validation.data, adminUser.email);
+  if (result.status !== ResultStatus.SUCCESS) {
+    const code = result.message.includes('not found') ? 404 : 400;
+    return jsonError(result.message, code, result.errors);
+  }
+
+  return jsonOk(result.data, result.message);
+}
+
+/**
+ * POST action=deactivate_club
+ * Admin-only. Marks a club as inactive.
+ */
+export function handleDeactivateClub(
+  payload: Record<string, unknown>,
+  _adminUser: UserRecord
+): GoogleAppsScript.Content.TextOutput {
+  const normalizedName = String(payload['normalizedName'] ?? '').trim();
+  if (!normalizedName) {
+    return jsonError('normalizedName is required', 400);
+  }
+
+  const result = deactivateClub(normalizedName);
+  if (result.status !== ResultStatus.SUCCESS) {
+    const code = result.message.includes('not found') ? 404 : 400;
+    return jsonError(result.message, code);
+  }
+
+  return jsonOk(result.data, result.message);
+}
+
+/**
+ * POST action=list_clubs
+ * Available to all authenticated users.
+ */
+export function handleListClubs(
+  _payload: Record<string, unknown>
+): GoogleAppsScript.Content.TextOutput {
+  const result = listAllClubs(1, 100);
+  return jsonOk(result, `Found ${result.total} club(s)`);
 }
 
 /**

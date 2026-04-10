@@ -1,5 +1,5 @@
 import { UserRole, UserStatus, UploadSource } from '../types/enums';
-import { UserRecord, EventRecord, UploadLogRecord } from '../types/models';
+import { UserRecord, EventRecord, UploadLogRecord, ClubRecord } from '../types/models';
 import { COLUMNS } from '../config/constants';
 
 /**
@@ -164,5 +164,45 @@ export function fromUploadLogRecord(record: UploadLogRecord): unknown[] {
     record.skippedNonPhoto,
     record.uploadTimestamp,
     record.source,
+  ];
+}
+
+// ─── Clubs ────────────────────────────────────────────────────────────────────
+
+/**
+ * Converts a raw Sheets row to a ClubRecord.
+ * Returns null if required fields are missing or status is invalid.
+ */
+export function toClubRecord(row: unknown[]): ClubRecord | null {
+  const COL = COLUMNS.CLUBS;
+  if (row.length <= COL.ADDED_BY) return null;
+
+  const displayName = String(row[COL.DISPLAY_NAME] ?? '').trim();
+  const normalizedName = String(row[COL.NORMALIZED_NAME] ?? '').trim();
+  const status = String(row[COL.STATUS] ?? '').trim();
+
+  if (!displayName || !normalizedName) return null;
+  if (status !== 'active' && status !== 'inactive') return null;
+
+  return {
+    displayName,
+    normalizedName,
+    status: status as 'active' | 'inactive',
+    addedDate: String(row[COL.ADDED_DATE] ?? '').trim(),
+    addedBy: String(row[COL.ADDED_BY] ?? '').trim().toLowerCase(),
+  };
+}
+
+/**
+ * Converts a ClubRecord back to a Sheets row array.
+ * Column order must match COLUMNS.CLUBS exactly.
+ */
+export function fromClubRecord(record: ClubRecord): unknown[] {
+  return [
+    record.displayName,
+    record.normalizedName,
+    record.status,
+    record.addedDate,
+    record.addedBy,
   ];
 }

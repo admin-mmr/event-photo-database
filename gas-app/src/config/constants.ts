@@ -75,6 +75,13 @@ export const COLUMNS: SheetColumnMap = {
     WINDOW_START: 1,
     REQUEST_COUNT: 2,
   },
+  CLUBS: {
+    DISPLAY_NAME: 0,
+    NORMALIZED_NAME: 1,
+    STATUS: 2,
+    ADDED_DATE: 3,
+    ADDED_BY: 4,
+  },
 };
 
 /**
@@ -118,8 +125,8 @@ export function getConfig(): AppConfig {
       EVENTS: 'Events',
       UPLOAD_LOG: 'Upload_Log',
       RATE_LIMIT: 'Rate_Limit',
+      CLUBS: 'Clubs',
     },
-    APPROVED_CLUBS,
     PHOTO_MIME_TYPES: [PhotoMimeType.JPEG, PhotoMimeType.PNG, PhotoMimeType.HEIC],
     MAX_FILE_SIZE_MB: 50,   // GAS hard limit per UrlFetch payload
     MAX_BATCH_SIZE_MB: 200, // Soft limit per upload session to avoid timeouts

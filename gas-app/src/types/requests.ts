@@ -59,3 +59,20 @@ export interface UpdateEventInput {
   readonly eventName?: string;     // New display name (does NOT rename Drive folder)
   readonly eventDate?: string;     // New date string "YYYY-MM-DD"
 }
+
+/**
+ * Input DTO for creating a new club (admin-only).
+ */
+export interface CreateClubInput {
+  readonly displayName: string;      // UI label, e.g. "驰跑团"
+  readonly normalizedName: string;   // Drive folder key, e.g. "CHI" or "New_Bee"
+}
+
+/**
+ * Input DTO for updating an existing club (admin-only).
+ * Only the displayName can be changed; normalizedName is immutable (Drive folders depend on it).
+ */
+export interface UpdateClubInput {
+  readonly normalizedName: string;   // Lookup key — cannot be changed
+  readonly displayName?: string;     // New UI label
+}
