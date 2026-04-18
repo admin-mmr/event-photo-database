@@ -61,6 +61,26 @@ export interface AuditLogRecord {
 }
 
 /**
+ * A row in the "Photos_Albums" sheet.
+ * Stores the mapping between events/clubs and their Google Photos album IDs.
+ *
+ * albumType = 'event' → master album for the whole event (all clubs)
+ * albumType = 'club'  → per-club album for a specific event+club combination
+ */
+export interface PhotosAlbumRecord {
+  readonly albumId:         string;            // Google Photos album ID
+  readonly albumType:       'event' | 'club';  // Scope of the album
+  readonly eventId:         string;            // FK → EventRecord.eventId
+  readonly clubName:        string;            // Normalized club name; empty for event-type albums
+  readonly albumTitle:      string;            // Human-readable title shown in Google Photos
+  readonly albumUrl:        string;            // Direct product URL for viewing in Google Photos
+  readonly shareableUrl:    string;            // Public shareable link (post-share call)
+  readonly createdAt:       string;            // ISO 8601 timestamp
+  readonly lastSyncAt:      string;            // ISO 8601 timestamp; empty until first sync
+  readonly syncedFileCount: number;            // Cumulative photos pushed to this album
+}
+
+/**
  * An entry in the approved clubs list.
  * `normalizedName` is used for Drive folder naming (underscores, no spaces).
  * `displayName` is shown in the UI.

@@ -9,12 +9,20 @@
  */
 
 import { ResultStatus, UserRole, UserStatus, UploadSource, AuditAction } from './types/enums';
+import {
+  ensureEventAlbum,
+  syncBatchToAlbums,
+  syncEventToAlbums,
+  backfillAllAlbums,
+  findAlbumsByEvent,
+  EventInfo,
+} from './services/photosService';
 import { authenticateRequest } from './middleware/authMiddleware';
 import { requireRole } from './middleware/roleGuard';
 import { handleGet, handlePost } from './routes/router';
 import { createUser, deactivateUser, reactivateUser, updateUser } from './services/userService';
 import { createEvent, updateEvent, listAll as listAllEvents, findById as findEventById } from './services/eventService';
-import { createClub, updateClub, deactivateClub, reactivateClub, listAll as listAllClubs, listActive as listActiveClubs } from './services/clubService';
+import { createClub, updateClub, deactivateClub, reactivateClub, listAll as listAllClubs, listActive as listActiveClubs, findByNormalizedName as findClubByNormalizedName } from './services/clubService';
 import {
   scanAllViolations,
   getOrCreateClubFolder,
@@ -163,11 +171,34 @@ function serverCreateEvent(
       auth.adminEmail
     );
     if (result.status === ResultStatus.SUCCESS && result.data) {
+      const eventRecord = result.data as { eventId: string; eventName: string; eventDate: string };
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.EVENT_CREATED,
-        resourceType: 'event', resourceId: (result.data as { eventId: string }).eventId,
+        resourceType: 'event', resourceId: eventRecord.eventId,
         details: { eventName: payload.eventName, eventDate: payload.eventDate },
       });
+
+      // Phase 6: auto-create the master Google Photos album for this event
+      try {
+        const albumResult = ensureEventAlbum(
+          eventRecord.eventId,
+          eventRecord.eventName,
+          eventRecord.eventDate
+        );
+        if (albumResult.status === ResultStatus.SUCCESS && albumResult.data) {
+          appendAuditLog({
+            actorEmail: auth.adminEmail, action: AuditAction.ALBUM_CREATED,
+            resourceType: 'event', resourceId: eventRecord.eventId,
+            details: { albumId: albumResult.data.albumId, albumTitle: albumResult.data.albumTitle },
+          });
+          Logger.log(`[serverCreateEvent] Photos album created: ${albumResult.data.albumId}`);
+        } else {
+          Logger.log(`[serverCreateEvent] Photos album creation failed: ${albumResult.message}`);
+        }
+      } catch (albumErr) {
+        // Album creation failure must not roll back the event creation
+        Logger.log(`[serverCreateEvent] Photos album error (non-fatal): ${String(albumErr)}`);
+      }
     }
     return {
       status: result.status,
@@ -756,6 +787,33 @@ function serverCompleteUpload(payload: {
       source:            UploadSource.WEB_APP,
     });
 
+    // Phase 6: auto-sync uploaded photos to Google Photos albums
+    if (Number(payload.fileCount) > 0) {
+      try {
+        const event = findEventById(payload.eventId);
+        if (event) {
+          // Resolve club display name for album title
+          const clubRecord = findClubByNormalizedName(payload.clubFolderName);
+          const clubDisplayName = clubRecord?.displayName ?? payload.clubFolderName.replace(/_/g, ' ');
+
+          const syncResult = syncBatchToAlbums(
+            event.eventId,
+            event.eventName,
+            event.eventDate,
+            payload.clubFolderName,
+            clubDisplayName,
+            payload.batchFolderId
+          );
+          Logger.log(
+            `[serverCompleteUpload] Photos sync: ${syncResult.message}`
+          );
+        }
+      } catch (syncErr) {
+        // Sync failure must not affect the upload log response
+        Logger.log(`[serverCompleteUpload] Photos sync error (non-fatal): ${String(syncErr)}`);
+      }
+    }
+
     return {
       status: result.status,
       message: result.message,
@@ -939,6 +997,154 @@ function serverGetAuditLog(payload: {
   } catch (err) {
     Logger.log(`serverGetAuditLog error: ${String(err)}`);
     return { status: 'error', message: 'Internal error fetching audit log' };
+  }
+}
+
+// ─── Phase 6 — Google Photos Albums server functions ─────────────────────────
+
+/**
+ * google.script.run entry point: returns all Google Photos album records for
+ * a given event (master event album + per-club albums).
+ *
+ * Available to all authenticated users so the upload page can surface album links
+ * after a successful upload.
+ *
+ * Payload: { eventId: string }
+ * Returns: { albums: PhotosAlbumRecord[] }
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverGetEventAlbums(payload: { eventId: string }): ServerResponse {
+  try {
+    const authResult = authenticateRequest();
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      return { status: 'error', message: 'Authentication required' };
+    }
+
+    if (!payload.eventId) {
+      return { status: 'error', message: 'eventId is required' };
+    }
+
+    const albums = findAlbumsByEvent(payload.eventId);
+    return {
+      status: 'success',
+      message: `Found ${albums.length} album(s) for event`,
+      data: { albums },
+    };
+  } catch (err) {
+    Logger.log(`serverGetEventAlbums error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error fetching event albums' };
+  }
+}
+
+/**
+ * google.script.run entry point: triggers a full re-sync of all Drive photos
+ * for one event to its Google Photos albums.
+ *
+ * Admin-only. Useful after manual Drive uploads or when photos were added
+ * outside the normal upload pipeline.
+ *
+ * Payload: { eventId: string }
+ * Returns: SyncEventResult
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverSyncAlbum(payload: { eventId: string }): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+
+    if (!payload.eventId) {
+      return { status: 'error', message: 'eventId is required' };
+    }
+
+    const event = findEventById(payload.eventId);
+    if (!event) {
+      return { status: 'error', message: `Event "${payload.eventId}" not found` };
+    }
+
+    // Build club display-name lookup map
+    const clubDisplayNames: Record<string, string> = {};
+    listActiveClubs().forEach((c) => {
+      clubDisplayNames[c.normalizedName] = c.displayName;
+    });
+
+    const eventInfo: EventInfo = {
+      eventId:       event.eventId,
+      eventName:     event.eventName,
+      eventDate:     event.eventDate,
+      driveFolderId: event.driveFolderId,
+    };
+
+    const result = syncEventToAlbums(eventInfo, clubDisplayNames);
+
+    if (result.status === ResultStatus.SUCCESS && result.data) {
+      appendAuditLog({
+        actorEmail: auth.adminEmail, action: AuditAction.ALBUM_SYNCED,
+        resourceType: 'event', resourceId: event.eventId,
+        details: {
+          totalSynced: result.data.totalSynced,
+          clubs: result.data.clubsSynced.length,
+          errors: result.data.errors.length,
+        },
+      });
+    }
+
+    return {
+      status: result.status,
+      message: result.message,
+      data: result.data,
+    };
+  } catch (err) {
+    Logger.log(`serverSyncAlbum error: ${String(err)}`);
+    return { status: 'error', message: `Internal error syncing album: ${String(err)}` };
+  }
+}
+
+/**
+ * google.script.run entry point: creates Google Photos albums for all events
+ * and syncs all Drive photos into them.
+ *
+ * Admin-only. Idempotent — safe to run multiple times.
+ * For very large archives, the GAS 6-minute limit may cut the run short;
+ * call again to continue (already-synced photos may be duplicated in Google Photos).
+ *
+ * Payload: {} (no parameters required)
+ * Returns: BackfillResult
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverBackfillAlbums(_payload: Record<string, unknown>): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+
+    // Build club display-name lookup map
+    const clubDisplayNames: Record<string, string> = {};
+    listActiveClubs().forEach((c) => {
+      clubDisplayNames[c.normalizedName] = c.displayName;
+    });
+
+    const result = backfillAllAlbums(clubDisplayNames);
+
+    if (result.status === ResultStatus.SUCCESS && result.data) {
+      appendAuditLog({
+        actorEmail: auth.adminEmail, action: AuditAction.ALBUM_BACKFILLED,
+        resourceType: 'report', resourceId: '',
+        details: {
+          eventsProcessed: result.data.eventsProcessed,
+          albumsCreated:   result.data.albumsCreated,
+          totalSynced:     result.data.totalSynced,
+          errorCount:      result.data.errors.length,
+        },
+      });
+    }
+
+    return {
+      status: result.status,
+      message: result.message,
+      data: result.data,
+    };
+  } catch (err) {
+    Logger.log(`serverBackfillAlbums error: ${String(err)}`);
+    return { status: 'error', message: `Internal error during backfill: ${String(err)}` };
   }
 }
 

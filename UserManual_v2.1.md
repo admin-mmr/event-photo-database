@@ -1,6 +1,6 @@
 # MM Runners Photo Archive — User Manual
 
-**Version**: 2.1  
+**Version**: 2.2  
 **Platform**: GAS Photo Management Platform  
 **System Administrator**: cathy.lin@mmrunners.org  
 **Last Updated**: April 2026
@@ -16,9 +16,10 @@
 5. [Admin: User Management](#5-admin-user-management)
 6. [Admin: Club Management](#6-admin-club-management)
 7. [Admin: Event Management](#7-admin-event-management)
-8. [Admin: Summary & Reports](#8-admin-summary--reports)
-9. [REST API (Partner Organizations)](#9-rest-api-partner-organizations)
-10. [Troubleshooting](#10-troubleshooting)
+8. [Google Photos Albums](#8-google-photos-albums)
+9. [Admin: Summary & Reports](#9-admin-summary--reports)
+10. [REST API (Partner Organizations)](#10-rest-api-partner-organizations)
+11. [Troubleshooting](#11-troubleshooting)
 
 ---
 
@@ -28,7 +29,7 @@
 
 The MM Runners Photo Archive is an event photo management tool built for the MM Runners organization. It runs on Google Apps Script and integrates with Google Drive and Google Sheets, giving every running club a unified way to upload, archive, and browse event photos.
 
-Version 2.1 includes all five development phases: upload flow, user management, club management, event management, admin summary dashboard, and a cross-organization REST API.
+Version 2.2 includes all six development phases: upload flow, user management, club management, event management, admin summary dashboard, cross-organization REST API, and automatic Google Photos album sync.
 
 ### 1.2 Key Features
 
@@ -41,6 +42,7 @@ Version 2.1 includes all five development phases: upload flow, user management, 
 - Folder naming validation to keep the directory structure consistent
 - Admin summary dashboard: upload stats by event and club, CSV export, exception email alerts
 - Cross-organization REST API: partner GAS scripts can query and upload photos programmatically
+- Google Photos albums: automatically created per event and club, kept in sync with Drive uploads
 
 ### 1.3 User Roles
 
@@ -184,6 +186,8 @@ After upload completes:
 | Skipped duplicates: N | Files that matched existing files (by name and size) |
 | Skipped non-photos: N | Files filtered out due to unsupported file type |
 
+Once the upload is logged, photos are automatically pushed to the event's Google Photos album and your club's Google Photos album. See [Chapter 8](#8-google-photos-albums) for details.
+
 ### 4.3 Where Are My Photos?
 
 Photos are saved in Google Drive at:
@@ -304,6 +308,7 @@ Click the **Events** tile on the dashboard, or click **Events** in the navigatio
    - Generates the folder name (`YYYY-MM-DD_Event_Name`)
    - Creates the Drive folder under the root folder
    - Writes the event record to the Events sheet
+   - **Automatically creates a shared Google Photos album** for the event (e.g. `2026-04-15 Boston Marathon`)
 5. The new event appears at the top of the table.
 
 ### 7.3 Editing an Event
@@ -322,19 +327,72 @@ When the Events page loads, the system silently scans Level 1 and Level 2 of the
 
 ---
 
-## 8. Admin: Summary & Reports
+## 8. Google Photos Albums
+
+The system automatically mirrors your Drive photos into Google Photos shared albums — one album per event (all clubs combined) and one per event+club pair. Albums are created and kept in sync without any extra steps from users or admins.
+
+### 8.1 How Albums Are Organized
+
+| Album type | Example title | Who can view |
+|------------|---------------|--------------|
+| Event album | `2026-04-15 Boston Marathon` | Anyone with the shareable link |
+| Club album | `2026-04-15 Boston Marathon – New Bee` | Anyone with the shareable link |
+
+Both albums are created automatically and shared with a public link when an event is created or photos are first uploaded.
+
+### 8.2 When Are Albums Synced?
+
+- **Event creation** — the master event album is created immediately when an admin creates a new event.
+- **After each upload** — once your upload session is finalized (Step 4 complete), all photos in the batch are pushed to both the event album and your club's album. No extra action needed.
+- **REST API uploads** — photos uploaded via the partner API are also synced automatically.
+
+### 8.3 Viewing Album Links
+
+To view album links for an event, contact your system administrator or use the `serverGetEventAlbums` function from the GAS editor. The shareable URL can be shared with anyone.
+
+### 8.4 Admin: Manual Sync
+
+If you uploaded photos directly to Drive (bypassing the upload flow), run a manual sync to push those photos to the albums:
+
+1. Open the GAS editor for the project.
+2. Call `serverSyncAlbum({ eventId: "<eventId>" })`.
+3. Check the execution log for the result — it shows how many photos were synced and any errors.
+
+### 8.5 Admin: Backfill All Events
+
+To create albums and sync Drive photos for all existing events in one operation:
+
+1. Open the GAS editor for the project.
+2. Call `serverBackfillAlbums({})`.
+3. Check the execution log for the progress report.
+
+> **Note:** The GAS 6-minute execution limit applies. For large archives, call `serverBackfillAlbums` multiple times — it is safe to re-run and picks up where it left off.
+
+### 8.6 One-Time Setup (Admin)
+
+Before deploying for the first time, create a sheet named `Photos_Albums` in the Google Spreadsheet. Add a header row with these columns in order:
+
+```
+albumId | albumType | eventId | clubName | albumTitle | albumUrl | shareableUrl | createdAt | lastSyncAt | syncedFileCount
+```
+
+After deploying, users will be prompted by Google to authorize two new permissions (Google Photos access). This is expected — click Allow.
+
+---
+
+## 9. Admin: Summary & Reports
 
 > This chapter is for administrators only.
 
-### 8.1 Opening the Summary Dashboard
+### 9.1 Opening the Summary Dashboard
 
 Click the **Summary** tile on the dashboard, or click **Summary** in the navigation bar.
 
-### 8.2 Date Range & Filters
+### 9.2 Date Range & Filters
 
 Use the **From / To** date pickers to set the reporting period. All data on the page updates automatically.
 
-### 8.3 Upload Statistics
+### 9.3 Upload Statistics
 
 The main table shows, for each event in the selected period:
 
@@ -342,11 +400,11 @@ The main table shows, for each event in the selected period:
 - Number of photos and total size per club
 - Grand total for the event
 
-### 8.4 Events with No Uploads
+### 9.4 Events with No Uploads
 
 A separate section lists events that had zero upload activity in the selected period. Use this list to follow up with clubs that may have missed their upload window.
 
-### 8.5 Naming Violations
+### 9.5 Naming Violations
 
 The violations section shows any Level 1 or Level 2 Drive folders whose names do not comply with the naming convention. For each violation:
 
@@ -355,27 +413,27 @@ The violations section shows any Level 1 or Level 2 Drive folders whose names do
 - Layer (1 or 2)
 - Violation type
 
-### 8.6 CSV Export
+### 9.6 CSV Export
 
 Click **Export CSV** to download the full summary report as a comma-separated file. The file can be opened in Excel or Google Sheets for further analysis.
 
-### 8.7 Exception Email Alert
+### 9.7 Exception Email Alert
 
 Click **Send Exception Email** to email the violation report to the administrator's registered address. The email lists all naming violations detected in the current scan.
 
 ---
 
-## 9. REST API (Partner Organizations)
+## 10. REST API (Partner Organizations)
 
 This chapter is for technical users at partner organizations who want to upload photos programmatically without using the web interface.
 
-### 9.1 Prerequisites
+### 10.1 Prerequisites
 
 - Your organization must be registered as an `api_client` user by the MM Runners administrator.
 - You will receive: the Web App URL and your API key (your registered email address).
 - You must have access to Google Apps Script or another environment that can make HTTP requests.
 
-### 9.2 Authentication
+### 10.2 Authentication
 
 Pass your API key as a query parameter on every request:
 
@@ -385,11 +443,11 @@ Pass your API key as a query parameter on every request:
 
 There is no separate token exchange. GAS Web Apps do not support reading custom HTTP headers, so the API key is always a query parameter.
 
-### 9.3 Rate Limit
+### 10.3 Rate Limit
 
 Each API key is limited to **60 requests per hour**. One file upload = one request. Exceeding the limit returns HTTP 429 with the message "Rate limit exceeded."
 
-### 9.4 Available Endpoints
+### 10.4 Available Endpoints
 
 **Check folder** (GET)
 
@@ -416,7 +474,7 @@ Body: { eventId, clubName, fileName, mimeType, base64Data }
 
 Returns: `{ status: "success", data: { fileId, batchFolderName } }` or an error with `code` and `message`.
 
-### 9.5 Standard Response Format
+### 10.5 Standard Response Format
 
 All responses follow:
 
@@ -440,13 +498,13 @@ Common error codes:
 | 429 | Too Many Requests — rate limit exceeded |
 | 500 | Internal server error |
 
-### 9.6 Partner Client Example
+### 10.6 Partner Client Example
 
 A ready-to-use GAS client script is included in the repository at `example/partner-client.gs`. Copy the file into your GAS project, set the `XIANGSHEIDONG_BASE_URL` and `API_KEY` constants, and run the functions.
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 | Problem | Cause | Solution |
 |---------|-------|----------|
@@ -458,5 +516,8 @@ A ready-to-use GAS client script is included in the repository at `example/partn
 | "Rate limit exceeded" in API | Your api_client key sent more than 60 requests in an hour | Wait until the hour resets, or contact the administrator to review your request pattern |
 | Naming violation banner on Events page | A Drive folder at Level 1 or 2 does not follow the naming convention | Review the violation list, identify the folder, and rename or delete it manually in Google Drive |
 | Changes pushed with `clasp push` not live | The live deployment has not been updated | In the GAS editor, create a new deployment version (Deploy → Manage deployments) |
+| Google Photos album not created after event creation | Photos scope was not authorized, or album creation failed silently | Check the GAS execution log for errors; run `serverSyncAlbum({ eventId })` to retry |
+| Photos not appearing in album after upload | Sync may have failed silently | Check the GAS execution log; run `serverSyncAlbum({ eventId })` to push Drive photos to albums |
+| "Authorization required" after deployment | New Google Photos scopes require user re-authorization | Open the app URL in a browser — Google will prompt for authorization; click Allow |
 
 For issues not covered here, contact: **cathy.lin@mmrunners.org**

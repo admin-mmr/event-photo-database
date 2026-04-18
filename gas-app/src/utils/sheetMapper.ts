@@ -1,5 +1,5 @@
 import { UserRole, UserStatus, UploadSource, AuditAction } from '../types/enums';
-import { UserRecord, EventRecord, UploadLogRecord, ClubRecord, AuditLogRecord } from '../types/models';
+import { UserRecord, EventRecord, UploadLogRecord, ClubRecord, AuditLogRecord, PhotosAlbumRecord } from '../types/models';
 import { COLUMNS } from '../config/constants';
 
 /**
@@ -248,5 +248,56 @@ export function fromAuditLogRecord(record: AuditLogRecord): unknown[] {
     record.resourceType,
     record.resourceId,
     record.details,
+  ];
+}
+
+// ─── Photos Albums ─────────────────────────────────────────────────────────────
+
+/**
+ * Converts a raw Sheets row to a PhotosAlbumRecord.
+ * Returns null if required fields are missing or albumType is unrecognized.
+ */
+export function toPhotosAlbumRecord(row: unknown[]): PhotosAlbumRecord | null {
+  const COL = COLUMNS.PHOTOS_ALBUMS;
+  if (row.length <= COL.SYNCED_FILE_COUNT) return null;
+
+  const albumId   = String(row[COL.ALBUM_ID]   ?? '').trim();
+  const albumType = String(row[COL.ALBUM_TYPE]  ?? '').trim();
+
+  if (!albumId) return null;
+  if (albumType !== 'event' && albumType !== 'club') return null;
+
+  const syncedFileCount = Number(row[COL.SYNCED_FILE_COUNT]);
+
+  return {
+    albumId,
+    albumType: albumType as 'event' | 'club',
+    eventId:         String(row[COL.EVENT_ID]         ?? '').trim(),
+    clubName:        String(row[COL.CLUB_NAME]         ?? '').trim(),
+    albumTitle:      String(row[COL.ALBUM_TITLE]       ?? '').trim(),
+    albumUrl:        String(row[COL.ALBUM_URL]         ?? '').trim(),
+    shareableUrl:    String(row[COL.SHAREABLE_URL]     ?? '').trim(),
+    createdAt:       String(row[COL.CREATED_AT]        ?? '').trim(),
+    lastSyncAt:      String(row[COL.LAST_SYNC_AT]      ?? '').trim(),
+    syncedFileCount: isFinite(syncedFileCount) ? syncedFileCount : 0,
+  };
+}
+
+/**
+ * Converts a PhotosAlbumRecord back to a Sheets row array.
+ * Column order must match COLUMNS.PHOTOS_ALBUMS exactly.
+ */
+export function fromPhotosAlbumRecord(record: PhotosAlbumRecord): unknown[] {
+  return [
+    record.albumId,
+    record.albumType,
+    record.eventId,
+    record.clubName,
+    record.albumTitle,
+    record.albumUrl,
+    record.shareableUrl,
+    record.createdAt,
+    record.lastSyncAt,
+    record.syncedFileCount,
   ];
 }

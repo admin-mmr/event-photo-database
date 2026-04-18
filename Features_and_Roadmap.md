@@ -161,4 +161,59 @@ The following features are not in v1 due to technical constraints of Google Apps
 
 **v1.0 is feature-complete.** All 5 planned phases have been implemented and tested (≥85% code coverage across all modules). The system is production-ready for the current scale of the MM Runners organization.
 
+**Phase 6 (Google Photos Albums)** is now implemented in v1.x and described in Part 3 below.
+
 The next major investment is the **v2.0 migration** to Node.js + Firebase, which will unlock background processing, webhooks, and better performance at scale while keeping all existing folder conventions and user workflows intact.
+
+---
+
+## Part 3 — Phase 6: Google Photos Albums (v1.x)
+
+### 3.1 Overview
+
+Phase 6 mirrors the Drive folder hierarchy into Google Photos shared albums so that members and organizers can view event photos directly in Google Photos — with shareable links, a mobile-friendly viewer, and no need to download from Drive.
+
+Two album levels are maintained per event:
+
+| Album type | Example title | Contents |
+|------------|---------------|----------|
+| **Event album** | `2026-04-15 Boston Marathon` | All clubs' photos for the event |
+| **Club album** | `2026-04-15 Boston Marathon – Misty Mountain` | One club's photos for the event |
+
+Both album types are created automatically and kept in sync.
+
+### 3.2 Implemented Features
+
+| Feature | Description |
+|---------|-------------|
+| **Auto-create event album** | When an admin creates a new event, a master Google Photos album is automatically created and shared. The album ID and shareable URL are stored in the new `Photos_Albums` sheet. |
+| **Auto-create club album** | When an upload session completes, the per-club album for that event+club is created if it doesn't already exist. |
+| **Auto-sync on upload** | After each successful upload session (`serverCompleteUpload`), all photos in the batch folder are pushed to both the event album and the club album. The REST API upload path (`api_upload_file`) also syncs automatically. |
+| **Manual sync** | Admin can trigger a full re-sync for any event via `serverSyncAlbum({ eventId })` — useful after Drive-direct uploads or edits outside the pipeline. |
+| **Full backfill** | `serverBackfillAlbums()` iterates every event, creates any missing albums, and syncs all Drive photos. Safe to run multiple times (idempotent). |
+| **Album link lookup** | `serverGetEventAlbums({ eventId })` returns all album records for an event, giving the UI both the direct product URL and the public shareable link. |
+| **Audit logging** | `ALBUM_CREATED`, `ALBUM_SYNCED`, and `ALBUM_BACKFILLED` actions are written to the Audit_Log sheet for every album operation performed by an admin. |
+| **`Photos_Albums` sheet** | New sheet with columns: albumId, albumType, eventId, clubName, albumTitle, albumUrl, shareableUrl, createdAt, lastSyncAt, syncedFileCount. Single source of truth for all album metadata. |
+
+### 3.3 Technical Notes
+
+**Google Photos Library API** is called via `UrlFetchApp` (GAS has no built-in Photos service). Two new OAuth scopes are required in `appsscript.json`:
+
+```
+https://www.googleapis.com/auth/photoslibrary
+https://www.googleapis.com/auth/photoslibrary.sharing
+```
+
+Users will be prompted to re-authorize the app after deployment.
+
+**Upload flow** (Drive → Photos):
+
+1. Read file blob from Drive via `DriveApp.getFileById(id).getBlob()`
+2. POST raw bytes to `/v1/uploads` → receive `uploadToken`
+3. POST `/v1/mediaItems:batchCreate` with the token + albumId → media item created
+
+**Failure isolation**: album/sync failures are caught and logged but never abort an upload or event-creation response. A failed sync is visible in the GAS execution log; the admin can re-trigger with `serverSyncAlbum`.
+
+**GAS execution limit**: the 6-minute limit applies to `serverBackfillAlbums`. For large archives, run it multiple times — the function is idempotent (already-synced photos may be re-added, but Google Photos deduplicates by content hash).
+
+**`Photos_Albums` sheet setup**: Create this sheet manually in the spreadsheet before the first deployment. Add a header row with these column names in order: `albumId`, `albumType`, `eventId`, `clubName`, `albumTitle`, `albumUrl`, `shareableUrl`, `createdAt`, `lastSyncAt`, `syncedFileCount`.

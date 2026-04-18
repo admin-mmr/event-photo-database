@@ -80,6 +80,11 @@ export enum RouteAction {
   API_CHECK_FOLDER = 'api_check_folder',   // GET: resolve event name → folder ID
   API_LIST_FILES   = 'api_list_files',     // GET: list files in a club folder
   API_UPLOAD_FILE  = 'api_upload_file',    // POST: upload a single photo
+
+  // Phase 6 — Google Photos Albums
+  SYNC_ALBUM      = 'sync_album',       // Admin: sync all Drive photos for one event → albums
+  BACKFILL_ALBUMS = 'backfill_albums',  // Admin: create + sync albums for all events
+  GET_EVENT_ALBUMS = 'get_event_albums', // Any user: get album links for an event
 }
 
 /**
@@ -106,6 +111,11 @@ export enum AuditAction {
   // Reporting
   EXPORT_CSV           = 'EXPORT_CSV',
   EXCEPTION_EMAIL_SENT = 'EXCEPTION_EMAIL_SENT',
+
+  // Phase 6 — Google Photos Albums
+  ALBUM_CREATED   = 'ALBUM_CREATED',   // A new Google Photos album was created
+  ALBUM_SYNCED    = 'ALBUM_SYNCED',    // Photos synced to album for one event
+  ALBUM_BACKFILLED = 'ALBUM_BACKFILLED', // Full backfill of all event albums completed
 }
 
 /**

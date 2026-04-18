@@ -22,6 +22,7 @@ export interface SheetNames {
   readonly RATE_LIMIT: string;
   readonly CLUBS: string;
   readonly AUDIT_LOG: string;
+  readonly PHOTOS_ALBUMS: string;
 }
 
 /**
@@ -36,6 +37,7 @@ export interface SheetColumnMap {
   readonly RATE_LIMIT: RateLimitSheetColumns;
   readonly CLUBS: ClubSheetColumns;
   readonly AUDIT_LOG: AuditLogSheetColumns;
+  readonly PHOTOS_ALBUMS: PhotosAlbumsSheetColumns;
 }
 
 export interface AuditLogSheetColumns {
@@ -94,4 +96,17 @@ export interface ClubSheetColumns {
   readonly STATUS: 2;           // "active" | "inactive"
   readonly ADDED_DATE: 3;       // ISO 8601 date "YYYY-MM-DD"
   readonly ADDED_BY: 4;         // Admin email
+}
+
+export interface PhotosAlbumsSheetColumns {
+  readonly ALBUM_ID:          0;  // Google Photos album ID
+  readonly ALBUM_TYPE:        1;  // "event" | "club"
+  readonly EVENT_ID:          2;  // FK → Events.eventId
+  readonly CLUB_NAME:         3;  // Normalized club name; empty for event-type albums
+  readonly ALBUM_TITLE:       4;  // Human-readable album title
+  readonly ALBUM_URL:         5;  // Google Photos product URL
+  readonly SHAREABLE_URL:     6;  // Public shareable link
+  readonly CREATED_AT:        7;  // ISO 8601 timestamp
+  readonly LAST_SYNC_AT:      8;  // ISO 8601 timestamp of most recent sync
+  readonly SYNCED_FILE_COUNT: 9;  // Cumulative number of photos pushed to album
 }

@@ -91,6 +91,18 @@ export const COLUMNS: SheetColumnMap = {
     RESOURCE_ID:   5,
     DETAILS:       6,
   },
+  PHOTOS_ALBUMS: {
+    ALBUM_ID:          0,
+    ALBUM_TYPE:        1,
+    EVENT_ID:          2,
+    CLUB_NAME:         3,
+    ALBUM_TITLE:       4,
+    ALBUM_URL:         5,
+    SHAREABLE_URL:     6,
+    CREATED_AT:        7,
+    LAST_SYNC_AT:      8,
+    SYNCED_FILE_COUNT: 9,
+  },
 };
 
 /**
@@ -136,6 +148,7 @@ export function getConfig(): AppConfig {
       RATE_LIMIT: 'Rate_Limit',
       CLUBS: 'Clubs',
       AUDIT_LOG: 'Audit_Log',
+      PHOTOS_ALBUMS: 'Photos_Albums',
     },
     PHOTO_MIME_TYPES: [PhotoMimeType.JPEG, PhotoMimeType.PNG, PhotoMimeType.HEIC],
     MAX_FILE_SIZE_MB: 50,   // GAS hard limit per UrlFetch payload
