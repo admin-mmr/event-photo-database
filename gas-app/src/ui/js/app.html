@@ -136,6 +136,34 @@
     });
   });
 
+  // ── Mobile nav hamburger toggle ───────────────────────────────────────────
+  //
+  // On narrow viewports (iPhone portrait etc.) the header nav collapses
+  // behind a hamburger button. Clicking the button toggles the .nav-open
+  // class on the header row, which reveals the dropdown panel via CSS.
+  document.addEventListener('DOMContentLoaded', function () {
+    var toggles = document.querySelectorAll('.nav-toggle');
+    toggles.forEach(function (toggle) {
+      toggle.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var row = toggle.closest('.mdl-layout__header-row');
+        if (!row) return;
+        var isOpen = row.classList.toggle('nav-open');
+        toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      });
+    });
+
+    // Tap outside the nav closes it.
+    document.addEventListener('click', function (e) {
+      document.querySelectorAll('.mdl-layout__header-row.nav-open').forEach(function (row) {
+        if (row.contains(e.target)) return;
+        row.classList.remove('nav-open');
+        var tgl = row.querySelector('.nav-toggle');
+        if (tgl) tgl.setAttribute('aria-expanded', 'false');
+      });
+    });
+  });
+
   // ── Confirmation helper ────────────────────────────────────────────────────
 
   /**

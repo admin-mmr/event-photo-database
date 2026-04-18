@@ -22,16 +22,22 @@
           湘舍动公益文件系统
         </a>
         <div class="mdl-layout-spacer"></div>
-        <nav class="mdl-navigation" id="nav-links">
-          <!-- Role-based links rendered by page template -->
-        </nav>
-        <?
-          if (typeof userEmail !== 'undefined' && userEmail) {
-        ?>
-        <span class="mdl-chip" style="margin-left:12px;">
-          <span class="mdl-chip__text"><?= userEmail ?></span>
-        </span>
-        <? } ?>
+        <div class="nav-panel">
+          <nav class="mdl-navigation" id="nav-links">
+            <!-- Role-based links rendered by page template -->
+          </nav>
+          <?
+            if (typeof userEmail !== 'undefined' && userEmail) {
+          ?>
+          <span class="mdl-chip" style="margin-left:12px;">
+            <span class="mdl-chip__text"><?= userEmail ?></span>
+          </span>
+          <? } ?>
+        </div>
+        <button class="nav-toggle" type="button"
+                aria-label="Toggle menu" aria-expanded="false">
+          <i class="material-icons">menu</i>
+        </button>
       </div>
     </header>
 

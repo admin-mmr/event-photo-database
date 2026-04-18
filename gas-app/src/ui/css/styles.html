@@ -222,18 +222,125 @@
     margin-top: 2px;
   }
 
-  /* ── Header nav truncation ───────────────────────────────────────────────── */
-  /* Collapse nav link labels on narrow screens to keep the header tidy */
-  @media (max-width: 640px) {
-    .mdl-navigation__link span.nav-label {
+  /* ── Header nav toggle (hamburger) ───────────────────────────────────────── */
+  /*
+   * The hamburger button is hidden on desktop. On narrow viewports
+   * (iPhone portrait etc.) the nav links collapse behind this button
+   * and drop down from the header when tapped.
+   */
+  .nav-toggle {
+    display: none;                 /* desktop: hidden */
+    background: transparent;
+    border: 0;
+    color: inherit;
+    padding: 8px;
+    margin-left: 8px;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+
+  .nav-toggle:hover,
+  .nav-toggle:focus {
+    background: rgba(255, 255, 255, 0.12);
+    outline: none;
+  }
+
+  .nav-toggle .material-icons {
+    font-size: 28px;
+    vertical-align: middle;
+  }
+
+  /*
+   * .nav-panel wraps the nav links AND the user-email chip. On desktop it is
+   * a transparent inline flex container so the layout is unchanged. On
+   * mobile (iPhone portrait) the whole panel collapses behind the hamburger.
+   */
+  .nav-panel {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  /* ── Collapsed mobile nav (iPhone portrait etc.) ─────────────────────────── */
+  @media (max-width: 600px) {
+
+    /* Show the hamburger toggle */
+    .nav-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* Keep header row tidy */
+    .mdl-layout__header-row {
+      padding: 0 12px;
+    }
+
+    .mdl-layout-title {
+      font-size: 16px;
+    }
+
+    /*
+     * The whole nav-panel (links + email chip) becomes a dropdown that is
+     * hidden by default and revealed when .nav-open is set on the header-row
+     * (toggled via JS).
+     */
+    .mdl-layout__header .nav-panel {
       display: none;
+      position: absolute;
+      top: 100%;                   /* just below the header row */
+      left: 0;
+      right: 0;
+      flex-direction: column;
+      align-items: stretch;
+      background: #3f51b5;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.25);
+      padding: 4px 0;
+      z-index: 5;
     }
-    .mdl-navigation__link {
-      padding: 0 6px;
-      min-width: 36px;
+
+    .mdl-layout__header-row.nav-open .nav-panel {
+      display: flex;
     }
-    .mdl-chip {
-      display: none; /* hide email chip on small screens */
+
+    /* Nav itself becomes a plain vertical stack inside the panel */
+    .mdl-layout__header .nav-panel .mdl-navigation {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+    }
+
+    .mdl-layout__header .nav-panel .mdl-navigation__link {
+      padding: 14px 20px;
+      line-height: 1.2;
+      height: auto;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      width: 100%;
+      box-sizing: border-box;
+      text-align: left;
+    }
+
+    .mdl-layout__header .nav-panel .mdl-navigation__link--current {
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    /* Email chip: render as last "row" in the dropdown */
+    .mdl-layout__header .nav-panel .mdl-chip {
+      display: flex;
+      align-items: center;
+      margin: 0 !important;
+      padding: 14px 20px;
+      width: 100%;
+      box-sizing: border-box;
+      background: transparent;
+      color: rgba(255, 255, 255, 0.85);
+      border-radius: 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.15);
+      height: auto;
+      font-size: 13px;
+    }
+
+    .mdl-layout__header .nav-panel .mdl-chip .mdl-chip__text {
+      color: inherit;
     }
   }
 

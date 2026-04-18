@@ -19,33 +19,39 @@
           湘舍动公益文件系统
         </a>
         <div class="mdl-layout-spacer"></div>
-        <nav class="mdl-navigation">
-          <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=dashboard">
-            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">home</i>
-            Home
-          </a>
-          <? if (isAdmin) { ?>
-          <a class="mdl-navigation__link" href="?action=admin_users">
-            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>
-            Users
-          </a>
-          <a class="mdl-navigation__link" href="?action=admin_events">
-            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
-            Events
-          </a>
-          <a class="mdl-navigation__link" href="?action=admin_clubs">
-            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>
-            Clubs
-          </a>
-          <? } ?>
-          <a class="mdl-navigation__link" href="?action=upload">
-            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">cloud_upload</i>
-            Upload
-          </a>
-        </nav>
-        <span class="mdl-chip" style="margin-left:12px;">
-          <span class="mdl-chip__text"><?= userEmail ?></span>
-        </span>
+        <div class="nav-panel">
+          <nav class="mdl-navigation">
+            <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=dashboard">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">home</i>
+              Home
+            </a>
+            <? if (isAdmin) { ?>
+            <a class="mdl-navigation__link" href="?action=admin_users">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>
+              Users
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_events">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
+              Events
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_clubs">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>
+              Clubs
+            </a>
+            <? } ?>
+            <a class="mdl-navigation__link" href="?action=upload">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">cloud_upload</i>
+              Upload
+            </a>
+          </nav>
+          <span class="mdl-chip" style="margin-left:12px;">
+            <span class="mdl-chip__text"><?= userEmail ?></span>
+          </span>
+        </div>
+        <button class="nav-toggle" type="button"
+                aria-label="Toggle menu" aria-expanded="false">
+          <i class="material-icons">menu</i>
+        </button>
       </div>
     </header>
 
