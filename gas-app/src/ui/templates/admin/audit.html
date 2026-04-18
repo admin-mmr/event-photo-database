@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Audit Log — 湘舍动公益文件系统</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.indigo-pink.min.css">
+  <?!= HtmlService.createHtmlOutputFromFile('ui/css/styles').getContent() ?>
+  <style>
+    .audit-table td, .audit-table th { font-size: 13px; }
+    .audit-action {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .audit-action.user    { background: #e3f2fd; color: #1565c0; }
+    .audit-action.event   { background: #e8f5e9; color: #2e7d32; }
+    .audit-action.club    { background: #f3e5f5; color: #6a1b9a; }
+    .audit-action.report  { background: #fff3e0; color: #e65100; }
+    .details-cell {
+      font-family: monospace;
+      font-size: 11px;
+      color: #555;
+      max-width: 260px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .details-cell.expanded {
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .filter-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      margin-bottom: 16px;
+    }
+    .filter-row .mdl-textfield { margin: 0; }
+    #audit-empty {
+      text-align: center;
+      color: #999;
+      padding: 32px;
+    }
+  </style>
+</head>
+<body>
+  <div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
+    <header class="mdl-layout__header">
+      <div class="mdl-layout__header-row">
+        <a href="?action=dashboard" class="mdl-layout-title"
+           style="color:inherit;text-decoration:none;">
+          湘舍动公益文件系统
+        </a>
+        <div class="mdl-layout-spacer"></div>
+        <div class="nav-panel">
+          <nav class="mdl-navigation">
+            <a class="mdl-navigation__link" href="?action=dashboard">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">home</i>
+              Home
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_users">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>
+              Users
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_events">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
+              Events
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_clubs">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>
+              Clubs
+            </a>
+            <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=admin_audit">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">history</i>
+              Audit Log
+            </a>
+          </nav>
+          <span class="mdl-chip" style="margin-left:12px;">
+            <span class="mdl-chip__text"><?= userEmail ?></span>
+          </span>
+        </div>
+        <button class="nav-toggle" type="button"
+                aria-label="Toggle menu" aria-expanded="false">
+          <i class="material-icons">menu</i>
+        </button>
+      </div>
+    </header>
+
+    <main class="mdl-layout__content">
+      <div class="page-content">
+
+        <!-- Page header -->
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;"
+             class="page-header-row">
+          <h4 style="margin:0;font-size:20px;">
+            <i class="material-icons" style="vertical-align:middle;margin-right:8px;color:#3f51b5;">history</i>
+            Audit Log
+            <span id="total-badge" style="font-size:14px;font-weight:400;color:#777;margin-left:8px;">
+              (<?= initialTotal ?> total)
+            </span>
+          </h4>
+        </div>
+
+        <!-- Server-side error (rare) -->
+        <? if (initialError) { ?>
+        <div class="card" style="color:#d32f2f;">
+          <i class="material-icons" style="vertical-align:middle;">error</i>
+          <?= initialError ?>
+        </div>
+        <? } ?>
+
+        <!-- Filters card -->
+        <div class="card" style="padding:16px 24px;">
+          <div class="filter-row">
+            <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
+              <input type="text" id="filter-actor" class="mdl-textfield__input"
+                     placeholder=" " oninput="scheduleFilter()">
+              <label class="mdl-textfield__label" for="filter-actor">Actor email</label>
+            </div>
+            <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
+              <input type="date" id="filter-from" class="mdl-textfield__input"
+                     onchange="scheduleFilter()">
+              <label class="mdl-textfield__label" for="filter-from">From date</label>
+            </div>
+            <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
+              <input type="date" id="filter-to" class="mdl-textfield__input"
+                     onchange="scheduleFilter()">
+              <label class="mdl-textfield__label" for="filter-to">To date</label>
+            </div>
+            <button class="mdl-button mdl-js-button" onclick="clearFilters()">
+              Clear
+            </button>
+            <div class="mdl-spinner mdl-js-spinner spinner hidden" id="filter-spinner"></div>
+          </div>
+        </div>
+
+        <!-- Audit table -->
+        <div class="card" style="padding:0;overflow:hidden;">
+          <table class="mdl-data-table mdl-js-data-table full-width audit-table"
+                 aria-label="Audit log">
+            <thead>
+              <tr>
+                <th class="mdl-data-table__cell--non-numeric" style="width:155px;">Timestamp</th>
+                <th class="mdl-data-table__cell--non-numeric">Actor</th>
+                <th class="mdl-data-table__cell--non-numeric">Action</th>
+                <th class="mdl-data-table__cell--non-numeric">Resource</th>
+                <th class="mdl-data-table__cell--non-numeric">Details</th>
+              </tr>
+            </thead>
+            <tbody id="audit-tbody">
+              <!-- Populated by renderRows() on load and after filter changes -->
+            </tbody>
+          </table>
+          <p id="audit-empty" style="display:none;">No audit entries found.</p>
+        </div>
+
+        <!-- Pagination -->
+        <div class="pagination" id="pagination-row" style="display:none;">
+          <button class="mdl-button mdl-js-button mdl-button--icon"
+                  id="btn-prev" onclick="goPage(currentPage - 1)" disabled>
+            <i class="material-icons">chevron_left</i>
+          </button>
+          <span id="page-label">Page 1</span>
+          <button class="mdl-button mdl-js-button mdl-button--icon"
+                  id="btn-next" onclick="goPage(currentPage + 1)">
+            <i class="material-icons">chevron_right</i>
+          </button>
+        </div>
+
+      </div>
+    </main>
+
+    <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
+  </div>
+
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.min.js"></script>
+  <script>window.APP_URL = '<?= scriptUrl ?>';</script>
+  <?!= HtmlService.createHtmlOutputFromFile('ui/js/app').getContent() ?>
+
+  <script>
+    // ── State ────────────────────────────────────────────────────────────────
+    var PAGE_SIZE    = 50;
+    var currentPage  = 1;
+    var currentTotal = <?= initialTotal ?>;
+    var filterTimer  = null;
+
+    // Initial data from server-side render (no extra round-trip on load)
+    var cachedItems  = <?!= initialLogs ?>;
+
+    // ── Render ───────────────────────────────────────────────────────────────
+    function actionClass(action) {
+      if (action.startsWith('USER_'))   return 'user';
+      if (action.startsWith('EVENT_'))  return 'event';
+      if (action.startsWith('CLUB_'))   return 'club';
+      return 'report';
+    }
+
+    function fmtTimestamp(ts) {
+      if (!ts) return '';
+      // "2026-04-18T09:15:02.123Z" → "2026-04-18 09:15:02"
+      return ts.replace('T', ' ').slice(0, 19);
+    }
+
+    function renderRows(items) {
+      var tbody = document.getElementById('audit-tbody');
+      var empty = document.getElementById('audit-empty');
+
+      if (!items || items.length === 0) {
+        tbody.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+      }
+
+      empty.style.display = 'none';
+      tbody.innerHTML = items.map(function(row, idx) {
+        var cls = actionClass(row.action);
+        var detailsId = 'det-' + idx;
+        return '<tr>' +
+          '<td class="mdl-data-table__cell--non-numeric" style="font-size:12px;color:#777;white-space:nowrap;">' +
+            escapeHtml(fmtTimestamp(row.timestamp)) +
+          '</td>' +
+          '<td class="mdl-data-table__cell--non-numeric">' +
+            escapeHtml(row.actorEmail) +
+          '</td>' +
+          '<td class="mdl-data-table__cell--non-numeric">' +
+            '<span class="audit-action ' + cls + '">' + escapeHtml(row.action) + '</span>' +
+          '</td>' +
+          '<td class="mdl-data-table__cell--non-numeric">' +
+            (row.resourceId
+              ? '<span style="font-size:12px;">' + escapeHtml(row.resourceType) + '</span>' +
+                '<br><span style="font-size:11px;color:#555;">' + escapeHtml(row.resourceId) + '</span>'
+              : '<span style="font-size:12px;">' + escapeHtml(row.resourceType) + '</span>') +
+          '</td>' +
+          '<td class="mdl-data-table__cell--non-numeric">' +
+            '<div class="details-cell" id="' + detailsId + '"' +
+              ' title="Click to expand" onclick="toggleDetails(\'' + detailsId + '\')">' +
+              escapeHtml(row.details) +
+            '</div>' +
+          '</td>' +
+        '</tr>';
+      }).join('');
+    }
+
+    function toggleDetails(id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.classList.toggle('expanded');
+    }
+
+    function updatePagination(total) {
+      var totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+      var pagRow = document.getElementById('pagination-row');
+      pagRow.style.display = total > PAGE_SIZE ? '' : 'none';
+      document.getElementById('page-label').textContent =
+        'Page ' + currentPage + ' of ' + totalPages;
+      document.getElementById('btn-prev').disabled = currentPage <= 1;
+      document.getElementById('btn-next').disabled = currentPage >= totalPages;
+      document.getElementById('total-badge').textContent = '(' + total + ' total)';
+    }
+
+    // ── Filter + pagination ───────────────────────────────────────────────────
+    function scheduleFilter() {
+      clearTimeout(filterTimer);
+      filterTimer = setTimeout(function() { applyFilter(1); }, 400);
+    }
+
+    function clearFilters() {
+      document.getElementById('filter-actor').value = '';
+      document.getElementById('filter-from').value  = '';
+      document.getElementById('filter-to').value    = '';
+      applyFilter(1);
+    }
+
+    function goPage(page) {
+      applyFilter(page);
+    }
+
+    function applyFilter(page) {
+      var actor   = document.getElementById('filter-actor').value.trim();
+      var from    = document.getElementById('filter-from').value;
+      var to      = document.getElementById('filter-to').value;
+      var spinner = document.getElementById('filter-spinner');
+
+      currentPage = page;
+      spinner.classList.remove('hidden');
+
+      var payload = { page: page, pageSize: PAGE_SIZE };
+      if (actor) payload.actorEmail = actor;
+      if (from)  payload.dateFrom   = from;
+      if (to)    payload.dateTo     = to;
+
+      callServer('serverGetAuditLog', payload)
+        .then(function(result) {
+          spinner.classList.add('hidden');
+          if (result.status === 'error') {
+            showToast(result.message, 'error');
+            return;
+          }
+          cachedItems    = result.data.items;
+          currentTotal   = result.data.total;
+          renderRows(cachedItems);
+          updatePagination(currentTotal);
+        })
+        .catch(function(err) {
+          spinner.classList.add('hidden');
+          showToast('Error loading audit log: ' + String(err), 'error');
+        });
+    }
+
+    // ── Initial render (uses server-side pre-loaded data) ─────────────────────
+    document.addEventListener('DOMContentLoaded', function() {
+      renderRows(cachedItems);
+      updatePagination(currentTotal);
+    });
+  </script>
+</body>
+</html>

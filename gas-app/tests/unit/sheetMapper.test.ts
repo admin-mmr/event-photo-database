@@ -7,8 +7,10 @@ import {
   fromUploadLogRecord,
   toClubRecord,
   fromClubRecord,
+  toAuditLogRecord,
+  fromAuditLogRecord,
 } from '../../src/utils/sheetMapper';
-import { UserRole, UserStatus, UploadSource } from '../../src/types/enums';
+import { UserRole, UserStatus, UploadSource, AuditAction } from '../../src/types/enums';
 import { UserRecord } from '../../src/types/models';
 
 // ─── Users ────────────────────────────────────────────────────────────────────
@@ -449,6 +451,155 @@ describe('sheetMapper — Clubs', () => {
       const restored = toClubRecord(fromClubRecord(original));
       expect(restored).toEqual(original);
       expect(restored!.status).toBe('inactive');
+    });
+  });
+});
+
+// ─── Audit Log ────────────────────────────────────────────────────────────────
+
+describe('sheetMapper — Audit Log', () => {
+  const validRow: unknown[] = [
+    'audit-uuid-001',
+    '2026-04-18T10:00:00.000Z',
+    'admin@mmrunners.org',
+    'USER_CREATED',
+    'user',
+    'newuser@example.com',
+    '{"email":"newuser@example.com","role":"user"}',
+  ];
+
+  describe('toAuditLogRecord()', () => {
+    it('maps a complete valid row', () => {
+      const record = toAuditLogRecord(validRow);
+      expect(record).not.toBeNull();
+      expect(record!.auditId).toBe('audit-uuid-001');
+      expect(record!.timestamp).toBe('2026-04-18T10:00:00.000Z');
+      expect(record!.actorEmail).toBe('admin@mmrunners.org');
+      expect(record!.action).toBe(AuditAction.USER_CREATED);
+      expect(record!.resourceType).toBe('user');
+      expect(record!.resourceId).toBe('newuser@example.com');
+      expect(record!.details).toBe('{"email":"newuser@example.com","role":"user"}');
+    });
+
+    it('normalises actorEmail to lowercase', () => {
+      const row = [...validRow];
+      row[2] = 'Admin@MMRUNNERS.ORG';
+      const record = toAuditLogRecord(row);
+      expect(record!.actorEmail).toBe('admin@mmrunners.org');
+    });
+
+    it('trims whitespace from all string fields', () => {
+      const row: unknown[] = [
+        '  audit-uuid-001  ', '  2026-04-18T10:00:00.000Z  ',
+        '  admin@mmrunners.org  ', '  USER_CREATED  ',
+        '  user  ', '  newuser@example.com  ', '  {}  ',
+      ];
+      const record = toAuditLogRecord(row);
+      expect(record!.auditId).toBe('audit-uuid-001');
+      expect(record!.actorEmail).toBe('admin@mmrunners.org');
+      expect(record!.action).toBe(AuditAction.USER_CREATED);
+    });
+
+    it('returns null when auditId is empty', () => {
+      const row = [...validRow];
+      row[0] = '';
+      expect(toAuditLogRecord(row)).toBeNull();
+    });
+
+    it('returns null when auditId is whitespace-only', () => {
+      const row = [...validRow];
+      row[0] = '   ';
+      expect(toAuditLogRecord(row)).toBeNull();
+    });
+
+    it('returns null when actorEmail is empty', () => {
+      const row = [...validRow];
+      row[2] = '';
+      expect(toAuditLogRecord(row)).toBeNull();
+    });
+
+    it('returns null for an unrecognized action value', () => {
+      const row = [...validRow];
+      row[3] = 'TOTALLY_FAKE_ACTION';
+      expect(toAuditLogRecord(row)).toBeNull();
+    });
+
+    it('returns null for row with fewer than 7 columns', () => {
+      expect(toAuditLogRecord(['id', 'ts', 'actor', 'USER_CREATED', 'user'])).toBeNull();
+      expect(toAuditLogRecord([])).toBeNull();
+    });
+
+    it('accepts all valid AuditAction values', () => {
+      for (const action of Object.values(AuditAction)) {
+        const row = [...validRow];
+        row[3] = action;
+        const record = toAuditLogRecord(row);
+        expect(record).not.toBeNull();
+        expect(record!.action).toBe(action);
+      }
+    });
+
+    it('accepts an empty resourceId (used by report actions)', () => {
+      const row = [...validRow];
+      row[5] = '';
+      const record = toAuditLogRecord(row);
+      expect(record).not.toBeNull();
+      expect(record!.resourceId).toBe('');
+    });
+
+    it('handles numeric cell values via String() coercion', () => {
+      const row: unknown[] = [
+        123, '2026-04-18T10:00:00.000Z', 'admin@mmrunners.org',
+        'CLUB_CREATED', 'club', 456, '{}',
+      ];
+      const record = toAuditLogRecord(row);
+      expect(record!.auditId).toBe('123');
+      expect(record!.resourceId).toBe('456');
+    });
+  });
+
+  describe('fromAuditLogRecord()', () => {
+    it('produces an array of 7 elements', () => {
+      const record = toAuditLogRecord(validRow)!;
+      const row = fromAuditLogRecord(record);
+      expect(row).toHaveLength(7);
+    });
+
+    it('preserves all field values in the correct column order', () => {
+      const record = toAuditLogRecord(validRow)!;
+      const row = fromAuditLogRecord(record);
+      expect(row[0]).toBe('audit-uuid-001');               // auditId
+      expect(row[1]).toBe('2026-04-18T10:00:00.000Z');    // timestamp
+      expect(row[2]).toBe('admin@mmrunners.org');          // actorEmail
+      expect(row[3]).toBe('USER_CREATED');                 // action
+      expect(row[4]).toBe('user');                         // resourceType
+      expect(row[5]).toBe('newuser@example.com');          // resourceId
+      expect(row[6]).toBe('{"email":"newuser@example.com","role":"user"}'); // details
+    });
+  });
+
+  describe('roundtrip: toAuditLogRecord → fromAuditLogRecord → toAuditLogRecord', () => {
+    it('produces an identical record after roundtrip', () => {
+      const original = toAuditLogRecord(validRow)!;
+      const row = fromAuditLogRecord(original);
+      const restored = toAuditLogRecord(row);
+      expect(restored).toEqual(original);
+    });
+
+    it('roundtrip preserves all AuditAction values', () => {
+      for (const action of Object.values(AuditAction)) {
+        const original = toAuditLogRecord([...validRow.slice(0, 3), action, ...validRow.slice(4)])!;
+        const restored = toAuditLogRecord(fromAuditLogRecord(original));
+        expect(restored).toEqual(original);
+      }
+    });
+
+    it('roundtrip preserves empty resourceId', () => {
+      const row = [...validRow];
+      row[5] = '';
+      const original = toAuditLogRecord(row)!;
+      const restored = toAuditLogRecord(fromAuditLogRecord(original));
+      expect(restored!.resourceId).toBe('');
     });
   });
 });

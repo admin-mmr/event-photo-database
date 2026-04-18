@@ -82,6 +82,15 @@ export const COLUMNS: SheetColumnMap = {
     ADDED_DATE: 3,
     ADDED_BY: 4,
   },
+  AUDIT_LOG: {
+    AUDIT_ID:      0,
+    TIMESTAMP:     1,
+    ACTOR_EMAIL:   2,
+    ACTION:        3,
+    RESOURCE_TYPE: 4,
+    RESOURCE_ID:   5,
+    DETAILS:       6,
+  },
 };
 
 /**
@@ -126,6 +135,7 @@ export function getConfig(): AppConfig {
       UPLOAD_LOG: 'Upload_Log',
       RATE_LIMIT: 'Rate_Limit',
       CLUBS: 'Clubs',
+      AUDIT_LOG: 'Audit_Log',
     },
     PHOTO_MIME_TYPES: [PhotoMimeType.JPEG, PhotoMimeType.PNG, PhotoMimeType.HEIC],
     MAX_FILE_SIZE_MB: 50,   // GAS hard limit per UrlFetch payload

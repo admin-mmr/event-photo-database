@@ -8,7 +8,7 @@
  * They all authenticate the caller and enforce admin-only access where needed.
  */
 
-import { ResultStatus, UserRole, UserStatus, UploadSource } from './types/enums';
+import { ResultStatus, UserRole, UserStatus, UploadSource, AuditAction } from './types/enums';
 import { authenticateRequest } from './middleware/authMiddleware';
 import { requireRole } from './middleware/roleGuard';
 import { handleGet, handlePost } from './routes/router';
@@ -22,6 +22,7 @@ import {
   createBatchFolder,
 } from './services/driveService';
 import { appendUploadLog } from './services/uploadLogService';
+import { appendAuditLog, getAuditLogs } from './services/auditLogService';
 import { generateSummary, summaryToCsv, buildExceptionEmailBody } from './services/summaryService';
 import { buildLayer3FolderName } from './utils/folderNameValidator';
 import { toBatchTimestamp } from './utils/dateFormatter';
@@ -59,6 +60,13 @@ function serverCreateUser(
       { email: payload.email, runningClub: payload.runningClub, role: payload.role as UserRole },
       auth.adminEmail
     );
+    if (result.status === ResultStatus.SUCCESS) {
+      appendAuditLog({
+        actorEmail: auth.adminEmail, action: AuditAction.USER_CREATED,
+        resourceType: 'user', resourceId: payload.email,
+        details: { email: payload.email, runningClub: payload.runningClub, role: payload.role },
+      });
+    }
     return { status: result.status, message: result.message, data: result.data, errors: result.errors };
   } catch (err) {
     Logger.log(`serverCreateUser error: ${String(err)}`);
@@ -82,6 +90,16 @@ function serverUpdateUser(
       },
       auth.adminEmail
     );
+    if (result.status === ResultStatus.SUCCESS) {
+      const changes: Record<string, unknown> = { email: payload.email };
+      if (payload.runningClub !== undefined) changes['runningClub'] = payload.runningClub;
+      if (payload.role       !== undefined) changes['role']        = payload.role;
+      if (payload.status     !== undefined) changes['status']      = payload.status;
+      appendAuditLog({
+        actorEmail: auth.adminEmail, action: AuditAction.USER_UPDATED,
+        resourceType: 'user', resourceId: payload.email, details: changes,
+      });
+    }
     return { status: result.status, message: result.message, data: result.data, errors: result.errors };
   } catch (err) {
     Logger.log(`serverUpdateUser error: ${String(err)}`);
@@ -95,6 +113,12 @@ function serverDeactivateUser(payload: { email: string }): ServerResponse {
     const auth = requireAdminOrFail();
     if (!auth.ok) return auth.response;
     const result = deactivateUser(payload.email);
+    if (result.status === ResultStatus.SUCCESS) {
+      appendAuditLog({
+        actorEmail: auth.adminEmail, action: AuditAction.USER_DEACTIVATED,
+        resourceType: 'user', resourceId: payload.email, details: { email: payload.email },
+      });
+    }
     return { status: result.status, message: result.message, data: result.data };
   } catch (err) {
     Logger.log(`serverDeactivateUser error: ${String(err)}`);
@@ -108,6 +132,12 @@ function serverReactivateUser(payload: { email: string }): ServerResponse {
     const auth = requireAdminOrFail();
     if (!auth.ok) return auth.response;
     const result = reactivateUser(payload.email);
+    if (result.status === ResultStatus.SUCCESS) {
+      appendAuditLog({
+        actorEmail: auth.adminEmail, action: AuditAction.USER_REACTIVATED,
+        resourceType: 'user', resourceId: payload.email, details: { email: payload.email },
+      });
+    }
     return { status: result.status, message: result.message, data: result.data };
   } catch (err) {
     Logger.log(`serverReactivateUser error: ${String(err)}`);
@@ -132,6 +162,13 @@ function serverCreateEvent(
       { eventName: payload.eventName, eventDate: payload.eventDate },
       auth.adminEmail
     );
+    if (result.status === ResultStatus.SUCCESS && result.data) {
+      appendAuditLog({
+        actorEmail: auth.adminEmail, action: AuditAction.EVENT_CREATED,
+        resourceType: 'event', resourceId: (result.data as { eventId: string }).eventId,
+        details: { eventName: payload.eventName, eventDate: payload.eventDate },
+      });
+    }
     return {
       status: result.status,
       message: result.message,
@@ -163,6 +200,15 @@ function serverUpdateEvent(
       },
       auth.adminEmail
     );
+    if (result.status === ResultStatus.SUCCESS) {
+      const changes: Record<string, unknown> = { eventId: payload.eventId };
+      if (payload.eventName !== undefined) changes['eventName'] = payload.eventName;
+      if (payload.eventDate !== undefined) changes['eventDate'] = payload.eventDate;
+      appendAuditLog({
+        actorEmail: auth.adminEmail, action: AuditAction.EVENT_UPDATED,
+        resourceType: 'event', resourceId: payload.eventId, details: changes,
+      });
+    }
     return {
       status: result.status,
       message: result.message,
@@ -283,6 +329,13 @@ function serverCreateClub(
       { displayName: payload.displayName, normalizedName: payload.normalizedName },
       auth.adminEmail
     );
+    if (result.status === ResultStatus.SUCCESS) {
+      appendAuditLog({
+        actorEmail: auth.adminEmail, action: AuditAction.CLUB_CREATED,
+        resourceType: 'club', resourceId: payload.normalizedName,
+        details: { displayName: payload.displayName, normalizedName: payload.normalizedName },
+      });
+    }
     return { status: result.status, message: result.message, data: result.data, errors: result.errors };
   } catch (err) {
     Logger.log(`serverCreateClub error: ${String(err)}`);
@@ -308,6 +361,14 @@ function serverUpdateClub(
       },
       auth.adminEmail
     );
+    if (result.status === ResultStatus.SUCCESS) {
+      const changes: Record<string, unknown> = { normalizedName: payload.normalizedName };
+      if (payload.displayName !== undefined) changes['displayName'] = payload.displayName;
+      appendAuditLog({
+        actorEmail: auth.adminEmail, action: AuditAction.CLUB_UPDATED,
+        resourceType: 'club', resourceId: payload.normalizedName, details: changes,
+      });
+    }
     return { status: result.status, message: result.message, data: result.data, errors: result.errors };
   } catch (err) {
     Logger.log(`serverUpdateClub error: ${String(err)}`);
@@ -324,6 +385,13 @@ function serverDeactivateClub(payload: { normalizedName: string }): ServerRespon
     const auth = requireAdminOrFail();
     if (!auth.ok) return auth.response;
     const result = deactivateClub(payload.normalizedName);
+    if (result.status === ResultStatus.SUCCESS) {
+      appendAuditLog({
+        actorEmail: auth.adminEmail, action: AuditAction.CLUB_DEACTIVATED,
+        resourceType: 'club', resourceId: payload.normalizedName,
+        details: { normalizedName: payload.normalizedName },
+      });
+    }
     return { status: result.status, message: result.message, data: result.data };
   } catch (err) {
     Logger.log(`serverDeactivateClub error: ${String(err)}`);
@@ -340,6 +408,13 @@ function serverReactivateClub(payload: { normalizedName: string }): ServerRespon
     const auth = requireAdminOrFail();
     if (!auth.ok) return auth.response;
     const result = reactivateClub(payload.normalizedName);
+    if (result.status === ResultStatus.SUCCESS) {
+      appendAuditLog({
+        actorEmail: auth.adminEmail, action: AuditAction.CLUB_REACTIVATED,
+        resourceType: 'club', resourceId: payload.normalizedName,
+        details: { normalizedName: payload.normalizedName },
+      });
+    }
     return { status: result.status, message: result.message, data: result.data };
   } catch (err) {
     Logger.log(`serverReactivateClub error: ${String(err)}`);
@@ -749,6 +824,11 @@ function serverExportSummaryCsv(payload: {
     }
 
     const csv = summaryToCsv(result.data);
+    appendAuditLog({
+      actorEmail: auth.adminEmail, action: AuditAction.EXPORT_CSV,
+      resourceType: 'report', resourceId: '',
+      details: { dateFrom: payload.dateFrom ?? null, dateTo: payload.dateTo ?? null },
+    });
     return {
       status: 'success',
       message: 'CSV generated',
@@ -809,6 +889,11 @@ function serverSendExceptionEmail(payload: {
     }
 
     Logger.log(`[serverSendExceptionEmail] Sent to ${uniqueRecipients.join(', ')}`);
+    appendAuditLog({
+      actorEmail: auth.adminEmail, action: AuditAction.EXCEPTION_EMAIL_SENT,
+      resourceType: 'report', resourceId: '',
+      details: { recipients: uniqueRecipients, violationCount: summary.violations.length },
+    });
     return {
       status: 'success',
       message: `Exception email sent to ${uniqueRecipients.length} recipient(s)`,
@@ -817,6 +902,43 @@ function serverSendExceptionEmail(payload: {
   } catch (err) {
     Logger.log(`serverSendExceptionEmail error: ${String(err)}`);
     return { status: 'error', message: `Failed to send exception email: ${String(err)}` };
+  }
+}
+
+// ─── Audit Log server function ────────────────────────────────────────────────
+
+/**
+ * google.script.run entry point: returns a paginated, filtered audit log.
+ *
+ * Admin-only. Returns rows newest-first with optional actor-email substring
+ * filter and date-range filter.
+ *
+ * Payload: { page?, pageSize?, actorEmail?, dateFrom?, dateTo? }
+ * Returns: AuditLogPage { items, total, page, pageSize }
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverGetAuditLog(payload: {
+  page?:        number;
+  pageSize?:    number;
+  actorEmail?:  string;
+  dateFrom?:    string;
+  dateTo?:      string;
+}): ServerResponse {
+  try {
+    const auth = requireAdminOrFail();
+    if (!auth.ok) return auth.response;
+
+    const result = getAuditLogs({
+      page:        payload.page     ?? 1,
+      pageSize:    Math.min(payload.pageSize ?? 50, 200),
+      actorEmail:  payload.actorEmail,
+      dateFrom:    payload.dateFrom,
+      dateTo:      payload.dateTo,
+    });
+    return { status: result.status, message: result.message, data: result.data };
+  } catch (err) {
+    Logger.log(`serverGetAuditLog error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error fetching audit log' };
   }
 }
 

@@ -73,12 +73,32 @@ export function createMockSheet(rows: unknown[][] = []): jest.Mocked<{
   };
 }
 
+/** Default Audit_Log sheet rows for tests that need pre-existing audit entries */
+export const DEFAULT_AUDIT_ROWS: unknown[][] = [
+  [
+    'audit-uuid-001', '2026-04-18T10:00:00.000Z', TEST_ADMIN_EMAIL,
+    'USER_CREATED', 'user', 'newuser@example.com',
+    '{"email":"newuser@example.com","runningClub":"New_Bee","role":"user"}',
+  ],
+  [
+    'audit-uuid-002', '2026-04-17T08:30:00.000Z', TEST_ADMIN_EMAIL,
+    'EVENT_CREATED', 'event', 'evt-uuid-999',
+    '{"eventName":"Spring Race","eventDate":"2026-05-01"}',
+  ],
+  [
+    'audit-uuid-003', '2026-04-16T14:00:00.000Z', TEST_ADMIN_EMAIL,
+    'CLUB_DEACTIVATED', 'club', 'Old_Club',
+    '{"normalizedName":"Old_Club"}',
+  ],
+];
+
 /** Active mock sheet instances — tests can access these to verify calls */
 export const mockSheets: Record<string, ReturnType<typeof createMockSheet>> = {
   Users:      createMockSheet(DEFAULT_USERS_ROWS),
   Events:     createMockSheet(DEFAULT_EVENTS_ROWS),
   Upload_Log: createMockSheet([]),
   Rate_Limit: createMockSheet([]),
+  Audit_Log:  createMockSheet([]),
 };
 
 /** Resets all mock sheets to their default data */
@@ -88,6 +108,7 @@ export function resetMockSheets(): void {
     Events:     createMockSheet(DEFAULT_EVENTS_ROWS),
     Upload_Log: createMockSheet([]),
     Rate_Limit: createMockSheet([]),
+    Audit_Log:  createMockSheet([]),
   });
 }
 

@@ -12,6 +12,7 @@ import {
   adminEventsPage,
   adminClubsPage,
   adminSummaryPage,
+  adminAuditPage,
   uploadPage,
 } from './pageRoutes';
 import {
@@ -67,6 +68,7 @@ function getGetRoutes(): Readonly<Record<string, RouteConfig>> {
     [RouteAction.ADMIN_EVENTS]:  { requiredRole: UserRole.ADMIN },
     [RouteAction.ADMIN_CLUBS]:   { requiredRole: UserRole.ADMIN },
     [RouteAction.ADMIN_SUMMARY]: { requiredRole: UserRole.ADMIN },
+    [RouteAction.ADMIN_AUDIT]:   { requiredRole: UserRole.ADMIN },
     [RouteAction.UPLOAD]:        { requiredRole: null }, // all authenticated users
   };
 }
@@ -212,6 +214,8 @@ function dispatchGetHandler(
       return adminClubsPage(user);
     case RouteAction.ADMIN_SUMMARY:
       return adminSummaryPage(user);
+    case RouteAction.ADMIN_AUDIT:
+      return adminAuditPage(user);
     case RouteAction.UPLOAD:
       return uploadPage(user);
     default:

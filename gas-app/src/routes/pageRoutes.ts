@@ -1,5 +1,6 @@
 import { UserRecord } from '../types/models';
 import { UserRole } from '../types/enums';
+import { getAuditLogs } from '../services/auditLogService';
 import { listAll } from '../services/userService';
 import { listAll as listAllEvents } from '../services/eventService';
 import { listAll as listAllClubs, listActive as listActiveClubs } from '../services/clubService';
@@ -196,5 +197,22 @@ export function adminSummaryPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOu
     // Pass the initial summary as JSON; null if generation failed
     initialSummary: hasSummary ? JSON.stringify(summaryResult.data) : 'null',
     initialError: hasSummary ? '' : (summaryResult.message ?? 'Failed to load summary'),
+  });
+}
+
+/**
+ * Admin — Audit Log page.
+ * Pre-loads the 50 most recent audit entries for instant display.
+ * Admin-only; role is enforced at the router level before this is called.
+ */
+export function adminAuditPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
+  const result = getAuditLogs({ page: 1, pageSize: 50 });
+  return renderTemplate('admin/audit', {
+    userEmail: user.email,
+    userRole:  user.role,
+    isAdmin:   user.role === UserRole.ADMIN,
+    initialLogs:  result.data ? JSON.stringify(result.data.items)    : '[]',
+    initialTotal: result.data ? result.data.total                    : 0,
+    initialError: result.data ? '' : (result.message ?? 'Failed to load audit log'),
   });
 }

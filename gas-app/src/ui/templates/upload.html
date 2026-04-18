@@ -506,10 +506,17 @@ var RUNNING_CLUB = '<?= runningClub ?>';
 var USER_EMAIL = '<?= userEmail ?>';
 var ACCEPTED_EXTS = ['.jpg','.jpeg','.png','.heic','.cr2','.arw','.nef'];
 var MAX_FILE_SIZE_MB = 50;
-var MAX_BATCH_MB = 200;
-var UPLOAD_CONCURRENCY = 4;   // parallel google.script.run calls per round
-var BUNDLE_FILES       = 5;   // max files per serverUploadFiles call
-var BUNDLE_MAX_RAW_MB  = 20;  // max combined raw size per bundle (base64 adds ~33%)
+var MAX_BATCH_MB = 500;
+// ── Upload tuning ──────────────────────────────────────────────────────────────
+// Each google.script.run call has ~1-2 s of fixed GAS startup overhead.
+// Packing more files into each call amortises that cost — this is the biggest
+// lever for speed.  Constraints:
+//   • GAS max request payload ≈ 50 MB encoded; base64 adds ~33 %, so cap raw
+//     data at 35 MB → ~47 MB encoded, safely under the limit.
+//   • GAS allows ~30 concurrent executions per user, so concurrency 6 is fine.
+var UPLOAD_CONCURRENCY = 6;   // parallel google.script.run calls per round
+var BUNDLE_FILES       = 10;  // max files per serverUploadFiles call
+var BUNDLE_MAX_RAW_MB  = 35;  // max combined raw size per bundle (base64 adds ~33%)
 
 var state = {
   currentStep: 1,

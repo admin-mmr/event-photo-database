@@ -70,6 +70,7 @@ export enum RouteAction {
 
   // Phase 4 — Admin Summary & Reconciliation
   ADMIN_SUMMARY = 'admin_summary',
+  ADMIN_AUDIT   = 'admin_audit',
 
   // Deployment healthcheck (no auth required)
   HEALTHCHECK = 'healthcheck',
@@ -79,6 +80,32 @@ export enum RouteAction {
   API_CHECK_FOLDER = 'api_check_folder',   // GET: resolve event name → folder ID
   API_LIST_FILES   = 'api_list_files',     // GET: list files in a club folder
   API_UPLOAD_FILE  = 'api_upload_file',    // POST: upload a single photo
+}
+
+/**
+ * Actions recorded in the Audit_Log sheet.
+ * One value per state-changing admin operation.
+ */
+export enum AuditAction {
+  // User management
+  USER_CREATED     = 'USER_CREATED',
+  USER_UPDATED     = 'USER_UPDATED',
+  USER_DEACTIVATED = 'USER_DEACTIVATED',
+  USER_REACTIVATED = 'USER_REACTIVATED',
+
+  // Event management
+  EVENT_CREATED = 'EVENT_CREATED',
+  EVENT_UPDATED = 'EVENT_UPDATED',
+
+  // Club management
+  CLUB_CREATED     = 'CLUB_CREATED',
+  CLUB_UPDATED     = 'CLUB_UPDATED',
+  CLUB_DEACTIVATED = 'CLUB_DEACTIVATED',
+  CLUB_REACTIVATED = 'CLUB_REACTIVATED',
+
+  // Reporting
+  EXPORT_CSV           = 'EXPORT_CSV',
+  EXCEPTION_EMAIL_SENT = 'EXCEPTION_EMAIL_SENT',
 }
 
 /**

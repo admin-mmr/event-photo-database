@@ -21,6 +21,7 @@ export interface SheetNames {
   readonly UPLOAD_LOG: string;
   readonly RATE_LIMIT: string;
   readonly CLUBS: string;
+  readonly AUDIT_LOG: string;
 }
 
 /**
@@ -34,6 +35,17 @@ export interface SheetColumnMap {
   readonly UPLOAD_LOG: UploadLogSheetColumns;
   readonly RATE_LIMIT: RateLimitSheetColumns;
   readonly CLUBS: ClubSheetColumns;
+  readonly AUDIT_LOG: AuditLogSheetColumns;
+}
+
+export interface AuditLogSheetColumns {
+  readonly AUDIT_ID:      0;
+  readonly TIMESTAMP:     1;
+  readonly ACTOR_EMAIL:   2;
+  readonly ACTION:        3;
+  readonly RESOURCE_TYPE: 4;
+  readonly RESOURCE_ID:   5;
+  readonly DETAILS:       6;
 }
 
 export interface RateLimitSheetColumns {

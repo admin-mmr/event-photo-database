@@ -1,5 +1,5 @@
-import { UserRole, UserStatus, UploadSource } from '../types/enums';
-import { UserRecord, EventRecord, UploadLogRecord, ClubRecord } from '../types/models';
+import { UserRole, UserStatus, UploadSource, AuditAction } from '../types/enums';
+import { UserRecord, EventRecord, UploadLogRecord, ClubRecord, AuditLogRecord } from '../types/models';
 import { COLUMNS } from '../config/constants';
 
 /**
@@ -204,5 +204,49 @@ export function fromClubRecord(record: ClubRecord): unknown[] {
     record.status,
     record.addedDate,
     record.addedBy,
+  ];
+}
+
+// ─── Audit Log ────────────────────────────────────────────────────────────────
+
+/**
+ * Converts a raw Sheets row to an AuditLogRecord.
+ * Returns null if required fields are missing or action is unrecognized.
+ */
+export function toAuditLogRecord(row: unknown[]): AuditLogRecord | null {
+  const COL = COLUMNS.AUDIT_LOG;
+  if (row.length <= COL.DETAILS) return null;
+
+  const auditId    = String(row[COL.AUDIT_ID]    ?? '').trim();
+  const actorEmail = String(row[COL.ACTOR_EMAIL]  ?? '').trim();
+  const action     = String(row[COL.ACTION]       ?? '').trim();
+
+  if (!auditId || !actorEmail) return null;
+  if (!Object.values(AuditAction).includes(action as AuditAction)) return null;
+
+  return {
+    auditId,
+    timestamp:    String(row[COL.TIMESTAMP]     ?? '').trim(),
+    actorEmail:   actorEmail.toLowerCase(),
+    action:       action as AuditAction,
+    resourceType: String(row[COL.RESOURCE_TYPE] ?? '').trim(),
+    resourceId:   String(row[COL.RESOURCE_ID]   ?? '').trim(),
+    details:      String(row[COL.DETAILS]        ?? '').trim(),
+  };
+}
+
+/**
+ * Converts an AuditLogRecord back to a Sheets row array.
+ * Column order must match COLUMNS.AUDIT_LOG exactly.
+ */
+export function fromAuditLogRecord(record: AuditLogRecord): unknown[] {
+  return [
+    record.auditId,
+    record.timestamp,
+    record.actorEmail,
+    record.action,
+    record.resourceType,
+    record.resourceId,
+    record.details,
   ];
 }

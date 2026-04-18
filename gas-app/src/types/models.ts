@@ -1,4 +1,4 @@
-import { UserRole, UserStatus, UploadSource } from './enums';
+import { UserRole, UserStatus, UploadSource, AuditAction } from './enums';
 
 /**
  * A row in the "Users" sheet.
@@ -43,6 +43,21 @@ export interface UploadLogRecord {
   readonly skippedNonPhoto: number;   // Files skipped due to wrong MIME type
   readonly uploadTimestamp: string;   // ISO 8601 timestamp
   readonly source: UploadSource;
+}
+
+/**
+ * A row in the "Audit_Log" sheet.
+ * Written once per successful state-changing admin operation.
+ * Records are append-only — never updated or deleted.
+ */
+export interface AuditLogRecord {
+  readonly auditId:      string;      // UUID v4
+  readonly timestamp:    string;      // ISO 8601 timestamp
+  readonly actorEmail:   string;      // Admin who performed the action
+  readonly action:       AuditAction; // What was done
+  readonly resourceType: string;      // 'user' | 'event' | 'club' | 'report'
+  readonly resourceId:   string;      // Email / eventId / normalizedName / ''
+  readonly details:      string;      // JSON string of relevant payload fields
 }
 
 /**
