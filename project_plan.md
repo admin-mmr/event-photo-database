@@ -207,31 +207,32 @@ flowchart TD
 
 ## 5. Development Phases
 
-### Phase 1 — Foundation (Week 1–2)
+### Phase 1 — Foundation (Week 1–2) ✅ Complete
 **Goal**: Skeleton GAS Web App running with auth and basic Drive/Sheets wiring.
 
-- [ ] Set up Google Drive root folder structure for 湘舍动
-- [ ] Create Google Sheets database (3 sheets as designed)
-- [ ] Deploy GAS Web App skeleton with Google OAuth login
-- [ ] Role-check middleware: read user from Sheets on login
-- [ ] Utility: folder name validator (regex for Layer 1–2)
-- [ ] Admin: CRUD for Users sheet (add/edit/deactivate users)
+- [x] Set up Google Drive root folder structure for 湘舍动
+- [x] Create Google Sheets database (Users, Events, Upload_Log, Rate_Limit, Clubs sheets)
+- [x] Deploy GAS Web App skeleton with Google OAuth login
+- [x] Role-check middleware: read user from Sheets on login
+- [x] Utility: folder name validator (regex for Layer 1–3)
+- [x] Admin: CRUD for Users sheet (add/edit/deactivate/reactivate users)
+- [x] Admin: CRUD for Clubs sheet (add/edit/deactivate/reactivate clubs via Admin UI)
 
 ---
 
-### Phase 2 — Event Management (Week 2–3)
+### Phase 2 — Event Management (Week 2–3) ✅ Complete
 **Goal**: Admins can create and browse events.
 
-- [ ] Admin UI: Create Event form (name + date → validated folder creation)
-- [ ] Admin UI: List Events (sortable, filterable by date)
-- [ ] Drive service: `createMasterFolder(eventDate, eventName)`
-- [ ] Drive service: `createClubFolder(eventFolderId, clubName)`
-- [ ] Sheets service: write/read Events sheet
-- [ ] Exception detection: scan Layer 1–2 on any Drive operation, log violations
+- [x] Admin UI: Create Event form (name + date → validated folder creation)
+- [x] Admin UI: List Events (sortable, filterable by date)
+- [x] Drive service: `createEventFolder(folderName)`
+- [x] Drive service: `getOrCreateClubFolder(eventFolderId, clubName)`
+- [x] Sheets service: write/read Events sheet
+- [x] Exception detection: scan Layer 1–2 on any Drive operation, log violations
 
 ---
 
-### Phase 3 — Upload Flow (Week 3–5)
+### Phase 3 — Upload Flow (Week 3–5) ✅ Complete
 **Goal**: Users can select an event and upload photos end-to-end.
 
 - [x] User UI: Event picker with date range filter
@@ -245,7 +246,7 @@ flowchart TD
 
 ---
 
-### Phase 4 — Admin Summary & Reconciliation (Week 5–6)
+### Phase 4 — Admin Summary & Reconciliation (Week 5–6) ✅ Complete
 **Goal**: Admins can generate system-wide and event-level reports.
 
 - [x] Admin UI: Summary dashboard with date range picker
@@ -257,7 +258,7 @@ flowchart TD
 
 ---
 
-### Phase 5 — Cross-Org REST API (Week 6–7)
+### Phase 5 — Cross-Org REST API (Week 6–7) ✅ Complete
 **Goal**: External GAS programs can check folders, list files, and upload photos via HTTP.
 
 - [x] `doGet(e)` handler: route by `?action=` param
@@ -298,10 +299,10 @@ flowchart TD
 
 ---
 
-## 8. Open Questions / Decisions Needed
+## 8. Resolved Decisions
 
-1. **Club name list**: Should we maintain an approved list of club names in the Sheets (for validation)? Who can add new clubs?
-2. **File size limit per upload session**: Set a max total MB per upload batch to avoid timeouts?
-3. **API key distribution**: How do partner orgs receive and rotate their API keys?
-4. **Photo types**: JPG + PNG + HEIC. Include RAW formats (CR2, ARW, NEF)? These are large.
-5. **Data retention**: Are old events ever archived or deleted from Drive?
+1. **Club name list** ✅ Resolved: Clubs are maintained in a dedicated `Clubs` sheet. Admins can add, edit, deactivate, and reactivate clubs through the Admin UI. The initial seed list (New Bee, Misty Mountain, Nankai, Admin) is loaded automatically on first run.
+2. **File size limit** ✅ Resolved: 50 MB per file; 200 MB per upload batch session. Enforced client-side with user warning.
+3. **API key distribution** ✅ Resolved: Admins register partner orgs as `api_client` users in the Users sheet via the Admin UI. The email address serves as the API key and is shared directly with the partner org.
+4. **Photo types** ✅ Resolved: JPEG, PNG, HEIC. RAW formats excluded for v1 due to size and GAS payload limits. RAW support is on the v2 wishlist.
+5. **Data retention**: No automated archival in v1. Events and upload logs are kept indefinitely. Manual archival via Google Drive. Scheduled archival is on the v2 wishlist.

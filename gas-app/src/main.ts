@@ -577,6 +577,68 @@ function serverUploadFile(payload: {
 }
 
 /**
+ * google.script.run entry point: uploads multiple files to Drive in one call.
+ *
+ * Accepts an array of files (each base64-encoded) and writes them all into
+ * the given batch folder within a single GAS execution.  This eliminates the
+ * per-file round-trip overhead that occurs when calling serverUploadFile once
+ * per file — the GAS startup cost is paid just once for the whole bundle.
+ *
+ * Returns per-file results so the client can surface partial failures without
+ * failing the whole bundle.
+ *
+ * Payload: { batchFolderId, files: [{fileName, mimeType, base64Data}] }
+ * Returns: { results: [{fileName, success, fileId?, sizeBytes?, error?}] }
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverUploadFiles(payload: {
+  batchFolderId: string;
+  files: Array<{
+    fileName:   string;
+    mimeType:   string;
+    base64Data: string;   // base64-encoded content, no data-URL prefix
+  }>;
+}): ServerResponse {
+  try {
+    const authResult = authenticateRequest();
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      return { status: 'error', message: 'Authentication required' };
+    }
+
+    const { batchFolderId, files } = payload;
+    if (!batchFolderId || !files || !files.length) {
+      return { status: 'error', message: 'batchFolderId and files are required' };
+    }
+
+    const folder = DriveApp.getFolderById(batchFolderId);
+
+    // Save every file; capture per-file success/failure so partial batches
+    // are reported cleanly rather than failing the whole call.
+    const results = files.map((f) => {
+      try {
+        const bytes  = Utilities.base64Decode(f.base64Data);
+        const blob   = Utilities.newBlob(bytes, f.mimeType || 'application/octet-stream', f.fileName);
+        const saved  = folder.createFile(blob);
+        return { fileName: f.fileName, success: true,  fileId: saved.getId(), sizeBytes: saved.getSize() };
+      } catch (e) {
+        Logger.log(`serverUploadFiles: failed to save "${f.fileName}": ${String(e)}`);
+        return { fileName: f.fileName, success: false, error: String(e) };
+      }
+    });
+
+    const successCount = results.filter((r) => r.success).length;
+    return {
+      status:  'success',
+      message: `${successCount} of ${files.length} files saved to Drive`,
+      data:    { results },
+    };
+  } catch (err) {
+    Logger.log(`serverUploadFiles error: ${String(err)}`);
+    return { status: 'error', message: `Failed to upload files: ${String(err)}` };
+  }
+}
+
+/**
  * google.script.run entry point: finalises the upload session.
  *
  * Called after all files have been uploaded (or attempted). Writes one

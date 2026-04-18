@@ -10,6 +10,11 @@ import {
   validateUpdateUserPayload,
   validateFolderNamePayload,
   requireString,
+  validateCreateEventPayload,
+  validateUpdateEventPayload,
+  isValidNormalizedName,
+  validateCreateClubPayload,
+  validateUpdateClubPayload,
 } from '../../src/middleware/inputValidator';
 import { ResultStatus, UserRole, UserStatus } from '../../src/types/enums';
 
@@ -167,9 +172,17 @@ describe('inputValidator', () => {
       expect(isApprovedClub('Misty Mountain')).toBe(true);
     });
 
-    it('returns false for unknown club names', () => {
-      expect(isApprovedClub('Unknown_Club')).toBe(false);
+    it('returns false for empty string (validation moved to Clubs sheet)', () => {
+      // isApprovedClub now only checks non-empty; actual club membership is
+      // enforced via the Clubs sheet at the service layer.
       expect(isApprovedClub('')).toBe(false);
+      expect(isApprovedClub('   ')).toBe(false);
+    });
+
+    it('returns true for any non-empty string (unknown clubs included)', () => {
+      // By design — the sheet-level check handles membership validation
+      expect(isApprovedClub('Unknown_Club')).toBe(true);
+      expect(isApprovedClub('Brand_New_Club')).toBe(true);
     });
   });
 
@@ -341,6 +354,235 @@ describe('inputValidator', () => {
     it('returns ERROR for non-string input', () => {
       const result = requireString(null, 'field');
       expect(result.status).toBe(ResultStatus.ERROR);
+    });
+  });
+
+  // ── validateCreateEventPayload ────────────────────────────────────────────
+
+  describe('validateCreateEventPayload()', () => {
+    it('returns SUCCESS with both fields present', () => {
+      const result = validateCreateEventPayload({
+        eventName: 'NYC Marathon',
+        eventDate: '2026-11-01',
+      });
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.eventName).toBe('NYC Marathon');
+      expect(result.data!.eventDate).toBe('2026-11-01');
+    });
+
+    it('trims whitespace from eventName and eventDate', () => {
+      const result = validateCreateEventPayload({
+        eventName: '  Boston Marathon  ',
+        eventDate: '  2026-04-21  ',
+      });
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.eventName).toBe('Boston Marathon');
+      expect(result.data!.eventDate).toBe('2026-04-21');
+    });
+
+    it('returns ERROR when eventName is missing', () => {
+      const result = validateCreateEventPayload({ eventDate: '2026-01-01' });
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.errors!.some((e) => e.field === 'eventName')).toBe(true);
+    });
+
+    it('returns ERROR when eventDate is missing', () => {
+      const result = validateCreateEventPayload({ eventName: 'Test' });
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.errors!.some((e) => e.field === 'eventDate')).toBe(true);
+    });
+
+    it('returns both field errors when both are missing', () => {
+      const result = validateCreateEventPayload({});
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.errors).toHaveLength(2);
+    });
+
+    it('returns ERROR when eventName is non-string', () => {
+      const result = validateCreateEventPayload({ eventName: 42, eventDate: '2026-01-01' });
+      expect(result.status).toBe(ResultStatus.ERROR);
+    });
+  });
+
+  // ── validateUpdateEventPayload ────────────────────────────────────────────
+
+  describe('validateUpdateEventPayload()', () => {
+    it('returns SUCCESS with eventId and optional fields', () => {
+      const result = validateUpdateEventPayload({
+        eventId: 'evt-uuid-001',
+        eventName: 'Updated Name',
+        eventDate: '2026-11-15',
+      });
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.eventId).toBe('evt-uuid-001');
+      expect(result.data!.eventName).toBe('Updated Name');
+      expect(result.data!.eventDate).toBe('2026-11-15');
+    });
+
+    it('returns SUCCESS with eventId only (no optional fields)', () => {
+      const result = validateUpdateEventPayload({ eventId: 'evt-uuid-001' });
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.eventName).toBeUndefined();
+      expect(result.data!.eventDate).toBeUndefined();
+    });
+
+    it('trims whitespace from eventId', () => {
+      const result = validateUpdateEventPayload({ eventId: '  evt-uuid-001  ' });
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.eventId).toBe('evt-uuid-001');
+    });
+
+    it('returns ERROR when eventId is missing', () => {
+      const result = validateUpdateEventPayload({ eventName: 'No ID' });
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.errors!.some((e) => e.field === 'eventId')).toBe(true);
+    });
+
+    it('returns ERROR when eventId is empty string', () => {
+      const result = validateUpdateEventPayload({ eventId: '' });
+      expect(result.status).toBe(ResultStatus.ERROR);
+    });
+
+    it('returns ERROR when eventId is non-string', () => {
+      const result = validateUpdateEventPayload({ eventId: 123 });
+      expect(result.status).toBe(ResultStatus.ERROR);
+    });
+
+    it('includes eventName in output only when it is a string', () => {
+      const withString = validateUpdateEventPayload({ eventId: 'x', eventName: 'Run' });
+      expect(withString.data!.eventName).toBe('Run');
+
+      const withNonString = validateUpdateEventPayload({ eventId: 'x', eventName: 99 });
+      expect(withNonString.data!.eventName).toBeUndefined();
+    });
+  });
+
+  // ── isValidNormalizedName ─────────────────────────────────────────────────
+
+  describe('isValidNormalizedName()', () => {
+    it('accepts alphanumeric names with underscores', () => {
+      expect(isValidNormalizedName('New_Bee')).toBe(true);
+      expect(isValidNormalizedName('Misty_Mountain_123')).toBe(true);
+      expect(isValidNormalizedName('CHI')).toBe(true);
+      expect(isValidNormalizedName('Run4Fun')).toBe(true);
+    });
+
+    it('rejects names with spaces', () => {
+      expect(isValidNormalizedName('New Bee')).toBe(false);
+    });
+
+    it('rejects names with hyphens', () => {
+      expect(isValidNormalizedName('New-Bee')).toBe(false);
+    });
+
+    it('rejects names with special characters', () => {
+      expect(isValidNormalizedName('Club!')).toBe(false);
+      expect(isValidNormalizedName('Club@Org')).toBe(false);
+    });
+
+    it('rejects empty string', () => {
+      expect(isValidNormalizedName('')).toBe(false);
+    });
+
+    it('trims before testing (whitespace-only fails)', () => {
+      expect(isValidNormalizedName('   ')).toBe(false);
+    });
+  });
+
+  // ── validateCreateClubPayload ─────────────────────────────────────────────
+
+  describe('validateCreateClubPayload()', () => {
+    it('returns SUCCESS with valid displayName and normalizedName', () => {
+      const result = validateCreateClubPayload({
+        displayName: '新蜂',
+        normalizedName: 'New_Bee',
+      });
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.displayName).toBe('新蜂');
+      expect(result.data!.normalizedName).toBe('New_Bee');
+    });
+
+    it('sanitizes string fields (strips HTML tags)', () => {
+      const result = validateCreateClubPayload({
+        displayName: '<b>Club</b>',
+        normalizedName: 'Club',
+      });
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.displayName).toBe('Club');
+    });
+
+    it('returns ERROR when displayName is empty', () => {
+      const result = validateCreateClubPayload({ displayName: '', normalizedName: 'New_Bee' });
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.errors!.some((e) => e.field === 'displayName')).toBe(true);
+    });
+
+    it('returns ERROR when normalizedName is empty', () => {
+      const result = validateCreateClubPayload({ displayName: '新蜂', normalizedName: '' });
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.errors!.some((e) => e.field === 'normalizedName')).toBe(true);
+    });
+
+    it('returns ERROR when normalizedName contains spaces', () => {
+      const result = validateCreateClubPayload({ displayName: 'New Bee', normalizedName: 'New Bee' });
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.errors!.some((e) => e.field === 'normalizedName')).toBe(true);
+    });
+
+    it('returns ERROR when normalizedName contains special characters', () => {
+      const result = validateCreateClubPayload({ displayName: 'Club', normalizedName: 'Club-99!' });
+      expect(result.status).toBe(ResultStatus.ERROR);
+    });
+
+    it('returns both errors when both fields are invalid', () => {
+      const result = validateCreateClubPayload({ displayName: '', normalizedName: '' });
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.errors!.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  // ── validateUpdateClubPayload ─────────────────────────────────────────────
+
+  describe('validateUpdateClubPayload()', () => {
+    it('returns SUCCESS with normalizedName only', () => {
+      const result = validateUpdateClubPayload({ normalizedName: 'New_Bee' });
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.normalizedName).toBe('New_Bee');
+      expect(result.data!.displayName).toBeUndefined();
+    });
+
+    it('returns SUCCESS with both normalizedName and displayName', () => {
+      const result = validateUpdateClubPayload({
+        normalizedName: 'New_Bee',
+        displayName: 'Updated Display',
+      });
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.displayName).toBe('Updated Display');
+    });
+
+    it('sanitizes displayName when provided', () => {
+      const result = validateUpdateClubPayload({
+        normalizedName: 'New_Bee',
+        displayName: '<script>xss</script>Club',
+      });
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.displayName).toBe('xssClub');
+    });
+
+    it('returns ERROR when normalizedName is missing', () => {
+      const result = validateUpdateClubPayload({ displayName: 'Something' });
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.errors!.some((e) => e.field === 'normalizedName')).toBe(true);
+    });
+
+    it('returns ERROR when normalizedName is empty string', () => {
+      const result = validateUpdateClubPayload({ normalizedName: '' });
+      expect(result.status).toBe(ResultStatus.ERROR);
+    });
+
+    it('does not include displayName in output when not provided', () => {
+      const result = validateUpdateClubPayload({ normalizedName: 'CHI' });
+      expect('displayName' in (result.data ?? {})).toBe(false);
     });
   });
 });

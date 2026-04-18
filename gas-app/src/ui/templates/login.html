@@ -73,6 +73,13 @@
       </div>
       <? } ?>
 
+      <? if (typeof detectedEmail !== 'undefined' && detectedEmail) { ?>
+      <div style="background:#e8f5e9;border-radius:4px;padding:8px 12px;margin-bottom:16px;font-size:13px;color:#2e7d32;text-align:left;">
+        <i class="material-icons" style="font-size:15px;vertical-align:middle;margin-right:4px;">account_circle</i>
+        Signed in as: <strong><?= detectedEmail ?></strong>
+      </div>
+      <? } ?>
+
       <p style="color:#555;font-size:14px;margin-bottom:20px;">
         This system is restricted to registered members.<br>
         Sign in with your organization Google account to continue.

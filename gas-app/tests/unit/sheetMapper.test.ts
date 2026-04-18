@@ -5,6 +5,8 @@ import {
   fromEventRecord,
   toUploadLogRecord,
   fromUploadLogRecord,
+  toClubRecord,
+  fromClubRecord,
 } from '../../src/utils/sheetMapper';
 import { UserRole, UserStatus, UploadSource } from '../../src/types/enums';
 import { UserRecord } from '../../src/types/models';
@@ -338,6 +340,115 @@ describe('sheetMapper — Upload Log', () => {
       const original = toUploadLogRecord(validRow)!;
       const restored = toUploadLogRecord(fromUploadLogRecord(original));
       expect(restored).toEqual(original);
+    });
+  });
+});
+
+// ─── Clubs ────────────────────────────────────────────────────────────────────
+
+describe('sheetMapper — Clubs', () => {
+  const validRow: unknown[] = [
+    '新蜂', 'New_Bee', 'active', '2025-01-01', 'system',
+  ];
+
+  describe('toClubRecord()', () => {
+    it('maps a complete valid active row', () => {
+      const record = toClubRecord(validRow);
+      expect(record).not.toBeNull();
+      expect(record!.displayName).toBe('新蜂');
+      expect(record!.normalizedName).toBe('New_Bee');
+      expect(record!.status).toBe('active');
+      expect(record!.addedDate).toBe('2025-01-01');
+      expect(record!.addedBy).toBe('system');
+    });
+
+    it('maps an inactive club correctly', () => {
+      const row = ['驰跑团', 'CHI', 'inactive', '2025-06-01', 'admin@mmrunners.org'];
+      const record = toClubRecord(row);
+      expect(record).not.toBeNull();
+      expect(record!.status).toBe('inactive');
+      expect(record!.normalizedName).toBe('CHI');
+    });
+
+    it('normalizes addedBy to lowercase', () => {
+      const row = ['Club', 'Club_Name', 'active', '2025-01-01', 'ADMIN@MMRUNNERS.ORG'];
+      const record = toClubRecord(row);
+      expect(record!.addedBy).toBe('admin@mmrunners.org');
+    });
+
+    it('trims whitespace from all fields', () => {
+      const row = ['  新蜂  ', '  New_Bee  ', 'active', '2025-01-01', 'system'];
+      const record = toClubRecord(row);
+      expect(record!.displayName).toBe('新蜂');
+      expect(record!.normalizedName).toBe('New_Bee');
+    });
+
+    it('returns null when displayName is empty', () => {
+      const row = ['', 'New_Bee', 'active', '2025-01-01', 'system'];
+      expect(toClubRecord(row)).toBeNull();
+    });
+
+    it('returns null when normalizedName is empty', () => {
+      const row = ['新蜂', '', 'active', '2025-01-01', 'system'];
+      expect(toClubRecord(row)).toBeNull();
+    });
+
+    it('returns null for invalid status', () => {
+      const row = ['新蜂', 'New_Bee', 'pending', '2025-01-01', 'system'];
+      expect(toClubRecord(row)).toBeNull();
+    });
+
+    it('returns null for row with fewer than 5 columns', () => {
+      expect(toClubRecord(['Club', 'Club_Name'])).toBeNull();
+      expect(toClubRecord([])).toBeNull();
+    });
+
+    it('accepts both "active" and "inactive" as valid statuses', () => {
+      const active   = toClubRecord(['A', 'A_Club', 'active',   '2025-01-01', 'sys']);
+      const inactive = toClubRecord(['A', 'A_Club', 'inactive', '2025-01-01', 'sys']);
+      expect(active!.status).toBe('active');
+      expect(inactive!.status).toBe('inactive');
+    });
+
+    it('handles numeric cell values via String() coercion', () => {
+      const row: unknown[] = [123, 456, 'active', '2025-01-01', 'system'];
+      const record = toClubRecord(row);
+      expect(record!.displayName).toBe('123');
+      expect(record!.normalizedName).toBe('456');
+    });
+  });
+
+  describe('fromClubRecord()', () => {
+    it('produces an array of 5 elements', () => {
+      const record = toClubRecord(validRow)!;
+      const row = fromClubRecord(record);
+      expect(row).toHaveLength(5);
+    });
+
+    it('preserves all field values in correct column order', () => {
+      const record = toClubRecord(validRow)!;
+      const row = fromClubRecord(record);
+      expect(row[0]).toBe('新蜂');         // displayName
+      expect(row[1]).toBe('New_Bee');     // normalizedName
+      expect(row[2]).toBe('active');      // status
+      expect(row[3]).toBe('2025-01-01'); // addedDate
+      expect(row[4]).toBe('system');     // addedBy
+    });
+  });
+
+  describe('roundtrip: toClubRecord → fromClubRecord → toClubRecord', () => {
+    it('produces an identical record', () => {
+      const original = toClubRecord(validRow)!;
+      const restored = toClubRecord(fromClubRecord(original));
+      expect(restored).toEqual(original);
+    });
+
+    it('roundtrip preserves inactive status', () => {
+      const row: unknown[] = ['驰跑团', 'CHI', 'inactive', '2025-06-01', 'admin@mmrunners.org'];
+      const original = toClubRecord(row)!;
+      const restored = toClubRecord(fromClubRecord(original));
+      expect(restored).toEqual(original);
+      expect(restored!.status).toBe('inactive');
     });
   });
 });

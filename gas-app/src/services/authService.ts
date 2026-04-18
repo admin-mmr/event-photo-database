@@ -6,10 +6,15 @@ import { ServiceResult } from '../types/responses';
 /**
  * AuthService — thin wrapper around GAS Session API.
  *
- * In GAS Web Apps deployed with "Execute as: USER_ACCESSING",
- * Session.getActiveUser().getEmail() returns the email of the
- * authenticated Google user. No additional OAuth step is needed
- * since GAS handles the OAuth flow automatically on first access.
+ * The Web App is deployed with "Execute as: Me (owner)", so the script
+ * always runs with the owner's credentials and can access owner-shared
+ * resources (e.g. the spreadsheet) regardless of who is logged in.
+ *
+ * "Who has access" is set to "Anyone with a Google account", which means
+ * Google forces the visitor to sign in before the script runs. Once signed
+ * in, Session.getActiveUser().getEmail() returns the *visitor's* email —
+ * not the owner's — so we can still identify and authorize each user
+ * against the Users sheet.
  *
  * This service is intentionally minimal — it only verifies session state.
  * Authorization (who can do what) is handled by RoleGuard.
@@ -19,10 +24,14 @@ import { ServiceResult } from '../types/responses';
 /**
  * Retrieves the current user's email from the active GAS session.
  *
+ * With "Execute as: Me" + "Anyone with a Google account", GAS guarantees
+ * the visitor is signed in before doGet/doPost runs, so this should always
+ * return a non-empty email in production.
+ *
  * Returns ERROR status if:
- *   - The Web App is not configured with Google OAuth (check appsscript.json)
- *   - The user somehow accessed without authentication
- *   - GAS returns an empty string (rare, but possible in some execution contexts)
+ *   - The Web App access setting was accidentally changed to "Anyone" (no login)
+ *   - The script is being run from the GAS editor preview (not the published URL)
+ *   - GAS returns an empty string for any other reason
  */
 export function getCurrentUserEmail(): ServiceResult<{ email: string }> {
   let email: string;
@@ -55,10 +64,14 @@ export function getCurrentUserEmail(): ServiceResult<{ email: string }> {
 
 /**
  * Checks whether the caller is using the GAS editor "test deployment"
- * rather than the published Web App URL. Editor deployments have
- * access restrictions that can cause auth issues.
+ * rather than the published Web App URL.
  *
- * Returns true if running in editor/development mode.
+ * With "Execute as: Me (owner)", the editor preview runs as the owner and
+ * getEmail() returns the owner's email — so technically it's non-empty.
+ * This helper is retained for diagnostic logging; route handlers should
+ * always redirect users to the published URL rather than the editor URL.
+ *
+ * Returns true if a session email is detectable (editor or published).
  */
 export function isEditorSession(): boolean {
   try {

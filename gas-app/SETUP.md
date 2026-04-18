@@ -61,6 +61,7 @@ Rename the default "Sheet1" tab and add three more. The names must match exactly
 | `Events` | Race events and their Drive folder IDs |
 | `Upload_Log` | Audit log of every upload session |
 | `Rate_Limit` | Per-API-key request counters |
+| `Clubs` | Approved running clubs (seeded automatically on first run) |
 
 ### Add header rows
 
@@ -85,6 +86,13 @@ log_id | event_id | club_name | uploaded_by | batch_folder_name | batch_folder_i
 ```
 api_key | window_start | request_count
 ```
+
+**Clubs**
+```
+displayName | normalizedName | status | addedDate | addedBy
+```
+
+> The `Clubs` sheet will be seeded automatically with default clubs when the app first accesses it. You only need to create the tab — leave it blank.
 
 > Headers are for human readability only — the app accesses columns by index (0-based), so **column order must be exact**.
 
@@ -138,10 +146,14 @@ npm run push:watch
    | Setting | Value |
    |---------|-------|
    | Description | `v1 beta` (or any label you like) |
-   | Execute as | **User accessing the web app** |
+   | Execute as | **Me (owner)** |
    | Who has access | **Anyone with a Google Account** |
 
-4. Click **Deploy**. Google will ask you to authorize the required OAuth scopes — click through to grant them.
+   > **Why "Me (owner)"?** The script must access the Sheets database and Drive folder that belong to the owner. If set to "User accessing the web app", each visitor would need their own Drive/Sheets permissions on those files — which defeats the purpose of a shared system.
+
+   > **Why "Anyone with a Google Account"?** This forces visitors to sign in with Google before the script runs, so `Session.getActiveUser().getEmail()` always returns a real email. Setting it to "Anyone" (no login required) would make `getEmail()` return an empty string and break authentication entirely.
+
+4. Click **Deploy**. Google will ask you to authorize the required OAuth scopes as the owner — click through and grant them. **This authorization step is mandatory** — skipping it causes a blank page with no error message.
 5. Copy the **Web app URL** that appears (it looks like `https://script.google.com/macros/s/.../exec`).
 6. **Save this URL** — you will share it with beta users.
 
@@ -166,14 +178,28 @@ The app checks the Users sheet on every login. Before anyone can use it, at leas
 
 ---
 
-## Step 8 — Smoke test the deployment
+## Step 8 — Verify the deployment with the healthcheck
 
-1. Open the web app URL from Step 6 in a browser while signed in as the admin account you added in Step 7.
-2. You should land on the **Dashboard** and see the admin navigation panel.
-3. Verify Drive and Sheets connectivity by creating a test event:
-   - Go to **Admin → Events → Create Event**
-   - Enter a name and date and submit
-   - Confirm the event appears in the Events sheet and a matching folder appears in Drive under the root folder
+After every push + redeploy, run the healthcheck **before** any real testing. It catches the two most common silent failures immediately.
+
+1. Open this URL in your browser (replace `<YOUR_APP_URL>` with the URL from Step 6):
+   ```
+   <YOUR_APP_URL>?action=healthcheck
+   ```
+2. You should see a diagnostic page. Check each item:
+
+   | What you see | What it means |
+   |---|---|
+   | **Session email** shows your Google email | ✅ OAuth authorized, session working |
+   | **Session email** is empty or shows ERROR | ❌ Re-authorize: open the app URL without `?action=healthcheck`, click through the Google permission dialog |
+   | **Deployment URL** matches your app URL | ✅ Correct version is live |
+   | Page itself fails to load (blank / refused) | ❌ `XFrameOptionsMode` is wrong — must be `ALLOWALL`, not `DEFAULT` |
+
+3. Once the healthcheck is green, proceed to the full smoke test:
+   - Open the app URL (without `?action=healthcheck`) while signed in as the admin added in Step 7
+   - You should land on the **Dashboard** with the admin navigation panel
+   - Go to **Admin → Events → Create Event**, enter a name and date, and submit
+   - Confirm the event appears in the Events sheet and a matching Drive folder was created
 
 If you see an error about missing Script Properties, revisit Step 4. If you see "Access Denied", double-check the email in the Users sheet exactly matches your Google account.
 
@@ -225,9 +251,9 @@ If a partner running club wants to upload photos programmatically using the REST
 
 ---
 
-## Approved clubs reference
+## Managing clubs
 
-The following club names are built into the app. Only uploads and user registrations using one of these normalized names will be accepted.
+Clubs are managed in the `Clubs` sheet of the database spreadsheet. The system seeds the sheet automatically on first run with the following default clubs:
 
 | Display name | Normalized folder name |
 |---|---|
@@ -236,7 +262,19 @@ The following club names are built into the app. Only uploads and user registrat
 | Nankai | `Nankai` |
 | Admin | `Admin` |
 
-To add a new club in a future update, edit `src/config/constants.ts` → `APPROVED_CLUBS`, push the changes, and redeploy.
+### Adding or editing clubs after launch
+
+Once the web app is running, use the **Admin UI** to manage clubs:
+
+1. Log in as an admin and navigate to **Admin → Clubs**.
+2. Click **Add Club** to create a new club, or click the edit icon next to an existing club.
+3. Fill in the **Display Name** (human-readable, e.g. `Sunrise Runners`) and **Normalized Name** (used as the Drive folder name, e.g. `Sunrise_Runners`).
+4. The normalized name must start with a letter, contain only letters, digits, and underscores, and have no consecutive underscores.
+5. Click **Save**. The club is immediately available for user registration and photo uploads.
+
+To **deactivate** a club, click the deactivate icon. Deactivated clubs no longer appear in the upload club selector, but their existing folders and upload history are preserved.
+
+> **Legacy note**: In older versions, clubs were hardcoded in `src/config/constants.ts → APPROVED_CLUBS`. That list is still used as the initial seed but the Clubs sheet is now the live source of truth. Do not edit `APPROVED_CLUBS` to manage clubs after first deployment.
 
 ---
 
@@ -256,3 +294,21 @@ To add a new club in a future update, edit `src/config/constants.ts` → `APPROV
 
 **Drive folder creation fails**
 → Confirm the org account has **Editor** access to the root Drive folder and that the `ROOT_FOLDER_ID` is the folder's ID (not a shared link or the full URL).
+
+---
+
+## GAS deployment gotchas (read before debugging)
+
+These are silent failures that produce misleading symptoms. Check these before anything else.
+
+**Blank page / "refused to connect" in the content area**
+→ `XFrameOptionsMode` is set to `DEFAULT`. GAS serves HTML content inside an iframe from `googleusercontent.com`; the outer wrapper page is on `script.google.com`. These are different origins, so `SAMEORIGIN` blocks GAS's own iframe. Must always be `ALLOWALL`. See `pageRoutes.ts`.
+
+**`Session.getActiveUser().getEmail()` returns empty string**
+→ Two possible causes: (a) the app was not yet authorized by the owner after deploying with "Execute as: Me" — open the app URL and complete the Google permission dialog; or (b) "Who has access" was accidentally set to "Anyone" (no login) instead of "Anyone with a Google Account" — without a login requirement, Google does not populate the active user session.
+
+**Auth works in the GAS editor preview but fails at the real URL (or vice versa)**
+→ The editor preview URL (`/dev`) and the published URL (`/exec`) behave differently for `Session.getActiveUser()`. Always test auth using the published URL, never the editor preview. Use `?action=healthcheck` on the published URL to verify session state.
+
+**Code changes are live in the editor but not at the published URL**
+→ `clasp push` only updates the editor draft. You must go to **Deploy → Manage deployments → Edit → New version → Deploy** to push changes to the live URL. The `npm run push` alias does not auto-deploy.

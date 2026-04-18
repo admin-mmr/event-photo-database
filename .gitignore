@@ -137,3 +137,34 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# photo examples
+20260315-NYRR-纽半马/**
+*.jpg
+*.HEIC
+*.jpeg
+*.png
+*.bmp
+*.gif
+*.webp
+*.svg
+*.ico
+*.tiff
+*.psd
+*.ai
+*.eps
+*.indd
+*.raw
+*.cr2
+*.nef
+*.orf
+*.sr2
+*.dng
+*.arw
+*.rw2
+*.raf
+*.mef
+*.mrw
+*.srw
+*.x3f
+*.kdc

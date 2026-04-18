@@ -71,6 +71,9 @@ export enum RouteAction {
   // Phase 4 — Admin Summary & Reconciliation
   ADMIN_SUMMARY = 'admin_summary',
 
+  // Deployment healthcheck (no auth required)
+  HEALTHCHECK = 'healthcheck',
+
   // Phase 5 — Cross-Org REST API
   // These are accessed by external GAS programs via HTTP, not the browser UI.
   API_CHECK_FOLDER = 'api_check_folder',   // GET: resolve event name → folder ID

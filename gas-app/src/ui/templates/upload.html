@@ -417,6 +417,7 @@
           <i class="material-icons" style="vertical-align:middle;margin-right:6px;font-size:20px;">cloud_upload</i>
           Uploading…
         </h5>
+        <div id="batch-indicator" style="display:none;font-size:13px;color:#7986cb;font-weight:500;margin-bottom:8px;letter-spacing:.3px;"></div>
         <div class="overall-progress-bar">
           <div class="overall-progress-fill" id="overall-progress-fill" style="width:0%;"></div>
         </div>
@@ -500,6 +501,9 @@ var USER_EMAIL = '<?= userEmail ?>';
 var ACCEPTED_EXTS = ['.jpg','.jpeg','.png','.heic','.cr2','.arw','.nef'];
 var MAX_FILE_SIZE_MB = 50;
 var MAX_BATCH_MB = 200;
+var UPLOAD_CONCURRENCY = 4;   // parallel google.script.run calls per round
+var BUNDLE_FILES       = 5;   // max files per serverUploadFiles call
+var BUNDLE_MAX_RAW_MB  = 20;  // max combined raw size per bundle (base64 adds ~33%)
 
 var state = {
   currentStep: 1,
@@ -797,13 +801,14 @@ function renderSelectedFiles() {
   document.getElementById('selected-total-size').textContent = formatBytes(totalBytes);
 
   var oversized = files.filter(function(f) { return f.size > MAX_FILE_SIZE_MB * 1024 * 1024; });
-  var batchTooLarge = totalBytes > MAX_BATCH_MB * 1024 * 1024;
+  var validForBatch = files.filter(function(f) { return f.size <= MAX_FILE_SIZE_MB * 1024 * 1024; });
+  var rounds = partitionIntoBatches(validForBatch);
   var sizeNotice = document.getElementById('size-limit-notice');
-  if (oversized.length || batchTooLarge) {
+  var msgs = [];
+  if (oversized.length) msgs.push(oversized.length + ' file' + (oversized.length > 1 ? 's exceed' : ' exceeds') + ' the 50 MB per-file limit and will be skipped.');
+  if (rounds.length > 1) msgs.push('Total ' + formatBytes(totalBytes) + ' will be automatically split into ' + rounds.length + ' upload rounds (≤' + MAX_BATCH_MB + ' MB each).');
+  if (msgs.length) {
     sizeNotice.style.display = '';
-    var msgs = [];
-    if (oversized.length) msgs.push(oversized.length + ' file' + (oversized.length > 1 ? 's exceed' : ' exceeds') + ' the 50 MB per-file limit and will be skipped.');
-    if (batchTooLarge) msgs.push('Total batch (' + formatBytes(totalBytes) + ') exceeds the recommended ' + MAX_BATCH_MB + ' MB — consider splitting into multiple uploads.');
     document.getElementById('size-limit-msg').textContent = msgs.join(' ');
   } else {
     sizeNotice.style.display = 'none';
@@ -929,116 +934,252 @@ function confirmAndUpload() {
   startUploadFlow(toUpload, skippedDuplicates);
 }
 
+// ── Auto-batch partitioner ─────────────────────────────────────────────────────
+// Splits a flat file list into rounds of ≤ MAX_BATCH_MB each.
+function partitionIntoBatches(files) {
+  var limit = MAX_BATCH_MB * 1024 * 1024;
+  var batches = [], current = [], currentSize = 0;
+  files.forEach(function(f) {
+    // If adding this file would exceed the limit AND we already have files,
+    // seal the current batch and start a new one.
+    if (current.length > 0 && currentSize + f.size > limit) {
+      batches.push(current);
+      current = [];
+      currentSize = 0;
+    }
+    current.push(f);
+    currentSize += f.size;
+  });
+  if (current.length) batches.push(current);
+  return batches.length ? batches : [[]];
+}
+
+// ── Bundle builder ─────────────────────────────────────────────────────────────
+// Groups a flat file list into bundles, each with ≤ BUNDLE_FILES files and
+// ≤ BUNDLE_MAX_RAW_MB total raw size.  Each bundle becomes one serverUploadFiles
+// call, so the GAS startup cost is shared across all files in the bundle.
+function buildBundles(files) {
+  var limit = BUNDLE_MAX_RAW_MB * 1024 * 1024;
+  var bundles = [], current = [], currentSize = 0;
+  files.forEach(function(f) {
+    if (current.length >= BUNDLE_FILES || (current.length > 0 && currentSize + f.size > limit)) {
+      bundles.push(current);
+      current = [];
+      currentSize = 0;
+    }
+    current.push(f);
+    currentSize += f.size;
+  });
+  if (current.length) bundles.push(current);
+  return bundles.length ? bundles : [[]];
+}
+
+// ── Concurrent bundle uploader ─────────────────────────────────────────────────
+// Uploads `files` to `batchFolderId` using bundled calls (BUNDLE_FILES per call),
+// running up to `concurrency` bundles in parallel.
+// `globalOffset` is the index of files[0] in the full file list (for status rows).
+// Callbacks: onFileDone(result) called per file, onAllDone(results[]) when finished.
+function uploadFilesConcurrently(files, batchFolderId, globalOffset, concurrency, onFileDone, onAllDone) {
+  if (!files.length) { onAllDone([]); return; }
+
+  var bundles      = buildBundles(files);
+  // Pre-compute the starting index of each bundle within `files`
+  var bundleStarts = bundles.reduce(function(acc, b) {
+    acc.push(acc.length ? acc[acc.length - 1] + bundles[acc.length - 1].length : 0);
+    return acc;
+  }, []);
+
+  var results       = new Array(files.length).fill(null);
+  var nextBundle    = 0;    // next bundle index to launch
+  var activeCount   = 0;   // in-flight bundle calls
+  var doneFileCount = 0;   // files fully settled
+
+  // Read all files in a bundle concurrently (browser FileReader is non-blocking).
+  function readBundle(bundle, callback) {
+    var base64s = new Array(bundle.length).fill(null);
+    var errs    = new Array(bundle.length).fill(null);
+    var done    = 0;
+    bundle.forEach(function(file, i) {
+      var reader = new FileReader();
+      reader.onload = function(e) {
+        var dataUrl = e.target.result;
+        base64s[i] = dataUrl.indexOf(',') >= 0 ? dataUrl.split(',')[1] : dataUrl;
+        if (++done === bundle.length) callback(errs, base64s);
+      };
+      reader.onerror = function() {
+        errs[i] = 'FileReader error';
+        if (++done === bundle.length) callback(errs, base64s);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function launchBundle(bIdx) {
+    activeCount++;
+    var bundle     = bundles[bIdx];
+    var fileStart  = bundleStarts[bIdx];   // index of bundle[0] within `files`
+
+    // Show every file in the bundle as "uploading" immediately
+    bundle.forEach(function(_, i) {
+      setFileStatus(globalOffset + fileStart + i, 'uploading', 'Uploading…');
+    });
+
+    readBundle(bundle, function(readErrs, base64s) {
+      if (readErrs.some(function(e) { return e; })) {
+        settleBundle(bIdx, bundle, fileStart, null, 'FileReader error');
+        return;
+      }
+
+      callServer('serverUploadFiles', {
+        batchFolderId: batchFolderId,
+        files: bundle.map(function(f, i) {
+          return { fileName: f.name, mimeType: f.type || 'application/octet-stream', base64Data: base64s[i] };
+        }),
+      }).then(function(r) {
+        settleBundle(bIdx, bundle, fileStart, r, null);
+      }).catch(function(err) {
+        settleBundle(bIdx, bundle, fileStart, null, String(err));
+      });
+    });
+  }
+
+  function settleBundle(bIdx, bundle, fileStart, response, callError) {
+    // Per-file results from the server (null if the whole call failed)
+    var serverResults = (response && response.status === 'success' &&
+                         response.data && response.data.results)
+                        ? response.data.results : null;
+
+    bundle.forEach(function(file, i) {
+      var absIdx = fileStart + i;
+      var sr     = serverResults && serverResults[i];
+      var result;
+      if (sr && sr.success) {
+        result = { file: file, success: true,
+                   data: { fileId: sr.fileId, fileName: sr.fileName, sizeBytes: sr.sizeBytes } };
+        setFileStatus(globalOffset + absIdx, 'done', '✓ Done');
+      } else {
+        var errMsg = callError || (sr && sr.error) || (response && response.message) || 'Upload failed';
+        result = { file: file, success: false, error: errMsg };
+        setFileStatus(globalOffset + absIdx, 'failed', '✗ Failed');
+      }
+      results[absIdx] = result;
+      doneFileCount++;
+      onFileDone(result);
+    });
+
+    activeCount--;
+    pump();
+    if (doneFileCount === files.length) onAllDone(results);
+  }
+
+  function pump() {
+    while (activeCount < concurrency && nextBundle < bundles.length) {
+      launchBundle(nextBundle++);
+    }
+  }
+
+  pump();
+}
+
+// ── Main upload flow (multi-round + concurrent) ────────────────────────────────
 function startUploadFlow(filesToUpload, skippedDuplicates) {
-  // skippedNonPhoto = total selected - oversized - (accepted + dupes) is already implicit.
-  // We count files that were originally in selectedFiles but filtered out as oversized.
   var oversizedCount = state.selectedFiles.filter(function(f) {
     return f.size > MAX_FILE_SIZE_MB * 1024 * 1024;
   }).length;
 
-  // Show progress panel
+  var batches    = partitionIntoBatches(filesToUpload);
+  var totalFiles = filesToUpload.length;
+  var globalDone = 0;      // files finished across all rounds
+  var allResults = [];     // flattened results from every round
+  var batchNames = [];     // folder names per round (for summary)
+
   showOnly('upload-progress-panel');
   document.getElementById('stepper').style.display = 'none';
-  renderUploadProgress(filesToUpload, []);
+  renderUploadProgress(filesToUpload);
+  updateBatchIndicator(1, batches.length);
 
-  // Step 1: create batch folder
   var usernameHint = USER_EMAIL.split('@')[0];
-  callServer('serverStartUploadSession', {
-    eventFolderId: state.selectedEvent.driveFolderId,
-    clubFolderName: RUNNING_CLUB,
-    usernameHint: usernameHint,
-  }).then(function(sessionResult) {
-    if (!sessionResult || sessionResult.status !== 'success') {
-      showUploadError('Failed to create upload session: ' + (sessionResult ? sessionResult.message : 'unknown error'));
+
+  function processRound(roundIdx) {
+    if (roundIdx >= batches.length) {
+      // All rounds done → show aggregate summary
+      showAggregatedSummary(allResults, batchNames, skippedDuplicates, oversizedCount);
       return;
     }
 
-    state.batchFolderId = sessionResult.data.batchFolderId;
-    state.batchFolderName = sessionResult.data.batchFolderName;
+    var batch        = batches[roundIdx];
+    var globalOffset = batches.slice(0, roundIdx).reduce(function(s, b) { return s + b.length; }, 0);
+    updateBatchIndicator(roundIdx + 1, batches.length);
 
-    // Step 2: upload files one by one
-    uploadFilesSequentially(filesToUpload, 0, [], skippedDuplicates, oversizedCount);
-  }).catch(function(err) {
-    showUploadError('Session error: ' + String(err));
-  });
-}
+    callServer('serverStartUploadSession', {
+      eventFolderId: state.selectedEvent.driveFolderId,
+      clubFolderName: RUNNING_CLUB,
+      usernameHint:  usernameHint,
+    }).then(function(sessionResult) {
+      if (!sessionResult || sessionResult.status !== 'success') {
+        showUploadError('Failed to create upload session (round ' + (roundIdx + 1) + '): ' +
+          (sessionResult ? sessionResult.message : 'unknown error'));
+        return;
+      }
 
-function uploadFilesSequentially(files, index, results, skippedDuplicates, skippedNonPhoto) {
-  updateOverallProgress(index, files.length);
+      var batchFolderId   = sessionResult.data.batchFolderId;
+      var batchFolderName = sessionResult.data.batchFolderName;
+      batchNames.push(batchFolderName);
 
-  if (index >= files.length) {
-    // All done — finalize
-    finalizeUpload(files, results, skippedDuplicates, skippedNonPhoto);
-    return;
+      uploadFilesConcurrently(
+        batch, batchFolderId, globalOffset, UPLOAD_CONCURRENCY,
+        /* onFileDone */  function() {
+          globalDone++;
+          updateOverallProgress(globalDone, totalFiles);
+        },
+        /* onAllDone */  function(batchResults) {
+          allResults = allResults.concat(batchResults);
+
+          // Log this round to the Upload_Log sheet
+          var successCount   = batchResults.filter(function(r) { return r.success; }).length;
+          var totalSizeBytes = batchResults
+            .filter(function(r) { return r.success && r.data; })
+            .reduce(function(s, r) { return s + (r.data.sizeBytes || 0); }, 0);
+
+          callServer('serverCompleteUpload', {
+            eventId:           state.selectedEvent.eventId,
+            clubFolderName:    RUNNING_CLUB,
+            batchFolderName:   batchFolderName,
+            batchFolderId:     batchFolderId,
+            fileCount:         successCount,
+            totalSizeMb:       totalSizeBytes / (1024 * 1024),
+            // attribute the skip counts only to the first round's log row
+            skippedDuplicates: roundIdx === 0 ? skippedDuplicates : 0,
+            skippedNonPhoto:   roundIdx === 0 ? oversizedCount     : 0,
+          }).catch(function() { /* log failure is non-fatal */ });
+
+          processRound(roundIdx + 1);
+        }
+      );
+    }).catch(function(err) {
+      showUploadError('Session error (round ' + (roundIdx + 1) + '): ' + String(err));
+    });
   }
 
-  var file = files[index];
-  setFileStatus(index, 'uploading', 'Uploading…');
-
-  // Read file as base64
-  var reader = new FileReader();
-  reader.onload = function(e) {
-    var dataUrl = e.target.result;
-    // Strip the data URL prefix: "data:image/jpeg;base64,..."
-    var base64Data = dataUrl.indexOf(',') >= 0 ? dataUrl.split(',')[1] : dataUrl;
-
-    callServer('serverUploadFile', {
-      batchFolderId: state.batchFolderId,
-      fileName: file.name,
-      mimeType: file.type || 'application/octet-stream',
-      base64Data: base64Data,
-    }).then(function(uploadResult) {
-      if (uploadResult && uploadResult.status === 'success') {
-        setFileStatus(index, 'done', '✓ Done');
-        results.push({ file: file, success: true, data: uploadResult.data });
-      } else {
-        setFileStatus(index, 'failed', '✗ Failed');
-        results.push({ file: file, success: false, error: uploadResult ? uploadResult.message : 'Unknown' });
-      }
-      uploadFilesSequentially(files, index + 1, results, skippedDuplicates, skippedNonPhoto);
-    }).catch(function(err) {
-      setFileStatus(index, 'failed', '✗ Error');
-      results.push({ file: file, success: false, error: String(err) });
-      uploadFilesSequentially(files, index + 1, results, skippedDuplicates, skippedNonPhoto);
-    });
-  };
-  reader.onerror = function() {
-    setFileStatus(index, 'failed', '✗ Read error');
-    results.push({ file: file, success: false, error: 'FileReader error' });
-    uploadFilesSequentially(files, index + 1, results, skippedDuplicates, skippedNonPhoto);
-  };
-  reader.readAsDataURL(file);
+  processRound(0);
 }
 
-function finalizeUpload(files, results, skippedDuplicates, skippedNonPhoto) {
-  updateOverallProgress(files.length, files.length);
-
-  var successCount = results.filter(function(r) { return r.success; }).length;
-  var totalSizeBytes = results
+function showAggregatedSummary(allResults, batchNames, skippedDuplicates, skippedNonPhoto) {
+  updateOverallProgress(allResults.length, allResults.length);
+  var successCount   = allResults.filter(function(r) { return r.success; }).length;
+  var totalSizeBytes = allResults
     .filter(function(r) { return r.success && r.data; })
     .reduce(function(s, r) { return s + (r.data.sizeBytes || 0); }, 0);
-  var totalSizeMb = totalSizeBytes / (1024 * 1024);
+  var failedResults  = allResults.filter(function(r) { return !r.success; });
 
-  // Log to sheets
-  callServer('serverCompleteUpload', {
-    eventId:           state.selectedEvent.eventId,
-    clubFolderName:    RUNNING_CLUB,
-    batchFolderName:   state.batchFolderName,
-    batchFolderId:     state.batchFolderId,
-    fileCount:         successCount,
-    totalSizeMb:       totalSizeMb,
-    skippedDuplicates: skippedDuplicates,
-    skippedNonPhoto:   skippedNonPhoto,
-  }).catch(function() { /* Log failure is non-fatal */ });
-
-  // Show summary
-  var failedResults = results.filter(function(r) { return !r.success; });
   showSummary({
     eventName:         state.selectedEvent.eventName,
     clubName:          RUNNING_CLUB,
-    batchFolderName:   state.batchFolderName,
+    batchFolderName:   batchNames.length === 1
+                         ? batchNames[0]
+                         : batchNames.length + ' rounds — ' + batchNames[0] + ' … ' + batchNames[batchNames.length - 1],
     fileCount:         successCount,
-    totalSizeMb:       totalSizeMb,
+    totalSizeMb:       totalSizeBytes / (1024 * 1024),
     skippedDuplicates: skippedDuplicates,
     skippedNonPhoto:   skippedNonPhoto,
     failedFiles:       failedResults,
@@ -1073,6 +1214,17 @@ function updateOverallProgress(done, total) {
   var pct = total > 0 ? Math.round((done / total) * 100) : 0;
   document.getElementById('overall-progress-fill').style.width = pct + '%';
   document.getElementById('progress-counter').textContent = done + ' / ' + total;
+}
+
+function updateBatchIndicator(current, total) {
+  var el = document.getElementById('batch-indicator');
+  if (!el) return;
+  if (total <= 1) {
+    el.style.display = 'none';
+  } else {
+    el.style.display = '';
+    el.textContent = '⟳  Round ' + current + ' of ' + total;
+  }
 }
 
 function showUploadError(msg) {

@@ -10,6 +10,9 @@ import {
   verifyRootFolderAccess,
   listFilesInClubFolder,
   getClubFolderTree,
+  scanLayer1Violations,
+  scanLayer2Violations,
+  scanAllViolations,
 } from '../../src/services/driveService';
 import {
   mockFolder,
@@ -435,6 +438,255 @@ describe('driveService', () => {
       const result = getClubFolderTree('bad-evt-id', 'New_Bee');
 
       expect(result.status).toBe(ResultStatus.ERROR);
+    });
+  });
+
+  // ── scanLayer1Violations ─────────────────────────────────────────────────
+
+  describe('scanLayer1Violations()', () => {
+    function makeIterator<T>(items: T[]) {
+      let i = 0;
+      return {
+        hasNext: jest.fn().mockImplementation(() => i < items.length),
+        next: jest.fn().mockImplementation(() => items[i++]),
+      };
+    }
+
+    it('returns SUCCESS with empty violations when all Layer 1 folders are valid', () => {
+      const f1 = makeMockFolder('2025-11-03_NYC_Marathon', 'id1');
+      const f2 = makeMockFolder('2025-12-25_Christmas_Run', 'id2');
+      mockFolder.getFolders.mockReturnValue(makeIterator([f1, f2]));
+
+      const result = scanLayer1Violations();
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toHaveLength(0);
+      expect(result.message).toContain('0 violation');
+    });
+
+    it('detects a Layer 1 folder with an invalid name (no date prefix)', () => {
+      const bad = makeMockFolder('NYC_Marathon', 'bad-id');
+      mockFolder.getFolders.mockReturnValue(makeIterator([bad]));
+
+      const result = scanLayer1Violations();
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toHaveLength(1);
+      expect(result.data![0].folderName).toBe('NYC_Marathon');
+      expect(result.data![0].layer).toBe(1);
+    });
+
+    it('detects a Layer 1 folder with a valid regex but invalid calendar date', () => {
+      const badDate = makeMockFolder('2025-02-30_Some_Run', 'bad-id-2');
+      mockFolder.getFolders.mockReturnValue(makeIterator([badDate]));
+
+      const result = scanLayer1Violations();
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toHaveLength(1);
+      expect(result.data![0].folderName).toBe('2025-02-30_Some_Run');
+    });
+
+    it('reports multiple violations when several folders are malformed', () => {
+      const bad1 = makeMockFolder('not-a-date-folder', 'id-bad1');
+      const bad2 = makeMockFolder('another bad one', 'id-bad2');
+      const good = makeMockFolder('2026-04-17_Spring_Run', 'id-good');
+      mockFolder.getFolders.mockReturnValue(makeIterator([bad1, bad2, good]));
+
+      const result = scanLayer1Violations();
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toHaveLength(2);
+    });
+
+    it('returns SUCCESS with empty array when root has no folders', () => {
+      mockFolder.getFolders.mockReturnValue(makeIterator([]));
+      const result = scanLayer1Violations();
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toHaveLength(0);
+    });
+
+    it('returns ERROR when root folder cannot be accessed', () => {
+      mockDriveApp.getFolderById.mockImplementationOnce(() => {
+        throw new Error('Permission denied');
+      });
+      const result = scanLayer1Violations();
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.message).toContain('Layer 1 scan failed');
+    });
+
+    it('includes folderId, parentFolderName, and detectedAt on each violation', () => {
+      const bad = makeMockFolder('bad_folder', 'bad-folder-id');
+      mockFolder.getFolders.mockReturnValue(makeIterator([bad]));
+
+      const result = scanLayer1Violations();
+
+      const v = result.data![0];
+      expect(v.folderId).toBe('bad-folder-id');
+      expect(typeof v.parentFolderName).toBe('string');
+      expect(typeof v.detectedAt).toBe('string');
+    });
+  });
+
+  // ── scanLayer2Violations ─────────────────────────────────────────────────
+
+  describe('scanLayer2Violations()', () => {
+    function makeIterator<T>(items: T[]) {
+      let i = 0;
+      return {
+        hasNext: jest.fn().mockImplementation(() => i < items.length),
+        next: jest.fn().mockImplementation(() => items[i++]),
+      };
+    }
+
+    // The Clubs sheet needs to be wired up so listAllClubs() can find approved names.
+    const CLUBS_HEADERS = ['displayName', 'normalizedName', 'status', 'addedDate', 'addedBy'];
+    const CLUBS_DATA: unknown[][] = [
+      ['新蜂', 'New_Bee',        'active', '2025-01-01', 'system'],
+      ['岚山', 'Misty_Mountain', 'active', '2025-01-01', 'system'],
+    ];
+
+    const { mockSheets: ms } = require('../mocks/gasGlobals');
+    const mockSA = (global as Record<string, unknown>)['SpreadsheetApp'] as { openById: jest.Mock };
+
+    function useClubsSheet() {
+      const clubSheet = {
+        getLastRow: jest.fn().mockReturnValue(CLUBS_DATA.length + 1),
+        getLastColumn: jest.fn().mockReturnValue(CLUBS_HEADERS.length),
+        getRange: jest.fn().mockImplementation((rowStart: number, _c: number, numRows?: number, numCols?: number) => {
+          if (rowStart === 1 && numRows === 1) {
+            return { getValues: jest.fn().mockReturnValue([CLUBS_HEADERS.slice(0, numCols ?? 5)]), setValues: jest.fn() };
+          }
+          const slice = CLUBS_DATA.slice(rowStart - 2, numRows ? (rowStart - 2) + numRows : undefined);
+          return { getValues: jest.fn().mockReturnValue(slice), setValues: jest.fn() };
+        }),
+        appendRow: jest.fn(),
+      };
+      ms['Clubs'] = clubSheet;
+      mockSA.openById.mockReturnValue({
+        getSheetByName: jest.fn().mockImplementation((name: string) => ms[name] ?? null),
+      });
+    }
+
+    beforeEach(() => {
+      useClubsSheet();
+    });
+
+    it('returns SUCCESS with empty violations when all club folders use approved names', () => {
+      const bee  = makeMockFolder('New_Bee', 'club-id-1');
+      const mist = makeMockFolder('Misty_Mountain', 'club-id-2');
+
+      const eventFolder = makeMockFolder('2025-11-03_NYC_Marathon', 'evt-id');
+      eventFolder.getFolders.mockReturnValue(makeIterator([bee, mist]));
+      mockDriveApp.getFolderById.mockReturnValue(eventFolder);
+
+      const result = scanLayer2Violations('evt-id');
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toHaveLength(0);
+    });
+
+    it('detects a Layer 2 folder that is not in the approved clubs list', () => {
+      const rogue = makeMockFolder('Unknown_Club', 'rogue-id');
+      const eventFolder = makeMockFolder('2025-11-03_NYC_Marathon', 'evt-id');
+      eventFolder.getFolders.mockReturnValue(makeIterator([rogue]));
+      mockDriveApp.getFolderById.mockReturnValue(eventFolder);
+
+      const result = scanLayer2Violations('evt-id');
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toHaveLength(1);
+      expect(result.data![0].folderName).toBe('Unknown_Club');
+      expect(result.data![0].layer).toBe(2);
+    });
+
+    it('detects folders that fail the Layer 2 regex (starts with digit)', () => {
+      const numeric = makeMockFolder('1Club', 'numeric-id');
+      const eventFolder = makeMockFolder('2025-11-03_NYC_Marathon', 'evt-id');
+      eventFolder.getFolders.mockReturnValue(makeIterator([numeric]));
+      mockDriveApp.getFolderById.mockReturnValue(eventFolder);
+
+      const result = scanLayer2Violations('evt-id');
+
+      expect(result.data).toHaveLength(1);
+      expect(result.data![0].violationType).toContain('Layer 2');
+    });
+
+    it('returns SUCCESS with empty array when event folder has no club subfolders', () => {
+      const eventFolder = makeMockFolder('2025-11-03_NYC_Marathon', 'evt-id');
+      eventFolder.getFolders.mockReturnValue(makeIterator([]));
+      mockDriveApp.getFolderById.mockReturnValue(eventFolder);
+
+      const result = scanLayer2Violations('evt-id');
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toHaveLength(0);
+    });
+
+    it('returns ERROR when the event folder ID is invalid', () => {
+      mockDriveApp.getFolderById.mockImplementationOnce(() => {
+        throw new Error('Not found');
+      });
+      const result = scanLayer2Violations('bad-evt-id');
+      expect(result.status).toBe(ResultStatus.ERROR);
+    });
+  });
+
+  // ── scanAllViolations ────────────────────────────────────────────────────
+
+  describe('scanAllViolations()', () => {
+    function makeIterator<T>(items: T[]) {
+      let i = 0;
+      return {
+        hasNext: jest.fn().mockImplementation(() => i < items.length),
+        next: jest.fn().mockImplementation(() => items[i++]),
+      };
+    }
+
+    it('returns SUCCESS combining Layer 1 + Layer 2 results', () => {
+      // Root: one valid event folder + one bad Layer 1 folder
+      const eventFolder = makeMockFolder('2025-11-03_NYC_Marathon', 'evt-id');
+      const badLayer1   = makeMockFolder('not_a_valid_event', 'bad-l1-id');
+
+      // The event folder has one valid club subfolder
+      eventFolder.getFolders.mockReturnValue(makeIterator([]));
+      eventFolder.getFoldersByName.mockReturnValue(makeIterator([]));
+
+      // Root.getFolders called twice: once for Layer1 scan, once for listEventFolders
+      let rootCallCount = 0;
+      mockFolder.getFolders.mockImplementation(() => {
+        rootCallCount++;
+        // Both calls return: valid event + bad layer1
+        const items = [eventFolder, badLayer1];
+        let i = 0;
+        return {
+          hasNext: jest.fn().mockImplementation(() => i < items.length),
+          next: jest.fn().mockImplementation(() => items[i++]),
+        };
+      });
+
+      // getFolderById for the event folder (during Layer 2 scan)
+      mockDriveApp.getFolderById.mockImplementation((id: string) => {
+        if (id === 'evt-id') return eventFolder;
+        return mockFolder; // root
+      });
+
+      const result = scanAllViolations();
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      // At minimum: the bad Layer 1 folder is detected
+      expect(result.data!.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('returns SUCCESS with empty violations when everything is clean', () => {
+      // No folders in root
+      mockFolder.getFolders.mockReturnValue(makeIterator([]));
+
+      const result = scanAllViolations();
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toHaveLength(0);
+      expect(result.message).toContain('0 total violation');
     });
   });
 });

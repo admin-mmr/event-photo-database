@@ -35,7 +35,12 @@ function renderTemplate(
   return template
     .evaluate()
     .setTitle('湘舍动公益文件系统')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT);
+    // MUST be ALLOWALL — not DEFAULT.
+    // GAS serves the HTML content in an iframe from googleusercontent.com while
+    // the outer wrapper page is on script.google.com (different origins).
+    // DEFAULT sets X-Frame-Options: SAMEORIGIN which blocks GAS's own iframe
+    // architecture and produces a blank "refused to connect" page.
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 // ─── Page handlers ────────────────────────────────────────────────────────────
@@ -43,8 +48,8 @@ function renderTemplate(
 /**
  * Login / welcome page shown to unauthenticated users.
  */
-export function loginPage(errorMessage = ''): GoogleAppsScript.HTML.HtmlOutput {
-  return renderTemplate('login', { errorMessage });
+export function loginPage(errorMessage = '', detectedEmail = ''): GoogleAppsScript.HTML.HtmlOutput {
+  return renderTemplate('login', { errorMessage, detectedEmail });
 }
 
 /**

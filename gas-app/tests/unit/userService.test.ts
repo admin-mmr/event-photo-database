@@ -179,7 +179,10 @@ describe('userService', () => {
     });
 
     it('sets addedDate to today in ISO format', () => {
-      const today = new Date().toISOString().split('T')[0];
+      // Use the same toIsoDate helper that userService uses (local-time, not UTC)
+      const { toIsoDate } = require('../../src/utils/dateFormatter') as
+        { toIsoDate: (d: Date) => string };
+      const today = toIsoDate(new Date());
       const result = createUser(
         { email: 'dated@x.com', runningClub: 'New_Bee', role: UserRole.USER },
         TEST_ADMIN_EMAIL

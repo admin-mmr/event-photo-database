@@ -1,6 +1,6 @@
 import { ResultStatus, RouteAction, UserRole } from '../types/enums';
 import { UserRecord } from '../types/models';
-import { authenticateRequest } from '../middleware/authMiddleware';
+import { authenticateRequest, getCurrentUser, resolveUser } from '../middleware/authMiddleware';
 import { requireRole } from '../middleware/roleGuard';
 import {
   loginPage,
@@ -119,14 +119,29 @@ export function handleGet(
       return loginPage();
     }
 
-    // Authenticate
+    // Healthcheck — deployment diagnostic, no auth required.
+    // Visit ?action=healthcheck immediately after any deploy to verify
+    // session detection, deployment URL, and execution context.
+    if (action === RouteAction.HEALTHCHECK) {
+      Logger.log(`[Router.handleGet] Serving healthcheck`);
+      return healthcheckPage(e);
+    }
+
+    // Authenticate — split into two steps so we can pass the detected email
+    // to the login page even when the user isn't registered in the Users sheet.
     Logger.log(`[Router.handleGet] Authenticating request…`);
-    const authResult = authenticateRequest();
-    Logger.log(`[Router.handleGet] Auth result: status=${authResult.status} message="${authResult.message}" email=${authResult.data?.email ?? 'n/a'} role=${authResult.data?.role ?? 'n/a'}`);
+    const sessionResult = getCurrentUser();
+    const detectedEmail = sessionResult.data?.email ?? '';
+    Logger.log(`[Router.handleGet] Session email: "${detectedEmail}"`);
+
+    const authResult = detectedEmail
+      ? resolveUser(detectedEmail)
+      : sessionResult as typeof authResult;
+    Logger.log(`[Router.handleGet] Auth result: status=${authResult.status} message="${authResult.message}" role=${authResult.data?.role ?? 'n/a'}`);
 
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       Logger.log(`[Router.handleGet] Auth failed — redirecting to login`);
-      return loginPage(authResult.message);
+      return loginPage(authResult.message, detectedEmail);
     }
 
     const user = authResult.data;
@@ -308,6 +323,76 @@ function dispatchPostHandler(
     default:
       return handleUnknownAction(action);
   }
+}
+
+// ─── Healthcheck page ─────────────────────────────────────────────────────────
+
+/**
+ * Deployment diagnostic page — visit ?action=healthcheck right after any deploy.
+ *
+ * Reports without requiring a registered user account:
+ *   - Session email detected (or empty — means OAuth flow not completed)
+ *   - Deployment URL (confirms the right version is live)
+ *   - Execution timestamp
+ *   - Query parameters received (useful for routing debugging)
+ *
+ * This catches the two most common post-deploy issues before real testing:
+ *   1. Blank page / X-Frame-Options error  → page loads = framing is fine
+ *   2. Session email empty                 → OAuth not yet authorized
+ */
+function healthcheckPage(
+  e: GoogleAppsScript.Events.DoGet
+): GoogleAppsScript.HTML.HtmlOutput {
+  /* global ScriptApp, Session */
+  let sessionEmail = '';
+  let sessionError = '';
+  try {
+    sessionEmail = Session.getActiveUser().getEmail() || '';
+  } catch (err) {
+    sessionError = String(err);
+  }
+
+  const deployUrl = ScriptApp.getService().getUrl();
+  const timestamp = new Date().toISOString();
+  const params = JSON.stringify(e.parameter, null, 2);
+
+  const ok = (label: string, value: string) =>
+    `<tr><td style="padding:6px 12px;color:#555;">${label}</td>` +
+    `<td style="padding:6px 12px;font-family:monospace;color:#1b5e20;font-weight:bold;">${value}</td></tr>`;
+  const warn = (label: string, value: string) =>
+    `<tr><td style="padding:6px 12px;color:#555;">${label}</td>` +
+    `<td style="padding:6px 12px;font-family:monospace;color:#b71c1c;font-weight:bold;">${value}</td></tr>`;
+
+  const rows = [
+    sessionEmail
+      ? ok('Session email', sessionEmail)
+      : warn('Session email', sessionError ? `ERROR: ${sessionError}` : '(empty — OAuth not completed)'),
+    ok('Deployment URL', deployUrl),
+    ok('Timestamp', timestamp),
+    ok('Query params', `<pre style="margin:0;">${params}</pre>`),
+  ].join('');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+    <title>Healthcheck</title>
+    <style>body{font-family:sans-serif;padding:32px;background:#f5f5f5;}
+    .card{background:#fff;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.12);
+          padding:24px;max-width:700px;margin:0 auto;}
+    h2{margin:0 0 16px;color:#333;}
+    table{border-collapse:collapse;width:100%;}
+    td{border-bottom:1px solid #eee;vertical-align:top;}
+    .badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;}
+    .ok{background:#e8f5e9;color:#2e7d32;} .fail{background:#ffebee;color:#c62828;}
+    </style></head><body><div class="card">
+    <h2>🩺 Deployment Healthcheck</h2>
+    <span class="badge ${sessionEmail ? 'ok' : 'fail'}">${sessionEmail ? '✓ Session OK' : '✗ No session'}</span>
+    <table style="margin-top:16px;">${rows}</table>
+    <p style="margin-top:20px;font-size:12px;color:#aaa;">
+      This page is public (no login required). Remove or restrict it before going to production.
+    </p></div></body></html>`;
+
+  return HtmlService.createHtmlOutput(html)
+    .setTitle('Healthcheck')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 // ─── Internal JSON helper ─────────────────────────────────────────────────────
