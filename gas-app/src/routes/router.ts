@@ -1,7 +1,10 @@
 import { ResultStatus, RouteAction, UserRole } from '../types/enums';
 import { UserRecord } from '../types/models';
-import { authenticateRequest, getCurrentUser, resolveUser } from '../middleware/authMiddleware';
+import { authenticateRequest, authenticateBySession, getCurrentUser, resolveUser } from '../middleware/authMiddleware';
+import { exchangeOAuthCode } from '../services/tokenService';
+import { createSession } from '../services/sessionService';
 import { requireRole } from '../middleware/roleGuard';
+import { getCanonicalScriptUrl } from '../utils/scriptUrl';
 import {
   loginPage,
   accessDeniedPage,
@@ -13,6 +16,8 @@ import {
   adminClubsPage,
   adminSummaryPage,
   adminAuditPage,
+  adminPhotosPage,
+  driveTreePage,
   uploadPage,
 } from './pageRoutes';
 import {
@@ -69,6 +74,8 @@ function getGetRoutes(): Readonly<Record<string, RouteConfig>> {
     [RouteAction.ADMIN_CLUBS]:   { requiredRole: UserRole.ADMIN },
     [RouteAction.ADMIN_SUMMARY]: { requiredRole: UserRole.ADMIN },
     [RouteAction.ADMIN_AUDIT]:   { requiredRole: UserRole.ADMIN },
+    [RouteAction.ADMIN_PHOTOS]:  { requiredRole: UserRole.ADMIN },
+    [RouteAction.DRIVE_TREE]:    { requiredRole: null }, // all authenticated users
     [RouteAction.UPLOAD]:        { requiredRole: null }, // all authenticated users
   };
 }
@@ -113,6 +120,15 @@ export function handleGet(
       return dispatchApiGetHandler(action, params);
     }
 
+    // ── OAuth 2.0 authorization code callback ─────────────────────────────────
+    // Google redirects here with ?code=XXX&state=oauth_login after the user
+    // approves sign-in. We exchange the code for an ID token server-side,
+    // verify the email, create a CacheService session, and redirect to dashboard.
+    if (params['code'] && params['state'] === 'oauth_login') {
+      Logger.log(`[Router.handleGet] OAuth callback received — exchanging code`);
+      return handleOAuthCallback(params['code']);
+    }
+
     // ── Standard browser request ──────────────────────────────────────────────
 
     // Login page doesn't require auth
@@ -129,16 +145,23 @@ export function handleGet(
       return healthcheckPage(e);
     }
 
-    // Authenticate — split into two steps so we can pass the detected email
-    // to the login page even when the user isn't registered in the Users sheet.
+    // ── Authenticate ─────────────────────────────────────────────────────────
+    // Priority 1: GAS native session (getActiveUser — works with USER_ACCESSING)
+    // Priority 2: session token from URL ?session=TOKEN (Path A: GIS login)
     Logger.log(`[Router.handleGet] Authenticating request…`);
-    const sessionResult = getCurrentUser();
-    const detectedEmail = sessionResult.data?.email ?? '';
-    Logger.log(`[Router.handleGet] Session email: "${detectedEmail}"`);
+    const sessionToken = params['session'] ?? '';
+    const gasSession = getCurrentUser();
+    const detectedEmail = gasSession.data?.email ?? '';
+    Logger.log(`[Router.handleGet] GAS session email: "${detectedEmail}", session token present: ${!!sessionToken}`);
 
-    const authResult = detectedEmail
-      ? resolveUser(detectedEmail)
-      : sessionResult as typeof authResult;
+    let authResult: ReturnType<typeof resolveUser>;
+    if (detectedEmail) {
+      authResult = resolveUser(detectedEmail);
+    } else if (sessionToken) {
+      authResult = authenticateBySession(sessionToken);
+    } else {
+      authResult = gasSession as typeof authResult;
+    }
     Logger.log(`[Router.handleGet] Auth result: status=${authResult.status} message="${authResult.message}" role=${authResult.data?.role ?? 'n/a'}`);
 
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
@@ -166,10 +189,10 @@ export function handleGet(
     }
 
     Logger.log(`[Router.handleGet] Dispatching to handler for action="${action}"`);
-    return dispatchGetHandler(action, user);
+    return dispatchGetHandler(action, user, sessionToken);
   } catch (err) {
     Logger.log(`[Router.handleGet] Unhandled error: ${String(err)}`);
-    return errorPage('An unexpected error occurred. Please try again or contact an administrator.');
+    return errorPage(`An unexpected error occurred.\n\nDetails: ${String(err)}`);
   }
 }
 
@@ -201,23 +224,28 @@ function dispatchApiGetHandler(
  */
 function dispatchGetHandler(
   action: RouteAction,
-  user: UserRecord
+  user: UserRecord,
+  sessionToken: string
 ): GoogleAppsScript.HTML.HtmlOutput {
   switch (action) {
     case RouteAction.DASHBOARD:
-      return dashboardPage(user);
+      return dashboardPage(user, sessionToken);
     case RouteAction.ADMIN_USERS:
-      return adminUsersPage(user);
+      return adminUsersPage(user, sessionToken);
     case RouteAction.ADMIN_EVENTS:
-      return adminEventsPage(user);
+      return adminEventsPage(user, sessionToken);
     case RouteAction.ADMIN_CLUBS:
-      return adminClubsPage(user);
+      return adminClubsPage(user, sessionToken);
     case RouteAction.ADMIN_SUMMARY:
-      return adminSummaryPage(user);
+      return adminSummaryPage(user, sessionToken);
     case RouteAction.ADMIN_AUDIT:
-      return adminAuditPage(user);
+      return adminAuditPage(user, sessionToken);
+    case RouteAction.ADMIN_PHOTOS:
+      return adminPhotosPage(user, sessionToken);
+    case RouteAction.DRIVE_TREE:
+      return driveTreePage(user, sessionToken);
     case RouteAction.UPLOAD:
-      return uploadPage(user);
+      return uploadPage(user, sessionToken);
     default:
       return notFoundPage(action);
   }
@@ -329,6 +357,90 @@ function dispatchPostHandler(
   }
 }
 
+// ─── OAuth callback handler ───────────────────────────────────────────────────
+
+/**
+ * Handles the redirect from Google after the user approves the OAuth consent.
+ * Exchanges the authorization code for an ID token, verifies the email,
+ * looks up the user record, creates a session, and redirects to the dashboard.
+ *
+ * The returned HtmlOutput contains only a JS redirect — the page itself is
+ * invisible. Using window.top ensures the outer script.google.com frame
+ * navigates (not just the inner googleusercontent.com iframe).
+ */
+function handleOAuthCallback(code: string): GoogleAppsScript.HTML.HtmlOutput {
+  // MUST use the canonical (non-Workspace) URL here — the redirect_uri sent
+  // during code→token exchange must be byte-identical to the one sent at
+  // authorize time. Since the login page injects getCanonicalScriptUrl() into
+  // its OAuth URL, we use the same helper here.
+  const redirectUri = getCanonicalScriptUrl();
+
+  const tokenResult = exchangeOAuthCode(code, redirectUri);
+  Logger.log(`[Router.handleOAuthCallback] token result: status=${tokenResult.status} msg="${tokenResult.message}"`);
+
+  if (tokenResult.status !== ResultStatus.SUCCESS || !tokenResult.data) {
+    return loginPage(`Google sign-in failed: ${tokenResult.message ?? 'Unknown error'}`);
+  }
+
+  const email = tokenResult.data.email;
+  const userResult = resolveUser(email);
+  Logger.log(`[Router.handleOAuthCallback] user lookup: status=${userResult.status} role=${userResult.data?.role ?? 'n/a'}`);
+
+  if (userResult.status !== ResultStatus.SUCCESS || !userResult.data) {
+    return loginPage(
+      userResult.message ?? 'Your account is not registered. Contact the administrator.',
+      email
+    );
+  }
+
+  const sessionToken = createSession(email, userResult.data.role);
+  const dashUrl = `${redirectUri}?action=dashboard&session=${encodeURIComponent(sessionToken)}`;
+  Logger.log(`[Router.handleOAuthCallback] session created — rendering continue page`);
+
+  // NOTE: We cannot auto-redirect via `window.top.location.href = ...` here.
+  // GAS serves the HTML in a googleusercontent.com iframe with sandbox flag
+  // `allow-top-navigation-by-user-activation`, which means top-frame
+  // navigation requires a user gesture (a click). An automatic JS redirect
+  // is silently blocked by Chrome and the user sees a blank page.
+  //
+  // Instead, we render a small "Signed in — Continue" page. Clicking the
+  // button provides the gesture Chrome requires, so the top-level navigation
+  // succeeds. For browsers/contexts that still permit auto top-nav we also
+  // attempt the JS redirect in an onload handler — if it's blocked, no harm,
+  // the user just clicks the button.
+  const safeEmail  = email.replace(/[<>&"']/g, '');
+  const safeDash   = dashUrl.replace(/'/g, '%27');
+  const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Signed in</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:#f5f5f5;
+         display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
+  .card { background:#fff; padding:32px 40px; border-radius:8px;
+          box-shadow:0 2px 12px rgba(0,0,0,.12); text-align:center; max-width:360px; }
+  h3  { margin:0 0 8px; color:#333; }
+  p   { color:#666; margin:0 0 20px; font-size:14px; }
+  a.btn { display:inline-block; background:#3f51b5; color:#fff; text-decoration:none;
+          padding:12px 28px; border-radius:4px; font-size:15px; font-weight:500; }
+  a.btn:hover { background:#303f9f; }
+</style></head>
+<body>
+  <div class="card">
+    <h3>Signed in</h3>
+    <p>Welcome, ${safeEmail}</p>
+    <a class="btn" href="${safeDash}" target="_top">Continue to Dashboard</a>
+  </div>
+  <script>
+    // Best-effort auto-redirect for browsers that allow it. Silently blocked
+    // in Chrome without a gesture — that's fine, the button covers it.
+    try { window.top.location.href = '${safeDash}'; } catch (e) {}
+  </script>
+</body></html>`;
+
+  return HtmlService
+    .createHtmlOutput(html)
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
 // ─── Healthcheck page ─────────────────────────────────────────────────────────
 
 /**
@@ -347,7 +459,7 @@ function dispatchPostHandler(
 function healthcheckPage(
   e: GoogleAppsScript.Events.DoGet
 ): GoogleAppsScript.HTML.HtmlOutput {
-  /* global ScriptApp, Session */
+  /* global ScriptApp, Session, PropertiesService */
   let sessionEmail = '';
   let sessionError = '';
   try {
@@ -356,22 +468,30 @@ function healthcheckPage(
     sessionError = String(err);
   }
 
-  const deployUrl = ScriptApp.getService().getUrl();
-  const timestamp = new Date().toISOString();
-  const params = JSON.stringify(e.parameter, null, 2);
+  const deployUrl    = ScriptApp.getService().getUrl();
+  const timestamp    = new Date().toISOString();
+  const params       = JSON.stringify(e.parameter, null, 2);
+  const clientId     = PropertiesService.getScriptProperties().getProperty('GOOGLE_CLIENT_ID')     ?? '(not set)';
+  const clientSecret = PropertiesService.getScriptProperties().getProperty('GOOGLE_CLIENT_SECRET') ?? '(not set)';
+  const secretHint   = clientSecret !== '(not set)' ? clientSecret.substring(0, 8) + '… (length=' + clientSecret.length + ')' : '(not set)';
 
   const ok = (label: string, value: string) =>
-    `<tr><td style="padding:6px 12px;color:#555;">${label}</td>` +
-    `<td style="padding:6px 12px;font-family:monospace;color:#1b5e20;font-weight:bold;">${value}</td></tr>`;
+    `<tr><td style="padding:6px 12px;color:#555;white-space:nowrap;">${label}</td>` +
+    `<td style="padding:6px 12px;font-family:monospace;color:#1b5e20;font-weight:bold;word-break:break-all;">${value}</td></tr>`;
   const warn = (label: string, value: string) =>
-    `<tr><td style="padding:6px 12px;color:#555;">${label}</td>` +
-    `<td style="padding:6px 12px;font-family:monospace;color:#b71c1c;font-weight:bold;">${value}</td></tr>`;
+    `<tr><td style="padding:6px 12px;color:#555;white-space:nowrap;">${label}</td>` +
+    `<td style="padding:6px 12px;font-family:monospace;color:#b71c1c;font-weight:bold;word-break:break-all;">${value}</td></tr>`;
 
+  const clientIdOk = clientId.includes('-k018eecas6s3mnqi84gec9m555de9r3a');
   const rows = [
     sessionEmail
       ? ok('Session email', sessionEmail)
-      : warn('Session email', sessionError ? `ERROR: ${sessionError}` : '(empty — OAuth not completed)'),
+      : warn('Session email', sessionError ? `ERROR: ${sessionError}` : '(empty — normal for USER_DEPLOYING)'),
     ok('Deployment URL', deployUrl),
+    clientIdOk
+      ? ok('GOOGLE_CLIENT_ID', clientId + ' ✓ (new client)')
+      : warn('GOOGLE_CLIENT_ID', clientId + ' ← WRONG — update Script Properties'),
+    ok('GOOGLE_CLIENT_SECRET', secretHint),
     ok('Timestamp', timestamp),
     ok('Query params', `<pre style="margin:0;">${params}</pre>`),
   ].join('');

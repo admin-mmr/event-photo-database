@@ -528,6 +528,112 @@ export function getClubFolderTree(
   };
 }
 
+// ─── Drive tree (read-only hierarchy view) ────────────────────────────────────
+
+/** A single batch folder node: Layer 3 inside a club. */
+export interface BatchTreeNode {
+  readonly id:         string;   // Drive folder ID
+  readonly name:       string;   // e.g. "20260415-093000_alice"
+  readonly fileCount:  number;   // JPEG + PNG + HEIC files in this folder
+}
+
+/** A club folder node: Layer 2 inside an event. */
+export interface ClubTreeNode {
+  readonly id:         string;             // Drive folder ID
+  readonly name:       string;             // e.g. "New_Bee"
+  readonly batches:    BatchTreeNode[];    // Layer-3 batch folders
+  readonly totalFiles: number;             // sum of fileCount across all batches
+}
+
+/** The full event tree returned to the browser for one event. */
+export interface EventDriveTree {
+  readonly eventId:       string;
+  readonly driveFolderId: string;
+  readonly clubs:         ClubTreeNode[];  // Layer-2 club folders
+  readonly totalFiles:    number;          // grand total across all clubs
+}
+
+/** MIME types counted as photos in the tree. */
+const PHOTO_MIME_SET = new Set(['image/jpeg', 'image/png', 'image/heic']);
+
+/**
+ * Walks the Drive hierarchy for one event and returns a serialisable tree.
+ *
+ * Hierarchy walked (read-only, no modifications):
+ *   Layer 1: event folder  (given by driveFolderId)
+ *   Layer 2: club folders  (direct children of the event folder)
+ *   Layer 3: batch folders (direct children of each club folder)
+ *   Files:   JPEG/PNG/HEIC counted inside each batch folder
+ *
+ * The returned data is intentionally shallow — no file IDs or sensitive
+ * metadata are exposed, only folder names and photo counts.
+ *
+ * May be slow for events with many clubs/batches; call via google.script.run
+ * on-demand (i.e. when the user expands an event node) rather than bulk-loading
+ * all events at page load.
+ */
+export function getEventDriveTree(
+  eventId: string,
+  driveFolderId: string
+): ServiceResult<EventDriveTree> {
+  let eventFolder: GoogleAppsScript.Drive.Folder;
+  try {
+    eventFolder = DriveApp.getFolderById(driveFolderId);
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Cannot access event folder (${driveFolderId}): ${String(err)}`,
+    };
+  }
+
+  const clubs: ClubTreeNode[] = [];
+  let grandTotal = 0;
+
+  try {
+    const clubIter = eventFolder.getFolders();
+    while (clubIter.hasNext()) {
+      const clubFolder = clubIter.next();
+      const clubName   = clubFolder.getName();
+      const batches: BatchTreeNode[] = [];
+      let clubTotal = 0;
+
+      const batchIter = clubFolder.getFolders();
+      while (batchIter.hasNext()) {
+        const batchFolder = batchIter.next();
+        let fileCount = 0;
+        const fileIter = batchFolder.getFiles();
+        while (fileIter.hasNext()) {
+          if (PHOTO_MIME_SET.has(fileIter.next().getMimeType())) {
+            fileCount++;
+          }
+        }
+        batches.push({ id: batchFolder.getId(), name: batchFolder.getName(), fileCount });
+        clubTotal += fileCount;
+      }
+
+      // Sort batches newest-first (Layer-3 names start with YYYYMMDD-HHMMSS)
+      batches.sort((a, b) => b.name.localeCompare(a.name));
+
+      clubs.push({ id: clubFolder.getId(), name: clubName, batches, totalFiles: clubTotal });
+      grandTotal += clubTotal;
+    }
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Error walking event folder hierarchy: ${String(err)}`,
+    };
+  }
+
+  // Sort clubs alphabetically
+  clubs.sort((a, b) => a.name.localeCompare(b.name));
+
+  return {
+    status: ResultStatus.SUCCESS,
+    message: `Tree loaded: ${clubs.length} club(s), ${grandTotal} photo(s)`,
+    data: { eventId, driveFolderId, clubs, totalFiles: grandTotal },
+  };
+}
+
 // ─── Contract test helpers ────────────────────────────────────────────────────
 
 /**

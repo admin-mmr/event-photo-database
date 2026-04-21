@@ -22,7 +22,8 @@ export interface SheetNames {
   readonly RATE_LIMIT: string;
   readonly CLUBS: string;
   readonly AUDIT_LOG: string;
-  readonly PHOTOS_ALBUMS: string;
+  readonly PHOTO_ALBUMS: string;
+  readonly PHOTO_FILES: string;
 }
 
 /**
@@ -37,7 +38,8 @@ export interface SheetColumnMap {
   readonly RATE_LIMIT: RateLimitSheetColumns;
   readonly CLUBS: ClubSheetColumns;
   readonly AUDIT_LOG: AuditLogSheetColumns;
-  readonly PHOTOS_ALBUMS: PhotosAlbumsSheetColumns;
+  readonly PHOTO_ALBUMS: PhotosAlbumsSheetColumns;
+  readonly PHOTO_FILES: PhotosFilesSheetColumns;
 }
 
 export interface AuditLogSheetColumns {
@@ -109,4 +111,15 @@ export interface PhotosAlbumsSheetColumns {
   readonly CREATED_AT:        7;  // ISO 8601 timestamp
   readonly LAST_SYNC_AT:      8;  // ISO 8601 timestamp of most recent sync
   readonly SYNCED_FILE_COUNT: 9;  // Cumulative number of photos pushed to album
+}
+
+export interface PhotosFilesSheetColumns {
+  readonly DRIVE_FILE_ID: 0;  // Google Drive file ID (composite key part 1)
+  readonly MEDIA_ITEM_ID: 1;  // Google Photos media item ID
+  readonly ALBUM_ID:      2;  // Google Photos album ID (composite key part 2)
+  readonly ALBUM_TYPE:    3;  // "event" | "club"
+  readonly EVENT_ID:      4;  // FK → Events.eventId
+  readonly CLUB_NAME:     5;  // Normalized club name; empty for event-type albums
+  readonly FILE_NAME:     6;  // Original filename, e.g. "IMG_0042.jpg"
+  readonly SYNCED_AT:     7;  // ISO 8601 timestamp of when the sync occurred
 }

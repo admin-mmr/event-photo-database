@@ -1,10 +1,21 @@
 import { ResultStatus } from '../types/enums';
-import { PhotosAlbumRecord } from '../types/models';
+import { PhotosAlbumRecord, PhotosFileRecord } from '../types/models';
 import { ServiceResult } from '../types/responses';
 import { getConfig } from '../config/constants';
 import { getAllRows, appendRow, updateRow } from './sheetService';
-import { toPhotosAlbumRecord, fromPhotosAlbumRecord, toEventRecord } from '../utils/sheetMapper';
+import {
+  toPhotosAlbumRecord,
+  fromPhotosAlbumRecord,
+  toEventRecord,
+  toPhotosFileRecord,
+  fromPhotosFileRecord,
+} from '../utils/sheetMapper';
 import { nowIsoTimestamp } from '../utils/dateFormatter';
+import {
+  incrementJobCounters,
+  isCancelRequested,
+  updateJob,
+} from './syncJobService';
 
 /* global ScriptApp, UrlFetchApp, DriveApp, Logger */
 
@@ -15,7 +26,7 @@ import { nowIsoTimestamp } from '../utils/dateFormatter';
  * hierarchy.  For each event a "master" album is created containing all clubs'
  * photos; for each event+club combination a narrower "club" album is created.
  *
- * Album metadata is persisted in the "Photos_Albums" Google Sheet so that
+ * Album metadata is persisted in the "Photo_Albums" Google Sheet so that
  * album IDs survive across GAS executions and albums are never created twice.
  *
  * Drive → Photos sync flow:
@@ -122,11 +133,11 @@ function photosUploadBytes(
   }
 }
 
-// ─── Photos_Albums sheet helpers ──────────────────────────────────────────────
+// ─── Photo_Albums sheet helpers ──────────────────────────────────────────────
 
 function loadAlbums(): PhotosAlbumRecord[] {
   const config = getConfig();
-  const rows = getAllRows(config.SHEET_NAMES.PHOTOS_ALBUMS);
+  const rows = getAllRows(config.SHEET_NAMES.PHOTO_ALBUMS);
   return rows
     .map(toPhotosAlbumRecord)
     .filter((r): r is PhotosAlbumRecord => r !== null);
@@ -163,9 +174,63 @@ export function findAlbumsByEvent(eventId: string): PhotosAlbumRecord[] {
   return loadAlbums().filter((a) => a.eventId === eventId);
 }
 
+/**
+ * Returns all album records in the Photo_Albums sheet.
+ * Used by the admin Photos Overview page to render the full album index.
+ */
+export function listAllAlbums(): PhotosAlbumRecord[] {
+  return loadAlbums();
+}
+
 function saveAlbum(record: PhotosAlbumRecord): void {
   const config = getConfig();
-  appendRow(config.SHEET_NAMES.PHOTOS_ALBUMS, fromPhotosAlbumRecord(record));
+  appendRow(config.SHEET_NAMES.PHOTO_ALBUMS, fromPhotosAlbumRecord(record));
+}
+
+// ─── Photo_Files helpers ─────────────────────────────────────────────────────
+
+/**
+ * Loads all rows from the Photo_Files sheet and maps them to typed records.
+ * Rows that fail validation are silently dropped.
+ */
+function loadFileRecords(): PhotosFileRecord[] {
+  const config = getConfig();
+  const rows = getAllRows(config.SHEET_NAMES.PHOTO_FILES);
+  return rows
+    .map(toPhotosFileRecord)
+    .filter((r): r is PhotosFileRecord => r !== null);
+}
+
+/**
+ * Returns the file record for the given (driveFileId, albumId) pair, or null.
+ * Used before each upload to avoid syncing the same Drive file to the same
+ * album twice.
+ */
+export function findSyncedFile(
+  driveFileId: string,
+  albumId: string
+): PhotosFileRecord | null {
+  return (
+    loadFileRecords().find(
+      (r) => r.driveFileId === driveFileId && r.albumId === albumId
+    ) ?? null
+  );
+}
+
+/**
+ * Appends a new row to Photo_Files after a successful sync.
+ */
+function saveFileRecord(record: PhotosFileRecord): void {
+  const config = getConfig();
+  appendRow(config.SHEET_NAMES.PHOTO_FILES, fromPhotosFileRecord(record));
+}
+
+/**
+ * Returns all file records in the Photo_Files sheet.
+ * Used by the reconciliation audit to compare Drive vs Photos counts.
+ */
+export function listAllFileRecords(): PhotosFileRecord[] {
+  return loadFileRecords();
 }
 
 /**
@@ -178,7 +243,7 @@ function updateAlbumSyncStats(
   syncedFileCount: number
 ): void {
   const config = getConfig();
-  const rows = getAllRows(config.SHEET_NAMES.PHOTOS_ALBUMS);
+  const rows = getAllRows(config.SHEET_NAMES.PHOTO_ALBUMS);
   const rowIndex = rows.findIndex((row) => String(row[0] ?? '').trim() === albumId);
   if (rowIndex < 0) return;
 
@@ -187,7 +252,7 @@ function updateAlbumSyncStats(
 
   const updated: PhotosAlbumRecord = { ...record, lastSyncAt, syncedFileCount };
   // updateRow is 1-based and accounts for the header row (+2 offset: 1 for header, 1 for 0→1 index)
-  updateRow(config.SHEET_NAMES.PHOTOS_ALBUMS, rowIndex + 2, fromPhotosAlbumRecord(updated));
+  updateRow(config.SHEET_NAMES.PHOTO_ALBUMS, rowIndex + 2, fromPhotosAlbumRecord(updated));
 }
 
 // ─── Album creation ───────────────────────────────────────────────────────────
@@ -199,16 +264,26 @@ interface GoogleAlbumCreationResult {
 }
 
 /**
- * Creates a new Google Photos album and makes it shareable.
- * Returns the album ID, product URL, and public shareable URL.
+ * Creates a new Google Photos album.
+ * Returns the album ID and product URL.
  *
- * Note: the shareable URL requires a second API call (:share).
- * If sharing fails (e.g. org policy), productUrl is used as a fallback.
+ * Sharing note (post March 2025):
+ *   The Library API's album-sharing endpoints (albums:share, sharedAlbums.*)
+ *   and the `photoslibrary.sharing` OAuth scope were deprecated by Google on
+ *   March 31, 2025. Calls to /albums/{id}:share now return 403
+ *   PERMISSION_DENIED, so we no longer attempt to auto-share albums here.
+ *
+ *   For viewers outside the owner's account, admins should share the album
+ *   manually from photos.google.com (three-dot menu → "Share"). The
+ *   shareableUrl field in the Photo_Albums sheet therefore now falls back to
+ *   the productUrl (visible only to the deploying/owner account until
+ *   manually shared).
+ *
+ *   Reference: https://developers.google.com/photos/support/updates
  */
 function createGoogleAlbum(
   title: string
 ): ServiceResult<GoogleAlbumCreationResult> {
-  // Step 1: create the album
   const createResult = photosPost('/albums', { album: { title } });
   if (!createResult.ok || !createResult.data) {
     return {
@@ -221,22 +296,10 @@ function createGoogleAlbum(
   const albumId = albumData.id;
   const productUrl = albumData.productUrl ?? '';
 
-  // Step 2: share the album (best-effort — not fatal if it fails)
-  let shareableUrl = productUrl;
-  const shareResult = photosPost(`/albums/${albumId}:share`, {
-    sharedAlbumOptions: { isCollaborative: false, isCommentable: false },
-  });
-  if (shareResult.ok && shareResult.data) {
-    const shareData = shareResult.data as {
-      shareInfo?: { shareableUrl?: string };
-    };
-    shareableUrl = shareData.shareInfo?.shareableUrl ?? productUrl;
-  } else {
-    Logger.log(
-      `[PhotosService] Warning: album "${title}" sharing failed (${shareResult.error}); ` +
-      'productUrl will be used as fallback.'
-    );
-  }
+  // Library API sharing is deprecated — productUrl is the only URL we can
+  // surface automatically. Admins must share manually in Google Photos if they
+  // need a public viewer link.
+  const shareableUrl = productUrl;
 
   return {
     status: ResultStatus.SUCCESS,
@@ -435,7 +498,8 @@ export function addDriveFileToAlbum(
 
 export interface FolderSyncResult {
   synced: number;
-  skipped: number;
+  skipped: number;     // wrong MIME type
+  deduplicated: number; // already in Photo_Files for this album → skipped
   errors: string[];
 }
 
@@ -443,15 +507,41 @@ export interface FolderSyncResult {
  * Syncs all eligible photos in a single Drive batch folder (Layer 3) to the
  * given Google Photos album.
  *
+ * Deduplication: before uploading each file, checks the Photo_Files sheet for
+ * an existing (driveFileId, albumId) record. Files already synced are counted
+ * in `deduplicated` and skipped — this makes every sync idempotent and safe to
+ * call multiple times without creating duplicate Photos media items.
+ *
+ * On successful upload, writes a row to Photo_Files recording the Drive→Photos
+ * mapping so future syncs can detect it.
+ *
  * Only JPEG, PNG, and HEIC files are uploaded; all other types are skipped.
  * Per-file errors are collected and returned rather than aborting the whole sync.
  *
  * @param albumId       Google Photos album ID
+ * @param albumType     'event' or 'club' — stored in the file record
+ * @param eventId       UUID of the event — stored in the file record
+ * @param clubName      Normalized club name (empty string for event albums)
  * @param batchFolderId Drive ID of the Layer-3 batch folder
+ * @param existingSyncedKeys Pre-loaded set of "driveFileId|albumId" strings to
+ *                      avoid re-reading Photo_Files once per folder iteration.
+ *                      Pass an empty Set to trigger a fresh sheet read.
+ * @param jobId         Optional SyncJob id — when provided, per-photo counters
+ *                      are pushed to the job record so the admin UI can show a
+ *                      live progress bar. Cancellation is also checked between
+ *                      files; a cancelled run returns early with what it has.
+ * @param progressStep  Human-readable label for the job's `currentStep` while
+ *                      this batch runs (e.g. "'Misty Mountain' / batch 2").
  */
 export function syncBatchFolderToAlbum(
   albumId: string,
-  batchFolderId: string
+  albumType: 'event' | 'club',
+  eventId: string,
+  clubName: string,
+  batchFolderId: string,
+  existingSyncedKeys: Set<string>,
+  jobId?: string,
+  progressStep?: string
 ): ServiceResult<FolderSyncResult> {
   let folder: GoogleAppsScript.Drive.Folder;
   try {
@@ -464,32 +554,94 @@ export function syncBatchFolderToAlbum(
   }
 
   const iter = folder.getFiles();
-  let synced = 0;
-  let skipped = 0;
+  let synced       = 0;
+  let skipped      = 0;
+  let deduplicated = 0;
   const errors: string[] = [];
+  const now = nowIsoTimestamp();
+
+  // Emit the folder-level step once, up front — avoids spamming the job record
+  // with an update per file while still giving the UI a human-readable label.
+  if (jobId && progressStep) {
+    updateJob(jobId, { currentStep: progressStep });
+  }
 
   while (iter.hasNext()) {
-    const file = iter.next();
+    // Cooperative cancellation: honour Cancel clicks between files so we never
+    // cut off mid-upload (which could leave a half-written mediaItem).
+    if (jobId && isCancelRequested(jobId)) {
+      return {
+        status: ResultStatus.SUCCESS,
+        message:
+          `Cancelled after syncing ${synced} file(s) ` +
+          `(${skipped} skipped, ${deduplicated} deduplicated)`,
+        data: { synced, skipped, deduplicated, errors },
+      };
+    }
+
+    const file     = iter.next();
     const mimeType = file.getMimeType();
 
+    // Skip non-photo files
     if (!PHOTO_MIME_TYPES.includes(mimeType)) {
       skipped++;
+      if (jobId) incrementJobCounters(jobId, { photosSkipped: 1 });
       continue;
     }
 
-    const result = addDriveFileToAlbum(albumId, file.getId(), file.getName(), mimeType);
-    if (result.status === ResultStatus.SUCCESS) {
+    const driveFileId = file.getId();
+    const dedupeKey   = `${driveFileId}|${albumId}`;
+
+    // Skip if already recorded in Photo_Files for this album
+    if (existingSyncedKeys.has(dedupeKey)) {
+      deduplicated++;
+      if (jobId) incrementJobCounters(jobId, { photosDeduplicated: 1 });
+      Logger.log(`[PhotosService] Dedup skip: "${file.getName()}" already in album ${albumId}`);
+      continue;
+    }
+
+    const result = addDriveFileToAlbum(albumId, driveFileId, file.getName(), mimeType);
+    if (result.status === ResultStatus.SUCCESS && result.data) {
       synced++;
+      // Persist the Drive → Photos mapping so future syncs can detect this file
+      const fileRecord: PhotosFileRecord = {
+        driveFileId,
+        mediaItemId: result.data.mediaItemId,
+        albumId,
+        albumType,
+        eventId,
+        clubName,
+        fileName: file.getName(),
+        syncedAt: now,
+      };
+      saveFileRecord(fileRecord);
+      // Add to in-memory set so duplicate batches within the same run are caught
+      existingSyncedKeys.add(dedupeKey);
+      // Bump the progress counters so the UI shows movement in near-real-time.
+      if (jobId) {
+        incrementJobCounters(
+          jobId,
+          { photosSynced: 1 },
+          progressStep
+            ? `${progressStep} — ${synced} uploaded`
+            : undefined
+        );
+      }
     } else {
       errors.push(`${file.getName()}: ${result.message}`);
       Logger.log(`[PhotosService] syncBatchFolderToAlbum error: ${result.message}`);
+      if (jobId) {
+        updateJob(jobId, { errors: [`${file.getName()}: ${result.message}`] });
+      }
     }
   }
 
   return {
     status: ResultStatus.SUCCESS,
-    message: `Synced ${synced} file(s) (${skipped} skipped, ${errors.length} error(s))`,
-    data: { synced, skipped, errors },
+    message:
+      `Synced ${synced} file(s) ` +
+      `(${skipped} skipped, ${deduplicated} deduplicated, ${errors.length} error(s))`,
+    data: { synced, skipped, deduplicated, errors },
   };
 }
 
@@ -545,15 +697,24 @@ export function syncBatchToAlbums(
   }
   const clubAlbumRecord = clubAlbumResult.data;
 
+  // Build dedup key set from Photo_Files once for both album syncs.
+  // Key format: "driveFileId|albumId"
+  const allFileRecords = loadFileRecords();
+  const syncedKeys = new Set(allFileRecords.map((r) => `${r.driveFileId}|${r.albumId}`));
+
   // Sync batch to event album
-  const eventSyncResult = syncBatchFolderToAlbum(eventAlbumRecord.albumId, batchFolderId);
+  const eventSyncResult = syncBatchFolderToAlbum(
+    eventAlbumRecord.albumId, 'event', eventId, '', batchFolderId, syncedKeys
+  );
   const eventSynced = eventSyncResult.data?.synced ?? 0;
   if (eventSyncResult.data?.errors.length) {
     errors.push(...eventSyncResult.data.errors.map((e) => `[event] ${e}`));
   }
 
-  // Sync batch to club album
-  const clubSyncResult = syncBatchFolderToAlbum(clubAlbumRecord.albumId, batchFolderId);
+  // Sync batch to club album (syncedKeys is shared so dedup also works across albums)
+  const clubSyncResult = syncBatchFolderToAlbum(
+    clubAlbumRecord.albumId, 'club', eventId, clubName, batchFolderId, syncedKeys
+  );
   const clubSynced = clubSyncResult.data?.synced ?? 0;
   if (clubSyncResult.data?.errors.length) {
     errors.push(...clubSyncResult.data.errors.map((e) => `[club:${clubName}] ${e}`));
@@ -638,16 +799,24 @@ export interface SyncEventResult {
  * @param event  EventInfo object (subset of EventRecord)
  * @param clubDisplayNames  Optional map of normalizedName → displayName for album titles.
  *                          If omitted, underscores in normalizedName are replaced with spaces.
+ * @param jobId   Optional SyncJob id — when provided, album-creation and
+ *                per-photo counters are pushed to the job record so the admin
+ *                UI can render a live progress bar. Cancellation is honoured
+ *                between clubs and between files.
  */
 export function syncEventToAlbums(
   event: EventInfo,
-  clubDisplayNames?: Record<string, string>
+  clubDisplayNames?: Record<string, string>,
+  jobId?: string
 ): ServiceResult<SyncEventResult> {
   const errors: string[] = [];
   const clubsSynced: ClubSyncSummary[] = [];
   let totalSynced = 0;
 
   // Ensure event-level album
+  if (jobId) {
+    updateJob(jobId, { currentStep: `Creating event album for "${event.eventName}"…` });
+  }
   const eventAlbumResult = ensureEventAlbum(event.eventId, event.eventName, event.eventDate);
   if (eventAlbumResult.status !== ResultStatus.SUCCESS || !eventAlbumResult.data) {
     return {
@@ -656,6 +825,10 @@ export function syncEventToAlbums(
     };
   }
   const eventAlbumRecord = eventAlbumResult.data;
+  // If the album was just created in this call its lastSyncAt will be empty.
+  if (jobId && !eventAlbumRecord.lastSyncAt && eventAlbumRecord.syncedFileCount === 0) {
+    incrementJobCounters(jobId, { albumsCreated: 1 });
+  }
 
   // Open the Layer-1 event folder in Drive
   let eventFolder: GoogleAppsScript.Drive.Folder;
@@ -668,35 +841,57 @@ export function syncEventToAlbums(
     };
   }
 
+  // Build dedup key set once for the entire event sync to avoid re-reading the
+  // Photo_Files sheet on every batch folder iteration.
+  const allFileRecords = loadFileRecords();
+  const syncedKeys = new Set(allFileRecords.map((r) => `${r.driveFileId}|${r.albumId}`));
+
   // Walk Layer-2 club folders
   const clubIter = eventFolder.getFolders();
   while (clubIter.hasNext()) {
+    // Honour cancellation between clubs too — catches the "pressed Cancel
+    // during a quiet moment between batches" case.
+    if (jobId && isCancelRequested(jobId)) break;
+
     const clubFolder = clubIter.next();
     const clubName = clubFolder.getName();
     const clubDisplayName =
       clubDisplayNames?.[clubName] ?? clubName.replace(/_/g, ' ');
 
     // Ensure club album
+    if (jobId) {
+      updateJob(jobId, { currentStep: `Creating club album for "${clubDisplayName}"…` });
+    }
     const clubAlbumResult = ensureClubAlbum(
       event.eventId, event.eventName, event.eventDate,
       clubName, clubDisplayName
     );
     if (clubAlbumResult.status !== ResultStatus.SUCCESS || !clubAlbumResult.data) {
-      errors.push(`Club "${clubName}": ${clubAlbumResult.message}`);
+      const msg = `Club "${clubName}": ${clubAlbumResult.message}`;
+      errors.push(msg);
+      if (jobId) updateJob(jobId, { errors: [msg] });
       continue;
     }
     const clubAlbumRecord = clubAlbumResult.data;
+    if (jobId && !clubAlbumRecord.lastSyncAt && clubAlbumRecord.syncedFileCount === 0) {
+      incrementJobCounters(jobId, { albumsCreated: 1 });
+    }
     let clubSynced = 0;
 
     // Walk Layer-3 batch folders
     const batchIter = clubFolder.getFolders();
     while (batchIter.hasNext()) {
+      if (jobId && isCancelRequested(jobId)) break;
+
       const batchFolder = batchIter.next();
       const batchFolderId = batchFolder.getId();
       const batchName = batchFolder.getName();
 
-      // Sync to event album
-      const evResult = syncBatchFolderToAlbum(eventAlbumRecord.albumId, batchFolderId);
+      // Sync to event album (dedup key set is shared and updated in-place)
+      const evResult = syncBatchFolderToAlbum(
+        eventAlbumRecord.albumId, 'event', event.eventId, '', batchFolderId, syncedKeys,
+        jobId, `"${clubDisplayName}" / ${batchName} → event album`
+      );
       const evSynced = evResult.data?.synced ?? 0;
       totalSynced += evSynced;
       if (evResult.data?.errors.length) {
@@ -706,7 +901,10 @@ export function syncEventToAlbums(
       }
 
       // Sync to club album
-      const clResult = syncBatchFolderToAlbum(clubAlbumRecord.albumId, batchFolderId);
+      const clResult = syncBatchFolderToAlbum(
+        clubAlbumRecord.albumId, 'club', event.eventId, clubName, batchFolderId, syncedKeys,
+        jobId, `"${clubDisplayName}" / ${batchName} → club album`
+      );
       const clSynced = clResult.data?.synced ?? 0;
       clubSynced += clSynced;
       if (clResult.data?.errors.length) {
@@ -767,9 +965,14 @@ export interface BackfillResult {
  *
  * @param clubDisplayNames  Optional map of normalizedName → displayName.
  *                          Pass the result of listActiveClubs() converted to a map.
+ * @param jobId  Optional SyncJob id — when provided, the backfill emits
+ *               per-event progress (events processed, photos synced, albums
+ *               created) to the job record so the admin UI can show a live
+ *               progress bar. Cancellation is honoured between events.
  */
 export function backfillAllAlbums(
-  clubDisplayNames?: Record<string, string>
+  clubDisplayNames?: Record<string, string>,
+  jobId?: string
 ): ServiceResult<BackfillResult> {
   const config = getConfig();
 
@@ -793,10 +996,25 @@ export function backfillAllAlbums(
   let totalSynced = 0;
   const errors: string[] = [];
 
+  // Seed the job totals so the UI can draw a meaningful progress bar from step 0
+  if (jobId) {
+    updateJob(jobId, {
+      eventsTotal: events.length,
+      currentStep: `Starting backfill of ${events.length} event(s)…`,
+    });
+  }
+
   for (const event of events) {
+    if (jobId && isCancelRequested(jobId)) break;
+
     Logger.log(
       `[PhotosService] Backfill: processing "${event.eventName}" (${event.eventId})`
     );
+    if (jobId) {
+      updateJob(jobId, {
+        currentStep: `Event ${eventsProcessed + 1}/${events.length}: "${event.eventName}"`,
+      });
+    }
 
     const result = syncEventToAlbums(
       {
@@ -805,13 +1023,17 @@ export function backfillAllAlbums(
         eventDate:     event.eventDate,
         driveFolderId: event.driveFolderId,
       },
-      clubDisplayNames
+      clubDisplayNames,
+      jobId
     );
 
     eventsProcessed++;
+    if (jobId) incrementJobCounters(jobId, { eventsProcessed: 1 });
 
     if (result.status !== ResultStatus.SUCCESS || !result.data) {
-      errors.push(`Event "${event.eventName}": ${result.message}`);
+      const msg = `Event "${event.eventName}": ${result.message}`;
+      errors.push(msg);
+      if (jobId) updateJob(jobId, { errors: [msg] });
       continue;
     }
 
@@ -836,5 +1058,203 @@ export function backfillAllAlbums(
       `${albumsCreated} album(s) created, ${totalSynced} photo(s) synced, ` +
       `${errors.length} error(s)`,
     data: { eventsProcessed, albumsCreated, totalSynced, errors },
+  };
+}
+
+// ─── Reconciliation ───────────────────────────────────────────────────────────
+
+/** Per-club breakdown within one event reconciliation result. */
+export interface ClubReconciliationResult {
+  clubName:     string;
+  driveCount:   number;  // Photo files found in Drive (Layer 2 + 3 hierarchy)
+  syncedCount:  number;  // Rows in Photo_Files for the club album
+  missingCount: number;  // driveCount - syncedCount (negative means orphans in Photos)
+  clubAlbumId:  string;  // Empty string if no club album exists yet
+}
+
+/** Full reconciliation result for one event. */
+export interface EventReconciliationResult {
+  eventId:          string;
+  eventName:        string;
+  eventDate:        string;
+  hasEventAlbum:    boolean;
+  eventAlbumId:     string;
+  driveTotal:       number;  // All photo files across all clubs in Drive
+  eventSyncedCount: number;  // Rows in Photo_Files for the event album
+  clubs:            ClubReconciliationResult[];
+  errors:           string[];
+}
+
+/**
+ * Reconciles Drive file counts against Photo_Files records for one event.
+ *
+ * Walk strategy:
+ *   - Layer 1 → event Drive folder
+ *   - Layer 2 → club sub-folders  (count JPEG/PNG/HEIC files across all batches)
+ *   - Compare each club's Drive count vs Photo_Files rows for that club's album
+ *
+ * This is a READ-ONLY operation — it does not create albums or upload files.
+ *
+ * @param event            Minimal event info (eventId, eventName, eventDate, driveFolderId)
+ * @param albumsByEventId  Pre-loaded map of eventId → PhotosAlbumRecord[] (avoids
+ *                         repeated sheet reads when reconciling multiple events)
+ * @param fileRecords      Pre-loaded Photo_Files records (avoids repeated sheet reads)
+ */
+export function reconcileEventPhotos(
+  event: EventInfo,
+  albumsByEventId: Map<string, PhotosAlbumRecord[]>,
+  fileRecords: PhotosFileRecord[]
+): EventReconciliationResult {
+  const eventAlbums = albumsByEventId.get(event.eventId) ?? [];
+  const eventAlbumRecord = eventAlbums.find((a) => a.albumType === 'event') ?? null;
+  const errors: string[] = [];
+  const clubs: ClubReconciliationResult[] = [];
+  let driveTotal = 0;
+
+  // Count Photo_Files rows for the event album
+  const eventSyncedCount = eventAlbumRecord
+    ? fileRecords.filter((r) => r.albumId === eventAlbumRecord.albumId).length
+    : 0;
+
+  // Open event Drive folder
+  let eventFolder: GoogleAppsScript.Drive.Folder | null = null;
+  try {
+    eventFolder = DriveApp.getFolderById(event.driveFolderId);
+  } catch (err) {
+    errors.push(`Cannot access Drive folder: ${String(err)}`);
+  }
+
+  if (eventFolder) {
+    // Walk club (Layer-2) folders
+    const clubIter = eventFolder.getFolders();
+    while (clubIter.hasNext()) {
+      const clubFolder = clubIter.next();
+      const clubName = clubFolder.getName();
+
+      // Count photo files across all batch (Layer-3) folders
+      let clubDriveCount = 0;
+      try {
+        const batchIter = clubFolder.getFolders();
+        while (batchIter.hasNext()) {
+          const batchFolder = batchIter.next();
+          const fileIter = batchFolder.getFiles();
+          while (fileIter.hasNext()) {
+            const file = fileIter.next();
+            if (PHOTO_MIME_TYPES.includes(file.getMimeType())) {
+              clubDriveCount++;
+            }
+          }
+        }
+      } catch (err) {
+        errors.push(`Club "${clubName}" Drive walk error: ${String(err)}`);
+      }
+
+      driveTotal += clubDriveCount;
+
+      // Find club album and count Photo_Files rows
+      const clubAlbumRecord = eventAlbums.find(
+        (a) => a.albumType === 'club' && a.clubName === clubName
+      ) ?? null;
+      const clubAlbumId = clubAlbumRecord?.albumId ?? '';
+      const syncedCount = clubAlbumId
+        ? fileRecords.filter((r) => r.albumId === clubAlbumId).length
+        : 0;
+
+      clubs.push({
+        clubName,
+        driveCount:   clubDriveCount,
+        syncedCount,
+        missingCount: clubDriveCount - syncedCount,
+        clubAlbumId,
+      });
+    }
+  }
+
+  return {
+    eventId:          event.eventId,
+    eventName:        event.eventName,
+    eventDate:        event.eventDate,
+    hasEventAlbum:    !!eventAlbumRecord,
+    eventAlbumId:     eventAlbumRecord?.albumId ?? '',
+    driveTotal,
+    eventSyncedCount,
+    clubs,
+    errors,
+  };
+}
+
+/** Aggregate result across all events. */
+export interface ReconciliationReport {
+  events:          EventReconciliationResult[];
+  totalDrive:      number;
+  totalSynced:     number;
+  totalMissing:    number;
+  eventsWithGaps:  number;
+}
+
+/**
+ * Runs reconcileEventPhotos for all events in the Events sheet.
+ *
+ * Pre-loads Photo_Albums and Photo_Files once to avoid redundant sheet reads
+ * during the per-event loop.
+ *
+ * Admin-only. May be slow for large archives (Drive API calls per folder).
+ */
+export function reconcileAllPhotos(): ServiceResult<ReconciliationReport> {
+  const config = getConfig();
+
+  // Load events
+  let eventRows: unknown[][];
+  try {
+    eventRows = getAllRows(config.SHEET_NAMES.EVENTS);
+  } catch (err) {
+    return { status: ResultStatus.ERROR, message: `Cannot read Events sheet: ${String(err)}` };
+  }
+  const events = eventRows
+    .map(toEventRecord)
+    .filter((r): r is NonNullable<ReturnType<typeof toEventRecord>> => r !== null);
+
+  // Pre-load albums grouped by eventId
+  const allAlbums = loadAlbums();
+  const albumsByEventId = new Map<string, PhotosAlbumRecord[]>();
+  for (const album of allAlbums) {
+    const list = albumsByEventId.get(album.eventId) ?? [];
+    list.push(album);
+    albumsByEventId.set(album.eventId, list);
+  }
+
+  // Pre-load file records
+  const fileRecords = loadFileRecords();
+
+  const results: EventReconciliationResult[] = [];
+  let totalDrive   = 0;
+  let totalSynced  = 0;
+  let eventsWithGaps = 0;
+
+  for (const event of events) {
+    const result = reconcileEventPhotos(
+      { eventId: event.eventId, eventName: event.eventName,
+        eventDate: event.eventDate, driveFolderId: event.driveFolderId },
+      albumsByEventId,
+      fileRecords
+    );
+    results.push(result);
+    totalDrive  += result.driveTotal;
+    totalSynced += result.eventSyncedCount;
+    const eventMissing = result.clubs.reduce((sum, c) => sum + Math.max(0, c.missingCount), 0);
+    if (eventMissing > 0 || !result.hasEventAlbum) eventsWithGaps++;
+  }
+
+  const totalMissing = totalDrive - totalSynced;
+
+  Logger.log(
+    `[PhotosService] Reconciliation: events=${results.length}, ` +
+    `drive=${totalDrive}, synced=${totalSynced}, missing=${totalMissing}`
+  );
+
+  return {
+    status: ResultStatus.SUCCESS,
+    message: `Reconciliation complete: ${results.length} event(s), ${totalMissing} photo(s) not yet synced`,
+    data: { events: results, totalDrive, totalSynced, totalMissing, eventsWithGaps },
   };
 }

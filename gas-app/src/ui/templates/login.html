@@ -9,6 +9,9 @@
   <link rel="stylesheet"
     href="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.indigo-pink.min.css">
   <?!= HtmlService.createHtmlOutputFromFile('ui/css/styles').getContent() ?>
+
+  <!-- No GIS library needed — we use a direct OAuth redirect instead -->
+
   <style>
     .login-container {
       min-height: 100vh;
@@ -22,7 +25,7 @@
       border-radius: 4px;
       box-shadow: 0 4px 16px rgba(0,0,0,0.16);
       padding: 40px 48px;
-      max-width: 420px;
+      max-width: 440px;
       width: 100%;
       text-align: center;
     }
@@ -41,19 +44,49 @@
       font-size: 14px;
       margin: 0 0 28px;
     }
-    .login-card .error-msg {
+    .error-msg {
       color: #d32f2f;
       font-size: 13px;
       margin-bottom: 16px;
       background: #ffebee;
       padding: 8px 12px;
       border-radius: 4px;
-      display: <?= (typeof errorMessage !== 'undefined' && errorMessage) ? 'block' : 'none' ?>;
+      text-align: left;
+    }
+    .status-msg {
+      font-size: 13px;
+      margin-bottom: 16px;
+      padding: 8px 12px;
+      border-radius: 4px;
+      text-align: left;
+    }
+    .status-msg.info   { background: #e3f2fd; color: #1565c0; }
+    .status-msg.success { background: #e8f5e9; color: #2e7d32; }
+    .gis-btn-container {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 20px;
+    }
+    .fallback-btn {
+      width: 100%;
+      padding: 12px 0;
+      font-size: 15px;
     }
     .login-info {
       margin-top: 24px;
       font-size: 13px;
       color: #999;
+    }
+    .debug-box {
+      background: #f3f3f3;
+      border-radius: 4px;
+      padding: 8px 12px;
+      margin-bottom: 16px;
+      font-size: 12px;
+      color: #555;
+      text-align: left;
+      font-family: monospace;
+      line-height: 1.8;
     }
   </style>
 </head>
@@ -66,6 +99,7 @@
       <h4>湘舍动公益文件系统</h4>
       <p class="subtitle">事件照片管理平台</p>
 
+      <!-- Server-side auth error (shown on page load if auth already failed) -->
       <? if (typeof errorMessage !== 'undefined' && errorMessage) { ?>
       <div class="error-msg" role="alert">
         <i class="material-icons" style="font-size:16px;vertical-align:middle;">error_outline</i>
@@ -73,24 +107,56 @@
       </div>
       <? } ?>
 
-      <? if (typeof detectedEmail !== 'undefined' && detectedEmail) { ?>
-      <div style="background:#e8f5e9;border-radius:4px;padding:8px 12px;margin-bottom:16px;font-size:13px;color:#2e7d32;text-align:left;">
-        <i class="material-icons" style="font-size:15px;vertical-align:middle;margin-right:4px;">account_circle</i>
-        Signed in as: <strong><?= detectedEmail ?></strong>
+      <!-- Debug block — always shown during OAuth rollout so you can see the
+           exact redirect_uri that will be sent to Google. Remove once stable. -->
+      <div class="debug-box">
+        <strong>Debug — Auth check:</strong><br>
+        Active user (visitor):&nbsp;
+        <? if (typeof detectedEmail !== 'undefined' && detectedEmail) { ?>
+          <span style="color:#2e7d32;font-weight:bold;"><?= detectedEmail ?></span>
+          <span style="color:#888;">(→ blocked at user lookup)</span>
+        <? } else { ?>
+          <span style="color:#b71c1c;font-weight:bold;">(empty)</span>
+        <? } ?><br>
+        Effective user (executeAs):&nbsp;
+        <? if (typeof effectiveEmail !== 'undefined' && effectiveEmail) { ?>
+          <span style="color:#1565c0;font-weight:bold;"><?= effectiveEmail ?></span>
+          <span style="color:#888;">(USER_DEPLOYING — owner runs script ✓)</span>
+        <? } else { ?>
+          <span style="color:#b71c1c;">(empty)</span>
+        <? } ?><br>
+        Build:&nbsp;<span style="color:#555;"><?= (typeof buildTime !== 'undefined') ? buildTime : '—' ?></span><br>
+        GIS client ID:&nbsp;<span style="color:#555;"><?= (typeof clientId !== 'undefined' && clientId) ? clientId : 'NOT SET' ?></span><br>
+        redirect_uri (will send to Google):<br>
+        <span style="color:#0d47a1;font-weight:bold;word-break:break-all;"><?= (typeof scriptUrl !== 'undefined' && scriptUrl) ? scriptUrl : 'NOT SET' ?></span>
       </div>
-      <? } ?>
 
       <p style="color:#555;font-size:14px;margin-bottom:20px;">
         This system is restricted to registered members.<br>
-        Sign in with your organization Google account to continue.
+        Sign in with any Google account — your access will be checked against the member list.
       </p>
 
-      <a href="<?= ScriptApp.getService().getUrl() ?>"
-         class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
-         style="width:100%;padding:12px 0;font-size:15px;">
-        <i class="material-icons" style="vertical-align:middle;margin-right:8px;">login</i>
-        Sign in with Google
-      </a>
+      <!-- Sign-In Button — triggers OAuth redirect via window.top -->
+      <? if (typeof clientId !== 'undefined' && clientId) { ?>
+      <div style="display:flex;justify-content:center;margin-bottom:20px;">
+        <button onclick="startOAuthFlow()"
+                class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored fallback-btn"
+                style="display:flex;align-items:center;gap:10px;padding:0 24px;height:44px;font-size:15px;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 48 48">
+            <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/>
+            <path fill="#FF3D00" d="m6.306 14.691 6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/>
+            <path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/>
+            <path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/>
+          </svg>
+          Sign in with Google
+        </button>
+      </div>
+      <? } else { ?>
+      <!-- Fallback: GOOGLE_CLIENT_ID not set yet -->
+      <div class="error-msg">
+        <strong>Setup required:</strong> GOOGLE_CLIENT_ID is not configured in Script Properties.
+      </div>
+      <? } ?>
 
       <p class="login-info">
         Not a member?
@@ -99,6 +165,59 @@
       </p>
     </div>
   </div>
+
+  <script>
+    /**
+     * Initiates the OAuth 2.0 Authorization Code flow.
+     *
+     * Navigates window.top (the outer script.google.com frame) to Google's
+     * authorization endpoint. After the user approves, Google redirects back
+     * to the GAS deployment URL with ?code=XXX&state=oauth_login, which the
+     * server handles in handleOAuthCallback() inside router.ts.
+     *
+     * This avoids all GIS iframe/FedCM restrictions because the sign-in
+     * happens in a full top-level navigation, not inside the iframe.
+     */
+    function startOAuthFlow() {
+      var clientId  = '<?= clientId ?>';
+      var scriptUrl = '<?= scriptUrl ?>';
+      if (!clientId) {
+        alert('GOOGLE_CLIENT_ID is not configured.');
+        return;
+      }
+      var params = [
+        'response_type=code',
+        'client_id='     + encodeURIComponent(clientId),
+        'redirect_uri='  + encodeURIComponent(scriptUrl),
+        'scope='         + encodeURIComponent('openid email profile'),
+        'state=oauth_login',
+        'access_type=online',
+        'prompt=select_account'
+      ].join('&');
+      var authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + params;
+
+      // ── Debug logging — remove once OAuth is stable ────────────────────────
+      // These values are ALSO visible in the debug box above the button, but
+      // we log them here so (a) they appear in DevTools Console, and
+      // (b) you can copy the exact redirect_uri from the confirm dialog before
+      //     navigation to compare against the GCP-registered list.
+      console.log('[OAuth] client_id     =', clientId);
+      console.log('[OAuth] redirect_uri  =', scriptUrl);
+      console.log('[OAuth] full auth URL =', authUrl);
+      var proceed = confirm(
+        'About to send this redirect_uri to Google:\n\n' +
+        scriptUrl + '\n\n' +
+        'This exact URI must be listed in the GCP OAuth client\'s\n' +
+        '"Authorized redirect URIs". Click OK to continue, or Cancel\n' +
+        'to copy it from the debug box above first.'
+      );
+      if (!proceed) return;
+      // ────────────────────────────────────────────────────────────────────────
+
+      window.top.location.href = authUrl;
+    }
+  </script>
+
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.min.js"></script>
 </body>
 </html>

@@ -9,6 +9,8 @@ import {
   fromClubRecord,
   toAuditLogRecord,
   fromAuditLogRecord,
+  toPhotosFileRecord,
+  fromPhotosFileRecord,
 } from '../../src/utils/sheetMapper';
 import { UserRole, UserStatus, UploadSource, AuditAction } from '../../src/types/enums';
 import { UserRecord } from '../../src/types/models';
@@ -71,15 +73,40 @@ describe('sheetMapper — Users', () => {
     });
 
     it('handles Sheets returning Date objects for date columns', () => {
-      // Sheets sometimes returns Date objects for cells formatted as dates
+      // Google Sheets returns DATE-typed cells as Date objects in GAS.
+      // formatSheetDate() must convert them to "YYYY-MM-DD", NOT the full
+      // Date.toString() locale string like "Thu Apr 09 2026 00:00:00 GMT-0400".
+      const localDate = new Date(2025, 1, 1); // Feb 1 2025 in local time
       const row: unknown[] = [
         'alice@example.com', 'New_Bee', 'user', 'active',
-        new Date('2025-02-01'), 'admin@mmrunners.org',
+        localDate, 'admin@mmrunners.org',
       ];
       const record = toUserRecord(row);
       expect(record).not.toBeNull();
-      // Date.toString() is stored as string — just verify no crash
-      expect(typeof record!.addedDate).toBe('string');
+      expect(record!.addedDate).toBe('2025-02-01');
+    });
+
+    it('does not store the full Date.toString() locale string for date cells', () => {
+      // Regression: before the fix, String(new Date(...)) produced a long
+      // locale string like "Sat Feb 01 2025 00:00:00 GMT-0500 (EST)".
+      const localDate = new Date(2025, 3, 9); // Apr 9 2025 in local time
+      const row: unknown[] = [
+        'bob@example.com', 'Admin', 'admin', 'active',
+        localDate, 'system',
+      ];
+      const record = toUserRecord(row);
+      expect(record!.addedDate).not.toContain('GMT');
+      expect(record!.addedDate).not.toContain(':');
+      expect(record!.addedDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it('preserves plain ISO string addedDate unchanged', () => {
+      const row: unknown[] = [
+        'carol@example.com', 'New_Bee', 'user', 'active',
+        '2025-06-15', 'admin@mmrunners.org',
+      ];
+      const record = toUserRecord(row);
+      expect(record!.addedDate).toBe('2025-06-15');
     });
 
     it('accepts all valid UserRole values', () => {
@@ -217,6 +244,64 @@ describe('sheetMapper — Events', () => {
       const row: unknown[] = [123, 'NYC Marathon', '2025-11-03', 'folder', 'drive-id', 'admin@x.com', 'ts'];
       const record = toEventRecord(row);
       expect(record!.eventId).toBe('123');
+    });
+
+    it('handles Sheets returning Date objects for eventDate', () => {
+      // Google Sheets returns DATE-typed cells as Date objects in GAS.
+      // formatSheetDate() must produce "YYYY-MM-DD", not the full locale string
+      // like "Sun Mar 15 2026 00:00:00 GMT-0400 (Eastern Daylight Time)".
+      const localDate = new Date(2026, 2, 15); // Mar 15 2026 in local time
+      const row: unknown[] = [
+        'evt-uuid-001', 'NYC Half Marathon', localDate,
+        '2026-03-15_NYC_Half_Marathon', 'drive-folder-id-001',
+        'admin@mmrunners.org', '2026-01-01T09:00:00.000Z',
+      ];
+      const record = toEventRecord(row);
+      expect(record).not.toBeNull();
+      expect(record!.eventDate).toBe('2026-03-15');
+    });
+
+    it('does not store the full Date.toString() locale string for eventDate', () => {
+      // Regression: before the fix, String(new Date(...)) returned something like
+      // "Sun Mar 15 2026 00:00:00 GMT-0400 (Eastern Daylight Time)" which was
+      // then displayed verbatim in the Photos page event date column.
+      const localDate = new Date(2026, 2, 15); // Mar 15 2026 in local time
+      const row: unknown[] = [
+        'evt-uuid-001', 'NYC Half Marathon', localDate,
+        '2026-03-15_NYC_Half_Marathon', 'drive-folder-id-001',
+        'admin@mmrunners.org', '2026-01-01T09:00:00.000Z',
+      ];
+      const record = toEventRecord(row);
+      expect(record!.eventDate).not.toContain('GMT');
+      expect(record!.eventDate).not.toContain(':');
+      expect(record!.eventDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it('preserves a plain ISO string eventDate unchanged', () => {
+      // When the cell is already a plain string (e.g. re-read after a write),
+      // formatSheetDate() must pass it through untouched.
+      const row: unknown[] = [
+        'evt-uuid-001', 'NYC Half Marathon', '2026-03-15',
+        '2026-03-15_NYC_Half_Marathon', 'drive-folder-id-001',
+        'admin@mmrunners.org', '2026-01-01T09:00:00.000Z',
+      ];
+      const record = toEventRecord(row);
+      expect(record!.eventDate).toBe('2026-03-15');
+    });
+
+    it('eventDate Date roundtrip survives toEventRecord → fromEventRecord → toEventRecord', () => {
+      // After the Date is converted to "YYYY-MM-DD" on the first parse,
+      // writing back and re-reading must produce the same string.
+      const localDate = new Date(2026, 10, 1); // Nov 1 2026 in local time
+      const row: unknown[] = [
+        'evt-uuid-001', 'Autumn Fun Run', localDate,
+        '2026-11-01_Autumn_Fun_Run', 'drive-folder-id-001',
+        'admin@mmrunners.org', '2026-09-01T09:00:00.000Z',
+      ];
+      const first = toEventRecord(row)!;
+      expect(first.eventDate).toBe('2026-11-01');
+      const restored = toEventRecord(fromEventRecord(first))!;
+      expect(restored.eventDate).toBe('2026-11-01');
     });
   });
 
@@ -418,6 +503,25 @@ describe('sheetMapper — Clubs', () => {
       expect(record!.displayName).toBe('123');
       expect(record!.normalizedName).toBe('456');
     });
+
+    it('handles Sheets returning Date objects for addedDate', () => {
+      // Same formatSheetDate() fix applies to Club rows — regression guard.
+      const localDate = new Date(2025, 0, 1); // Jan 1 2025 local time
+      const row: unknown[] = ['新蜂', 'New_Bee', 'active', localDate, 'system'];
+      const record = toClubRecord(row);
+      expect(record).not.toBeNull();
+      expect(record!.addedDate).toBe('2025-01-01');
+      expect(record!.addedDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it('does not store the full Date.toString() locale string for addedDate', () => {
+      const localDate = new Date(2025, 5, 15); // Jun 15 2025 local time
+      const row: unknown[] = ['岚山', 'Lanshan', 'active', localDate, 'admin@mmrunners.org'];
+      const record = toClubRecord(row);
+      expect(record!.addedDate).not.toContain('GMT');
+      expect(record!.addedDate).not.toContain(':');
+      expect(record!.addedDate).toBe('2025-06-15');
+    });
   });
 
   describe('fromClubRecord()', () => {
@@ -547,6 +651,17 @@ describe('sheetMapper — Audit Log', () => {
       expect(record!.resourceId).toBe('');
     });
 
+    it('accepts ALBUM_ERROR as a valid AuditAction', () => {
+      // Regression guard for the ALBUM_ERROR action added alongside the
+      // persistent error logging for Google Photos failures. The action must
+      // round-trip through toAuditLogRecord without returning null.
+      const row = [...validRow];
+      row[3] = 'ALBUM_ERROR';
+      const record = toAuditLogRecord(row);
+      expect(record).not.toBeNull();
+      expect(record!.action).toBe(AuditAction.ALBUM_ERROR);
+    });
+
     it('handles numeric cell values via String() coercion', () => {
       const row: unknown[] = [
         123, '2026-04-18T10:00:00.000Z', 'admin@mmrunners.org',
@@ -600,6 +715,208 @@ describe('sheetMapper — Audit Log', () => {
       const original = toAuditLogRecord(row)!;
       const restored = toAuditLogRecord(fromAuditLogRecord(original));
       expect(restored!.resourceId).toBe('');
+    });
+  });
+});
+
+// ─── Photos Files ──────────────────────────────────────────────────────────────
+
+describe('sheetMapper — Photos Files', () => {
+  // Column order: driveFileId(0), mediaItemId(1), albumId(2), albumType(3),
+  //               eventId(4), clubName(5), fileName(6), syncedAt(7)
+  const validEventRow: unknown[] = [
+    'drive-file-id-001',
+    'media-item-id-001',
+    'album-id-event-001',
+    'event',
+    'evt-uuid-001',
+    '',
+    'IMG_0042.jpg',
+    '2026-04-19T10:00:00.000Z',
+  ];
+
+  const validClubRow: unknown[] = [
+    'drive-file-id-002',
+    'media-item-id-002',
+    'album-id-club-001',
+    'club',
+    'evt-uuid-001',
+    'New_Bee',
+    'IMG_0043.heic',
+    '2026-04-19T10:01:00.000Z',
+  ];
+
+  describe('toPhotosFileRecord()', () => {
+    it('maps a complete valid event-type row', () => {
+      const record = toPhotosFileRecord(validEventRow);
+      expect(record).not.toBeNull();
+      expect(record!.driveFileId).toBe('drive-file-id-001');
+      expect(record!.mediaItemId).toBe('media-item-id-001');
+      expect(record!.albumId).toBe('album-id-event-001');
+      expect(record!.albumType).toBe('event');
+      expect(record!.eventId).toBe('evt-uuid-001');
+      expect(record!.clubName).toBe('');
+      expect(record!.fileName).toBe('IMG_0042.jpg');
+      expect(record!.syncedAt).toBe('2026-04-19T10:00:00.000Z');
+    });
+
+    it('maps a complete valid club-type row', () => {
+      const record = toPhotosFileRecord(validClubRow);
+      expect(record).not.toBeNull();
+      expect(record!.albumType).toBe('club');
+      expect(record!.clubName).toBe('New_Bee');
+      expect(record!.fileName).toBe('IMG_0043.heic');
+    });
+
+    it('returns null when driveFileId is empty', () => {
+      const row = [...validEventRow];
+      row[0] = '';
+      expect(toPhotosFileRecord(row)).toBeNull();
+    });
+
+    it('returns null when driveFileId is whitespace-only', () => {
+      const row = [...validEventRow];
+      row[0] = '   ';
+      expect(toPhotosFileRecord(row)).toBeNull();
+    });
+
+    it('returns null when albumId is empty', () => {
+      const row = [...validEventRow];
+      row[2] = '';
+      expect(toPhotosFileRecord(row)).toBeNull();
+    });
+
+    it('returns null when albumId is whitespace-only', () => {
+      const row = [...validEventRow];
+      row[2] = '   ';
+      expect(toPhotosFileRecord(row)).toBeNull();
+    });
+
+    it('returns null for unrecognized albumType', () => {
+      const row = [...validEventRow];
+      row[3] = 'album';
+      expect(toPhotosFileRecord(row)).toBeNull();
+    });
+
+    it('returns null for empty albumType', () => {
+      const row = [...validEventRow];
+      row[3] = '';
+      expect(toPhotosFileRecord(row)).toBeNull();
+    });
+
+    it('accepts both "event" and "club" as valid albumType values', () => {
+      const evRecord = toPhotosFileRecord(validEventRow);
+      const clRecord = toPhotosFileRecord(validClubRow);
+      expect(evRecord!.albumType).toBe('event');
+      expect(clRecord!.albumType).toBe('club');
+    });
+
+    it('returns null for row with fewer than 8 columns', () => {
+      expect(toPhotosFileRecord(['drive-id', 'media-id', 'album-id', 'event', 'evt-id', ''])).toBeNull();
+      expect(toPhotosFileRecord([])).toBeNull();
+    });
+
+    it('trims whitespace from all string fields', () => {
+      const row: unknown[] = [
+        '  drive-file-id-001  ', '  media-item-id-001  ', '  album-id-event-001  ',
+        '  event  ', '  evt-uuid-001  ', '  ', '  IMG_0042.jpg  ', '  2026-04-19T10:00:00.000Z  ',
+      ];
+      const record = toPhotosFileRecord(row);
+      expect(record!.driveFileId).toBe('drive-file-id-001');
+      expect(record!.mediaItemId).toBe('media-item-id-001');
+      expect(record!.albumId).toBe('album-id-event-001');
+      expect(record!.albumType).toBe('event');
+      expect(record!.eventId).toBe('evt-uuid-001');
+      expect(record!.clubName).toBe('');  // whitespace-only normalises to ''
+      expect(record!.fileName).toBe('IMG_0042.jpg');
+    });
+
+    it('handles Sheets returning numeric values via String() coercion', () => {
+      const row: unknown[] = [
+        123, 456, 789, 'event', 'evt-id', '', 'photo.jpg', '2026-04-19T10:00:00.000Z',
+      ];
+      const record = toPhotosFileRecord(row);
+      expect(record!.driveFileId).toBe('123');
+      expect(record!.mediaItemId).toBe('456');
+      expect(record!.albumId).toBe('789');
+    });
+
+    it('handles Sheets returning Date objects in syncedAt via String() coercion', () => {
+      const row: unknown[] = [
+        'drive-id', 'media-id', 'album-id', 'event',
+        'evt-id', '', 'photo.jpg', new Date('2026-04-19T10:00:00.000Z'),
+      ];
+      const record = toPhotosFileRecord(row);
+      expect(record).not.toBeNull();
+      expect(typeof record!.syncedAt).toBe('string');
+    });
+
+    it('accepts empty clubName for event-type albums', () => {
+      const record = toPhotosFileRecord(validEventRow);
+      expect(record!.clubName).toBe('');
+    });
+
+    it('preserves non-empty clubName for club-type albums', () => {
+      const record = toPhotosFileRecord(validClubRow);
+      expect(record!.clubName).toBe('New_Bee');
+    });
+  });
+
+  describe('fromPhotosFileRecord()', () => {
+    it('produces an array of 8 elements', () => {
+      const record = toPhotosFileRecord(validEventRow)!;
+      const row = fromPhotosFileRecord(record);
+      expect(row).toHaveLength(8);
+    });
+
+    it('preserves all field values in correct column order', () => {
+      const record = toPhotosFileRecord(validEventRow)!;
+      const row = fromPhotosFileRecord(record);
+      expect(row[0]).toBe('drive-file-id-001');           // driveFileId  (col A)
+      expect(row[1]).toBe('media-item-id-001');           // mediaItemId  (col B)
+      expect(row[2]).toBe('album-id-event-001');          // albumId      (col C)
+      expect(row[3]).toBe('event');                       // albumType    (col D)
+      expect(row[4]).toBe('evt-uuid-001');                // eventId      (col E)
+      expect(row[5]).toBe('');                            // clubName     (col F)
+      expect(row[6]).toBe('IMG_0042.jpg');                // fileName     (col G)
+      expect(row[7]).toBe('2026-04-19T10:00:00.000Z');   // syncedAt     (col H)
+    });
+
+    it('preserves club-type record fields correctly', () => {
+      const record = toPhotosFileRecord(validClubRow)!;
+      const row = fromPhotosFileRecord(record);
+      expect(row[3]).toBe('club');
+      expect(row[5]).toBe('New_Bee');
+    });
+  });
+
+  describe('roundtrip: toPhotosFileRecord → fromPhotosFileRecord → toPhotosFileRecord', () => {
+    it('produces an identical event-type record after roundtrip', () => {
+      const original = toPhotosFileRecord(validEventRow)!;
+      const row = fromPhotosFileRecord(original);
+      const restored = toPhotosFileRecord(row);
+      expect(restored).toEqual(original);
+    });
+
+    it('produces an identical club-type record after roundtrip', () => {
+      const original = toPhotosFileRecord(validClubRow)!;
+      const row = fromPhotosFileRecord(original);
+      const restored = toPhotosFileRecord(row);
+      expect(restored).toEqual(original);
+    });
+
+    it('roundtrip preserves empty clubName for event albums', () => {
+      const original = toPhotosFileRecord(validEventRow)!;
+      const restored = toPhotosFileRecord(fromPhotosFileRecord(original));
+      expect(restored!.clubName).toBe('');
+    });
+
+    it('roundtrip preserves non-ASCII fileName', () => {
+      const row = [...validEventRow];
+      row[6] = '跑步照片_001.jpg';
+      const original = toPhotosFileRecord(row)!;
+      const restored = toPhotosFileRecord(fromPhotosFileRecord(original));
+      expect(restored!.fileName).toBe('跑步照片_001.jpg');
     });
   });
 });

@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>File System — 湘舍动公益文件系统</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.indigo-pink.min.css">
+  <?!= HtmlService.createHtmlOutputFromFile('ui/css/styles').getContent() ?>
+  <style>
+    /* ── Drive Tree specific styles ──────────────────────────────────────────── */
+
+    .page-header {
+      display: flex; align-items: center; gap: 12px;
+      margin-bottom: 20px;
+    }
+    .page-header h2 {
+      margin: 0; font-size: 20px; font-weight: 500; color: #333;
+    }
+    .page-header .material-icons {
+      font-size: 28px; color: #3f51b5;
+    }
+
+    /* Search bar */
+    .search-row {
+      display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
+    }
+    .search-wrap {
+      flex: 1; position: relative;
+    }
+    .search-wrap .material-icons {
+      position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+      color: #9e9e9e; font-size: 20px; pointer-events: none;
+    }
+    .search-input {
+      width: 100%; padding: 8px 12px 8px 36px; border: 1px solid #e0e0e0;
+      border-radius: 4px; font-size: 14px; outline: none; box-sizing: border-box;
+      transition: border-color .2s;
+    }
+    .search-input:focus { border-color: #3f51b5; }
+
+    /* Summary pills */
+    .summary-pills {
+      display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;
+    }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 14px; border-radius: 20px; font-size: 13px;
+      font-weight: 500; background: #e8eaf6; color: #3f51b5;
+    }
+    .pill .material-icons { font-size: 16px; }
+    .pill.green  { background: #e8f5e9; color: #2e7d32; }
+    .pill.orange { background: #fff3e0; color: #e65100; }
+
+    /* Tree container */
+    .tree { list-style: none; margin: 0; padding: 0; }
+
+    /* ── Layer 1: Event node ──────────────────────────────────────────────── */
+    .event-node { margin-bottom: 8px; }
+
+    .event-header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 12px 16px; border: 1px solid #e0e0e0; border-radius: 6px;
+      cursor: pointer; background: #fff; transition: background .15s, border-color .15s;
+      user-select: none;
+    }
+    .event-header:hover { background: #f5f5f5; border-color: #bdbdbd; }
+    .event-header.open  { border-color: #3f51b5; background: #f0f2ff; border-radius: 6px 6px 0 0; }
+
+    .event-toggle {
+      color: #757575; font-size: 20px; transition: transform .2s; flex-shrink: 0;
+    }
+    .event-header.open .event-toggle { transform: rotate(90deg); }
+
+    .event-icon { color: #3f51b5; font-size: 22px; flex-shrink: 0; }
+    .event-name { flex: 1; font-size: 15px; font-weight: 500; color: #212121; }
+    .event-date { font-size: 12px; color: #757575; white-space: nowrap; }
+    .event-count {
+      font-size: 12px; font-weight: 600; color: #3f51b5;
+      background: #e8eaf6; padding: 2px 10px; border-radius: 12px;
+      white-space: nowrap;
+    }
+    .event-count.empty { background: #f5f5f5; color: #bdbdbd; }
+
+    /* Loading / error states inside event */
+    .event-body {
+      border: 1px solid #3f51b5; border-top: none;
+      border-radius: 0 0 6px 6px; background: #fafbff;
+      display: none; overflow: hidden;
+    }
+    .event-header.open + .event-body { display: block; }
+
+    .tree-loading {
+      display: flex; align-items: center; gap: 8px;
+      padding: 16px 20px; font-size: 13px; color: #757575;
+    }
+    .tree-error {
+      padding: 12px 20px; font-size: 13px; color: #c62828;
+      display: flex; align-items: center; gap: 8px;
+    }
+
+    /* ── Layer 2: Club nodes ──────────────────────────────────────────────── */
+    .club-list { list-style: none; margin: 0; padding: 0; }
+
+    .club-node { border-bottom: 1px solid #e8eaf6; }
+    .club-node:last-child { border-bottom: none; }
+
+    .club-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 20px; cursor: pointer;
+      transition: background .12s;
+      user-select: none;
+    }
+    .club-header:hover { background: #eef0fb; }
+    .club-header.open  { background: #e8eaf6; }
+
+    .club-toggle {
+      color: #9e9e9e; font-size: 18px; transition: transform .2s; flex-shrink: 0;
+    }
+    .club-header.open .club-toggle { transform: rotate(90deg); color: #5c6bc0; }
+
+    .club-icon { color: #5c6bc0; font-size: 20px; flex-shrink: 0; }
+    .club-name { flex: 1; font-size: 14px; font-weight: 500; color: #333; }
+    .club-count {
+      font-size: 12px; font-weight: 600;
+      color: #5c6bc0; background: #ede7f6;
+      padding: 2px 9px; border-radius: 10px; white-space: nowrap;
+    }
+    .club-count.empty { color: #bdbdbd; background: #f5f5f5; }
+
+    /* Club body / batch list */
+    .club-body {
+      display: none; background: #fff;
+    }
+    .club-header.open + .club-body { display: block; }
+
+    /* ── Layer 3: Batch nodes ─────────────────────────────────────────────── */
+    .batch-list { list-style: none; margin: 0; padding: 0; }
+
+    .batch-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 28px 7px 40px;
+      border-bottom: 1px solid #f5f5f5; font-size: 13px;
+    }
+    .batch-row:last-child { border-bottom: none; }
+    .batch-row:hover { background: #fafafa; }
+
+    .batch-icon { color: #9e9e9e; font-size: 17px; flex-shrink: 0; }
+    .batch-name { flex: 1; color: #555; font-family: monospace; font-size: 12px; }
+    .batch-count {
+      font-size: 12px; font-weight: 600; color: #616161;
+      white-space: nowrap;
+    }
+    .batch-count.zero { color: #bdbdbd; }
+
+    /* No clubs placeholder */
+    .empty-event {
+      padding: 16px 20px; font-size: 13px; color: #9e9e9e;
+      display: flex; align-items: center; gap: 8px;
+    }
+
+    /* "No results" for search */
+    .no-results {
+      text-align: center; padding: 40px 20px; color: #9e9e9e;
+    }
+    .no-results .material-icons { font-size: 40px; display: block; margin-bottom: 8px; }
+
+    /* Hidden via search */
+    .event-node.hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
+    <header class="mdl-layout__header">
+      <div class="mdl-layout__header-row">
+        <a href="?action=dashboard" class="mdl-layout-title"
+           style="color:inherit;text-decoration:none;">
+          湘舍动公益文件系统
+        </a>
+        <div class="mdl-layout-spacer"></div>
+        <div class="nav-panel">
+          <nav class="mdl-navigation">
+            <a class="mdl-navigation__link" href="?action=dashboard">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">home</i>
+              Home
+            </a>
+            <? if (isAdmin) { ?>
+            <a class="mdl-navigation__link" href="?action=admin_users">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>
+              Users
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_events">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
+              Events
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_clubs">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>
+              Clubs
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_photos">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">photo_library</i>
+              Photos
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_audit">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">history</i>
+              Audit Log
+            </a>
+            <? } ?>
+            <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=drive_tree">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">account_tree</i>
+              File System
+            </a>
+            <a class="mdl-navigation__link" href="?action=upload">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">cloud_upload</i>
+              Upload
+            </a>
+          </nav>
+          <span class="mdl-chip" style="margin-left:12px;">
+            <span class="mdl-chip__text"><?= userEmail ?></span>
+          </span>
+        </div>
+        <button class="nav-toggle" type="button"
+                aria-label="Toggle menu" aria-expanded="false">
+          <i class="material-icons">menu</i>
+        </button>
+      </div>
+    </header>
+
+    <main class="mdl-layout__content">
+      <div class="page-content">
+
+        <div class="card">
+          <!-- Page header -->
+          <div class="page-header">
+            <i class="material-icons">account_tree</i>
+            <h2>File System</h2>
+          </div>
+
+          <!-- Summary pills -->
+          <div class="summary-pills" id="summaryPills">
+            <span class="pill">
+              <i class="material-icons">event</i>
+              <span id="totalEventsLabel">—</span> events
+            </span>
+            <span class="pill green" id="pillPhotos" style="display:none;">
+              <i class="material-icons">photo</i>
+              <span id="totalPhotosLabel">—</span> photos loaded
+            </span>
+          </div>
+
+          <!-- Search -->
+          <div class="search-row">
+            <div class="search-wrap">
+              <i class="material-icons">search</i>
+              <input type="text" id="searchInput" class="search-input"
+                     placeholder="Filter by event name or date…">
+            </div>
+          </div>
+
+          <!-- Tree -->
+          <ul class="tree" id="eventTree" aria-label="Drive folder hierarchy"></ul>
+          <div class="no-results" id="noResults" style="display:none;">
+            <i class="material-icons">search_off</i>
+            No events match your filter
+          </div>
+        </div>
+
+      </div>
+    </main>
+
+    <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
+  </div>
+
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.min.js"></script>
+  <script>
+    window.APP_URL = '<?= scriptUrl ?>';
+    window.SESSION_TOKEN = '<?= (typeof sessionToken !== "undefined" && sessionToken) ? sessionToken : "" ?>';
+  </script>
+  <?!= HtmlService.createHtmlOutputFromFile('ui/js/app').getContent() ?>
+
+  <script>
+  (function () {
+    'use strict';
+
+    // ── Data injected from server ────────────────────────────────────────────
+    var EVENTS = <?!= events ?>;   // EventRecord[] sorted newest-first
+
+    // ── State ───────────────────────────────────────────────────────────────
+    // Map of eventId → { loaded: bool, data: EventDriveTree | null, error: string | null }
+    var treeCache = {};
+    var totalPhotosLoaded = 0;
+
+    // ── DOM refs ────────────────────────────────────────────────────────────
+    var elTree     = document.getElementById('eventTree');
+    var elSearch   = document.getElementById('searchInput');
+    var elNoRes    = document.getElementById('noResults');
+    var elTotalEvt = document.getElementById('totalEventsLabel');
+    var elTotalPh  = document.getElementById('totalPhotosLabel');
+    var elPillPh   = document.getElementById('pillPhotos');
+
+    // ── Init ────────────────────────────────────────────────────────────────
+    elTotalEvt.textContent = EVENTS.length;
+    EVENTS.forEach(function (event) {
+      elTree.appendChild(buildEventNode(event));
+    });
+    elSearch.addEventListener('input', onSearch);
+
+    // ── Build event node (Layer 1) ───────────────────────────────────────────
+    function buildEventNode (event) {
+      var li = document.createElement('li');
+      li.className = 'event-node';
+      li.dataset.eventId = event.eventId;
+      li.dataset.name    = (event.eventName + ' ' + event.eventDate).toLowerCase();
+
+      // Header
+      var header = document.createElement('div');
+      header.className = 'event-header';
+      header.setAttribute('role', 'button');
+      header.setAttribute('aria-expanded', 'false');
+      header.innerHTML =
+        '<i class="material-icons event-toggle">chevron_right</i>' +
+        '<i class="material-icons event-icon">event</i>' +
+        '<span class="event-name">' + escHtml(event.eventName) + '</span>' +
+        '<span class="event-date">' + escHtml(event.eventDate) + '</span>' +
+        '<span class="event-count empty" id="ec-' + event.eventId + '">—</span>';
+
+      // Body (lazy-loaded)
+      var body = document.createElement('div');
+      body.className = 'event-body';
+      body.id = 'eb-' + event.eventId;
+
+      header.addEventListener('click', function () {
+        toggleEvent(event, header, body);
+      });
+
+      li.appendChild(header);
+      li.appendChild(body);
+      return li;
+    }
+
+    // ── Toggle event row ─────────────────────────────────────────────────────
+    function toggleEvent (event, header, body) {
+      var isOpen = header.classList.contains('open');
+      if (isOpen) {
+        header.classList.remove('open');
+        header.setAttribute('aria-expanded', 'false');
+        return;
+      }
+
+      // Open
+      header.classList.add('open');
+      header.setAttribute('aria-expanded', 'true');
+
+      // Already loaded from cache
+      if (treeCache[event.eventId]) {
+        renderEventBody(body, treeCache[event.eventId]);
+        return;
+      }
+
+      // Show loading state
+      body.innerHTML =
+        '<div class="tree-loading">' +
+        '<i class="material-icons" style="animation:spin 1s linear infinite;font-size:18px;">autorenew</i>' +
+        'Loading folder tree…</div>';
+
+      // Fetch from server
+      google.script.run
+        .withSuccessHandler(function (resp) {
+          if (resp.status === 'success' && resp.data) {
+            treeCache[event.eventId] = { loaded: true, data: resp.data, error: null };
+            updatePhotoCount(resp.data.totalFiles);
+            var ec = document.getElementById('ec-' + event.eventId);
+            if (ec) {
+              ec.textContent = photoLabel(resp.data.totalFiles);
+              ec.className = 'event-count' + (resp.data.totalFiles === 0 ? ' empty' : '');
+            }
+          } else {
+            treeCache[event.eventId] = { loaded: true, data: null, error: resp.message };
+          }
+          renderEventBody(body, treeCache[event.eventId]);
+        })
+        .withFailureHandler(function (err) {
+          treeCache[event.eventId] = { loaded: true, data: null, error: String(err) };
+          renderEventBody(body, treeCache[event.eventId]);
+        })
+        .serverGetDriveTree({ eventId: event.eventId, driveFolderId: event.driveFolderId });
+    }
+
+    // ── Render event body once data is available ──────────────────────────────
+    function renderEventBody (body, state) {
+      if (state.error) {
+        body.innerHTML =
+          '<div class="tree-error"><i class="material-icons" style="font-size:16px;">error_outline</i>' +
+          escHtml(state.error) + '</div>';
+        return;
+      }
+
+      var tree = state.data;
+      if (!tree || tree.clubs.length === 0) {
+        body.innerHTML =
+          '<div class="empty-event"><i class="material-icons" style="font-size:18px;color:#bdbdbd;">folder_open</i>' +
+          'No club folders found in this event</div>';
+        return;
+      }
+
+      var ul = document.createElement('ul');
+      ul.className = 'club-list';
+      tree.clubs.forEach(function (club) {
+        ul.appendChild(buildClubNode(club));
+      });
+      body.innerHTML = '';
+      body.appendChild(ul);
+    }
+
+    // ── Build club node (Layer 2) ────────────────────────────────────────────
+    function buildClubNode (club) {
+      var li = document.createElement('li');
+      li.className = 'club-node';
+
+      var countCls = 'club-count' + (club.totalFiles === 0 ? ' empty' : '');
+      var header = document.createElement('div');
+      header.className = 'club-header';
+      header.setAttribute('role', 'button');
+      header.setAttribute('aria-expanded', 'false');
+      header.innerHTML =
+        '<i class="material-icons club-toggle">chevron_right</i>' +
+        '<i class="material-icons club-icon">group</i>' +
+        '<span class="club-name">' + escHtml(club.name.replace(/_/g, ' ')) + '</span>' +
+        '<span class="' + countCls + '">' + photoLabel(club.totalFiles) + '</span>';
+
+      var body = document.createElement('div');
+      body.className = 'club-body';
+
+      if (club.batches.length === 0) {
+        body.innerHTML =
+          '<div class="empty-event" style="padding-left:40px;">' +
+          '<i class="material-icons" style="font-size:16px;color:#bdbdbd;">inbox</i>' +
+          'No batch folders yet</div>';
+      } else {
+        var batchUl = document.createElement('ul');
+        batchUl.className = 'batch-list';
+        club.batches.forEach(function (batch) {
+          batchUl.appendChild(buildBatchRow(batch));
+        });
+        body.appendChild(batchUl);
+      }
+
+      header.addEventListener('click', function () {
+        var open = header.classList.toggle('open');
+        header.setAttribute('aria-expanded', String(open));
+      });
+
+      li.appendChild(header);
+      li.appendChild(body);
+      return li;
+    }
+
+    // ── Build batch row (Layer 3) ────────────────────────────────────────────
+    function buildBatchRow (batch) {
+      var li = document.createElement('li');
+      li.className = 'batch-row';
+
+      var parts = batch.name.split('_');
+      var uploader = parts.length > 1 ? parts[parts.length - 1] : '';
+      var timestamp = parts[0] || batch.name;
+
+      var countCls = 'batch-count' + (batch.fileCount === 0 ? ' zero' : '');
+      li.innerHTML =
+        '<i class="material-icons batch-icon">folder</i>' +
+        '<span class="batch-name">' + escHtml(timestamp) +
+        (uploader ? ' <span style="color:#9e9e9e;font-style:italic;">/ ' + escHtml(uploader) + '</span>' : '') +
+        '</span>' +
+        '<span class="' + countCls + '">' + photoLabel(batch.fileCount) + '</span>';
+      return li;
+    }
+
+    // ── Search / filter ───────────────────────────────────────────────────────
+    function onSearch () {
+      var q = elSearch.value.trim().toLowerCase();
+      var visible = 0;
+      var nodes = elTree.querySelectorAll('.event-node');
+      nodes.forEach(function (node) {
+        var match = !q || node.dataset.name.indexOf(q) !== -1;
+        node.classList.toggle('hidden', !match);
+        if (match) visible++;
+      });
+      elNoRes.style.display = visible === 0 ? 'block' : 'none';
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    function photoLabel (n) {
+      if (n === 0) return '0 photos';
+      return n + (n === 1 ? ' photo' : ' photos');
+    }
+
+    function updatePhotoCount (n) {
+      totalPhotosLoaded += n;
+      elTotalPh.textContent = totalPhotosLoaded;
+      elPillPh.style.display = 'inline-flex';
+    }
+
+    function escHtml (s) {
+      return String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // CSS keyframe for loading spinner
+    var style = document.createElement('style');
+    style.textContent = '@keyframes spin { to { transform: rotate(360deg); } }';
+    document.head.appendChild(style);
+
+  }());
+  </script>
+</body>
+</html>

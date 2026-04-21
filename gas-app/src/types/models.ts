@@ -61,7 +61,7 @@ export interface AuditLogRecord {
 }
 
 /**
- * A row in the "Photos_Albums" sheet.
+ * A row in the "Photo_Albums" sheet.
  * Stores the mapping between events/clubs and their Google Photos album IDs.
  *
  * albumType = 'event' → master album for the whole event (all clubs)
@@ -88,6 +88,31 @@ export interface PhotosAlbumRecord {
 export interface ClubEntry {
   readonly displayName: string;      // "New Bee"
   readonly normalizedName: string;   // "New_Bee" — used as Drive folder name
+}
+
+/**
+ * A row in the "Photo_Files" sheet.
+ * Records the mapping between a Google Drive file and the Google Photos media
+ * item created when it was synced to an album.
+ *
+ * Composite key: (driveFileId, albumId) — the same Drive file is synced to
+ * both an event album and a club album, producing two rows per photo.
+ *
+ * This table is the source of truth for:
+ *   - Deduplication: before uploading, check whether (driveFileId, albumId)
+ *     already exists; skip if so.
+ *   - Reconciliation: compare Drive file counts against rows here per event
+ *     to detect photos not yet synced to Google Photos.
+ */
+export interface PhotosFileRecord {
+  readonly driveFileId: string;           // Google Drive file ID (key col A)
+  readonly mediaItemId: string;           // Google Photos media item ID (col B)
+  readonly albumId:     string;           // Photos album ID (key col C)
+  readonly albumType:   'event' | 'club'; // Scope of the album (col D)
+  readonly eventId:     string;           // FK → Events.eventId (col E)
+  readonly clubName:    string;           // Normalized club name; empty for event albums (col F)
+  readonly fileName:    string;           // Original filename, e.g. "IMG_0042.jpg" (col G)
+  readonly syncedAt:    string;           // ISO 8601 timestamp of sync (col H)
 }
 
 /**

@@ -5,6 +5,7 @@ import { getCurrentUserEmail } from '../services/authService';
 import { getAllRows } from '../services/sheetService';
 import { toUserRecord } from '../utils/sheetMapper';
 import { getConfig } from '../config/constants';
+import { lookupSession } from '../services/sessionService';
 
 /**
  * AuthMiddleware — request authentication and user resolution pipeline.
@@ -83,14 +84,41 @@ export function resolveUser(email: string): ServiceResult<UserRecord> {
 
 /**
  * Convenience: runs both auth steps and returns the full UserRecord on success.
- * This is the single call most route handlers use.
+ *
+ * Auth priority:
+ *   1. GAS session (Session.getActiveUser) — works with USER_ACCESSING deployment
+ *   2. Session token — used with USER_DEPLOYING + GIS client-side login (Path A)
+ *
+ * Pass the sessionToken from the client payload when calling from google.script.run.
  */
-export function authenticateRequest(): ServiceResult<UserRecord> {
+export function authenticateRequest(sessionToken?: string): ServiceResult<UserRecord> {
+  // 1. Try GAS native session (works with USER_ACCESSING)
   const sessionResult = getCurrentUser();
-  if (sessionResult.status !== ResultStatus.SUCCESS || !sessionResult.data) {
-    return { status: ResultStatus.ERROR, message: sessionResult.message };
+  if (sessionResult.status === ResultStatus.SUCCESS && sessionResult.data?.email) {
+    return resolveUser(sessionResult.data.email);
   }
-  return resolveUser(sessionResult.data.email);
+
+  // 2. Fall back to session token from client (USER_DEPLOYING + GIS)
+  if (sessionToken) {
+    return authenticateBySession(sessionToken);
+  }
+
+  return { status: ResultStatus.ERROR, message: sessionResult.message };
+}
+
+/**
+ * Authenticates using a session token created after GIS login.
+ * Looks up the token in CacheService and resolves the stored email.
+ */
+export function authenticateBySession(sessionToken: string): ServiceResult<UserRecord> {
+  const session = lookupSession(sessionToken);
+  if (!session) {
+    return {
+      status:  ResultStatus.ERROR,
+      message: 'Session expired or invalid. Please sign in again.',
+    };
+  }
+  return resolveUser(session.email);
 }
 
 /**

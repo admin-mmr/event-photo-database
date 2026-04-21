@@ -13,6 +13,7 @@ import {
   scanLayer1Violations,
   scanLayer2Violations,
   scanAllViolations,
+  getEventDriveTree,
 } from '../../src/services/driveService';
 import {
   mockFolder,
@@ -687,6 +688,269 @@ describe('driveService', () => {
       expect(result.status).toBe(ResultStatus.SUCCESS);
       expect(result.data).toHaveLength(0);
       expect(result.message).toContain('0 total violation');
+    });
+  });
+
+  // ── getEventDriveTree ─────────────────────────────────────────────────────
+
+  describe('getEventDriveTree()', () => {
+    /**
+     * Builds a minimal mock Drive file with just getMimeType().
+     */
+    function makeMockFile(mimeType: string) {
+      return { getMimeType: jest.fn().mockReturnValue(mimeType) };
+    }
+
+    /**
+     * Creates a synchronous iterator over an array (mirrors the GAS pattern).
+     */
+    function makeIterator<T>(items: T[]) {
+      let i = 0;
+      return {
+        hasNext: jest.fn().mockImplementation(() => i < items.length),
+        next:    jest.fn().mockImplementation(() => items[i++]),
+      };
+    }
+
+    /**
+     * Builds a mock batch folder (Layer 3) containing a given set of files.
+     */
+    function makeBatchFolder(id: string, name: string, files: ReturnType<typeof makeMockFile>[]) {
+      const f = makeMockFolder(name, id);
+      f.getFiles.mockReturnValue(makeIterator(files));
+      f.getFolders.mockReturnValue(makeIterator([])); // batch folders have no sub-folders
+      return f;
+    }
+
+    /**
+     * Builds a mock club folder (Layer 2) containing a given set of batch folders.
+     */
+    function makeClubFolder(
+      id: string,
+      name: string,
+      batches: ReturnType<typeof makeMockFolder>[]
+    ) {
+      const f = makeMockFolder(name, id);
+      f.getFolders.mockReturnValue(makeIterator(batches));
+      f.getFiles.mockReturnValue(makeIterator([]));
+      return f;
+    }
+
+    /**
+     * Builds a mock event folder (Layer 1) containing a given set of club folders.
+     */
+    function makeEventFolder(clubs: ReturnType<typeof makeMockFolder>[]) {
+      const f = makeMockFolder('2026-04-19_Test_Event', 'event-folder-id');
+      f.getFolders.mockReturnValue(makeIterator(clubs));
+      f.getFiles.mockReturnValue(makeIterator([]));
+      return f;
+    }
+
+    it('returns SUCCESS with empty clubs and zero totalFiles for an empty event folder', () => {
+      const eventFolder = makeEventFolder([]);
+      mockDriveApp.getFolderById.mockReturnValue(eventFolder);
+
+      const result = getEventDriveTree('evt-001', 'event-folder-id');
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.eventId).toBe('evt-001');
+      expect(result.data!.clubs).toHaveLength(0);
+      expect(result.data!.totalFiles).toBe(0);
+    });
+
+    it('returns ERROR when the event folder cannot be accessed', () => {
+      mockDriveApp.getFolderById.mockImplementationOnce(() => {
+        throw new Error('Drive access denied');
+      });
+
+      const result = getEventDriveTree('evt-001', 'bad-folder-id');
+
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.message).toContain('bad-folder-id');
+    });
+
+    it('counts JPEG, PNG, and HEIC files correctly in one batch', () => {
+      const batch = makeBatchFolder('batch-id', '20260419-100000_alice', [
+        makeMockFile('image/jpeg'),
+        makeMockFile('image/png'),
+        makeMockFile('image/heic'),
+      ]);
+      const club = makeClubFolder('club-id', 'New_Bee', [batch]);
+      mockDriveApp.getFolderById.mockReturnValue(makeEventFolder([club]));
+
+      const result = getEventDriveTree('evt-001', 'event-folder-id');
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.clubs[0].batches[0].fileCount).toBe(3);
+      expect(result.data!.totalFiles).toBe(3);
+    });
+
+    it('excludes non-photo files (PDF, MP4, etc.) from the count', () => {
+      const batch = makeBatchFolder('batch-id', '20260419-090000_bob', [
+        makeMockFile('image/jpeg'),
+        makeMockFile('application/pdf'),    // must be excluded
+        makeMockFile('video/mp4'),           // must be excluded
+        makeMockFile('image/png'),
+      ]);
+      const club = makeClubFolder('club-id', 'CHI', [batch]);
+      mockDriveApp.getFolderById.mockReturnValue(makeEventFolder([club]));
+
+      const result = getEventDriveTree('evt-001', 'event-folder-id');
+
+      expect(result.data!.clubs[0].batches[0].fileCount).toBe(2); // JPEG + PNG only
+      expect(result.data!.totalFiles).toBe(2);
+    });
+
+    it('aggregates totalFiles correctly across multiple clubs and batches', () => {
+      const batch1a = makeBatchFolder('b1a', '20260419-090000_alice', [
+        makeMockFile('image/jpeg'),
+        makeMockFile('image/jpeg'),
+      ]);
+      const batch1b = makeBatchFolder('b1b', '20260419-110000_alice', [
+        makeMockFile('image/heic'),
+      ]);
+      const batch2a = makeBatchFolder('b2a', '20260419-100000_bob', [
+        makeMockFile('image/png'),
+        makeMockFile('image/png'),
+        makeMockFile('image/png'),
+      ]);
+      const clubA = makeClubFolder('club-a', 'New_Bee', [batch1a, batch1b]);
+      const clubB = makeClubFolder('club-b', 'CHI',     [batch2a]);
+      mockDriveApp.getFolderById.mockReturnValue(makeEventFolder([clubA, clubB]));
+
+      const result = getEventDriveTree('evt-001', 'event-folder-id');
+
+      const newBee = result.data!.clubs.find((c) => c.name === 'New_Bee')!;
+      const chi    = result.data!.clubs.find((c) => c.name === 'CHI')!;
+      expect(newBee.totalFiles).toBe(3);   // 2 + 1
+      expect(chi.totalFiles).toBe(3);      // 3
+      expect(result.data!.totalFiles).toBe(6);
+    });
+
+    it('sorts clubs alphabetically by name', () => {
+      const zClub  = makeClubFolder('z-id', 'Zebra_Club', []);
+      const aClub  = makeClubFolder('a-id', 'Alpha_Club', []);
+      const mClub  = makeClubFolder('m-id', 'Mid_Club',   []);
+      // Drive returns them in arbitrary order
+      mockDriveApp.getFolderById.mockReturnValue(makeEventFolder([zClub, aClub, mClub]));
+
+      const result = getEventDriveTree('evt-001', 'event-folder-id');
+
+      const names = result.data!.clubs.map((c) => c.name);
+      expect(names).toEqual(['Alpha_Club', 'Mid_Club', 'Zebra_Club']);
+    });
+
+    it('sorts batches within a club newest-first (by name descending)', () => {
+      const older  = makeBatchFolder('b-old', '20260410-080000_alice', []);
+      const newer  = makeBatchFolder('b-new', '20260419-120000_alice', []);
+      const middle = makeBatchFolder('b-mid', '20260415-090000_alice', []);
+      const club   = makeClubFolder('club-id', 'New_Bee', [older, newer, middle]);
+      mockDriveApp.getFolderById.mockReturnValue(makeEventFolder([club]));
+
+      const result = getEventDriveTree('evt-001', 'event-folder-id');
+
+      const batchNames = result.data!.clubs[0].batches.map((b) => b.name);
+      expect(batchNames).toEqual([
+        '20260419-120000_alice',  // newest first
+        '20260415-090000_alice',
+        '20260410-080000_alice',
+      ]);
+    });
+
+    it('handles a club with no batch folders (empty batches array)', () => {
+      const club = makeClubFolder('club-id', 'Empty_Club', []);
+      mockDriveApp.getFolderById.mockReturnValue(makeEventFolder([club]));
+
+      const result = getEventDriveTree('evt-001', 'event-folder-id');
+
+      expect(result.data!.clubs[0].batches).toHaveLength(0);
+      expect(result.data!.clubs[0].totalFiles).toBe(0);
+    });
+
+    it('handles a batch folder with no files (fileCount = 0)', () => {
+      const emptyBatch = makeBatchFolder('b-empty', '20260419-080000_alice', []);
+      const club = makeClubFolder('club-id', 'New_Bee', [emptyBatch]);
+      mockDriveApp.getFolderById.mockReturnValue(makeEventFolder([club]));
+
+      const result = getEventDriveTree('evt-001', 'event-folder-id');
+
+      expect(result.data!.clubs[0].batches[0].fileCount).toBe(0);
+      expect(result.data!.clubs[0].totalFiles).toBe(0);
+    });
+
+    it('records the correct folder ID and name for each node', () => {
+      const batch = makeBatchFolder('batch-xyz', '20260419-093000_carol', [
+        makeMockFile('image/jpeg'),
+      ]);
+      const club = makeClubFolder('club-abc', 'Nankai', [batch]);
+      mockDriveApp.getFolderById.mockReturnValue(makeEventFolder([club]));
+
+      const result = getEventDriveTree('evt-uuid-99', 'event-folder-id');
+
+      expect(result.data!.eventId).toBe('evt-uuid-99');
+      expect(result.data!.clubs[0].id).toBe('club-abc');
+      expect(result.data!.clubs[0].name).toBe('Nankai');
+      expect(result.data!.clubs[0].batches[0].id).toBe('batch-xyz');
+      expect(result.data!.clubs[0].batches[0].name).toBe('20260419-093000_carol');
+    });
+
+    it('returns ERROR when the club folder walk throws', () => {
+      const brokenEventFolder = makeMockFolder('2026-04-19_Test_Event', 'event-folder-id');
+      brokenEventFolder.getFolders.mockImplementationOnce(() => {
+        throw new Error('Permission denied');
+      });
+      mockDriveApp.getFolderById.mockReturnValue(brokenEventFolder);
+
+      const result = getEventDriveTree('evt-001', 'event-folder-id');
+
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.message).toContain('Error walking event folder');
+    });
+
+    it('handles multiple batches with mixed photo and non-photo files', () => {
+      const batch1 = makeBatchFolder('b1', '20260419-090000_alice', [
+        makeMockFile('image/jpeg'),
+        makeMockFile('image/gif'),  // not counted
+      ]);
+      const batch2 = makeBatchFolder('b2', '20260419-100000_alice', [
+        makeMockFile('image/heic'),
+        makeMockFile('image/heic'),
+        makeMockFile('text/plain'), // not counted
+      ]);
+      const club = makeClubFolder('club-id', 'New_Bee', [batch1, batch2]);
+      mockDriveApp.getFolderById.mockReturnValue(makeEventFolder([club]));
+
+      const result = getEventDriveTree('evt-001', 'event-folder-id');
+
+      const batches = result.data!.clubs[0].batches;
+      // Sorted newest-first: batch2 before batch1
+      expect(batches[0].name).toBe('20260419-100000_alice');
+      expect(batches[0].fileCount).toBe(2); // 2 HEICs
+      expect(batches[1].name).toBe('20260419-090000_alice');
+      expect(batches[1].fileCount).toBe(1); // 1 JPEG (GIF excluded)
+      expect(result.data!.clubs[0].totalFiles).toBe(3);
+    });
+
+    it('passes driveFolderId through to data.driveFolderId', () => {
+      mockDriveApp.getFolderById.mockReturnValue(makeEventFolder([]));
+
+      const result = getEventDriveTree('evt-abc', 'drive-folder-xyz');
+
+      expect(result.data!.driveFolderId).toBe('drive-folder-xyz');
+    });
+
+    it('returns SUCCESS message containing club and photo counts', () => {
+      const batch = makeBatchFolder('b-id', '20260419-090000_alice', [
+        makeMockFile('image/jpeg'),
+        makeMockFile('image/jpeg'),
+      ]);
+      const club = makeClubFolder('c-id', 'New_Bee', [batch]);
+      mockDriveApp.getFolderById.mockReturnValue(makeEventFolder([club]));
+
+      const result = getEventDriveTree('evt-001', 'event-folder-id');
+
+      expect(result.message).toContain('1 club');
+      expect(result.message).toContain('2 photo');
     });
   });
 });

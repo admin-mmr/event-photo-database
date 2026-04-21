@@ -47,6 +47,27 @@
    * @param {Element}  [spinner]     Spinner element to show during the call
    * @returns {Promise<*>}
    */
+  // ── Session token ──────────────────────────────────────────────────────────
+  // Stored after GIS login; injected into every server call and navigation link.
+
+  function getSessionToken() {
+    return sessionStorage.getItem('gasSessionToken') || (window.SESSION_TOKEN || '');
+  }
+
+  function setSessionToken(token) {
+    sessionStorage.setItem('gasSessionToken', token);
+    window.SESSION_TOKEN = token;
+  }
+
+  // On page load, seed from server-injected window.SESSION_TOKEN (if present).
+  // The server passes sessionToken via renderTemplate, and each page template
+  // writes it into window.SESSION_TOKEN before including app.html.
+  document.addEventListener('DOMContentLoaded', function () {
+    if (window.SESSION_TOKEN && !sessionStorage.getItem('gasSessionToken')) {
+      sessionStorage.setItem('gasSessionToken', window.SESSION_TOKEN);
+    }
+  });
+
   function callServer(functionName, args, btn, spinner) {
     return new Promise(function (resolve, reject) {
       if (btn) {
@@ -54,6 +75,12 @@
         btn.setAttribute('aria-busy', 'true');
       }
       if (spinner) spinner.classList.remove('hidden');
+
+      // Auto-inject sessionToken into every payload
+      var payload = (args && typeof args === 'object') ? args : { _args: args };
+      if (!payload.sessionToken) {
+        payload.sessionToken = getSessionToken();
+      }
 
       google.script.run
         .withSuccessHandler(function (result) {
@@ -72,7 +99,7 @@
           if (spinner) spinner.classList.add('hidden');
           reject(err);
         })
-        [functionName](args);
+        [functionName](payload);
     });
   }
 
@@ -107,10 +134,12 @@
   /**
    * Navigates the outer (script.google.com) frame to a route action.
    *
-   * window.APP_URL is injected server-side by ScriptApp.getService().getUrl()
+   * window.APP_URL is injected server-side by getCanonicalScriptUrl()
    * via renderTemplate() in pageRoutes.ts, and output into each template as
    *   window.APP_URL = '<deployment url>';
-   * just before this file is included.
+   * just before this file is included. Canonical form is used so the URL is
+   * identical for Workspace and external Google accounts (required for the
+   * OAuth redirect_uri to match across sign-in + token-exchange phases).
    *
    * We navigate window.top (not window) because the GAS web app renders inside
    * an iframe on googleusercontent.com; only the outer script.google.com frame
@@ -118,7 +147,10 @@
    */
   function navigate(action) {
     var base = (window.APP_URL || window.location.href).split('?')[0];
-    window.top.location.href = base + '?action=' + action;
+    var token = getSessionToken();
+    var url = base + '?action=' + action;
+    if (token) url += '&session=' + encodeURIComponent(token);
+    window.top.location.href = url;
   }
 
   // Intercept all href="?action=..." links so they go through navigate()
@@ -188,17 +220,29 @@
 
       parent.replaceChild(prompt, triggerBtn);
 
-      prompt.querySelector('button:first-of-type').addEventListener('click', function () {
+      // Restore helper — called by Yes, Cancel, or click-outside
+      function dismiss(confirmed) {
+        document.removeEventListener('mousedown', onOutsideClick, true);
         parent.innerHTML = saved;
-        // Re-upgrade MDL on restored elements
         if (window.componentHandler) componentHandler.upgradeDom();
-        resolve(true);
+        resolve(confirmed);
+      }
+
+      // Click-outside: resolve false and restore the original button
+      function onOutsideClick(e) {
+        if (!prompt.contains(e.target)) dismiss(false);
+      }
+      // Delay one tick so the triggering click itself doesn't fire it
+      setTimeout(function () {
+        document.addEventListener('mousedown', onOutsideClick, true);
+      }, 0);
+
+      prompt.querySelector('button:first-of-type').addEventListener('click', function () {
+        dismiss(true);
       });
 
       prompt.querySelector('button:last-of-type').addEventListener('click', function () {
-        parent.innerHTML = saved;
-        if (window.componentHandler) componentHandler.upgradeDom();
-        resolve(false);
+        dismiss(false);
       });
     });
   }

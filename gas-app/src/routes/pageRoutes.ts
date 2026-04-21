@@ -5,8 +5,11 @@ import { listAll } from '../services/userService';
 import { listAll as listAllEvents } from '../services/eventService';
 import { listAll as listAllClubs, listActive as listActiveClubs } from '../services/clubService';
 import { generateSummary } from '../services/summaryService';
+import { listAllAlbums } from '../services/photosService';
+import { getCanonicalScriptUrl } from '../utils/scriptUrl';
+import { BUILD_TIME } from '../buildInfo';
 
-/* global HtmlService */
+/* global HtmlService, Session, PropertiesService */
 
 /**
  * PageRoutes — handlers that return HtmlOutput for doGet routes.
@@ -27,12 +30,17 @@ function renderTemplate(
   templateName: string,
   data: Record<string, unknown>
 ): GoogleAppsScript.HTML.HtmlOutput {
-  /* global ScriptApp */
   const template = HtmlService.createTemplateFromFile(`ui/templates/${templateName}`);
   // Inject the deployment URL so client-side navigate() can route correctly.
   // window.top navigation requires the real script.google.com URL, not the
   // googleusercontent.com iframe URL that window.location gives.
-  Object.assign(template, { scriptUrl: ScriptApp.getService().getUrl(), ...data });
+  //
+  // Use the canonical (non-Workspace) form so that the OAuth redirect_uri is
+  // identical for every user regardless of account type — otherwise Workspace
+  // users and external Gmail users send different redirect_uris to Google and
+  // we'd need both registered on the OAuth client (and they'd mismatch during
+  // code→token exchange whenever account context changed between phases).
+  Object.assign(template, { scriptUrl: getCanonicalScriptUrl(), ...data });
   return template
     .evaluate()
     .setTitle('湘舍动公益文件系统')
@@ -50,7 +58,11 @@ function renderTemplate(
  * Login / welcome page shown to unauthenticated users.
  */
 export function loginPage(errorMessage = '', detectedEmail = ''): GoogleAppsScript.HTML.HtmlOutput {
-  return renderTemplate('login', { errorMessage, detectedEmail });
+  let effectiveEmail = '';
+  let clientId = '';
+  try { effectiveEmail = Session.getEffectiveUser().getEmail(); } catch { effectiveEmail = 'error'; }
+  try { clientId = PropertiesService.getScriptProperties().getProperty('GOOGLE_CLIENT_ID') ?? ''; } catch { clientId = ''; }
+  return renderTemplate('login', { errorMessage, detectedEmail, effectiveEmail, buildTime: BUILD_TIME, clientId });
 }
 
 /**
@@ -79,9 +91,9 @@ export function errorPage(message: string): GoogleAppsScript.HTML.HtmlOutput {
  * Shows a role-appropriate summary: admin sees management links,
  * regular users see their club and the upload interface.
  */
-export function dashboardPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
+export function dashboardPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
   const isAdmin = user.role === UserRole.ADMIN;
-  return renderTemplate('dashboard', {
+  return renderTemplate('dashboard', { sessionToken,
     userEmail: user.email,
     userRole: user.role,
     runningClub: user.runningClub,
@@ -94,7 +106,7 @@ export function dashboardPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutpu
  * Lists all users with add/edit/deactivate controls.
  * Admin-only; role is enforced at the router level before this is called.
  */
-export function adminUsersPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
+export function adminUsersPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
   const result = listAll(1, 200); // Load first 200 users for initial render
   const activeClubs = listActiveClubs();
   const approvedClubs = activeClubs.map((c) => ({
@@ -103,7 +115,7 @@ export function adminUsersPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutp
   }));
   const roleOptions = Object.values(UserRole).filter((r) => r !== UserRole.API_CLIENT);
 
-  return renderTemplate('admin/users', {
+  return renderTemplate('admin/users', { sessionToken,
     userEmail: user.email,
     users: result.items,
     total: result.total,
@@ -118,10 +130,10 @@ export function adminUsersPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutp
  * Subsequent interactions (create, filter, paginate) use google.script.run.
  * Admin-only; role is enforced at the router level before this is called.
  */
-export function adminEventsPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
+export function adminEventsPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
   const events = listAllEvents(1, 20, 'desc');
 
-  return renderTemplate('admin/events', {
+  return renderTemplate('admin/events', { sessionToken,
     userEmail: user.email,
     userRole: user.role,
     isAdmin: user.role === UserRole.ADMIN,
@@ -140,7 +152,7 @@ export function adminEventsPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOut
  *
  * Available to all authenticated users (admins can upload too).
  */
-export function uploadPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
+export function uploadPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
   const events = listAllEvents(1, 200, 'desc');
   const activeClubs = listActiveClubs();
   const approvedClubs = activeClubs.map((c) => ({
@@ -148,7 +160,7 @@ export function uploadPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
     value: c.normalizedName,
   }));
 
-  return renderTemplate('upload', {
+  return renderTemplate('upload', { sessionToken,
     userEmail: user.email,
     userRole: user.role,
     runningClub: user.runningClub,
@@ -164,10 +176,10 @@ export function uploadPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
  * Clubs are loaded from the Clubs sheet, not the static constant.
  * Admin-only; role is enforced at the router level before this is called.
  */
-export function adminClubsPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
+export function adminClubsPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
   const result = listAllClubs(1, 100);
 
-  return renderTemplate('admin/clubs', {
+  return renderTemplate('admin/clubs', { sessionToken,
     userEmail: user.email,
     userRole: user.role,
     isAdmin: user.role === UserRole.ADMIN,
@@ -185,12 +197,12 @@ export function adminClubsPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutp
  *
  * Admin-only; role is enforced at the router level before this is called.
  */
-export function adminSummaryPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
+export function adminSummaryPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
   // Load initial summary with no date filter
   const summaryResult = generateSummary();
   const hasSummary = summaryResult.data !== undefined;
 
-  return renderTemplate('admin/summary', {
+  return renderTemplate('admin/summary', { sessionToken,
     userEmail: user.email,
     userRole: user.role,
     isAdmin: user.role === UserRole.ADMIN,
@@ -201,13 +213,55 @@ export function adminSummaryPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOu
 }
 
 /**
+ * Admin — Photos Overview page (Phase 6).
+ *
+ * Pre-loads all events and all Photo_Albums records so the page can render
+ * the full upload/album matrix immediately without additional round-trips.
+ * Admins can trigger a per-event sync or a full backfill from this page.
+ *
+ * Admin-only; role is enforced at the router level before this is called.
+ */
+export function adminPhotosPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
+  const events = listAllEvents(1, 200, 'desc');
+  const albums = listAllAlbums();
+
+  return renderTemplate('admin/photos', { sessionToken,
+    userEmail:    user.email,
+    userRole:     user.role,
+    isAdmin:      user.role === UserRole.ADMIN,
+    events:       JSON.stringify(events.items),
+    totalEvents:  events.total,
+    albums:       JSON.stringify(albums),
+  });
+}
+
+/**
+ * Drive File System Tree page (all authenticated users).
+ *
+ * Pre-loads the full event list so the page can render the event list
+ * immediately. The Drive hierarchy for each event (clubs → batches → file
+ * counts) is loaded on-demand via google.script.run when the user expands
+ * an event row — this avoids Drive API calls on every page load.
+ */
+export function driveTreePage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
+  const events = listAllEvents(1, 200, 'desc');
+
+  return renderTemplate('drive_tree', { sessionToken,
+    userEmail: user.email,
+    userRole:  user.role,
+    isAdmin:   user.role === UserRole.ADMIN,
+    events:    JSON.stringify(events.items),
+  });
+}
+
+/**
  * Admin — Audit Log page.
  * Pre-loads the 50 most recent audit entries for instant display.
  * Admin-only; role is enforced at the router level before this is called.
  */
-export function adminAuditPage(user: UserRecord): GoogleAppsScript.HTML.HtmlOutput {
+export function adminAuditPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
   const result = getAuditLogs({ page: 1, pageSize: 50 });
-  return renderTemplate('admin/audit', {
+  return renderTemplate('admin/audit', { sessionToken,
     userEmail: user.email,
     userRole:  user.role,
     isAdmin:   user.role === UserRole.ADMIN,

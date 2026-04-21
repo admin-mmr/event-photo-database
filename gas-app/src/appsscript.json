@@ -4,7 +4,7 @@
   "exceptionLogging": "STACKDRIVER",
   "runtimeVersion": "V8",
   "webapp": {
-    "executeAs": "USER_ACCESSING",
+    "executeAs": "USER_DEPLOYING",
     "access": "ANYONE"
   },
   "oauthScopes": [
@@ -13,7 +13,7 @@
     "https://www.googleapis.com/auth/script.external_request",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/script.scriptapp",
-    "https://www.googleapis.com/auth/photoslibrary",
-    "https://www.googleapis.com/auth/photoslibrary.sharing"
+    "https://www.googleapis.com/auth/photoslibrary.appendonly",
+    "https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata"
   ]
 }

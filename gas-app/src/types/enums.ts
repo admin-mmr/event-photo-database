@@ -85,6 +85,10 @@ export enum RouteAction {
   SYNC_ALBUM      = 'sync_album',       // Admin: sync all Drive photos for one event → albums
   BACKFILL_ALBUMS = 'backfill_albums',  // Admin: create + sync albums for all events
   GET_EVENT_ALBUMS = 'get_event_albums', // Any user: get album links for an event
+  ADMIN_PHOTOS    = 'admin_photos',     // Admin: photo upload overview + album management
+
+  // Drive file system tree (all authenticated users)
+  DRIVE_TREE = 'drive_tree',            // Visual hierarchy browser: Event → Club → Batch
 }
 
 /**
@@ -113,9 +117,10 @@ export enum AuditAction {
   EXCEPTION_EMAIL_SENT = 'EXCEPTION_EMAIL_SENT',
 
   // Phase 6 — Google Photos Albums
-  ALBUM_CREATED   = 'ALBUM_CREATED',   // A new Google Photos album was created
-  ALBUM_SYNCED    = 'ALBUM_SYNCED',    // Photos synced to album for one event
+  ALBUM_CREATED    = 'ALBUM_CREATED',    // A new Google Photos album was created
+  ALBUM_SYNCED     = 'ALBUM_SYNCED',     // Photos synced to album for one event
   ALBUM_BACKFILLED = 'ALBUM_BACKFILLED', // Full backfill of all event albums completed
+  ALBUM_ERROR      = 'ALBUM_ERROR',      // A Google Photos album operation failed
 }
 
 /**

@@ -1,0 +1,1182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Photos Overview — 湘舍动公益文件系统</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.indigo-pink.min.css">
+  <?!= HtmlService.createHtmlOutputFromFile('ui/css/styles').getContent() ?>
+  <style>
+    /* ── Album status chips ── */
+    .album-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 10px;
+      border-radius: 14px;
+      font-size: .78rem;
+      font-weight: 600;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .album-chip.exists {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+    .album-chip.missing {
+      background: #fce4ec;
+      color: #880e4f;
+    }
+    .album-chip .material-icons { font-size: 14px; }
+
+    /* ── Event rows ── */
+    .event-row {
+      background: #fff;
+      border-radius: 4px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.12);
+      margin-bottom: 12px;
+      overflow: hidden;
+    }
+    .event-row-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px;
+      cursor: pointer;
+      gap: 12px;
+    }
+    .event-row-header:hover { background: #f5f5f5; }
+    .event-row-header .event-name {
+      font-weight: 600;
+      font-size: .95rem;
+      flex: 1;
+    }
+    .event-row-header .event-date {
+      color: #777;
+      font-size: .82rem;
+      min-width: 90px;
+    }
+    .event-row-actions {
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .event-row-detail {
+      border-top: 1px solid #f0f0f0;
+      padding: 12px 16px 14px;
+      display: none;
+    }
+    .event-row-detail.open { display: block; }
+
+    /* ── Club album list inside detail ── */
+    .club-album-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .club-album-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: .85rem;
+      padding: 4px 0;
+    }
+    .club-album-item .club-label {
+      min-width: 120px;
+      color: #444;
+    }
+
+    /* ── Stat bar at top ── */
+    .stat-row {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    .stat-pill {
+      background: #fff;
+      border-radius: 24px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.12);
+      padding: 8px 18px;
+      font-size: .85rem;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .stat-pill strong { color: #3f51b5; }
+    .stat-pill .material-icons { font-size: 18px; color: #5c6bc0; }
+
+    /* ── Backfill section ── */
+    .backfill-card {
+      background: #e8eaf6;
+      border-radius: 4px;
+      padding: 14px 16px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .backfill-card p { margin: 0; font-size: .88rem; color: #3949ab; }
+
+    /* ── Empty state ── */
+    #no-events {
+      text-align: center;
+      color: #999;
+      padding: 48px 24px;
+    }
+
+    /* ── Persistent error banner ── */
+    #error-banner {
+      display: none;
+      background: #ffebee;
+      border: 1px solid #ef9a9a;
+      border-left: 4px solid #c62828;
+      border-radius: 4px;
+      padding: 12px 14px;
+      margin-bottom: 18px;
+      position: relative;
+    }
+    #error-banner.visible { display: block; }
+    #error-banner-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    #error-banner-header .material-icons {
+      color: #c62828;
+      font-size: 20px;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    #error-banner-title {
+      font-weight: 600;
+      color: #b71c1c;
+      font-size: .92rem;
+      flex: 1;
+    }
+    #error-banner-close {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #999;
+      padding: 0;
+      line-height: 1;
+    }
+    #error-banner-close:hover { color: #555; }
+    #error-banner-list {
+      margin: 8px 0 0 28px;
+      padding: 0;
+      list-style: disc;
+    }
+    #error-banner-list li {
+      font-size: .84rem;
+      color: #c62828;
+      margin-bottom: 4px;
+      word-break: break-word;
+    }
+
+    /* ── Reconciliation panel ── */
+    .reconcile-card {
+      background: #e0f2f1;
+      border-radius: 4px;
+      padding: 14px 16px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .reconcile-card p { margin: 0; font-size: .88rem; color: #00695c; }
+    #reconcile-results {
+      background: #fff;
+      border-radius: 4px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.12);
+      margin-bottom: 24px;
+      display: none;
+    }
+    #reconcile-results.visible { display: block; }
+    .reconcile-summary {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      padding: 16px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .reconcile-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .85rem;
+    }
+    .reconcile-table th {
+      background: #f5f5f5;
+      text-align: left;
+      padding: 8px 12px;
+      font-weight: 600;
+      font-size: .78rem;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      color: #555;
+    }
+    .reconcile-table td { padding: 8px 12px; border-bottom: 1px solid #f5f5f5; }
+    .reconcile-table tr:last-child td { border-bottom: none; }
+    .gap-cell { color: #c62828; font-weight: 600; }
+    .ok-cell  { color: #2e7d32; }
+    .status-ok   { color: #2e7d32; }
+    .status-gap  { color: #e65100; font-weight: 600; }
+    .status-none { color: #9e9e9e; }
+
+    /* ── Sync progress card ── */
+    #progress-card {
+      display: none;
+      background: #fff;
+      border-radius: 4px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.12);
+      padding: 16px 18px;
+      margin-bottom: 20px;
+      border-left: 4px solid #3f51b5;
+    }
+    #progress-card.visible { display: block; }
+    #progress-card.state-completed { border-left-color: #2e7d32; }
+    #progress-card.state-failed    { border-left-color: #c62828; }
+    #progress-card.state-cancelled { border-left-color: #ef6c00; }
+
+    .progress-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .progress-title {
+      font-weight: 600;
+      font-size: .95rem;
+      color: #3f51b5;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #progress-card.state-completed .progress-title { color: #2e7d32; }
+    #progress-card.state-failed    .progress-title { color: #c62828; }
+    #progress-card.state-cancelled .progress-title { color: #ef6c00; }
+    .progress-title .material-icons {
+      font-size: 20px;
+      animation: spin 1.4s linear infinite;
+    }
+    #progress-card:not(.state-running) .progress-title .material-icons {
+      animation: none;
+    }
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
+    }
+
+    .progress-step {
+      font-size: .85rem;
+      color: #555;
+      margin: 6px 0 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      word-break: break-word;
+    }
+    .progress-bar-wrap {
+      background: #eceff1;
+      height: 8px;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 12px;
+      position: relative;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #3f51b5, #5c6bc0);
+      width: 0%;
+      transition: width .3s ease;
+      border-radius: 4px;
+    }
+    .progress-bar-fill.indeterminate {
+      width: 35%;
+      animation: indeterm 1.6s ease-in-out infinite;
+    }
+    @keyframes indeterm {
+      0%   { margin-left: -35%; }
+      100% { margin-left: 100%; }
+    }
+    #progress-card.state-completed .progress-bar-fill { background: #2e7d32; }
+    #progress-card.state-failed    .progress-bar-fill { background: #c62828; }
+    #progress-card.state-cancelled .progress-bar-fill { background: #ef6c00; }
+
+    .progress-counters {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      font-size: .82rem;
+      color: #555;
+      margin-bottom: 4px;
+    }
+    .progress-counter strong {
+      color: #3f51b5;
+      font-size: .95rem;
+      margin-right: 3px;
+    }
+    .progress-counter.warn strong { color: #ef6c00; }
+    .progress-counter.ok   strong { color: #2e7d32; }
+
+    .progress-actions {
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .progress-elapsed {
+      font-size: .78rem;
+      color: #999;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      margin-right: 10px;
+    }
+    #progress-error-list {
+      margin: 10px 0 0 0;
+      padding: 8px 12px;
+      background: #fff3e0;
+      border-radius: 4px;
+      font-size: .78rem;
+      color: #6d4c41;
+      max-height: 120px;
+      overflow-y: auto;
+      list-style: disc inside;
+      display: none;
+    }
+    #progress-error-list.visible { display: block; }
+  </style>
+</head>
+<body>
+  <div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
+    <header class="mdl-layout__header">
+      <div class="mdl-layout__header-row">
+        <a href="?action=dashboard" class="mdl-layout-title"
+           style="color:inherit;text-decoration:none;">
+          湘舍动公益文件系统
+        </a>
+        <div class="mdl-layout-spacer"></div>
+        <div class="nav-panel">
+          <nav class="mdl-navigation">
+            <a class="mdl-navigation__link" href="?action=dashboard">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">home</i>
+              Home
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_users">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>
+              Users
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_events">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
+              Events
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_clubs">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>
+              Clubs
+            </a>
+            <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=admin_photos">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">photo_library</i>
+              Photos
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_audit">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">history</i>
+              Audit Log
+            </a>
+            <a class="mdl-navigation__link" href="?action=drive_tree">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">account_tree</i>
+              File System
+            </a>
+          </nav>
+          <span class="mdl-chip" style="margin-left:12px;">
+            <span class="mdl-chip__text"><?= userEmail ?></span>
+          </span>
+        </div>
+        <button class="nav-toggle" type="button"
+                aria-label="Toggle menu" aria-expanded="false">
+          <i class="material-icons">menu</i>
+        </button>
+      </div>
+    </header>
+
+    <main class="mdl-layout__content">
+      <div class="page-content">
+
+        <!-- Page header -->
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px;">
+          <h4 style="margin:0;font-size:20px;">
+            <i class="material-icons" style="vertical-align:middle;margin-right:8px;color:#3f51b5;">photo_library</i>
+            Photos Overview
+            <span id="event-count-badge" style="font-size:14px;font-weight:400;color:#777;margin-left:8px;">
+              (<?= totalEvents ?> events)
+            </span>
+          </h4>
+        </div>
+
+        <!-- Persistent error banner (shown when album operations fail) -->
+        <div id="error-banner" role="alert">
+          <div id="error-banner-header">
+            <i class="material-icons">error</i>
+            <span id="error-banner-title">Album operation error(s)</span>
+            <button id="error-banner-close" onclick="clearErrorBanner()"
+                    aria-label="Dismiss errors" title="Dismiss">
+              <i class="material-icons" style="font-size:18px;">close</i>
+            </button>
+          </div>
+          <ul id="error-banner-list"></ul>
+        </div>
+
+        <!-- Stats pills -->
+        <div class="stat-row" id="stat-row">
+          <!-- Populated by JS after data is parsed -->
+        </div>
+
+        <!-- Sync progress card (shown while a sync/backfill job is running or just finished) -->
+        <div id="progress-card" class="state-running" role="status" aria-live="polite">
+          <div class="progress-header">
+            <span class="progress-title" id="progress-title">
+              <i class="material-icons">sync</i>
+              <span id="progress-title-label">Starting…</span>
+            </span>
+            <div class="progress-actions">
+              <span class="progress-elapsed" id="progress-elapsed">0s</span>
+              <button id="progress-cancel-btn"
+                      class="mdl-button mdl-js-button"
+                      style="color:#c62828;"
+                      onclick="handleCancelSync()">
+                <i class="material-icons" style="vertical-align:middle;margin-right:4px;">cancel</i>
+                Cancel
+              </button>
+              <button id="progress-dismiss-btn"
+                      class="mdl-button mdl-js-button"
+                      style="display:none;"
+                      onclick="dismissProgress()">
+                <i class="material-icons" style="vertical-align:middle;margin-right:4px;">close</i>
+                Dismiss
+              </button>
+            </div>
+          </div>
+          <div class="progress-step" id="progress-step">Initializing…</div>
+          <div class="progress-bar-wrap">
+            <div class="progress-bar-fill indeterminate" id="progress-bar-fill"></div>
+          </div>
+          <div class="progress-counters" id="progress-counters">
+            <!-- Populated dynamically -->
+          </div>
+          <ul id="progress-error-list"></ul>
+        </div>
+
+        <!-- Backfill all albums -->
+        <div class="backfill-card">
+          <p>
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;">sync</i>
+            <strong>Backfill All Albums</strong> — creates and syncs Google Photos albums for every event.
+            Safe to run multiple times (idempotent).
+          </p>
+          <button id="btn-backfill"
+                  class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                  onclick="handleBackfillAll(this)">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">cloud_sync</i>
+            Backfill All
+          </button>
+        </div>
+
+        <!-- Reconciliation -->
+        <div class="reconcile-card">
+          <p>
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;">rule</i>
+            <strong>Reconcile Drive vs Photos</strong> — compares photos in Google Drive against
+            confirmed syncs in Photo_Files. Read-only; no uploads are triggered.
+          </p>
+          <button id="btn-reconcile"
+                  class="mdl-button mdl-js-button mdl-button--raised"
+                  style="background:#00897b;color:#fff;"
+                  onclick="handleReconcile(this)">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">rule</i>
+            Reconcile
+          </button>
+        </div>
+
+        <!-- Reconciliation results (hidden until run) -->
+        <div id="reconcile-results">
+          <div class="reconcile-summary" id="reconcile-summary"></div>
+          <table class="reconcile-table">
+            <thead>
+              <tr>
+                <th>Event</th>
+                <th>Date</th>
+                <th>Event Album</th>
+                <th style="text-align:right;">Drive</th>
+                <th style="text-align:right;">Synced</th>
+                <th style="text-align:right;">Gap</th>
+                <th>Status</th>
+                <th>Clubs</th>
+              </tr>
+            </thead>
+            <tbody id="reconcile-tbody"></tbody>
+          </table>
+        </div>
+
+        <!-- Event rows -->
+        <div id="events-list"></div>
+        <div id="no-events" style="display:none;">
+          <i class="material-icons" style="font-size:48px;color:#ddd;">photo_library</i>
+          <p>No events found. <a href="?action=admin_events">Create one first.</a></p>
+        </div>
+
+      </div>
+    </main>
+
+    <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
+  </div>
+
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.min.js"></script>
+  <script>
+    window.APP_URL = '<?= scriptUrl ?>';
+    window.SESSION_TOKEN = '<?= (typeof sessionToken !== "undefined" && sessionToken) ? sessionToken : "" ?>';
+  </script>
+  <?!= HtmlService.createHtmlOutputFromFile('ui/js/app').getContent() ?>
+
+  <script>
+    // ── Persistent error banner helpers ───────────────────────────────────────
+
+    /**
+     * Show a sticky error banner at the top of the page and a permanent toast.
+     * Each call appends a new bullet so multiple errors accumulate in one place.
+     * Long API error messages (e.g. 403 scope errors) are fully visible here.
+     */
+    function showErrorBanner(message) {
+      var banner = document.getElementById('error-banner');
+      var list   = document.getElementById('error-banner-list');
+      var li     = document.createElement('li');
+      li.textContent = message;
+      list.appendChild(li);
+      banner.classList.add('visible');
+      // Also show a brief toast pointing users to the banner
+      showToast('Error — see the error banner above for details.', 'error', 0);
+    }
+
+    function clearErrorBanner() {
+      var banner = document.getElementById('error-banner');
+      var list   = document.getElementById('error-banner-list');
+      banner.classList.remove('visible');
+      list.innerHTML = '';
+    }
+
+    // ── Data injected server-side ──────────────────────────────────────────────
+    var EVENTS  = JSON.parse('<?!= events ?>');
+    var ALBUMS  = JSON.parse('<?!= albums ?>');
+
+    // Build a lookup: eventId → { event: PhotosAlbumRecord, clubs: PhotosAlbumRecord[] }
+    var albumsByEvent = {};
+    ALBUMS.forEach(function(album) {
+      if (!albumsByEvent[album.eventId]) {
+        albumsByEvent[album.eventId] = { event: null, clubs: [] };
+      }
+      if (album.albumType === 'event') {
+        albumsByEvent[album.eventId].event = album;
+      } else if (album.albumType === 'club') {
+        albumsByEvent[album.eventId].clubs.push(album);
+      }
+    });
+
+    // ── Stats ──────────────────────────────────────────────────────────────────
+    (function renderStats() {
+      var totalAlbums   = ALBUMS.length;
+      var eventAlbums   = ALBUMS.filter(function(a) { return a.albumType === 'event'; }).length;
+      var clubAlbums    = ALBUMS.filter(function(a) { return a.albumType === 'club'; }).length;
+      var synced        = ALBUMS.filter(function(a) { return a.syncedFileCount > 0; }).length;
+      var totalPhotos   = ALBUMS.reduce(function(sum, a) { return sum + (a.syncedFileCount || 0); }, 0);
+      var missingCount  = EVENTS.filter(function(e) {
+        return !albumsByEvent[e.eventId] || !albumsByEvent[e.eventId].event;
+      }).length;
+
+      var statRow = document.getElementById('stat-row');
+      statRow.innerHTML = [
+        pill('photo_library', totalAlbums, 'Total Albums'),
+        pill('event',         eventAlbums,  'Event Albums'),
+        pill('groups',        clubAlbums,   'Club Albums'),
+        pill('image',         totalPhotos,  'Photos Synced'),
+        missingCount > 0
+          ? pillWarn('warning', missingCount, 'Missing Albums')
+          : pill('check_circle', EVENTS.length - missingCount, 'Events with Albums'),
+      ].join('');
+    })();
+
+    function pill(icon, val, label) {
+      return '<div class="stat-pill">' +
+        '<i class="material-icons">' + icon + '</i>' +
+        '<strong>' + val + '</strong> ' + label +
+        '</div>';
+    }
+    function pillWarn(icon, val, label) {
+      return '<div class="stat-pill" style="background:#fff3e0;">' +
+        '<i class="material-icons" style="color:#e65100;">' + icon + '</i>' +
+        '<strong style="color:#e65100;">' + val + '</strong> ' + label +
+        '</div>';
+    }
+
+    // ── Render event rows ──────────────────────────────────────────────────────
+    (function renderEvents() {
+      var list = document.getElementById('events-list');
+      if (!EVENTS || EVENTS.length === 0) {
+        document.getElementById('no-events').style.display = 'block';
+        return;
+      }
+
+      EVENTS.forEach(function(ev, idx) {
+        var albumData   = albumsByEvent[ev.eventId] || { event: null, clubs: [] };
+        var hasEvent    = !!albumData.event;
+        var clubAlbums  = albumData.clubs;
+        var totalSynced = (albumData.event ? albumData.event.syncedFileCount : 0) || 0;
+
+        var eventChip = hasEvent
+          ? chipLink('exists', 'check', 'Event Album', albumData.event.albumUrl || albumData.event.shareableUrl)
+          : chip('missing', 'error_outline', 'No Album');
+
+        var btnLabel = hasEvent ? 'Sync Albums' : 'Create Albums';
+        var btnIcon  = hasEvent ? 'sync' : 'add_photo_alternate';
+
+        var clubRows = '';
+        if (clubAlbums.length > 0) {
+          clubRows = '<div class="club-album-list">';
+          clubAlbums.forEach(function(ca) {
+            var url = ca.shareableUrl || ca.albumUrl;
+            clubRows +=
+              '<div class="club-album-item">' +
+              '  <span class="club-label">' + escHtml(ca.clubName.replace(/_/g, ' ')) + '</span>' +
+              '  ' + (url
+                ? '<a href="' + escHtml(url) + '" target="_blank" rel="noopener" class="album-chip exists">' +
+                  '  <i class="material-icons">photo_album</i>' +
+                  '  ' + (ca.syncedFileCount || 0) + ' photos' +
+                  '</a>'
+                : '<span class="album-chip missing"><i class="material-icons">error_outline</i>No URL</span>') +
+              '</div>';
+          });
+          clubRows += '</div>';
+        } else if (hasEvent) {
+          clubRows = '<p style="margin:8px 0 0;font-size:.84rem;color:#999;">' +
+            'No club albums yet — click <em>Sync Albums</em> to create them for all clubs that have uploads.' +
+            '</p>';
+        }
+
+        var lastSync = albumData.event && albumData.event.lastSyncAt
+          ? '<span style="color:#777;font-size:.8rem;">Last sync: ' + albumData.event.lastSyncAt.slice(0, 16).replace('T', ' ') + '</span>'
+          : '';
+
+        var row = document.createElement('div');
+        row.className = 'event-row';
+        row.id = 'event-row-' + ev.eventId;
+        row.innerHTML =
+          '<div class="event-row-header" onclick="toggleDetail(\'' + ev.eventId + '\')">' +
+          '  <i class="material-icons" style="color:#9e9e9e;font-size:20px;">expand_more</i>' +
+          '  <span class="event-date">' + escHtml(ev.eventDate) + '</span>' +
+          '  <span class="event-name">' + escHtml(ev.eventName) + '</span>' +
+          '  ' + eventChip +
+          '  <span style="color:#777;font-size:.8rem;min-width:60px;text-align:right;">' +
+               (totalSynced > 0 ? totalSynced + ' photos' : '') +
+          '  </span>' +
+          '  <div class="event-row-actions" onclick="event.stopPropagation()">' +
+          '    <button class="mdl-button mdl-js-button mdl-button--raised ' +
+                  (hasEvent ? '' : 'mdl-button--colored') + '" ' +
+                  'onclick="handleSyncEvent(\'' + ev.eventId + '\', this)">' +
+          '      <i class="material-icons" style="vertical-align:middle;margin-right:4px;">' + btnIcon + '</i>' +
+                  btnLabel +
+          '    </button>' +
+          '  </div>' +
+          '</div>' +
+          '<div class="event-row-detail" id="detail-' + ev.eventId + '">' +
+          '  <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">' +
+          '    <span style="font-size:.82rem;color:#555;font-family:monospace;">' + escHtml(ev.folderName || '') + '</span>' +
+          '    ' + lastSync +
+          '  </div>' +
+          (clubAlbums.length > 0 || hasEvent
+            ? '<h6 style="margin:0 0 6px;font-size:.82rem;text-transform:uppercase;letter-spacing:.5px;color:#888;">Club Albums</h6>' + clubRows
+            : '<p style="margin:0;font-size:.84rem;color:#999;">No albums yet — click <em>Create Albums</em> to get started.</p>') +
+          '</div>';
+
+        list.appendChild(row);
+      });
+    })();
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+    function chip(cls, icon, label) {
+      return '<span class="album-chip ' + cls + '">' +
+        '<i class="material-icons">' + icon + '</i>' + label + '</span>';
+    }
+    function chipLink(cls, icon, label, url) {
+      if (!url) return chip(cls, icon, label);
+      return '<a href="' + escHtml(url) + '" target="_blank" rel="noopener" class="album-chip ' + cls + '">' +
+        '<i class="material-icons">' + icon + '</i>' + label + '</a>';
+    }
+    function escHtml(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function toggleDetail(eventId) {
+      var detail = document.getElementById('detail-' + eventId);
+      if (!detail) return;
+      detail.classList.toggle('open');
+      // Flip arrow icon
+      var row = document.getElementById('event-row-' + eventId);
+      var icon = row.querySelector('.event-row-header > .material-icons');
+      if (icon) {
+        icon.textContent = detail.classList.contains('open') ? 'expand_less' : 'expand_more';
+      }
+    }
+
+    // ── Server actions ─────────────────────────────────────────────────────────
+
+    // Progress-tracking state. Only one sync can be tracked at a time in the UI;
+    // overlapping clicks are prevented by disabling the Sync/Backfill buttons
+    // while `currentJob` is set.
+    var currentJob = {
+      jobId:    null,   // non-null while a sync/backfill is in flight
+      pollId:   null,   // setInterval handle for serverGetSyncJob polls
+      elapsedId:null,   // setInterval handle for the "elapsed seconds" clock
+      startedAt:0,
+      buttonEl: null,   // button that originated the sync (to restore on finish)
+      buttonRestore: null, // {html, disabled} snapshot
+    };
+
+    /**
+     * Sync (or create) albums for a single event.
+     * Flow: create a SyncJob → fire serverSyncAlbum + start polling in parallel
+     *       → render live progress → on completion, restore button state.
+     */
+    function handleSyncEvent(eventId, btn) {
+      if (currentJob.jobId) {
+        showToast('Another sync is already running. Wait for it to finish or cancel it.', 'error');
+        return;
+      }
+      startSyncJob('sync-event', { eventId: eventId }, btn,
+        '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">hourglass_empty</i>Working…');
+    }
+
+    /**
+     * Generic sync-job launcher used by both "Sync Albums" and "Backfill All".
+     *
+     * jobType: 'sync-event' creates a per-event sync; 'backfill-all' processes
+     * every event. The worker endpoint is chosen accordingly.
+     */
+    function startSyncJob(jobType, payload, btn, workingHtml) {
+      btn.disabled = true;
+      var originalHtml = btn.innerHTML;
+      btn.innerHTML = workingHtml;
+
+      currentJob.buttonEl = btn;
+      currentJob.buttonRestore = { html: originalHtml, disabled: false };
+
+      // Step 1: create the job record so we have a jobId we can poll.
+      google.script.run
+        .withSuccessHandler(function(createResult) {
+          if (!createResult || createResult.status !== 'success' || !createResult.data) {
+            restoreButton();
+            showErrorBanner((createResult && createResult.message) || 'Failed to create sync job');
+            return;
+          }
+          var job = createResult.data;
+          currentJob.jobId     = job.jobId;
+          currentJob.startedAt = Date.now();
+
+          // Step 2: show progress card immediately so the admin sees feedback
+          // within ~1s of clicking — before the worker RPC has returned.
+          showProgressCard(job, jobType);
+
+          // Step 3: fire the worker RPC. It will run for up to ~30 minutes.
+          // Note we do NOT await it here — google.script.run is async and the
+          // poll loop below runs in parallel.
+          var workerPayload = Object.assign({}, payload, { jobId: job.jobId });
+          var runner = google.script.run
+            .withSuccessHandler(onWorkerDone)
+            .withFailureHandler(onWorkerFailed);
+          if (jobType === 'sync-event') {
+            runner.serverSyncAlbum(workerPayload);
+          } else {
+            runner.serverBackfillAlbums(workerPayload);
+          }
+
+          // Step 4: start polling every 3s. Google Apps Script caps
+          // google.script.run at 6 concurrent in-flight calls per client, so
+          // this 1-poll-every-3s pattern is well within limits.
+          currentJob.pollId = setInterval(pollJob, 3000);
+          // Also bump a lightweight clock every second for a live "elapsed" indicator.
+          currentJob.elapsedId = setInterval(renderElapsed, 1000);
+          renderElapsed();
+        })
+        .withFailureHandler(function(err) {
+          restoreButton();
+          showErrorBanner('Could not start sync: ' + String(err));
+        })
+        .serverCreateSyncJob({
+          jobType: jobType,
+          eventId: payload.eventId || '',
+        });
+    }
+
+    /**
+     * One poll tick: fetch latest job state and re-render progress.
+     * Completion is also detected here (the worker writes a terminal status),
+     * which acts as a backstop in case the worker RPC callback is delayed.
+     */
+    function pollJob() {
+      if (!currentJob.jobId) return;
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (!result || result.status !== 'success' || !result.data) return;
+          renderProgress(result.data);
+          if (isTerminal(result.data.status)) {
+            finishJob(result.data);
+          }
+        })
+        .withFailureHandler(function() {
+          // Swallow — transient failures are recoverable on the next tick.
+        })
+        .serverGetSyncJob({ jobId: currentJob.jobId });
+    }
+
+    function onWorkerDone(result) {
+      // The worker RPC returned. Do one final poll so we render the canonical
+      // terminal state the server wrote in completeJob(), rather than guessing
+      // from the RPC result shape.
+      pollJob();
+      if (result && result.status !== 'success') {
+        showErrorBanner((result && result.message) || 'Sync finished with errors.');
+      }
+    }
+
+    function onWorkerFailed(err) {
+      // RPC-level failure (timeout, quota). The server-side job record may or
+      // may not have been updated; try one more poll then surface the error.
+      pollJob();
+      showErrorBanner('Sync RPC failed: ' + String(err) +
+        ' — the job may still be running on the server; check the GAS execution log.');
+    }
+
+    /**
+     * Called when we detect the job has reached a terminal state
+     * (completed/failed/cancelled). Stops polling, restores the originating
+     * button, and leaves the progress card visible in a "finished" styling
+     * so the admin can read the summary and dismiss it.
+     */
+    function finishJob(job) {
+      stopTimers();
+      setCardState(job.status);
+      setElapsedFinal(job);
+      toggleCancelButton(false);
+      toggleDismissButton(true);
+      if (job.status === 'completed') {
+        showToast(job.finalMessage || 'Sync complete. Reload to see updated albums.', 'success', 6000);
+      } else if (job.status === 'cancelled') {
+        showToast('Sync cancelled. ' + (job.finalMessage || ''), 'info', 6000);
+      } else if (job.status === 'failed') {
+        showErrorBanner(job.finalMessage || 'Sync failed.');
+      }
+      restoreButton();
+      currentJob.jobId = null;
+    }
+
+    function stopTimers() {
+      if (currentJob.pollId)    { clearInterval(currentJob.pollId);    currentJob.pollId    = null; }
+      if (currentJob.elapsedId) { clearInterval(currentJob.elapsedId); currentJob.elapsedId = null; }
+    }
+
+    function restoreButton() {
+      if (currentJob.buttonEl && currentJob.buttonRestore) {
+        currentJob.buttonEl.disabled  = currentJob.buttonRestore.disabled;
+        currentJob.buttonEl.innerHTML = currentJob.buttonRestore.html;
+      }
+      currentJob.buttonEl = null;
+      currentJob.buttonRestore = null;
+    }
+
+    function isTerminal(status) {
+      return status === 'completed' || status === 'failed' || status === 'cancelled';
+    }
+
+    /**
+     * Called when admin clicks the Cancel button. The server sets a flag; the
+     * worker checks it between units of work and exits gracefully. This can
+     * take several seconds if the worker is mid-upload.
+     */
+    function handleCancelSync() {
+      if (!currentJob.jobId) return;
+      var btn = document.getElementById('progress-cancel-btn');
+      btn.disabled = true;
+      btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">hourglass_empty</i>Cancelling…';
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result && result.status === 'success') {
+            showToast('Cancel requested — the worker will stop shortly.', 'info', 4000);
+          } else {
+            showErrorBanner((result && result.message) || 'Cancel failed');
+            btn.disabled = false;
+            btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">cancel</i>Cancel';
+          }
+        })
+        .withFailureHandler(function(err) {
+          showErrorBanner('Cancel RPC failed: ' + String(err));
+          btn.disabled = false;
+          btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">cancel</i>Cancel';
+        })
+        .serverCancelSyncJob({ jobId: currentJob.jobId });
+    }
+
+    function dismissProgress() {
+      document.getElementById('progress-card').classList.remove('visible');
+      toggleCancelButton(true);  // restore default state for next run
+      toggleDismissButton(false);
+      document.getElementById('progress-error-list').classList.remove('visible');
+      document.getElementById('progress-error-list').innerHTML = '';
+      document.getElementById('progress-card').className = 'state-running';
+    }
+
+    // ── Progress rendering helpers ─────────────────────────────────────────────
+
+    function showProgressCard(job, jobType) {
+      var card = document.getElementById('progress-card');
+      card.className = 'state-running visible';
+
+      var label = jobType === 'backfill-all'
+        ? 'Backfilling all albums'
+        : 'Syncing event albums';
+      document.getElementById('progress-title-label').textContent = label + '…';
+
+      document.getElementById('progress-step').textContent = job.currentStep || 'Initializing…';
+      document.getElementById('progress-bar-fill').className = 'progress-bar-fill indeterminate';
+      document.getElementById('progress-counters').innerHTML = '';
+      document.getElementById('progress-error-list').classList.remove('visible');
+      document.getElementById('progress-error-list').innerHTML = '';
+
+      toggleCancelButton(true);
+      toggleDismissButton(false);
+      // Scroll so the admin can see the card even if they're below the fold.
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    /**
+     * Re-paints the progress card from a freshly-polled job record.
+     * Called on every 3s tick while the job is running and once more on
+     * termination.
+     */
+    function renderProgress(job) {
+      document.getElementById('progress-step').textContent = job.currentStep || '…';
+
+      // Progress bar:
+      //   - For backfill-all we know eventsTotal up front, so show a
+      //     deterministic bar based on eventsProcessed / eventsTotal.
+      //   - For per-event sync the total photo count isn't known ahead of
+      //     time (we'd have to walk Drive twice), so keep the indeterminate
+      //     striped animation until we reach terminal state.
+      var fill = document.getElementById('progress-bar-fill');
+      if (job.jobType === 'backfill-all' && job.eventsTotal > 0) {
+        var pct = Math.min(100, Math.round((job.eventsProcessed / job.eventsTotal) * 100));
+        fill.className = 'progress-bar-fill';
+        fill.style.width = pct + '%';
+      } else if (isTerminal(job.status)) {
+        fill.className = 'progress-bar-fill';
+        fill.style.width = '100%';
+      } else {
+        fill.className = 'progress-bar-fill indeterminate';
+        fill.style.width = '';
+      }
+
+      // Counters — only render non-zero values so the UI stays clean on fresh jobs.
+      var counters = [];
+      if (job.jobType === 'backfill-all' && job.eventsTotal > 0) {
+        counters.push(counter('Events', job.eventsProcessed + ' / ' + job.eventsTotal));
+      }
+      if (job.albumsCreated > 0)    counters.push(counter('Albums created', job.albumsCreated));
+      if (job.photosSynced > 0)     counters.push(counter('Photos uploaded', job.photosSynced, 'ok'));
+      if (job.photosDeduplicated > 0) counters.push(counter('Already synced', job.photosDeduplicated));
+      if (job.photosSkipped > 0)    counters.push(counter('Skipped (non-photo)', job.photosSkipped));
+      if (job.errors && job.errors.length > 0) counters.push(counter('Errors', job.errors.length, 'warn'));
+      document.getElementById('progress-counters').innerHTML = counters.join('');
+
+      // Error list — collapsed by default, reveals when errors accumulate.
+      if (job.errors && job.errors.length > 0) {
+        var list = document.getElementById('progress-error-list');
+        // Only render the last 20 to keep the card readable.
+        var recent = job.errors.slice(-20);
+        list.innerHTML = recent.map(function(e) {
+          return '<li>' + escHtml(e) + '</li>';
+        }).join('');
+        list.classList.add('visible');
+      }
+    }
+
+    function counter(label, value, cls) {
+      var klass = 'progress-counter' + (cls ? ' ' + cls : '');
+      return '<span class="' + klass + '"><strong>' + value + '</strong>' + label + '</span>';
+    }
+
+    function setCardState(status) {
+      var card = document.getElementById('progress-card');
+      card.className = 'visible state-' + status;
+      var title = document.getElementById('progress-title-label');
+      var icon  = document.querySelector('#progress-title .material-icons');
+      if (status === 'completed') { title.textContent = 'Sync complete';       icon.textContent = 'check_circle'; }
+      if (status === 'failed')    { title.textContent = 'Sync failed';         icon.textContent = 'error'; }
+      if (status === 'cancelled') { title.textContent = 'Sync cancelled';      icon.textContent = 'cancel'; }
+    }
+
+    function toggleCancelButton(visible) {
+      var btn = document.getElementById('progress-cancel-btn');
+      btn.style.display = visible ? '' : 'none';
+      btn.disabled = false;
+      btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">cancel</i>Cancel';
+    }
+    function toggleDismissButton(visible) {
+      document.getElementById('progress-dismiss-btn').style.display = visible ? '' : 'none';
+    }
+
+    function renderElapsed() {
+      if (!currentJob.startedAt) return;
+      var sec = Math.floor((Date.now() - currentJob.startedAt) / 1000);
+      document.getElementById('progress-elapsed').textContent = formatSeconds(sec);
+    }
+    function setElapsedFinal(job) {
+      // Freeze the elapsed clock at the total runtime the server recorded.
+      try {
+        var start = Date.parse(job.startedAt);
+        var end   = Date.parse(job.updatedAt);
+        if (!isNaN(start) && !isNaN(end) && end > start) {
+          document.getElementById('progress-elapsed').textContent =
+            formatSeconds(Math.floor((end - start) / 1000)) + ' (done)';
+        }
+      } catch (_) { /* ignore */ }
+    }
+    function formatSeconds(sec) {
+      if (sec < 60) return sec + 's';
+      var m = Math.floor(sec / 60);
+      var s = sec % 60;
+      return m + 'm ' + (s < 10 ? '0' : '') + s + 's';
+    }
+
+    /**
+     * Runs the read-only reconciliation audit and renders results in the table.
+     */
+    function handleReconcile(btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">hourglass_empty</i>Scanning…';
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">rule</i>Reconcile';
+
+          if (!result || result.status !== 'success' || !result.data) {
+            showErrorBanner((result && result.message) || 'Reconciliation failed');
+            return;
+          }
+
+          var data    = result.data;
+          var events  = data.events || [];
+
+          // Summary pills
+          var summaryEl = document.getElementById('reconcile-summary');
+          summaryEl.innerHTML = [
+            rPill('folder', data.totalDrive,   'Files in Drive'),
+            rPill('check_circle', data.totalSynced,  'Confirmed Synced'),
+            data.totalMissing > 0
+              ? rPillWarn('warning', data.totalMissing, 'Not Yet Synced')
+              : rPill('verified', 0, 'All Synced'),
+            data.eventsWithGaps > 0
+              ? rPillWarn('event_busy', data.eventsWithGaps, 'Events with Gaps')
+              : rPill('event_available', events.length, 'Events OK'),
+          ].join('');
+
+          // Table rows
+          var tbody = document.getElementById('reconcile-tbody');
+          tbody.innerHTML = '';
+          events.forEach(function(ev) {
+            var gap = ev.driveTotal - ev.eventSyncedCount;
+            var statusHtml =
+              !ev.hasEventAlbum
+                ? '<span class="status-none">No album</span>'
+                : gap > 0
+                  ? '<span class="status-gap">⚠ ' + gap + ' missing</span>'
+                  : '<span class="status-ok">✓ In sync</span>';
+
+            // Clubs tooltip text
+            var clubSummary = ev.clubs.map(function(c) {
+              return c.clubName.replace(/_/g, ' ') +
+                ': ' + c.syncedCount + '/' + c.driveCount;
+            }).join(' | ');
+
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+              '<td>' + escHtml(ev.eventName) + '</td>' +
+              '<td>' + escHtml(ev.eventDate) + '</td>' +
+              '<td>' + (ev.hasEventAlbum
+                ? '<span class="status-ok">✓ Exists</span>'
+                : '<span class="status-none">Missing</span>') + '</td>' +
+              '<td style="text-align:right;">' + ev.driveTotal + '</td>' +
+              '<td style="text-align:right;">' + ev.eventSyncedCount + '</td>' +
+              '<td style="text-align:right;">' +
+                (gap > 0
+                  ? '<span class="gap-cell">' + gap + '</span>'
+                  : '<span class="ok-cell">0</span>') +
+              '</td>' +
+              '<td>' + statusHtml + '</td>' +
+              '<td style="font-size:.78rem;color:#666;" title="' + escHtml(clubSummary) + '">' +
+                (ev.clubs.length > 0
+                  ? ev.clubs.length + ' club' + (ev.clubs.length > 1 ? 's' : '') +
+                    ' <i class="material-icons" style="font-size:13px;vertical-align:middle;color:#bbb;">info</i>'
+                  : '—') +
+              '</td>';
+            tbody.appendChild(tr);
+          });
+
+          document.getElementById('reconcile-results').classList.add('visible');
+          showToast(result.message, 'success');
+        })
+        .withFailureHandler(function(err) {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">rule</i>Reconcile';
+          showErrorBanner('Reconcile error: ' + String(err));
+        })
+        .serverReconcilePhotos({});
+    }
+
+    function rPill(icon, val, label) {
+      return '<div class="stat-pill">' +
+        '<i class="material-icons" style="font-size:16px;">' + icon + '</i>' +
+        '<strong>' + val + '</strong> ' + label + '</div>';
+    }
+    function rPillWarn(icon, val, label) {
+      return '<div class="stat-pill" style="background:#fff3e0;">' +
+        '<i class="material-icons" style="font-size:16px;color:#e65100;">' + icon + '</i>' +
+        '<strong style="color:#e65100;">' + val + '</strong> ' + label + '</div>';
+    }
+
+    /**
+     * Backfill all events — creates & syncs albums for the entire archive.
+     *
+     * Uses the same job-based progress flow as per-event sync: create a job,
+     * fire the worker, and poll every 3s to render live progress + a Cancel
+     * button. Backfills can run 10+ minutes on a full archive, so the progress
+     * card is essential here.
+     */
+    function handleBackfillAll(btn) {
+      if (currentJob.jobId) {
+        showToast('Another sync is already running. Wait for it to finish or cancel it.', 'error');
+        return;
+      }
+      if (!confirm('This will create and sync Google Photos albums for ALL events. This may take several minutes for large archives. Continue?')) return;
+
+      startSyncJob('backfill-all', {}, btn,
+        '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">hourglass_empty</i>Running…');
+    }
+  </script>
+</body>
+</html>

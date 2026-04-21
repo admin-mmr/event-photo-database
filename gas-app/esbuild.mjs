@@ -21,6 +21,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, 'dist');
 const SRC  = join(__dirname, 'src');
 
+// ── Inject build timestamp into src/buildInfo.ts before bundling ─────────────
+function writeBuildInfo() {
+  const now = new Date().toISOString(); // e.g. "2026-04-20T14:32:00.000Z"
+  const content = `// AUTO-GENERATED — do not edit. Rewritten on every \`npm run build\`.\nexport const BUILD_TIME = '${now}';\n`;
+  writeFileSync(join(SRC, 'buildInfo.ts'), content, 'utf-8');
+}
+
 // ── Copy non-TS assets (HTML templates, appsscript.json) to dist ────────────
 function copyAssets() {
   execSync(`rm -rf "${DIST}" && mkdir -p "${DIST}"`);
@@ -65,6 +72,7 @@ const buildOptions = {
 const isWatch = process.argv.includes('--watch');
 
 if (isWatch) {
+  writeBuildInfo();
   copyAssets();
   const ctx = await esbuild.context({
     ...buildOptions,
@@ -78,6 +86,7 @@ if (isWatch) {
   await ctx.watch();
   console.log('Watching for changes…');
 } else {
+  writeBuildInfo();
   copyAssets();
   await esbuild.build(buildOptions);
   unwrapIIFE(outfile);

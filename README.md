@@ -68,14 +68,11 @@ All three layers are validated by the system. Naming violations are detected aut
 
 | Document | Description |
 |----------|-------------|
-| [`gas-app/SETUP.md`](gas-app/SETUP.md) | Step-by-step deployment guide |
-| [`Runners_UserManual_v2.1.docx`](Runners_UserManual_v2.1.docx) | English user manual (Word) |
-| [`UserManual_v2.1.md`](UserManual_v2.1.md) | English user manual (Markdown) |
-| [`湘舍动_用户手册_v2.1.docx`](湘舍动_用户手册_v2.1.docx) | Chinese user manual (Word) |
-| [`用户手册_v2.1.md`](用户手册_v2.1.md) | Chinese user manual (Markdown) |
-| [`Features_and_Roadmap.md`](Features_and_Roadmap.md) | Implemented features + future wishlist (English) |
-| [`功能清单与发展路线.md`](功能清单与发展路线.md) | Implemented features + future wishlist (Chinese) |
-| [`project_plan.md`](project_plan.md) | Technical system design and phase breakdown |
+| [`USER_GUIDE.md`](USER_GUIDE.md) | Complete system guide: all features, workflows, troubleshooting (English) |
+| [`USER_GUIDE.docx`](USER_GUIDE.docx) | Complete system guide (English, Word format) |
+| [`使用指南.md`](使用指南.md) | 完整系统指南：所有功能、工作流程、故障排除 (中文) |
+| [`使用指南.docx`](使用指南.docx) | 完整系统指南 (中文, Word格式) |
+| [`gas-app/SETUP.md`](gas-app/SETUP.md) | Step-by-step deployment and development setup |
 
 ## Local Development
 

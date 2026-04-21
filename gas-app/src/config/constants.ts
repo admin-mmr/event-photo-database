@@ -91,7 +91,7 @@ export const COLUMNS: SheetColumnMap = {
     RESOURCE_ID:   5,
     DETAILS:       6,
   },
-  PHOTOS_ALBUMS: {
+  PHOTO_ALBUMS: {
     ALBUM_ID:          0,
     ALBUM_TYPE:        1,
     EVENT_ID:          2,
@@ -102,6 +102,16 @@ export const COLUMNS: SheetColumnMap = {
     CREATED_AT:        7,
     LAST_SYNC_AT:      8,
     SYNCED_FILE_COUNT: 9,
+  },
+  PHOTO_FILES: {
+    DRIVE_FILE_ID: 0,
+    MEDIA_ITEM_ID: 1,
+    ALBUM_ID:      2,
+    ALBUM_TYPE:    3,
+    EVENT_ID:      4,
+    CLUB_NAME:     5,
+    FILE_NAME:     6,
+    SYNCED_AT:     7,
   },
 };
 
@@ -148,7 +158,8 @@ export function getConfig(): AppConfig {
       RATE_LIMIT: 'Rate_Limit',
       CLUBS: 'Clubs',
       AUDIT_LOG: 'Audit_Log',
-      PHOTOS_ALBUMS: 'Photos_Albums',
+      PHOTO_ALBUMS: 'Photo_Albums',
+      PHOTO_FILES:  'Photo_Files',
     },
     PHOTO_MIME_TYPES: [PhotoMimeType.JPEG, PhotoMimeType.PNG, PhotoMimeType.HEIC],
     MAX_FILE_SIZE_MB: 50,   // GAS hard limit per UrlFetch payload

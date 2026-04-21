@@ -1,5 +1,5 @@
 import { UserRole, UserStatus, UploadSource, AuditAction } from '../types/enums';
-import { UserRecord, EventRecord, UploadLogRecord, ClubRecord, AuditLogRecord, PhotosAlbumRecord } from '../types/models';
+import { UserRecord, EventRecord, UploadLogRecord, ClubRecord, AuditLogRecord, PhotosAlbumRecord, PhotosFileRecord } from '../types/models';
 import { COLUMNS } from '../config/constants';
 
 /**
@@ -14,6 +14,26 @@ import { COLUMNS } from '../config/constants';
  *   - Return null for rows that fail validation — callers filter these out
  *   - fromRecord() produces a row array in the same column order as COLUMNS
  */
+
+// ─── Shared helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Normalises a Sheets cell that may be a Date object or a plain string.
+ *
+ * Google Sheets stores DATE-typed cells internally as Date objects in GAS.
+ * Calling String() on a Date gives the full locale timestamp like
+ * "Thu Apr 09 2026 00:00:00 GMT-0400 (Eastern Daylight Time)".
+ * This helper converts those to the compact "YYYY-MM-DD" format instead.
+ */
+function formatSheetDate(value: unknown): string {
+  if (value instanceof Date) {
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, '0');
+    const d = String(value.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  return String(value ?? '').trim();
+}
 
 // ─── Users ────────────────────────────────────────────────────────────────────
 
@@ -38,7 +58,7 @@ export function toUserRecord(row: unknown[]): UserRecord | null {
     runningClub: String(row[COL.RUNNING_CLUB] ?? '').trim(),
     role: role as UserRole,
     status: status as UserStatus,
-    addedDate: String(row[COL.ADDED_DATE] ?? '').trim(),
+    addedDate: formatSheetDate(row[COL.ADDED_DATE]),
     addedBy: String(row[COL.ADDED_BY] ?? '').trim().toLowerCase(),
   };
 }
@@ -77,7 +97,7 @@ export function toEventRecord(row: unknown[]): EventRecord | null {
   return {
     eventId,
     eventName,
-    eventDate: String(row[COL.EVENT_DATE] ?? '').trim(),
+    eventDate: formatSheetDate(row[COL.EVENT_DATE]),
     folderName: String(row[COL.FOLDER_NAME] ?? '').trim(),
     driveFolderId,
     createdBy: String(row[COL.CREATED_BY] ?? '').trim().toLowerCase(),
@@ -188,7 +208,7 @@ export function toClubRecord(row: unknown[]): ClubRecord | null {
     displayName,
     normalizedName,
     status: status as 'active' | 'inactive',
-    addedDate: String(row[COL.ADDED_DATE] ?? '').trim(),
+    addedDate: formatSheetDate(row[COL.ADDED_DATE]),
     addedBy: String(row[COL.ADDED_BY] ?? '').trim().toLowerCase(),
   };
 }
@@ -258,7 +278,7 @@ export function fromAuditLogRecord(record: AuditLogRecord): unknown[] {
  * Returns null if required fields are missing or albumType is unrecognized.
  */
 export function toPhotosAlbumRecord(row: unknown[]): PhotosAlbumRecord | null {
-  const COL = COLUMNS.PHOTOS_ALBUMS;
+  const COL = COLUMNS.PHOTO_ALBUMS;
   if (row.length <= COL.SYNCED_FILE_COUNT) return null;
 
   const albumId   = String(row[COL.ALBUM_ID]   ?? '').trim();
@@ -285,7 +305,7 @@ export function toPhotosAlbumRecord(row: unknown[]): PhotosAlbumRecord | null {
 
 /**
  * Converts a PhotosAlbumRecord back to a Sheets row array.
- * Column order must match COLUMNS.PHOTOS_ALBUMS exactly.
+ * Column order must match COLUMNS.PHOTO_ALBUMS exactly.
  */
 export function fromPhotosAlbumRecord(record: PhotosAlbumRecord): unknown[] {
   return [
@@ -299,5 +319,56 @@ export function fromPhotosAlbumRecord(record: PhotosAlbumRecord): unknown[] {
     record.createdAt,
     record.lastSyncAt,
     record.syncedFileCount,
+  ];
+}
+
+// ─── Photos Files ──────────────────────────────────────────────────────────────
+
+/**
+ * Converts a raw Sheets row to a PhotosFileRecord.
+ *
+ * Returns null if required key fields (driveFileId, albumId) are missing or
+ * if albumType is not "event" or "club".
+ *
+ * Column order: driveFileId(A), mediaItemId(B), albumId(C), albumType(D),
+ *               eventId(E), clubName(F), fileName(G), syncedAt(H)
+ */
+export function toPhotosFileRecord(row: unknown[]): PhotosFileRecord | null {
+  const COL = COLUMNS.PHOTO_FILES;
+  if (row.length <= COL.SYNCED_AT) return null;
+
+  const driveFileId = String(row[COL.DRIVE_FILE_ID] ?? '').trim();
+  const albumId     = String(row[COL.ALBUM_ID]      ?? '').trim();
+  const albumType   = String(row[COL.ALBUM_TYPE]    ?? '').trim();
+
+  if (!driveFileId || !albumId) return null;
+  if (albumType !== 'event' && albumType !== 'club') return null;
+
+  return {
+    driveFileId,
+    mediaItemId: String(row[COL.MEDIA_ITEM_ID] ?? '').trim(),
+    albumId,
+    albumType:   albumType as 'event' | 'club',
+    eventId:     String(row[COL.EVENT_ID]   ?? '').trim(),
+    clubName:    String(row[COL.CLUB_NAME]  ?? '').trim(),
+    fileName:    String(row[COL.FILE_NAME]  ?? '').trim(),
+    syncedAt:    String(row[COL.SYNCED_AT]  ?? '').trim(),
+  };
+}
+
+/**
+ * Converts a PhotosFileRecord back to a Sheets row array.
+ * Column order must match COLUMNS.PHOTO_FILES exactly.
+ */
+export function fromPhotosFileRecord(record: PhotosFileRecord): unknown[] {
+  return [
+    record.driveFileId,
+    record.mediaItemId,
+    record.albumId,
+    record.albumType,
+    record.eventId,
+    record.clubName,
+    record.fileName,
+    record.syncedAt,
   ];
 }

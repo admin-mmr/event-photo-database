@@ -9,15 +9,26 @@
  */
 
 import { ResultStatus, UserRole, UserStatus, UploadSource, AuditAction } from './types/enums';
+import { verifyGoogleIdToken } from './services/tokenService';
+import { createSession } from './services/sessionService';
 import {
   ensureEventAlbum,
   syncBatchToAlbums,
   syncEventToAlbums,
   backfillAllAlbums,
   findAlbumsByEvent,
+  reconcileAllPhotos,
   EventInfo,
 } from './services/photosService';
-import { authenticateRequest } from './middleware/authMiddleware';
+import {
+  createJob,
+  getJob,
+  completeJob,
+  requestCancel,
+  sweepExpired,
+  SyncJob,
+} from './services/syncJobService';
+import { authenticateRequest, resolveUser } from './middleware/authMiddleware';
 import { requireRole } from './middleware/roleGuard';
 import { handleGet, handlePost } from './routes/router';
 import { createUser, deactivateUser, reactivateUser, updateUser } from './services/userService';
@@ -28,6 +39,7 @@ import {
   getOrCreateClubFolder,
   getClubFolderTree,
   createBatchFolder,
+  getEventDriveTree,
 } from './services/driveService';
 import { appendUploadLog } from './services/uploadLogService';
 import { appendAuditLog, getAuditLogs } from './services/auditLogService';
@@ -53,16 +65,98 @@ function doPost(
   return handlePost(e);
 }
 
+// ─── Debug helper (run from GAS editor: select debugConfig → Run) ────────────
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function debugClientId(): void {
+  /* global PropertiesService */
+  const clientId = PropertiesService.getScriptProperties().getProperty('GOOGLE_CLIENT_ID') ?? '(not set)';
+  Logger.log('GOOGLE_CLIENT_ID = [' + clientId + ']');
+  Logger.log('Length = ' + clientId.length);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function debugConfig(): void {
+  /* global ScriptApp, PropertiesService, Session */
+  const clientId     = PropertiesService.getScriptProperties().getProperty('GOOGLE_CLIENT_ID')     ?? '(not set)';
+  const clientSecret = PropertiesService.getScriptProperties().getProperty('GOOGLE_CLIENT_SECRET') ?? '(not set)';
+  const deployUrl    = ScriptApp.getService().getUrl();
+  const activeEmail  = Session.getActiveUser().getEmail()    || '(empty)';
+  const effectEmail  = Session.getEffectiveUser().getEmail() || '(empty)';
+
+  Logger.log('=== debugConfig ===');
+  Logger.log('GOOGLE_CLIENT_ID:     [' + clientId + ']');
+  Logger.log('GOOGLE_CLIENT_SECRET: ' + (clientSecret !== '(not set)' ? clientSecret.substring(0, 10) + '…' : '(not set)'));
+  Logger.log('Deployment URL:       ' + deployUrl);
+  Logger.log('Active user email:    ' + activeEmail);
+  Logger.log('Effective user email: ' + effectEmail);
+  Logger.log('===================');
+}
+
 // ─── google.script.run server functions ──────────────────────────────────────
 
 type ServerResponse = { status: string; message: string; data?: unknown; errors?: unknown };
 
+/**
+ * Every google.script.run payload carries an optional sessionToken so the
+ * server can authenticate the caller (required with USER_DEPLOYING deployment).
+ */
+type WithSession<T = Record<string, unknown>> = T & { sessionToken?: string };
+
+/**
+ * Path A — Google Identity Services login.
+ *
+ * Called from the login page after the client-side GIS button returns a
+ * credential JWT. This function:
+ *   1. Verifies the JWT signature via Google's tokeninfo endpoint
+ *   2. Checks the email against the Users sheet
+ *   3. Creates a 30-min server-side session in CacheService
+ *   4. Returns { sessionToken, email, role } to the client
+ *
+ * The client stores sessionToken in sessionStorage and passes it with every
+ * subsequent google.script.run call and page navigation (?session=TOKEN).
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverVerifyGoogleToken(idToken: string): ServerResponse {
+  try {
+    // Step 1: verify the JWT with Google's tokeninfo endpoint
+    const tokenResult = verifyGoogleIdToken(idToken);
+    if (tokenResult.status !== ResultStatus.SUCCESS || !tokenResult.data) {
+      Logger.log(`[serverVerifyGoogleToken] Token invalid: ${tokenResult.message}`);
+      return { status: 'error', message: tokenResult.message };
+    }
+
+    const email = tokenResult.data.email;
+    Logger.log(`[serverVerifyGoogleToken] Token valid for: ${email}`);
+
+    // Step 2: check the email against the Users sheet
+    const authResult = resolveUser(email);
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      Logger.log(`[serverVerifyGoogleToken] User lookup failed for ${email}: ${authResult.message}`);
+      return { status: 'error', message: authResult.message };
+    }
+
+    // Step 3: create a 30-min server-side session
+    const sessionToken = createSession(email, authResult.data.role);
+    Logger.log(`[serverVerifyGoogleToken] Session created for ${email} (${authResult.data.role})`);
+
+    return {
+      status: 'success',
+      message: 'Authenticated',
+      data: { sessionToken, email, role: authResult.data.role },
+    };
+  } catch (err) {
+    Logger.log(`[serverVerifyGoogleToken] Error: ${String(err)}`);
+    return { status: 'error', message: `Authentication error: ${String(err)}` };
+  }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function serverCreateUser(
-  payload: { email: string; runningClub: string; role: string }
+  payload: WithSession<{ email: string; runningClub: string; role: string }>
 ): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
     const result = createUser(
       { email: payload.email, runningClub: payload.runningClub, role: payload.role as UserRole },
@@ -84,10 +178,10 @@ function serverCreateUser(
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function serverUpdateUser(
-  payload: { email: string; runningClub?: string; role?: string; status?: string }
+  payload: WithSession
 ): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
     const result = updateUser(
       {
@@ -116,9 +210,9 @@ function serverUpdateUser(
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverDeactivateUser(payload: { email: string }): ServerResponse {
+function serverDeactivateUser(payload: WithSession<{ email: string }>): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
     const result = deactivateUser(payload.email);
     if (result.status === ResultStatus.SUCCESS) {
@@ -135,9 +229,9 @@ function serverDeactivateUser(payload: { email: string }): ServerResponse {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverReactivateUser(payload: { email: string }): ServerResponse {
+function serverReactivateUser(payload: WithSession<{ email: string }>): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
     const result = reactivateUser(payload.email);
     if (result.status === ResultStatus.SUCCESS) {
@@ -160,10 +254,10 @@ function serverReactivateUser(payload: { email: string }): ServerResponse {
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function serverCreateEvent(
-  payload: { eventName: string; eventDate: string }
+  payload: WithSession
 ): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
 
     const result = createEvent(
@@ -194,10 +288,20 @@ function serverCreateEvent(
           Logger.log(`[serverCreateEvent] Photos album created: ${albumResult.data.albumId}`);
         } else {
           Logger.log(`[serverCreateEvent] Photos album creation failed: ${albumResult.message}`);
+          appendAuditLog({
+            actorEmail: auth.adminEmail, action: AuditAction.ALBUM_ERROR,
+            resourceType: 'event', resourceId: eventRecord.eventId,
+            details: { operation: 'ensure_event_album', error: albumResult.message },
+          });
         }
       } catch (albumErr) {
         // Album creation failure must not roll back the event creation
         Logger.log(`[serverCreateEvent] Photos album error (non-fatal): ${String(albumErr)}`);
+        appendAuditLog({
+          actorEmail: auth.adminEmail, action: AuditAction.ALBUM_ERROR,
+          resourceType: 'event', resourceId: eventRecord.eventId,
+          details: { operation: 'ensure_event_album', error: String(albumErr) },
+        });
       }
     }
     return {
@@ -217,10 +321,10 @@ function serverCreateEvent(
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function serverUpdateEvent(
-  payload: { eventId: string; eventName?: string; eventDate?: string }
+  payload: WithSession
 ): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
 
     const result = updateEvent(
@@ -258,10 +362,10 @@ function serverUpdateEvent(
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function serverListEvents(
-  payload: { page?: number; pageSize?: number; sort?: string; dateFrom?: string; dateTo?: string }
+  payload: WithSession
 ): ServerResponse {
   try {
-    const authResult = authenticateRequest();
+    const authResult = authenticateRequest(payload?.sessionToken);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       return { status: 'error', message: 'Authentication required' };
     }
@@ -300,7 +404,7 @@ function serverListEvents(
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function serverScanViolations(): ServerResponse {
   try {
-    const authResult = authenticateRequest();
+    const authResult = authenticateRequest(payload?.sessionToken);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       return { status: 'error', message: 'Authentication required' };
     }
@@ -325,10 +429,10 @@ function serverScanViolations(): ServerResponse {
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function serverListClubs(
-  payload: { activeOnly?: boolean }
+  payload: WithSession
 ): ServerResponse {
   try {
-    const authResult = authenticateRequest();
+    const authResult = authenticateRequest(payload?.sessionToken);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       return { status: 'error', message: 'Authentication required' };
     }
@@ -350,10 +454,10 @@ function serverListClubs(
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function serverCreateClub(
-  payload: { displayName: string; normalizedName: string }
+  payload: WithSession
 ): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
 
     const result = createClub(
@@ -379,10 +483,10 @@ function serverCreateClub(
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function serverUpdateClub(
-  payload: { normalizedName: string; displayName?: string }
+  payload: WithSession
 ): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
 
     const result = updateClub(
@@ -411,9 +515,9 @@ function serverUpdateClub(
  * google.script.run entry point for deactivating a club from the admin UI.
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverDeactivateClub(payload: { normalizedName: string }): ServerResponse {
+function serverDeactivateClub(payload: WithSession<{ normalizedName: string }>): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
     const result = deactivateClub(payload.normalizedName);
     if (result.status === ResultStatus.SUCCESS) {
@@ -434,9 +538,9 @@ function serverDeactivateClub(payload: { normalizedName: string }): ServerRespon
  * google.script.run entry point for reactivating a club from the admin UI.
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverReactivateClub(payload: { normalizedName: string }): ServerResponse {
+function serverReactivateClub(payload: WithSession<{ normalizedName: string }>): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
     const result = reactivateClub(payload.normalizedName);
     if (result.status === ResultStatus.SUCCESS) {
@@ -462,10 +566,10 @@ function serverReactivateClub(payload: { normalizedName: string }): ServerRespon
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function serverListEventsForUpload(
-  payload: { dateFrom?: string; dateTo?: string; sort?: string }
+  payload: WithSession
 ): ServerResponse {
   try {
-    const authResult = authenticateRequest();
+    const authResult = authenticateRequest(payload?.sessionToken);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       return { status: 'error', message: 'Authentication required' };
     }
@@ -503,10 +607,10 @@ function serverListEventsForUpload(
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function serverGetClubFolderTree(
-  payload: { eventFolderId: string; clubFolderName: string }
+  payload: WithSession
 ): ServerResponse {
   try {
-    const authResult = authenticateRequest();
+    const authResult = authenticateRequest(payload?.sessionToken);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       return { status: 'error', message: 'Authentication required' };
     }
@@ -539,10 +643,10 @@ function serverGetClubFolderTree(
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function serverEnsureClubFolder(
-  payload: { eventFolderId: string; clubFolderName: string }
+  payload: WithSession
 ): ServerResponse {
   try {
-    const authResult = authenticateRequest();
+    const authResult = authenticateRequest(payload?.sessionToken);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       return { status: 'error', message: 'Authentication required' };
     }
@@ -578,13 +682,13 @@ function serverEnsureClubFolder(
  * Returns: { batchFolderId, batchFolderName, clubFolderId }
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverStartUploadSession(payload: {
+function serverStartUploadSession(payload: WithSession<{
   eventFolderId: string;
   clubFolderName: string;
   usernameHint: string;   // Email local-part used in the batch folder name
-}): ServerResponse {
+}>): ServerResponse {
   try {
-    const authResult = authenticateRequest();
+    const authResult = authenticateRequest(payload?.sessionToken);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       return { status: 'error', message: 'Authentication required' };
     }
@@ -643,14 +747,14 @@ function serverStartUploadSession(payload: {
  * Returns: { fileId, fileName, sizeBytes }
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverUploadFile(payload: {
+function serverUploadFile(payload: WithSession<{
   batchFolderId: string;
   fileName: string;
   mimeType: string;
   base64Data: string;  // base64-encoded file content (no data URL prefix)
-}): ServerResponse {
+}>): ServerResponse {
   try {
-    const authResult = authenticateRequest();
+    const authResult = authenticateRequest(payload?.sessionToken);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       return { status: 'error', message: 'Authentication required' };
     }
@@ -697,16 +801,16 @@ function serverUploadFile(payload: {
  * Returns: { results: [{fileName, success, fileId?, sizeBytes?, error?}] }
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverUploadFiles(payload: {
+function serverUploadFiles(payload: WithSession<{
   batchFolderId: string;
   files: Array<{
     fileName:   string;
     mimeType:   string;
     base64Data: string;   // base64-encoded content, no data-URL prefix
   }>;
-}): ServerResponse {
+}>): ServerResponse {
   try {
-    const authResult = authenticateRequest();
+    const authResult = authenticateRequest(payload?.sessionToken);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       return { status: 'error', message: 'Authentication required' };
     }
@@ -758,7 +862,7 @@ function serverUploadFiles(payload: {
  * Returns: UploadLogRecord
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverCompleteUpload(payload: {
+function serverCompleteUpload(payload: WithSession<{
   eventId: string;
   clubFolderName: string;
   batchFolderName: string;
@@ -767,9 +871,9 @@ function serverCompleteUpload(payload: {
   totalSizeMb: number;
   skippedDuplicates: number;
   skippedNonPhoto: number;
-}): ServerResponse {
+}>): ServerResponse {
   try {
-    const authResult = authenticateRequest();
+    const authResult = authenticateRequest(payload?.sessionToken);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       return { status: 'error', message: 'Authentication required' };
     }
@@ -837,12 +941,12 @@ function serverCompleteUpload(payload: {
  * Returns: SystemSummary
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverGetSummary(payload: {
+function serverGetSummary(payload: WithSession<{
   dateFrom?: string;
   dateTo?: string;
-}): ServerResponse {
+}>): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
 
     const result = generateSummary(payload.dateFrom, payload.dateTo);
@@ -868,12 +972,12 @@ function serverGetSummary(payload: {
  * Returns: { csv: string }   (the full CSV text)
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverExportSummaryCsv(payload: {
+function serverExportSummaryCsv(payload: WithSession<{
   dateFrom?: string;
   dateTo?: string;
-}): ServerResponse {
+}>): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
 
     const result = generateSummary(payload.dateFrom, payload.dateTo);
@@ -910,11 +1014,11 @@ function serverExportSummaryCsv(payload: {
  * Returns: { recipientCount: number }
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverSendExceptionEmail(payload: {
+function serverSendExceptionEmail(payload: WithSession<{
   additionalRecipients?: string[];
-}): ServerResponse {
+}>): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
 
     const result = generateSummary();
@@ -975,15 +1079,15 @@ function serverSendExceptionEmail(payload: {
  * Returns: AuditLogPage { items, total, page, pageSize }
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverGetAuditLog(payload: {
+function serverGetAuditLog(payload: WithSession<{
   page?:        number;
   pageSize?:    number;
   actorEmail?:  string;
   dateFrom?:    string;
   dateTo?:      string;
-}): ServerResponse {
+}>): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
 
     const result = getAuditLogs({
@@ -1013,9 +1117,9 @@ function serverGetAuditLog(payload: {
  * Returns: { albums: PhotosAlbumRecord[] }
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverGetEventAlbums(payload: { eventId: string }): ServerResponse {
+function serverGetEventAlbums(payload: WithSession<{ eventId: string }>): ServerResponse {
   try {
-    const authResult = authenticateRequest();
+    const authResult = authenticateRequest(payload?.sessionToken);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       return { status: 'error', message: 'Authentication required' };
     }
@@ -1043,22 +1147,37 @@ function serverGetEventAlbums(payload: { eventId: string }): ServerResponse {
  * Admin-only. Useful after manual Drive uploads or when photos were added
  * outside the normal upload pipeline.
  *
- * Payload: { eventId: string }
+ * Progress tracking: the UI should create a SyncJob (via
+ * `serverCreateSyncJob`) and pass the resulting `jobId` here. While this
+ * function runs on the server, the UI can poll `serverGetSyncJob({jobId})`
+ * in parallel (google.script.run calls are concurrent) to render a progress
+ * bar, and call `serverCancelSyncJob({jobId})` to abort cooperatively.
+ *
+ * Payload: { eventId: string; jobId?: string }
  * Returns: SyncEventResult
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverSyncAlbum(payload: { eventId: string }): ServerResponse {
+function serverSyncAlbum(
+  payload: WithSession<{ eventId: string; jobId?: string }>
+): ServerResponse {
+  const jobId = payload?.jobId;
   try {
-    const auth = requireAdminOrFail();
-    if (!auth.ok) return auth.response;
+    const auth = requireAdminOrFail(payload?.sessionToken);
+    if (!auth.ok) {
+      if (jobId) completeJob(jobId, 'failed', 'Unauthorized');
+      return auth.response;
+    }
 
     if (!payload.eventId) {
+      if (jobId) completeJob(jobId, 'failed', 'eventId is required');
       return { status: 'error', message: 'eventId is required' };
     }
 
     const event = findEventById(payload.eventId);
     if (!event) {
-      return { status: 'error', message: `Event "${payload.eventId}" not found` };
+      const msg = `Event "${payload.eventId}" not found`;
+      if (jobId) completeJob(jobId, 'failed', msg);
+      return { status: 'error', message: msg };
     }
 
     // Build club display-name lookup map
@@ -1074,7 +1193,7 @@ function serverSyncAlbum(payload: { eventId: string }): ServerResponse {
       driveFolderId: event.driveFolderId,
     };
 
-    const result = syncEventToAlbums(eventInfo, clubDisplayNames);
+    const result = syncEventToAlbums(eventInfo, clubDisplayNames, jobId);
 
     if (result.status === ResultStatus.SUCCESS && result.data) {
       appendAuditLog({
@@ -1086,6 +1205,32 @@ function serverSyncAlbum(payload: { eventId: string }): ServerResponse {
           errors: result.data.errors.length,
         },
       });
+      // Log any per-club errors that occurred during the sync
+      if (result.data.errors.length > 0) {
+        appendAuditLog({
+          actorEmail: auth.adminEmail, action: AuditAction.ALBUM_ERROR,
+          resourceType: 'event', resourceId: event.eventId,
+          details: { operation: 'sync_event_to_albums', errors: result.data.errors },
+        });
+      }
+      if (jobId) {
+        // Detect cancellation: if the job's current record already has
+        // cancelRequested=true, mark it cancelled; otherwise complete.
+        const finalState = getJob(jobId);
+        if (finalState?.cancelRequested) {
+          completeJob(jobId, 'cancelled',
+            `Cancelled after syncing ${result.data.totalSynced} photo(s) across ${result.data.clubsSynced.length} club(s)`);
+        } else {
+          completeJob(jobId, 'completed', result.message);
+        }
+      }
+    } else if (result.status !== ResultStatus.SUCCESS) {
+      appendAuditLog({
+        actorEmail: auth.adminEmail, action: AuditAction.ALBUM_ERROR,
+        resourceType: 'event', resourceId: event.eventId,
+        details: { operation: 'sync_event_to_albums', error: result.message },
+      });
+      if (jobId) completeJob(jobId, 'failed', result.message);
     }
 
     return {
@@ -1095,6 +1240,12 @@ function serverSyncAlbum(payload: { eventId: string }): ServerResponse {
     };
   } catch (err) {
     Logger.log(`serverSyncAlbum error: ${String(err)}`);
+    appendAuditLog({
+      actorEmail: 'system', action: AuditAction.ALBUM_ERROR,
+      resourceType: 'event', resourceId: payload.eventId ?? '',
+      details: { operation: 'sync_event_to_albums', error: String(err) },
+    });
+    if (jobId) completeJob(jobId, 'failed', `Internal error: ${String(err)}`);
     return { status: 'error', message: `Internal error syncing album: ${String(err)}` };
   }
 }
@@ -1110,11 +1261,46 @@ function serverSyncAlbum(payload: { eventId: string }): ServerResponse {
  * Payload: {} (no parameters required)
  * Returns: BackfillResult
  */
+/**
+ * google.script.run entry point: runs a read-only reconciliation audit comparing
+ * Drive file counts against Photo_Files sync records for every event.
+ *
+ * Admin-only. Returns an EventReconciliationResult per event showing how many
+ * photos are in Drive vs how many have been confirmed synced to Google Photos.
+ * Does NOT upload or modify any data.
+ *
+ * Payload: {} (no parameters required)
+ * Returns: ReconciliationReport
+ */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function serverBackfillAlbums(_payload: Record<string, unknown>): ServerResponse {
+function serverReconcilePhotos(_payload: Record<string, unknown>): ServerResponse {
   try {
-    const auth = requireAdminOrFail();
+    const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
+
+    const result = reconcileAllPhotos();
+    return {
+      status: result.status,
+      message: result.message,
+      data: result.data,
+    };
+  } catch (err) {
+    Logger.log(`serverReconcilePhotos error: ${String(err)}`);
+    return { status: 'error', message: `Internal error during reconciliation: ${String(err)}` };
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverBackfillAlbums(
+  payload: WithSession<{ jobId?: string }>
+): ServerResponse {
+  const jobId = payload?.jobId;
+  try {
+    const auth = requireAdminOrFail(payload?.sessionToken);
+    if (!auth.ok) {
+      if (jobId) completeJob(jobId, 'failed', 'Unauthorized');
+      return auth.response;
+    }
 
     // Build club display-name lookup map
     const clubDisplayNames: Record<string, string> = {};
@@ -1122,7 +1308,7 @@ function serverBackfillAlbums(_payload: Record<string, unknown>): ServerResponse
       clubDisplayNames[c.normalizedName] = c.displayName;
     });
 
-    const result = backfillAllAlbums(clubDisplayNames);
+    const result = backfillAllAlbums(clubDisplayNames, jobId);
 
     if (result.status === ResultStatus.SUCCESS && result.data) {
       appendAuditLog({
@@ -1135,6 +1321,30 @@ function serverBackfillAlbums(_payload: Record<string, unknown>): ServerResponse
           errorCount:      result.data.errors.length,
         },
       });
+      // Log any per-event errors encountered during the backfill run
+      if (result.data.errors.length > 0) {
+        appendAuditLog({
+          actorEmail: auth.adminEmail, action: AuditAction.ALBUM_ERROR,
+          resourceType: 'report', resourceId: '',
+          details: { operation: 'backfill_all_albums', errors: result.data.errors },
+        });
+      }
+      if (jobId) {
+        const finalState = getJob(jobId);
+        if (finalState?.cancelRequested) {
+          completeJob(jobId, 'cancelled',
+            `Cancelled after ${result.data.eventsProcessed} event(s), ${result.data.totalSynced} photo(s) synced`);
+        } else {
+          completeJob(jobId, 'completed', result.message);
+        }
+      }
+    } else if (result.status !== ResultStatus.SUCCESS) {
+      appendAuditLog({
+        actorEmail: auth.adminEmail, action: AuditAction.ALBUM_ERROR,
+        resourceType: 'report', resourceId: '',
+        details: { operation: 'backfill_all_albums', error: result.message },
+      });
+      if (jobId) completeJob(jobId, 'failed', result.message);
     }
 
     return {
@@ -1144,7 +1354,157 @@ function serverBackfillAlbums(_payload: Record<string, unknown>): ServerResponse
     };
   } catch (err) {
     Logger.log(`serverBackfillAlbums error: ${String(err)}`);
+    appendAuditLog({
+      actorEmail: 'system', action: AuditAction.ALBUM_ERROR,
+      resourceType: 'report', resourceId: '',
+      details: { operation: 'backfill_all_albums', error: String(err) },
+    });
+    if (jobId) completeJob(jobId, 'failed', `Internal error: ${String(err)}`);
     return { status: 'error', message: `Internal error during backfill: ${String(err)}` };
+  }
+}
+
+// ─── Sync job progress endpoints ─────────────────────────────────────────────
+//
+// Admin-only lightweight endpoints called by the Photos Overview UI to render
+// a live progress bar while serverSyncAlbum / serverBackfillAlbums run. They
+// must be cheap (property read only) since the client polls every ~3 seconds.
+
+/**
+ * google.script.run entry point: creates a new SyncJob record in 'pending'
+ * state and returns the jobId. The UI immediately starts polling
+ * `serverGetSyncJob({jobId})` and fires the actual worker (serverSyncAlbum or
+ * serverBackfillAlbums) with the same jobId in parallel.
+ *
+ * Payload: { jobType: 'sync-event' | 'backfill-all'; eventId?: string }
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverCreateSyncJob(
+  payload: WithSession<{ jobType: SyncJob['jobType']; eventId?: string }>
+): ServerResponse {
+  try {
+    const auth = requireAdminOrFail(payload?.sessionToken);
+    if (!auth.ok) return auth.response;
+
+    if (payload.jobType !== 'sync-event' && payload.jobType !== 'backfill-all') {
+      return { status: 'error', message: 'Invalid jobType' };
+    }
+    // Opportunistic cleanup of expired records so the property store doesn't
+    // balloon when the admin kicks off a lot of jobs.
+    sweepExpired();
+
+    const job = createJob(payload.jobType, payload.eventId ?? '');
+    return { status: 'success', message: 'Job created', data: job };
+  } catch (err) {
+    Logger.log(`serverCreateSyncJob error: ${String(err)}`);
+    return { status: 'error', message: `Internal error creating sync job: ${String(err)}` };
+  }
+}
+
+/**
+ * google.script.run entry point: returns the current state of a SyncJob.
+ * Called on a ~3-second interval from the Photos Overview UI while a
+ * worker is running. Returns 404-style shape if the jobId is unknown.
+ *
+ * Payload: { jobId: string }
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverGetSyncJob(
+  payload: WithSession<{ jobId: string }>
+): ServerResponse {
+  try {
+    const auth = requireAdminOrFail(payload?.sessionToken);
+    if (!auth.ok) return auth.response;
+
+    if (!payload.jobId) {
+      return { status: 'error', message: 'jobId is required' };
+    }
+
+    const job = getJob(payload.jobId);
+    if (!job) {
+      return { status: 'error', message: 'Job not found (expired or invalid id)' };
+    }
+    return { status: 'success', message: 'OK', data: job };
+  } catch (err) {
+    Logger.log(`serverGetSyncJob error: ${String(err)}`);
+    return { status: 'error', message: `Internal error reading sync job: ${String(err)}` };
+  }
+}
+
+/**
+ * google.script.run entry point: sets the cancel flag on a running job.
+ * The worker (serverSyncAlbum / serverBackfillAlbums) checks the flag
+ * between units of work and stops gracefully — it does not interrupt an
+ * in-flight photo upload, so cancellation can take a few seconds.
+ *
+ * Payload: { jobId: string }
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverCancelSyncJob(
+  payload: WithSession<{ jobId: string }>
+): ServerResponse {
+  try {
+    const auth = requireAdminOrFail(payload?.sessionToken);
+    if (!auth.ok) return auth.response;
+
+    if (!payload.jobId) {
+      return { status: 'error', message: 'jobId is required' };
+    }
+    const ok = requestCancel(payload.jobId);
+    if (!ok) {
+      return { status: 'error', message: 'Job not found or already finished' };
+    }
+    appendAuditLog({
+      actorEmail: auth.adminEmail, action: AuditAction.ALBUM_ERROR,
+      resourceType: 'report', resourceId: payload.jobId,
+      details: { operation: 'cancel_sync_job' },
+    });
+    return { status: 'success', message: 'Cancel requested — the worker will stop shortly.' };
+  } catch (err) {
+    Logger.log(`serverCancelSyncJob error: ${String(err)}`);
+    return { status: 'error', message: `Internal error cancelling sync job: ${String(err)}` };
+  }
+}
+
+// ─── Drive file system tree (all authenticated users) ────────────────────────
+
+/**
+ * google.script.run entry point: walks the Drive hierarchy for one event and
+ * returns a serialisable tree of clubs → batches → photo counts.
+ *
+ * Available to all authenticated users (not admin-only) — the tree is read-only
+ * and exposes only folder names and file counts, no Drive file IDs or metadata.
+ *
+ * Called lazily: the Drive Tree page loads all event metadata on page load, then
+ * calls this function only when the user expands a specific event node.
+ *
+ * Payload: { eventId: string; driveFolderId: string }
+ * Returns: EventDriveTree
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverGetDriveTree(
+  payload: WithSession
+): ServerResponse {
+  try {
+    const authResult = authenticateRequest(payload?.sessionToken);
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      return { status: 'error', message: 'Authentication required' };
+    }
+
+    const { eventId, driveFolderId } = payload;
+    if (!eventId || !driveFolderId) {
+      return { status: 'error', message: 'eventId and driveFolderId are required' };
+    }
+
+    const result = getEventDriveTree(eventId, driveFolderId);
+    return {
+      status: result.status,
+      message: result.message,
+      data: result.data,
+    };
+  } catch (err) {
+    Logger.log(`serverGetDriveTree error: ${String(err)}`);
+    return { status: 'error', message: `Internal error fetching drive tree: ${String(err)}` };
   }
 }
 
@@ -1154,8 +1514,8 @@ type AdminCheckResult =
   | { ok: true; adminEmail: string }
   | { ok: false; response: ServerResponse };
 
-function requireAdminOrFail(): AdminCheckResult {
-  const authResult = authenticateRequest();
+function requireAdminOrFail(sessionToken?: string): AdminCheckResult {
+  const authResult = authenticateRequest(sessionToken);
   if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
     return { ok: false, response: { status: 'error', message: 'Authentication required' } };
   }
@@ -1164,4 +1524,26 @@ function requireAdminOrFail(): AdminCheckResult {
     return { ok: false, response: { status: 'error', message: guard.message } };
   }
   return { ok: true, adminEmail: authResult.data.email };
+}
+
+/**
+ * Dev-only: touches every scope in the manifest so a single consent dialog
+ * grants them all. Remove after first-deploy authorization is complete.
+ *
+ * Each call is wrapped in try/catch so one failure (e.g. a missing script
+ * property, or an intentionally-invalid token in the UrlFetchApp probe)
+ * doesn't abort the run before the remaining scopes are touched — the point
+ * is to force Google to aggregate ALL needed scopes into a single consent
+ * prompt, not to have any of the calls actually succeed.
+ */
+export function warmAllScopes(): void {
+  const props = PropertiesService.getScriptProperties();
+  const sheetId = props.getProperty('SPREADSHEET_ID') ?? '';
+
+  try { if (sheetId) SpreadsheetApp.openById(sheetId); } catch (e) { console.log('[warm] Spreadsheet:', e); }
+  try { DriveApp.getRootFolder(); }                     catch (e) { console.log('[warm] Drive:',       e); }
+  try { UrlFetchApp.fetch('https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=x'); }
+                                                         catch (e) { console.log('[warm] UrlFetch:',   e); }
+  try { Session.getActiveUser().getEmail(); }            catch (e) { console.log('[warm] Session:',    e); }
+  try { ScriptApp.getService().getUrl(); }               catch (e) { console.log('[warm] ScriptApp:',  e); }
 }
