@@ -1,4 +1,4 @@
-import { ResultStatus, EmailType, AuditAction, UserRole, UserStatus } from '../types/enums';
+import { ResultStatus, EmailType, AuditAction, UserStatus } from '../types/enums';
 import { UserRecord } from '../types/models';
 import { ServiceResult } from '../types/responses';
 import { listRecipientsForType, listAllAdminEmails } from './emailPreferenceService';
@@ -135,6 +135,12 @@ interface SendOptions {
   readonly html: string;
   readonly type: EmailType;      // For audit logging and quota bookkeeping
   readonly resourceId?: string;  // Optional audit resourceId (e.g. target user email)
+  /**
+   * If true (default), a quota failure is added to the retry queue with
+   * exponential backoff. Pass false when called from drainEmailRetryQueue()
+   * to prevent recursive queuing.
+   */
+  readonly retry?: boolean;
 }
 
 /**
@@ -182,6 +188,10 @@ function send(opts: SendOptions): ServiceResult<{ to: string[]; cc: string[] }> 
       resourceId: opts.resourceId ?? '',
       details:    { type: opts.type, reason: 'quota', remaining, needed },
     });
+    // Enqueue for retry with backoff (unless we're already inside the retry drain).
+    if (opts.retry !== false) {
+      enqueueRetry(opts);
+    }
     return { status: ResultStatus.ERROR, message: msg };
   }
 
@@ -276,8 +286,8 @@ export function notifyUserCreated(
      <table style="border-collapse:collapse;margin:12px 0;font-size:14px;">
        <tr><td style="padding:4px 12px 4px 0;color:#666;">Role</td>
            <td style="padding:4px 0;font-family:monospace;">${esc(newUser.role)}</td></tr>
-       <tr><td style="padding:4px 12px 4px 0;color:#666;">Running club</td>
-           <td style="padding:4px 0;font-family:monospace;">${esc(newUser.runningClub)}</td></tr>
+       <tr><td style="padding:4px 12px 4px 0;color:#666;">Club</td>
+           <td style="padding:4px 0;font-family:monospace;">${esc(newUser.clubId || '—')}</td></tr>
        <tr><td style="padding:4px 12px 4px 0;color:#666;">Added on</td>
            <td style="padding:4px 0;font-family:monospace;">${esc(newUser.addedDate)}</td></tr>
      </table>
@@ -434,6 +444,59 @@ export function notifySecurityEvent(
   });
 }
 
+// ─── Event lifecycle notifications ────────────────────────────────────────────
+
+/**
+ * Sent TO all opted-in admins when a new event is created.
+ *
+ * Design §10: "All admins receive notifications when a new event is created
+ * (subject to each recipient's preferences)."
+ *
+ * This is the primary coordination signal for club admins — it tells them
+ * to generate upload links so volunteers can start submitting photos for
+ * the new event. On by default (see emailPreferenceService.defaultPreferences).
+ */
+export function notifyEventCreated(
+  eventName: string,
+  eventDate: string,
+  createdByAdminEmail: string,
+): ServiceResult<{ to: string[]; cc: string[] }> {
+  const recipients = listRecipientsForType(EmailType.EVENT_CREATED);
+  if (recipients.length === 0) {
+    return {
+      status: ResultStatus.SUCCESS,
+      message: 'No admins opted in to event-created notifications — skipped',
+      data: { to: [], cc: [] },
+    };
+  }
+
+  const linksUrl = mainPageUrl('admin_links');
+  const html = wrapHtml(
+    `New event created: ${eventName}`,
+    `<p><b>${esc(createdByAdminEmail)}</b> created a new event.</p>
+     <table style="border-collapse:collapse;margin:12px 0;font-size:14px;">
+       <tr><td style="padding:4px 12px 4px 0;color:#666;">Event name</td>
+           <td style="padding:4px 0;font-weight:500;">${esc(eventName)}</td></tr>
+       <tr><td style="padding:4px 12px 4px 0;color:#666;">Event date</td>
+           <td style="padding:4px 0;font-family:monospace;">${esc(eventDate)}</td></tr>
+       <tr><td style="padding:4px 12px 4px 0;color:#666;">Created by</td>
+           <td style="padding:4px 0;font-family:monospace;">${esc(createdByAdminEmail)}</td></tr>
+     </table>
+     <p>Club admins: generate an upload link for your club so volunteers can
+        start submitting photos for this event.</p>`,
+    'Manage upload links',
+    linksUrl,
+  );
+
+  return send({
+    to:        recipients,
+    subject:   `[${PRODUCT_NAME_EN}] New event: ${eventName} (${eventDate})`,
+    html,
+    type:      EmailType.EVENT_CREATED,
+    resourceId: eventName,
+  });
+}
+
 // ─── Scheduled digests ───────────────────────────────────────────────────────
 
 /**
@@ -537,6 +600,13 @@ export function sendDailyReport(): ServiceResult<{ to: string[]; cc: string[] }>
 
   const summaryResult = generateSummary();
   if (summaryResult.status !== ResultStatus.SUCCESS || !summaryResult.data) {
+    appendAuditLog({
+      actorEmail:   'system',
+      action:       AuditAction.EMAIL_FAILED,
+      resourceType: 'report',
+      resourceId:   '',
+      details:      { reason: summaryResult.message ?? 'generateSummary failed' },
+    });
     return { status: ResultStatus.ERROR, message: summaryResult.message };
   }
 
@@ -640,6 +710,212 @@ export function uninstallEmailReportTriggers(): void {
   }
 }
 
-// Make absolutely sure the unused-import lint doesn't trim UserRole; it's
-// re-exported transitively via UserStatus usage above.
-void UserRole;
+// ─── Email retry queue (exponential backoff) ─────────────────────────────────
+
+/**
+ * Persisted retry entry stored as JSON in Script Properties.
+ * We use ScriptProperties rather than a dedicated sheet because retries are
+ * transient and short-lived (max ~4 hours at the default backoff schedule);
+ * the overhead of a sheet is not warranted for < 10 simultaneous entries.
+ */
+interface PendingRetry {
+  readonly id:            string;
+  readonly type:          EmailType;
+  readonly to:            string[];
+  readonly cc:            string[];
+  readonly subject:       string;
+  readonly html:          string;
+  readonly resourceId:    string;
+  readonly firstFailedAt: string;
+  attempts:               number;
+  nextAttemptAt:          string;
+  lastError:              string;
+}
+
+const RETRY_QUEUE_PROP_KEY = 'EMAIL_RETRY_QUEUE';
+const MAX_RETRY_ATTEMPTS   = 3;
+
+/**
+ * Backoff intervals in hours for each retry attempt (index = attempts so far).
+ *   attempt 0 → wait 30 min, attempt 1 → wait 1 h, attempt 2 → wait 2 h
+ * After 3 failed attempts the item is escalated and dropped from the queue.
+ */
+const RETRY_BACKOFF_HOURS = [0.5, 1, 2] as const;
+
+/* global PropertiesService */
+
+function loadRetryQueue(): PendingRetry[] {
+  try {
+    const raw = PropertiesService.getScriptProperties().getProperty(RETRY_QUEUE_PROP_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw) as PendingRetry[];
+  } catch {
+    return [];
+  }
+}
+
+function saveRetryQueue(queue: PendingRetry[]): void {
+  PropertiesService.getScriptProperties().setProperty(
+    RETRY_QUEUE_PROP_KEY,
+    JSON.stringify(queue),
+  );
+}
+
+/**
+ * Appends a new entry to the retry queue for the given send options.
+ * The first retry will be attempted after RETRY_BACKOFF_HOURS[0] hours.
+ *
+ * Called by send() when a quota failure occurs (retry: true, the default).
+ */
+function enqueueRetry(opts: SendOptions): void {
+  const queue    = loadRetryQueue();
+  const nextAt   = new Date(Date.now() + RETRY_BACKOFF_HOURS[0] * 3600 * 1000).toISOString();
+  const id       = `retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  queue.push({
+    id,
+    type:          opts.type,
+    to:            opts.to,
+    cc:            opts.cc ?? [],
+    subject:       opts.subject,
+    html:          opts.html,
+    resourceId:    opts.resourceId ?? '',
+    firstFailedAt: new Date().toISOString(),
+    attempts:      0,
+    nextAttemptAt: nextAt,
+    lastError:     '',
+  });
+  saveRetryQueue(queue);
+
+  Logger.log(
+    `[emailService.enqueueRetry] Queued retry for ${opts.type} (id=${id}) ` +
+    `— first attempt at ${nextAt}`,
+  );
+}
+
+/**
+ * Processes all due entries in the retry queue.
+ *
+ * For each due item:
+ *   - Tries to resend (with retry=false to prevent recursive queuing).
+ *   - On success: removes from queue.
+ *   - On failure with attempts < MAX_RETRY_ATTEMPTS: doubles the backoff and
+ *     reschedules.
+ *   - On exhaustion (attempts >= MAX_RETRY_ATTEMPTS): writes a high-visibility
+ *     EMAIL_FAILED audit entry tagged ACTION_REQUIRED, then drops the item.
+ *
+ * Intended to be called from a GAS time-driven trigger every hour.
+ */
+export function drainEmailRetryQueue(): void {
+  const queue = loadRetryQueue();
+  if (queue.length === 0) {
+    Logger.log('[emailService.drainEmailRetryQueue] Queue is empty — nothing to do');
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const remaining: PendingRetry[] = [];
+
+  for (const item of queue) {
+    if (item.nextAttemptAt > now) {
+      remaining.push(item); // Not due yet — keep.
+      continue;
+    }
+
+    Logger.log(
+      `[emailService.drainEmailRetryQueue] Retrying ${item.type} ` +
+      `(attempt ${item.attempts + 1}/${MAX_RETRY_ATTEMPTS}, id=${item.id})`,
+    );
+
+    // Attempt resend — pass retry:false to avoid recursive queueing.
+    const result = send({
+      to:         item.to,
+      cc:         item.cc,
+      subject:    item.subject,
+      html:       item.html,
+      type:       item.type,
+      resourceId: item.resourceId,
+      retry:      false,
+    });
+
+    const succeeded =
+      result.status === ResultStatus.SUCCESS &&
+      ((result.data?.to.length ?? 0) > 0 || (result.data?.cc.length ?? 0) > 0);
+
+    if (succeeded) {
+      // Sent successfully on retry — drop from queue.
+      Logger.log(
+        `[emailService.drainEmailRetryQueue] Retry succeeded for ${item.type} ` +
+        `(attempt ${item.attempts + 1}, id=${item.id})`,
+      );
+      // Success already audit-logged by send(); no further action needed.
+    } else {
+      const newAttempts = item.attempts + 1;
+
+      if (newAttempts >= MAX_RETRY_ATTEMPTS) {
+        // Exhausted — escalate to audit log and discard the item.
+        Logger.log(
+          `[emailService.drainEmailRetryQueue] ESCALATE: ${item.type} failed ` +
+          `after ${newAttempts} retries (id=${item.id})`,
+        );
+        appendAuditLog({
+          actorEmail:   'system',
+          action:       AuditAction.EMAIL_FAILED,
+          resourceType: 'email',
+          resourceId:   item.resourceId,
+          details:      {
+            type:          item.type,
+            reason:        'retry_exhausted',
+            attempts:      newAttempts,
+            firstFailedAt: item.firstFailedAt,
+            subject:       item.subject,
+            to:            item.to,
+            note:          'ACTION_REQUIRED: Email delivery permanently failed after all retries. ' +
+                           'Check MailApp daily quota and consider resending manually.',
+          },
+        });
+        // Drop from queue — already escalated.
+      } else {
+        const backoffMs = (RETRY_BACKOFF_HOURS[newAttempts] ?? 4) * 3600 * 1000;
+        remaining.push({
+          ...item,
+          attempts:      newAttempts,
+          lastError:     result.message ?? '',
+          nextAttemptAt: new Date(Date.now() + backoffMs).toISOString(),
+        });
+      }
+    }
+  }
+
+  saveRetryQueue(remaining);
+  Logger.log(
+    `[emailService.drainEmailRetryQueue] Done — ${remaining.length} item(s) still pending`,
+  );
+}
+
+/**
+ * Installs the hourly email retry trigger if it does not already exist.
+ * Run once from the GAS editor alongside installEmailReportTriggers().
+ * Idempotent — safe to call multiple times.
+ */
+export function installEmailRetryTrigger(): void {
+  const existing = ScriptApp.getProjectTriggers();
+  const names    = new Set(existing.map((t) => t.getHandlerFunction()));
+  if (!names.has('retryFailedEmailsTrigger')) {
+    ScriptApp.newTrigger('retryFailedEmailsTrigger').timeBased().everyHours(1).create();
+    Logger.log('[emailService.installEmailRetryTrigger] Installed retryFailedEmailsTrigger (hourly)');
+  }
+}
+
+/**
+ * Removes the email retry trigger if present.
+ */
+export function uninstallEmailRetryTrigger(): void {
+  const all = ScriptApp.getProjectTriggers();
+  for (const t of all) {
+    if (t.getHandlerFunction() === 'retryFailedEmailsTrigger') {
+      ScriptApp.deleteTrigger(t);
+    }
+  }
+}
+

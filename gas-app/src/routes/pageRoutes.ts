@@ -1,12 +1,15 @@
 import { UserRecord } from '../types/models';
 import { UserRole } from '../types/enums';
+import { isAdmin, isSuperAdmin } from '../middleware/roleGuard';
 import { getAuditLogs } from '../services/auditLogService';
 import { listAll } from '../services/userService';
 import { listAll as listAllEvents } from '../services/eventService';
 import { listAll as listAllClubs, listActive as listActiveClubs } from '../services/clubService';
 import { generateSummary } from '../services/summaryService';
 import { listAllAlbums } from '../services/photosService';
+import { listPublicAlbumIndex } from '../services/publicAlbumIndexService';
 import { getPreferencesFor } from '../services/emailPreferenceService';
+import { findByClub } from '../services/uploadLinkService';
 import { getCanonicalScriptUrl } from '../utils/scriptUrl';
 import { BUILD_TIME, BUILD_COMMIT } from '../buildInfo';
 /* global HtmlService, PropertiesService */
@@ -95,12 +98,12 @@ export function errorPage(message: string): GoogleAppsScript.HTML.HtmlOutput {
  * regular users see their club and the upload interface.
  */
 export function dashboardPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
-  const isAdmin = user.role === UserRole.ADMIN;
   return renderTemplate('dashboard', { sessionToken,
-    userEmail: user.email,
-    userRole: user.role,
-    runningClub: user.runningClub,
-    isAdmin,
+    userEmail:   user.email,
+    userRole:    user.role,
+    clubId:      user.clubId,
+    isAdmin:     isAdmin(user.role),
+    isSuperAdmin: isSuperAdmin(user.role),
   });
 }
 
@@ -116,7 +119,7 @@ export function adminUsersPage(user: UserRecord, sessionToken = ""): GoogleAppsS
     display: c.displayName,
     value: c.normalizedName,
   }));
-  const roleOptions = Object.values(UserRole).filter((r) => r !== UserRole.API_CLIENT);
+  const roleOptions = Object.values(UserRole);
 
   return renderTemplate('admin/users', { sessionToken,
     userEmail: user.email,
@@ -137,10 +140,10 @@ export function adminEventsPage(user: UserRecord, sessionToken = ""): GoogleApps
   const events = listAllEvents(1, 20, 'desc');
 
   return renderTemplate('admin/events', { sessionToken,
-    userEmail: user.email,
-    userRole: user.role,
-    isAdmin: user.role === UserRole.ADMIN,
-    events: JSON.stringify(events.items),
+    userEmail:   user.email,
+    userRole:    user.role,
+    isAdmin:     isAdmin(user.role),
+    events:      JSON.stringify(events.items),
     totalEvents: events.total,
   });
 }
@@ -163,12 +166,18 @@ export function uploadPage(user: UserRecord, sessionToken = ""): GoogleAppsScrip
     value: c.normalizedName,
   }));
 
+  // Super admins have no fixed club — they must select one from approvedClubs.
+  // Club admins are bound to their assigned club.
+  const runningClub = isSuperAdmin(user.role) ? '' : (user.clubId ?? '');
+
   return renderTemplate('upload', { sessionToken,
-    userEmail: user.email,
-    userRole: user.role,
-    runningClub: user.runningClub,
-    isAdmin: user.role === UserRole.ADMIN,
-    events: JSON.stringify(events.items),
+    userEmail:     user.email,
+    userRole:      user.role,
+    clubId:        user.clubId,
+    isAdmin:       isAdmin(user.role),
+    isSuperAdmin:  isSuperAdmin(user.role),
+    runningClub,
+    events:        JSON.stringify(events.items),
     approvedClubs: JSON.stringify(approvedClubs),
   });
 }
@@ -183,10 +192,10 @@ export function adminClubsPage(user: UserRecord, sessionToken = ""): GoogleAppsS
   const result = listAllClubs(1, 100);
 
   return renderTemplate('admin/clubs', { sessionToken,
-    userEmail: user.email,
-    userRole: user.role,
-    isAdmin: user.role === UserRole.ADMIN,
-    clubs: JSON.stringify(result.items),
+    userEmail:  user.email,
+    userRole:   user.role,
+    isAdmin:    isAdmin(user.role),
+    clubs:      JSON.stringify(result.items),
     totalClubs: result.total,
   });
 }
@@ -206,12 +215,12 @@ export function adminSummaryPage(user: UserRecord, sessionToken = ""): GoogleApp
   const hasSummary = summaryResult.data !== undefined;
 
   return renderTemplate('admin/summary', { sessionToken,
-    userEmail: user.email,
-    userRole: user.role,
-    isAdmin: user.role === UserRole.ADMIN,
+    userEmail:      user.email,
+    userRole:       user.role,
+    isAdmin:        isAdmin(user.role),
     // Pass the initial summary as JSON; null if generation failed
     initialSummary: hasSummary ? JSON.stringify(summaryResult.data) : 'null',
-    initialError: hasSummary ? '' : (summaryResult.message ?? 'Failed to load summary'),
+    initialError:   hasSummary ? '' : (summaryResult.message ?? 'Failed to load summary'),
   });
 }
 
@@ -229,12 +238,12 @@ export function adminPhotosPage(user: UserRecord, sessionToken = ""): GoogleApps
   const albums = listAllAlbums();
 
   return renderTemplate('admin/photos', { sessionToken,
-    userEmail:    user.email,
-    userRole:     user.role,
-    isAdmin:      user.role === UserRole.ADMIN,
-    events:       JSON.stringify(events.items),
-    totalEvents:  events.total,
-    albums:       JSON.stringify(albums),
+    userEmail:   user.email,
+    userRole:    user.role,
+    isAdmin:     isAdmin(user.role),
+    events:      JSON.stringify(events.items),
+    totalEvents: events.total,
+    albums:      JSON.stringify(albums),
   });
 }
 
@@ -252,7 +261,7 @@ export function driveTreePage(user: UserRecord, sessionToken = ""): GoogleAppsSc
   return renderTemplate('drive_tree', { sessionToken,
     userEmail: user.email,
     userRole:  user.role,
-    isAdmin:   user.role === UserRole.ADMIN,
+    isAdmin:   isAdmin(user.role),
     events:    JSON.stringify(events.items),
   });
 }
@@ -272,7 +281,7 @@ export function adminEmailPrefsPage(user: UserRecord, sessionToken = ''): Google
     sessionToken,
     userEmail: user.email,
     userRole:  user.role,
-    isAdmin:   user.role === UserRole.ADMIN,
+    isAdmin:   isAdmin(user.role),
     prefs:     JSON.stringify(prefs),
   });
 }
@@ -285,11 +294,72 @@ export function adminEmailPrefsPage(user: UserRecord, sessionToken = ''): Google
 export function adminAuditPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
   const result = getAuditLogs({ page: 1, pageSize: 50 });
   return renderTemplate('admin/audit', { sessionToken,
-    userEmail: user.email,
-    userRole:  user.role,
-    isAdmin:   user.role === UserRole.ADMIN,
-    initialLogs:  result.data ? JSON.stringify(result.data.items)    : '[]',
-    initialTotal: result.data ? result.data.total                    : 0,
+    userEmail:    user.email,
+    userRole:     user.role,
+    isAdmin:      isAdmin(user.role),
+    initialLogs:  result.data ? JSON.stringify(result.data.items) : '[]',
+    initialTotal: result.data ? result.data.total                 : 0,
     initialError: result.data ? '' : (result.message ?? 'Failed to load audit log'),
+  });
+}
+
+/**
+ * Public — Album Index page (Phase 5, design §6).
+ *
+ * A Google-login-gated landing page that lists every event with synced Google
+ * Photos albums. Unlike admin pages, this handler accepts the viewer's email
+ * address directly (not a UserRecord) because visitors do NOT have to be
+ * registered admins — any Google account may view. The router enforces the
+ * "Google login required" gate before calling this function.
+ *
+ * All links are rendered as <a target="_blank"> pointing at the shareable
+ * Photos URL recorded at album-creation time. No session token is needed on
+ * the page — the page does not call back into GAS.
+ */
+export function publicAlbumIndexPage(viewerEmail: string): GoogleAppsScript.HTML.HtmlOutput {
+  const entries = listPublicAlbumIndex();
+  return renderTemplate('public/album_index', {
+    viewerEmail,
+    entries:      JSON.stringify(entries),
+    totalEvents:  entries.length,
+    totalAlbums:  entries.reduce(
+      (sum, e) => sum + (e.eventAlbum ? 1 : 0) + e.clubAlbums.length,
+      0
+    ),
+  });
+}
+
+/**
+ * Admin — Upload Link Management page.
+ *
+ * Pre-loads all events for the selectors and, for club admins, pre-loads
+ * their club's existing links so the page renders useful data immediately.
+ * Super admins start with an empty list and filter by event/club on demand.
+ *
+ * Club admins can only view/manage links for their own club.
+ * Super admins can view and manage any club's links.
+ *
+ * Admin-only; role is enforced at the router level before this is called.
+ */
+export function adminLinksPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
+  const events = listAllEvents(1, 200, 'desc');
+  const activeClubs = listActiveClubs();
+
+  // Pre-load the calling club admin's own links so the page is immediately
+  // useful. Super admins start empty and filter on demand.
+  let initialLinks: unknown[] = [];
+  if (user.clubId) {
+    initialLinks = findByClub(user.clubId);
+  }
+
+  return renderTemplate('admin/links', { sessionToken,
+    userEmail:    user.email,
+    userRole:     user.role,
+    clubId:       user.clubId,
+    isAdmin:      isAdmin(user.role),
+    isSuperAdmin: isSuperAdmin(user.role),
+    events:       JSON.stringify(events.items),
+    clubs:        JSON.stringify(activeClubs),
+    initialLinks: JSON.stringify(initialLinks),
   });
 }

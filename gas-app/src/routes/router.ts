@@ -19,9 +19,17 @@ import {
   adminAuditPage,
   adminEmailPrefsPage,
   adminPhotosPage,
+  adminLinksPage,
   driveTreePage,
   uploadPage,
+  publicAlbumIndexPage,
 } from './pageRoutes';
+import {
+  volunteerConfirmPage,
+  volunteerUploadPage,
+  linkErrorPage,
+  handleVolunteerOAuthCallback,
+} from './volunteerRoutes';
 import {
   handleCreateUser,
   handleUpdateUser,
@@ -34,15 +42,17 @@ import {
   handleUpdateClub,
   handleDeactivateClub,
   handleListClubs,
+  handleGenerateLink,
+  handleRevokeLink,
+  handleRotateLink,
+  handleListLinks,
+  handleDeleteFile,
+  handleRestoreFile,
+  handleListDeleted,
   handleLogout,
   handleUnknownAction,
   handleForbidden,
 } from './apiRoutes';
-import {
-  handleApiCheckFolder,
-  handleApiListFiles,
-  handleApiUploadFile,
-} from './apiClientHandlers';
 
 /* global Logger, ContentService */
 
@@ -72,13 +82,14 @@ function getGetRoutes(): Readonly<Record<string, RouteConfig>> {
   return {
     [RouteAction.DASHBOARD]:     { requiredRole: null },
     [RouteAction.LOGIN]:         { requiredRole: null },
-    [RouteAction.ADMIN_USERS]:   { requiredRole: UserRole.ADMIN },
-    [RouteAction.ADMIN_EVENTS]:  { requiredRole: UserRole.ADMIN },
-    [RouteAction.ADMIN_CLUBS]:   { requiredRole: UserRole.ADMIN },
-    [RouteAction.ADMIN_SUMMARY]: { requiredRole: UserRole.ADMIN },
-    [RouteAction.ADMIN_AUDIT]:   { requiredRole: UserRole.ADMIN },
-    [RouteAction.ADMIN_PHOTOS]:  { requiredRole: UserRole.ADMIN },
-    [RouteAction.ADMIN_EMAIL_PREFS]: { requiredRole: UserRole.ADMIN },
+    [RouteAction.ADMIN_USERS]:   { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.ADMIN_EVENTS]:  { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.ADMIN_CLUBS]:   { requiredRole: UserRole.SUPER_ADMIN },
+    [RouteAction.ADMIN_SUMMARY]: { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.ADMIN_AUDIT]:   { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.ADMIN_PHOTOS]:  { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.ADMIN_EMAIL_PREFS]: { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.ADMIN_LINKS]:   { requiredRole: UserRole.CLUB_ADMIN },
     [RouteAction.DRIVE_TREE]:    { requiredRole: null }, // all authenticated users
     [RouteAction.UPLOAD]:        { requiredRole: null }, // all authenticated users
   };
@@ -86,18 +97,25 @@ function getGetRoutes(): Readonly<Record<string, RouteConfig>> {
 
 function getPostRoutes(): Readonly<Record<string, RouteConfig>> {
   return {
-    [RouteAction.CREATE_USER]:           { requiredRole: UserRole.ADMIN },
-    [RouteAction.UPDATE_USER]:           { requiredRole: UserRole.ADMIN },
-    [RouteAction.DEACTIVATE_USER]:       { requiredRole: UserRole.ADMIN },
+    [RouteAction.CREATE_USER]:           { requiredRole: UserRole.SUPER_ADMIN },
+    [RouteAction.UPDATE_USER]:           { requiredRole: UserRole.SUPER_ADMIN },
+    [RouteAction.DEACTIVATE_USER]:       { requiredRole: UserRole.SUPER_ADMIN },
     [RouteAction.VALIDATE_FOLDER_NAME]:  { requiredRole: null },
-    [RouteAction.CREATE_EVENT]:          { requiredRole: UserRole.ADMIN },
-    [RouteAction.UPDATE_EVENT]:          { requiredRole: UserRole.ADMIN },
-    [RouteAction.LIST_EVENTS]:           { requiredRole: null }, // all users can list events
-    [RouteAction.CREATE_CLUB]:           { requiredRole: UserRole.ADMIN },
-    [RouteAction.UPDATE_CLUB]:           { requiredRole: UserRole.ADMIN },
-    [RouteAction.DEACTIVATE_CLUB]:       { requiredRole: UserRole.ADMIN },
+    [RouteAction.CREATE_EVENT]:          { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.UPDATE_EVENT]:          { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.LIST_EVENTS]:           { requiredRole: null }, // all authenticated users can list events
+    [RouteAction.CREATE_CLUB]:           { requiredRole: UserRole.SUPER_ADMIN },
+    [RouteAction.UPDATE_CLUB]:           { requiredRole: UserRole.SUPER_ADMIN },
+    [RouteAction.DEACTIVATE_CLUB]:       { requiredRole: UserRole.SUPER_ADMIN },
     [RouteAction.LIST_CLUBS]:            { requiredRole: null }, // all authenticated users
     [RouteAction.LOGOUT]:                { requiredRole: null }, // all authenticated users
+    [RouteAction.GENERATE_LINK]:         { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.REVOKE_LINK]:           { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.ROTATE_LINK]:           { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.LIST_LINKS]:            { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.DELETE_FILE]:           { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.RESTORE_FILE]:          { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.LIST_DELETED]:          { requiredRole: UserRole.CLUB_ADMIN },
   };
 }
 
@@ -119,10 +137,50 @@ export function handleGet(
     const params = e.parameter as Record<string, string>;
     Logger.log(`[Router.handleGet] action="${action}" params=${JSON.stringify(params)}`);
 
-    // ── Phase 5: API client requests (machine-to-machine) ─────────────────────
+    // ── Volunteer upload link — pre-login confirmation page ───────────────────
+    // ?action=upload_link&token=XYZ  (or just ?token=XYZ)
+    // Served BEFORE authentication — this page is intentionally public.
+    // The volunteer sees the event + club name and the consent line, then
+    // clicks "Sign in with Google" which initiates OAuth with state=volunteer:TOKEN.
+    if (action === RouteAction.UPLOAD_LINK || (params['token'] && !params['code'])) {
+      const token = params['token'] ?? '';
+      Logger.log(`[Router.handleGet] Volunteer confirm page — token present: ${!!token}`);
+      if (!token) {
+        return linkErrorPage('No upload token was provided. Please use the full upload link.', false);
+      }
+      return volunteerConfirmPage(token);
+    }
+
+    // ── Volunteer OAuth callback ───────────────────────────────────────────────
+    // Google redirects here with ?code=XXX&state=volunteer:TOKEN after the
+    // volunteer approves sign-in on the confirm page.
+    if (params['code'] && params['state']?.startsWith('volunteer:')) {
+      const linkToken = params['state'].substring('volunteer:'.length);
+      Logger.log(`[Router.handleGet] Volunteer OAuth callback — exchanging code`);
+      return handleVolunteerOAuthCallback(params['code'], linkToken);
+    }
+
+    // ── Volunteer upload page — post-auth, vsession-gated ────────────────────
+    // Served after the volunteer OAuth callback creates a vsession.
+    // Not a "real" admin route — bypasses the standard auth pipeline entirely.
+    if (action === RouteAction.VOLUNTEER_UPLOAD) {
+      const vsession = params['vsession'] ?? '';
+      Logger.log(`[Router.handleGet] Volunteer upload page — vsession present: ${!!vsession}`);
+      if (!vsession) {
+        return linkErrorPage('Missing session. Please open the upload link again.', false);
+      }
+      return volunteerUploadPage(vsession);
+    }
+
+    // ── API key requests: deprecated since Phase 1 redesign ───────────────────
     if (params['api_key']) {
-      Logger.log(`[Router.handleGet] API key present — routing to API handler`);
-      return dispatchApiGetHandler(action, params);
+      Logger.log(`[Router.handleGet] API key rejected — api_key auth removed`);
+      return ContentService
+        .createTextOutput(JSON.stringify({
+          status: 'error', code: 410,
+          message: 'API key authentication has been removed. Use upload links instead.',
+        }))
+        .setMimeType(ContentService.MimeType.JSON);
     }
 
     // ── OAuth 2.0 authorization code callback ─────────────────────────────────
@@ -148,6 +206,39 @@ export function handleGet(
     if (action === RouteAction.HEALTHCHECK) {
       Logger.log(`[Router.handleGet] Serving healthcheck`);
       return healthcheckPage(e);
+    }
+
+    // ── Public album index — Google-login-gated, non-admin (design §6) ────────
+    // This page is intentionally reachable by visitors who are NOT registered
+    // admins. We only require that the viewer has a Google session so we can
+    // log who browsed the catalog (deterring drive-by bots). Admin role is
+    // explicitly NOT required — we skip resolveUser() entirely.
+    //
+    // Under USER_ACCESSING deployment: Session.getActiveUser() returns an
+    // email for any Google account, which is all we need.
+    // Under USER_DEPLOYING deployment: only the deploying account's session
+    // is visible; a dedicated public OAuth flow is a follow-up.
+    if (action === RouteAction.ALBUM_INDEX) {
+      const gasSession = getCurrentUser();
+      const viewerEmail = gasSession.data?.email ?? '';
+      Logger.log(`[Router.handleGet] Album index — viewerEmail="${viewerEmail}"`);
+
+      if (!viewerEmail) {
+        // Fall through to the admin session token path (lets admins who arrive
+        // via ?session= also see it without re-authenticating) before giving up.
+        const sessionToken = (e.parameter['session'] as string | undefined) ?? '';
+        if (sessionToken) {
+          const sessionAuth = authenticateBySession(sessionToken);
+          if (sessionAuth.status === ResultStatus.SUCCESS && sessionAuth.data) {
+            return publicAlbumIndexPage(sessionAuth.data.email);
+          }
+        }
+        return loginPage(
+          'Please sign in with any Google account to view the public album index.'
+        );
+      }
+
+      return publicAlbumIndexPage(viewerEmail);
     }
 
     // ── Authenticate ─────────────────────────────────────────────────────────
@@ -202,29 +293,6 @@ export function handleGet(
 }
 
 /**
- * Routes Phase 5 API GET requests (authenticated via api_key param).
- * Returns a JSON TextOutput in all cases — never HTML.
- */
-function dispatchApiGetHandler(
-  action: RouteAction,
-  params: Record<string, string>
-): GoogleAppsScript.Content.TextOutput {
-  switch (action) {
-    case RouteAction.API_CHECK_FOLDER:
-      return handleApiCheckFolder(params);
-    case RouteAction.API_LIST_FILES:
-      return handleApiListFiles(params);
-    default:
-      return ContentService
-        .createTextOutput(JSON.stringify({
-          status: 'error', code: 404,
-          message: `Unknown API action: "${action}"`,
-        }))
-        .setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-/**
  * Maps a validated action to its page handler.
  */
 function dispatchGetHandler(
@@ -249,6 +317,8 @@ function dispatchGetHandler(
       return adminPhotosPage(user, sessionToken);
     case RouteAction.ADMIN_EMAIL_PREFS:
       return adminEmailPrefsPage(user, sessionToken);
+    case RouteAction.ADMIN_LINKS:
+      return adminLinksPage(user, sessionToken);
     case RouteAction.DRIVE_TREE:
       return driveTreePage(user, sessionToken);
     case RouteAction.UPLOAD:
@@ -362,9 +432,20 @@ function dispatchPostHandler(
       return handleDeactivateClub(payload, user);
     case RouteAction.LIST_CLUBS:
       return handleListClubs(payload);
-    case RouteAction.API_UPLOAD_FILE:
-      // Phase 5: API upload; auth is inside the handler (api_key in body)
-      return handleApiUploadFile(payload);
+    case RouteAction.GENERATE_LINK:
+      return handleGenerateLink(payload, user);
+    case RouteAction.REVOKE_LINK:
+      return handleRevokeLink(payload, user);
+    case RouteAction.ROTATE_LINK:
+      return handleRotateLink(payload, user);
+    case RouteAction.LIST_LINKS:
+      return handleListLinks(payload, user);
+    case RouteAction.DELETE_FILE:
+      return handleDeleteFile(payload, user);
+    case RouteAction.RESTORE_FILE:
+      return handleRestoreFile(payload, user);
+    case RouteAction.LIST_DELETED:
+      return handleListDeleted(payload, user);
     case RouteAction.LOGOUT:
       return handleLogout(payload);
     default:

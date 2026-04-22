@@ -32,6 +32,12 @@ export interface CreateAuditLogInput {
   readonly resourceType: string;
   readonly resourceId:   string;
   readonly details:      Record<string, unknown>;
+  /** Upload link ID used for this action (upload events only). */
+  readonly linkId?:      string;
+  /** IP address of the actor (when available). */
+  readonly ipAddress?:   string;
+  /** Optional free-text reason (especially for deletes and revocations). */
+  readonly reason?:      string;
 }
 
 // ─── Query type ───────────────────────────────────────────────────────────────
@@ -72,6 +78,9 @@ export function appendAuditLog(input: CreateAuditLogInput): void {
       resourceType: input.resourceType,
       resourceId:   input.resourceId,
       details:      JSON.stringify(input.details),
+      linkId:       input.linkId    ?? '',
+      ipAddress:    input.ipAddress ?? '',
+      reason:       input.reason    ?? '',
     };
 
     const config = getConfig();

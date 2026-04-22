@@ -1,5 +1,5 @@
-import { UserRole, UserStatus, UploadSource, AuditAction } from '../types/enums';
-import { UserRecord, EventRecord, UploadLogRecord, ClubRecord, AuditLogRecord, PhotosAlbumRecord, PhotosFileRecord, EmailPreferenceRecord } from '../types/models';
+import { UserRole, UserStatus, UploadSource, AuditAction, SyncQueueStatus, DeletedFileStatus } from '../types/enums';
+import { UserRecord, EventRecord, UploadLogRecord, UploadLinkRecord, ClubRecord, AuditLogRecord, PhotosAlbumRecord, PhotosFileRecord, EmailPreferenceRecord, SyncQueueRecord, DeletedFileRecord } from '../types/models';
 import { COLUMNS } from '../config/constants';
 
 /**
@@ -40,9 +40,13 @@ function formatSheetDate(value: unknown): string {
 /**
  * Converts a raw Sheets row to a UserRecord.
  * Returns null if the row is structurally invalid or has an unrecognized role.
+ *
+ * Column order: EMAIL(0) FIRST_NAME(1) LAST_NAME(2) ROLE(3) STATUS(4)
+ *               CLUB_ID(5) ADDED_DATE(6) ADDED_BY(7) LAST_LOGIN_AT(8)
  */
 export function toUserRecord(row: unknown[]): UserRecord | null {
   const COL = COLUMNS.USERS;
+  // Minimum required: columns 0-7 (LAST_LOGIN_AT col 8 is optional — may be absent on older rows)
   if (row.length <= COL.ADDED_BY) return null;
 
   const email = String(row[COL.EMAIL] ?? '').trim().toLowerCase();
@@ -55,11 +59,14 @@ export function toUserRecord(row: unknown[]): UserRecord | null {
 
   return {
     email,
-    runningClub: String(row[COL.RUNNING_CLUB] ?? '').trim(),
-    role: role as UserRole,
-    status: status as UserStatus,
+    firstName: String(row[COL.FIRST_NAME] ?? '').trim(),
+    lastName:  String(row[COL.LAST_NAME]  ?? '').trim(),
+    role:      role as UserRole,
+    status:    status as UserStatus,
+    clubId:    String(row[COL.CLUB_ID]    ?? '').trim(),
     addedDate: formatSheetDate(row[COL.ADDED_DATE]),
-    addedBy: String(row[COL.ADDED_BY] ?? '').trim().toLowerCase(),
+    addedBy:   String(row[COL.ADDED_BY]  ?? '').trim().toLowerCase(),
+    lastLoginAt: String(row[COL.LAST_LOGIN_AT] ?? '').trim(),
   };
 }
 
@@ -70,11 +77,14 @@ export function toUserRecord(row: unknown[]): UserRecord | null {
 export function fromUserRecord(record: UserRecord): unknown[] {
   return [
     record.email,
-    record.runningClub,
+    record.firstName,
+    record.lastName,
     record.role,
     record.status,
+    record.clubId,
     record.addedDate,
     record.addedBy,
+    record.lastLoginAt,
   ];
 }
 
@@ -164,6 +174,8 @@ export function toUploadLogRecord(row: unknown[]): UploadLogRecord | null {
     skippedNonPhoto,
     uploadTimestamp: String(row[COL.UPLOAD_TIMESTAMP] ?? '').trim(),
     source: source as UploadSource,
+    // linkId may be absent on older rows (before Phase 2)
+    linkId: String(row[COL.LINK_ID] ?? '').trim(),
   };
 }
 
@@ -184,6 +196,7 @@ export function fromUploadLogRecord(record: UploadLogRecord): unknown[] {
     record.skippedNonPhoto,
     record.uploadTimestamp,
     record.source,
+    record.linkId,
   ];
 }
 
@@ -232,6 +245,9 @@ export function fromClubRecord(record: ClubRecord): unknown[] {
 /**
  * Converts a raw Sheets row to an AuditLogRecord.
  * Returns null if required fields are missing or action is unrecognized.
+ *
+ * Legacy rows (pre-Phase-2) only have 7 columns; the three new fields
+ * (LINK_ID, IP_ADDRESS, REASON) default to empty strings for those rows.
  */
 export function toAuditLogRecord(row: unknown[]): AuditLogRecord | null {
   const COL = COLUMNS.AUDIT_LOG;
@@ -252,6 +268,10 @@ export function toAuditLogRecord(row: unknown[]): AuditLogRecord | null {
     resourceType: String(row[COL.RESOURCE_TYPE] ?? '').trim(),
     resourceId:   String(row[COL.RESOURCE_ID]   ?? '').trim(),
     details:      String(row[COL.DETAILS]        ?? '').trim(),
+    // Extended fields — may be absent on legacy rows
+    linkId:    String(row[COL.LINK_ID]    ?? '').trim(),
+    ipAddress: String(row[COL.IP_ADDRESS] ?? '').trim(),
+    reason:    String(row[COL.REASON]     ?? '').trim(),
   };
 }
 
@@ -268,6 +288,60 @@ export function fromAuditLogRecord(record: AuditLogRecord): unknown[] {
     record.resourceType,
     record.resourceId,
     record.details,
+    record.linkId,
+    record.ipAddress,
+    record.reason,
+  ];
+}
+
+// ─── Upload Links ─────────────────────────────────────────────────────────────
+
+/**
+ * Converts a raw Sheets row to an UploadLinkRecord.
+ * Returns null if required key fields (linkId, eventId, token) are missing.
+ */
+export function toUploadLinkRecord(row: unknown[]): UploadLinkRecord | null {
+  const COL = COLUMNS.UPLOAD_LINKS;
+  if (row.length <= COL.REVOKED_REASON) return null;
+
+  const linkId  = String(row[COL.LINK_ID]  ?? '').trim();
+  const eventId = String(row[COL.EVENT_ID] ?? '').trim();
+  const token   = String(row[COL.TOKEN]    ?? '').trim();
+
+  if (!linkId || !eventId || !token) return null;
+
+  const version = Number(row[COL.VERSION]);
+
+  return {
+    linkId,
+    eventId,
+    clubName:      String(row[COL.CLUB_NAME]      ?? '').trim(),
+    token,
+    version:       isFinite(version) ? version : 1,
+    generatedBy:   String(row[COL.GENERATED_BY]   ?? '').trim().toLowerCase(),
+    generatedAt:   String(row[COL.GENERATED_AT]   ?? '').trim(),
+    revokedAt:     String(row[COL.REVOKED_AT]     ?? '').trim(),
+    revokedBy:     String(row[COL.REVOKED_BY]     ?? '').trim().toLowerCase(),
+    revokedReason: String(row[COL.REVOKED_REASON] ?? '').trim(),
+  };
+}
+
+/**
+ * Converts an UploadLinkRecord back to a Sheets row array.
+ * Column order must match COLUMNS.UPLOAD_LINKS exactly.
+ */
+export function fromUploadLinkRecord(record: UploadLinkRecord): unknown[] {
+  return [
+    record.linkId,
+    record.eventId,
+    record.clubName,
+    record.token,
+    record.version,
+    record.generatedBy,
+    record.generatedAt,
+    record.revokedAt,
+    record.revokedBy,
+    record.revokedReason,
   ];
 }
 
@@ -373,6 +447,62 @@ export function fromPhotosFileRecord(record: PhotosFileRecord): unknown[] {
   ];
 }
 
+// ─── Sync Queue ───────────────────────────────────────────────────────────────
+
+/**
+ * Converts a raw Sheets row to a SyncQueueRecord.
+ * Returns null if required fields (queueId, eventId, batchFolderId) are missing
+ * or if the status value is not a recognised SyncQueueStatus.
+ */
+export function toSyncQueueRecord(row: unknown[]): SyncQueueRecord | null {
+  const COL = COLUMNS.SYNC_QUEUE;
+  if (row.length <= COL.COMPLETED_AT) return null;
+
+  const queueId       = String(row[COL.QUEUE_ID]       ?? '').trim();
+  const eventId       = String(row[COL.EVENT_ID]       ?? '').trim();
+  const batchFolderId = String(row[COL.BATCH_FOLDER_ID] ?? '').trim();
+  const status        = String(row[COL.STATUS]          ?? '').trim();
+
+  if (!queueId || !eventId || !batchFolderId) return null;
+  if (!Object.values(SyncQueueStatus).includes(status as SyncQueueStatus)) return null;
+
+  const attempts = Number(row[COL.ATTEMPTS]);
+
+  return {
+    queueId,
+    eventId,
+    clubName:        String(row[COL.CLUB_NAME]         ?? '').trim(),
+    batchFolderId,
+    batchFolderName: String(row[COL.BATCH_FOLDER_NAME] ?? '').trim(),
+    enqueuedAt:      String(row[COL.ENQUEUED_AT]       ?? '').trim(),
+    status:          status as SyncQueueStatus,
+    attempts:        isFinite(attempts) ? attempts : 0,
+    lastAttemptAt:   String(row[COL.LAST_ATTEMPT_AT]   ?? '').trim(),
+    errorMsg:        String(row[COL.ERROR_MSG]          ?? '').trim(),
+    completedAt:     String(row[COL.COMPLETED_AT]       ?? '').trim(),
+  };
+}
+
+/**
+ * Converts a SyncQueueRecord back to a Sheets row array.
+ * Column order must match COLUMNS.SYNC_QUEUE exactly.
+ */
+export function fromSyncQueueRecord(record: SyncQueueRecord): unknown[] {
+  return [
+    record.queueId,
+    record.eventId,
+    record.clubName,
+    record.batchFolderId,
+    record.batchFolderName,
+    record.enqueuedAt,
+    record.status,
+    record.attempts,
+    record.lastAttemptAt,
+    record.errorMsg,
+    record.completedAt,
+  ];
+}
+
 // ─── Email Preferences ────────────────────────────────────────────────────────
 
 /**
@@ -396,7 +526,9 @@ function toOptInBoolean(value: unknown): boolean {
  */
 export function toEmailPreferenceRecord(row: unknown[]): EmailPreferenceRecord | null {
   const COL = COLUMNS.EMAIL_PREFERENCES;
-  if (row.length <= COL.UPDATED_AT) return null;
+  // Rows written before EVENT_CREATED was added only have 8 columns (UPDATED_AT at index 7).
+  // Accept rows with at least 5 columns (EMAIL through SECURITY_EVENT) so old data still loads.
+  if (row.length < 5) return null;
 
   const email = String(row[COL.EMAIL] ?? '').trim().toLowerCase();
   if (!email) return null;
@@ -407,9 +539,12 @@ export function toEmailPreferenceRecord(row: unknown[]): EmailPreferenceRecord |
     userRoleChanged: toOptInBoolean(row[COL.USER_ROLE_CHANGED]),
     userDeactivated: toOptInBoolean(row[COL.USER_DEACTIVATED]),
     securityEvent:   toOptInBoolean(row[COL.SECURITY_EVENT]),
-    dailyReport:     toOptInBoolean(row[COL.DAILY_REPORT]),
-    weeklyReport:    toOptInBoolean(row[COL.WEEKLY_REPORT]),
-    updatedAt:       String(row[COL.UPDATED_AT] ?? '').trim(),
+    // EVENT_CREATED column (index 5) may be absent in rows written before the schema update;
+    // default to true (opted in) to match the default policy for new transactional alerts.
+    eventCreated:    row.length > COL.EVENT_CREATED ? toOptInBoolean(row[COL.EVENT_CREATED]) : true,
+    dailyReport:     row.length > COL.DAILY_REPORT   ? toOptInBoolean(row[COL.DAILY_REPORT])   : false,
+    weeklyReport:    row.length > COL.WEEKLY_REPORT  ? toOptInBoolean(row[COL.WEEKLY_REPORT])  : false,
+    updatedAt:       row.length > COL.UPDATED_AT     ? String(row[COL.UPDATED_AT] ?? '').trim() : '',
   };
 }
 
@@ -425,8 +560,67 @@ export function fromEmailPreferenceRecord(record: EmailPreferenceRecord): unknow
     record.userRoleChanged,
     record.userDeactivated,
     record.securityEvent,
+    record.eventCreated,
     record.dailyReport,
     record.weeklyReport,
     record.updatedAt,
+  ];
+}
+
+// ─── Deleted Files ────────────────────────────────────────────────────────────
+
+/**
+ * Coerces a Sheets row into a DeletedFileRecord.
+ * Returns null if any required identity field is missing or status is invalid.
+ */
+export function toDeletedFileRecord(row: unknown[]): DeletedFileRecord | null {
+  const COL = COLUMNS.DELETED_FILES;
+  if (row.length <= COL.STATUS) return null;
+
+  const deleteId    = String(row[COL.DELETE_ID]    ?? '').trim();
+  const driveFileId = String(row[COL.DRIVE_FILE_ID] ?? '').trim();
+  const status      = String(row[COL.STATUS]        ?? '').trim();
+
+  if (!deleteId || !driveFileId) return null;
+  if (!Object.values(DeletedFileStatus).includes(status as DeletedFileStatus)) return null;
+
+  return {
+    deleteId,
+    driveFileId,
+    fileName:        String(row[COL.FILE_NAME]        ?? '').trim(),
+    eventId:         String(row[COL.EVENT_ID]         ?? '').trim(),
+    clubName:        String(row[COL.CLUB_NAME]        ?? '').trim(),
+    batchFolderName: String(row[COL.BATCH_FOLDER_NAME] ?? '').trim(),
+    uploadedBy:      String(row[COL.UPLOADED_BY]      ?? '').trim(),
+    deletedAt:       String(row[COL.DELETED_AT]       ?? '').trim(),
+    deletedBy:       String(row[COL.DELETED_BY]       ?? '').trim(),
+    deletedReason:   String(row[COL.DELETED_REASON]   ?? '').trim(),
+    restoredAt:      String(row[COL.RESTORED_AT]      ?? '').trim(),
+    restoredBy:      String(row[COL.RESTORED_BY]      ?? '').trim(),
+    purgedAt:        String(row[COL.PURGED_AT]        ?? '').trim(),
+    status:          status as DeletedFileStatus,
+  };
+}
+
+/**
+ * Converts a DeletedFileRecord to a Sheets row array.
+ * Column order must match COLUMNS.DELETED_FILES exactly.
+ */
+export function fromDeletedFileRecord(record: DeletedFileRecord): unknown[] {
+  return [
+    record.deleteId,
+    record.driveFileId,
+    record.fileName,
+    record.eventId,
+    record.clubName,
+    record.batchFolderName,
+    record.uploadedBy,
+    record.deletedAt,
+    record.deletedBy,
+    record.deletedReason,
+    record.restoredAt,
+    record.restoredBy,
+    record.purgedAt,
+    record.status,
   ];
 }

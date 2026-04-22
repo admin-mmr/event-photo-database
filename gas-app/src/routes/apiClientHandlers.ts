@@ -1,7 +1,5 @@
 import { ResultStatus, PhotoMimeType, UploadSource } from '../types/enums';
 import { UserRecord } from '../types/models';
-import { authenticateApiKey } from '../middleware/authMiddleware';
-import { checkAndIncrementRateLimit } from '../services/rateLimitService';
 import { getAllRows } from '../services/sheetService';
 import { toEventRecord } from '../utils/sheetMapper';
 import {
@@ -57,28 +55,22 @@ function jsonError(
 
 /**
  * Runs the full API auth + rate-limit pipeline.
- * Returns the authenticated UserRecord on success, or a TextOutput error.
+ *
+ * NOTE: The API_CLIENT role has been removed as part of the Phase 1 redesign.
+ * Machine-to-machine API access via api_key is deprecated; all uploads now go
+ * through upload links. These handlers are retained temporarily for reference
+ * but always return 410 Gone.
  */
 function gatekeep(
-  apiKey: string
+  _apiKey: string
 ): { ok: true; user: UserRecord } | { ok: false; response: GoogleAppsScript.Content.TextOutput } {
-  // 1. Auth
-  const authResult = authenticateApiKey(apiKey);
-  if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
-    return { ok: false, response: jsonError(authResult.message, 401) };
-  }
-
-  // 2. Rate limit
-  const rlResult = checkAndIncrementRateLimit(apiKey);
-  if (rlResult.status !== ResultStatus.SUCCESS) {
-    return { ok: false, response: jsonError(rlResult.message, 500) };
-  }
-  if (!rlResult.data?.allowed) {
-    const msg = `Rate limit exceeded. Resets at ${rlResult.data?.windowResetsAt ?? 'unknown'}.`;
-    return { ok: false, response: jsonError(msg, 429) };
-  }
-
-  return { ok: true, user: authResult.data };
+  return {
+    ok: false,
+    response: jsonError(
+      'The API key authentication method has been removed. Use upload links instead.',
+      410
+    ),
+  };
 }
 
 // ─── Handler: api_check_folder ────────────────────────────────────────────────
@@ -290,7 +282,7 @@ export function handleApiUploadFile(
     totalSizeMb:       Math.round(sizeMb * 1000) / 1000,
     skippedDuplicates: 0,
     skippedNonPhoto:   0,
-    source:            UploadSource.API,
+    source:            UploadSource.LINK,
   });
 
   Logger.log(

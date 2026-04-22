@@ -1,17 +1,28 @@
-import { UserRole, UserStatus, UploadSource, AuditAction } from './enums';
+import { UserRole, UserStatus, UploadSource, AuditAction, SyncQueueStatus } from './enums';
 
 /**
  * A row in the "Users" sheet.
  * Column order mirrors SheetColumns.USERS in config.ts.
  * All fields are readonly — mutations go through UserService methods.
+ *
+ * Volunteers (uploaders) are NOT stored here. They access the system via a
+ * per-(event, club) upload link and only need a Google account in the moment.
  */
 export interface UserRecord {
   readonly email: string;         // Google account email (primary key)
-  readonly runningClub: string;   // Must match an approved club normalizedName
+  readonly firstName: string;     // Given name from Google profile (captured on first login)
+  readonly lastName: string;      // Family name from Google profile (captured on first login)
   readonly role: UserRole;
   readonly status: UserStatus;
+  /**
+   * For CLUB_ADMIN: the normalizedName of the one club this person administers.
+   * For SUPER_ADMIN: empty string — super admins are not scoped to a club.
+   * A person cannot be club admin for more than one club; promote to super admin if needed.
+   */
+  readonly clubId: string;
   readonly addedDate: string;     // ISO 8601 date: "YYYY-MM-DD"
   readonly addedBy: string;       // Admin email who created the record
+  readonly lastLoginAt: string;   // ISO 8601 timestamp of most recent login; empty until first login
 }
 
 /**
@@ -34,7 +45,7 @@ export interface UploadLogRecord {
   readonly logId: string;             // UUID v4
   readonly eventId: string;           // FK → EventRecord.eventId
   readonly clubName: string;          // Normalized club name
-  readonly uploadedBy: string;        // User email
+  readonly uploadedBy: string;        // Uploader's Google email
   readonly batchFolderName: string;   // YYYYMMDD-HHMMSS_username
   readonly batchFolderId: string;     // Google Drive folder ID
   readonly fileCount: number;         // Photos successfully uploaded
@@ -43,21 +54,50 @@ export interface UploadLogRecord {
   readonly skippedNonPhoto: number;   // Files skipped due to wrong MIME type
   readonly uploadTimestamp: string;   // ISO 8601 timestamp
   readonly source: UploadSource;
+  readonly linkId: string;            // Upload link ID used for this session; empty for admin uploads
+}
+
+/**
+ * A row in the "Upload_Links" sheet.
+ *
+ * One record per (event, club) pair. A link is permanent (no expiration) but
+ * revocable. Rotating a link increments `version` and clears `revokedAt`; the
+ * old token can no longer be used, but the (linkId, version) pair is preserved
+ * in every audit row written while that token was active — so forensic history
+ * survives rotation.
+ *
+ * Bearer-token semantics: anyone who holds the URL can upload within the scope
+ * encoded in the link, provided they also authenticate via Google OAuth.
+ */
+export interface UploadLinkRecord {
+  readonly linkId:        string;  // UUID v4 — stable across rotations
+  readonly eventId:       string;  // FK → EventRecord.eventId
+  readonly clubName:      string;  // Normalized club name (Drive folder key)
+  readonly token:         string;  // URL-safe random secret (changes on rotation)
+  readonly version:       number;  // Incremented each time the link is rotated
+  readonly generatedBy:   string;  // Admin email who created/last-rotated the link
+  readonly generatedAt:   string;  // ISO 8601 timestamp of creation/last rotation
+  readonly revokedAt:     string;  // ISO 8601 timestamp of revocation; empty if active
+  readonly revokedBy:     string;  // Admin email who revoked; empty if not revoked
+  readonly revokedReason: string;  // Free-text reason for revocation; empty if not revoked
 }
 
 /**
  * A row in the "Audit_Log" sheet.
- * Written once per successful state-changing admin operation.
+ * Written once per successful state-changing operation.
  * Records are append-only — never updated or deleted.
  */
 export interface AuditLogRecord {
   readonly auditId:      string;      // UUID v4
   readonly timestamp:    string;      // ISO 8601 timestamp
-  readonly actorEmail:   string;      // Admin who performed the action
+  readonly actorEmail:   string;      // User who performed the action (admin or volunteer email)
   readonly action:       AuditAction; // What was done
-  readonly resourceType: string;      // 'user' | 'event' | 'club' | 'report'
-  readonly resourceId:   string;      // Email / eventId / normalizedName / ''
+  readonly resourceType: string;      // 'user' | 'event' | 'club' | 'link' | 'file' | 'report'
+  readonly resourceId:   string;      // Email / eventId / normalizedName / linkId / ''
   readonly details:      string;      // JSON string of relevant payload fields
+  readonly linkId:       string;      // Upload link ID used (for uploads — preserves forensics after rotation); empty otherwise
+  readonly ipAddress:    string;      // IP address of the actor; empty if unavailable
+  readonly reason:       string;      // Optional free-text reason (especially for deletes/revocations)
 }
 
 /**
@@ -136,9 +176,40 @@ export interface EmailPreferenceRecord {
   readonly userRoleChanged: boolean;         // CC on role-change notifications
   readonly userDeactivated: boolean;         // CC on deactivation notifications
   readonly securityEvent: boolean;           // Receive failed-login alerts
+  readonly eventCreated: boolean;            // Receive new-event creation alerts
   readonly dailyReport: boolean;             // Receive the daily digest
   readonly weeklyReport: boolean;            // Receive the weekly digest
   readonly updatedAt: string;                // ISO 8601 timestamp of last change
+}
+
+/**
+ * A row in the "Sync_Queue" sheet (Phase 4).
+ *
+ * Each row represents one Drive batch folder that must be synced to Google Photos.
+ * The queue is written by serverCompleteUpload / serverCompleteVolunteerUpload and
+ * drained by the drainSyncQueueTrigger() time-trigger function.
+ *
+ * Retry strategy:
+ *   - A drain run marks the item in_progress, then calls syncBatchToAlbums().
+ *   - On success → status = done, completedAt = now.
+ *   - On failure → attempts++, status = pending (up to MAX_SYNC_ATTEMPTS),
+ *                  then status = failed permanently so it doesn't loop.
+ *   - If a GAS execution is killed mid-run (6-min wall-clock limit), the item
+ *     stays in_progress. The next drain run treats items stuck in_progress for
+ *     longer than SYNC_STUCK_THRESHOLD_MINUTES as pending again.
+ */
+export interface SyncQueueRecord {
+  readonly queueId:        string;            // UUID v4 (primary key)
+  readonly eventId:        string;            // FK → Events.eventId
+  readonly clubName:       string;            // Normalized club name
+  readonly batchFolderId:  string;            // Google Drive folder ID for this batch
+  readonly batchFolderName: string;           // Human-readable batch folder name
+  readonly enqueuedAt:     string;            // ISO 8601 timestamp
+  readonly status:         SyncQueueStatus;   // pending | in_progress | done | failed
+  readonly attempts:       number;            // Number of drain attempts made
+  readonly lastAttemptAt:  string;            // ISO 8601 timestamp; empty until first attempt
+  readonly errorMsg:       string;            // Last error text; empty if no error yet
+  readonly completedAt:    string;            // ISO 8601 timestamp; empty until done
 }
 
 /**
@@ -152,4 +223,28 @@ export interface ClubRecord {
   readonly status: 'active' | 'inactive';
   readonly addedDate: string;        // ISO 8601 date: "YYYY-MM-DD"
   readonly addedBy: string;          // Admin email who created the record
+}
+
+/**
+ * A row in the "Deleted_Files" sheet (Phase 7 — soft delete).
+ *
+ * Records are written by softDeleteFile() and updated in place by restoreFile()
+ * and purgeDeletedFiles(). A row is never hard-deleted from the sheet — the
+ * full lifecycle (deleted → restored or purged) is preserved for the audit trail.
+ */
+export interface DeletedFileRecord {
+  readonly deleteId:        string;  // UUID v4 (primary key)
+  readonly driveFileId:     string;  // Google Drive file ID
+  readonly fileName:        string;  // Original filename (for UI display)
+  readonly eventId:         string;  // FK → EventRecord.eventId
+  readonly clubName:        string;  // Normalized club name
+  readonly batchFolderName: string;  // Batch folder where the file lived
+  readonly uploadedBy:      string;  // Original uploader's Google email
+  readonly deletedAt:       string;  // ISO 8601 timestamp of soft-delete
+  readonly deletedBy:       string;  // Admin email who triggered the delete
+  readonly deletedReason:   string;  // Free-text reason (optional; empty if none)
+  readonly restoredAt:      string;  // ISO 8601 timestamp of restore; empty if not restored
+  readonly restoredBy:      string;  // Admin email who restored; empty if not restored
+  readonly purgedAt:        string;  // ISO 8601 timestamp of hard-delete; empty if not purged
+  readonly status:          import('./enums').DeletedFileStatus;
 }

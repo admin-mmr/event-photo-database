@@ -100,9 +100,11 @@ export function validateCreateUserPayload(
 ): ServiceResult<CreateUserInput> {
   const errors: ValidationError[] = [];
 
-  const email = sanitizeEmail(raw['email']);
-  const runningClub = sanitizeString(raw['runningClub']);
-  const role = sanitizeString(raw['role']);
+  const email     = sanitizeEmail(raw['email']);
+  const firstName = sanitizeString(raw['firstName']);
+  const lastName  = sanitizeString(raw['lastName']);
+  const role      = sanitizeString(raw['role']);
+  const clubId    = raw['clubId'] !== undefined ? sanitizeString(raw['clubId']) : undefined;
 
   if (!email) {
     errors.push({ field: 'email', message: 'Email is required' });
@@ -110,8 +112,12 @@ export function validateCreateUserPayload(
     errors.push({ field: 'email', message: 'Invalid email address format', value: email });
   }
 
-  if (!runningClub) {
-    errors.push({ field: 'runningClub', message: 'Running club is required' });
+  if (!firstName) {
+    errors.push({ field: 'firstName', message: 'First name is required' });
+  }
+
+  if (!lastName) {
+    errors.push({ field: 'lastName', message: 'Last name is required' });
   }
 
   if (!role) {
@@ -133,15 +139,17 @@ export function validateCreateUserPayload(
     message: 'Valid',
     data: {
       email,
-      runningClub,
+      firstName,
+      lastName,
       role: role as UserRole,
+      ...(clubId !== undefined && { clubId }),
     },
   };
 }
 
 /**
  * Validates and sanitizes an UpdateUserInput payload extracted from doPost.
- * At least one of runningClub, role, or status must be supplied.
+ * At least one of firstName, lastName, clubId, role, or status must be supplied.
  */
 export function validateUpdateUserPayload(
   raw: Record<string, unknown>
@@ -153,9 +161,11 @@ export function validateUpdateUserPayload(
     errors.push({ field: 'email', message: 'A valid email is required to identify the user', value: email });
   }
 
-  const role = raw['role'] !== undefined ? sanitizeString(raw['role']) : undefined;
-  const status = raw['status'] !== undefined ? sanitizeString(raw['status']) : undefined;
-  const runningClub = raw['runningClub'] !== undefined ? sanitizeString(raw['runningClub']) : undefined;
+  const firstName = raw['firstName'] !== undefined ? sanitizeString(raw['firstName']) : undefined;
+  const lastName  = raw['lastName']  !== undefined ? sanitizeString(raw['lastName'])  : undefined;
+  const clubId    = raw['clubId']    !== undefined ? sanitizeString(raw['clubId'])    : undefined;
+  const role      = raw['role']      !== undefined ? sanitizeString(raw['role'])      : undefined;
+  const status    = raw['status']    !== undefined ? sanitizeString(raw['status'])    : undefined;
 
   if (role !== undefined && !isValidRole(role)) {
     errors.push({ field: 'role', message: `Invalid role: "${role}"`, value: role });
@@ -165,10 +175,11 @@ export function validateUpdateUserPayload(
     errors.push({ field: 'status', message: `Invalid status: "${status}"`, value: status });
   }
 
-  if (role === undefined && status === undefined && runningClub === undefined) {
+  if (firstName === undefined && lastName === undefined && clubId === undefined &&
+      role === undefined && status === undefined) {
     errors.push({
       field: '_form',
-      message: 'At least one of runningClub, role, or status must be supplied',
+      message: 'At least one of firstName, lastName, clubId, role, or status must be supplied',
     });
   }
 
@@ -181,9 +192,11 @@ export function validateUpdateUserPayload(
     message: 'Valid',
     data: {
       email,
-      ...(runningClub !== undefined && { runningClub }),
-      ...(role !== undefined && { role: role as UserRole }),
-      ...(status !== undefined && { status: status as UserStatus }),
+      ...(firstName !== undefined && { firstName }),
+      ...(lastName  !== undefined && { lastName }),
+      ...(clubId    !== undefined && { clubId }),
+      ...(role      !== undefined && { role: role as UserRole }),
+      ...(status    !== undefined && { status: status as UserStatus }),
     },
   };
 }

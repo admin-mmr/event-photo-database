@@ -1258,3 +1258,131 @@ export function reconcileAllPhotos(): ServiceResult<ReconciliationReport> {
     data: { events: results, totalDrive, totalSynced, totalMissing, eventsWithGaps },
   };
 }
+
+// ─── Delete / restore sync ────────────────────────────────────────────────────
+
+/**
+ * Calls the Photos Library API to remove a single media item from an album.
+ * Returns true on 2xx, false on any error (logged but non-throwing).
+ */
+function apiRemoveMediaItemFromAlbum(albumId: string, mediaItemId: string): boolean {
+  const result = photosPost(
+    `/albums/${encodeURIComponent(albumId)}:removeMediaItems`,
+    { mediaItemIds: [mediaItemId] },
+  );
+  if (!result.ok) {
+    Logger.log(
+      `[PhotosService.apiRemoveMediaItemFromAlbum] Failed to remove mediaItem ` +
+      `${mediaItemId} from album ${albumId}: ${result.error}`,
+    );
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Removes all Photo_Files rows whose driveFileId matches from the sheet.
+ * Deletes rows in reverse index order so earlier deletions do not shift
+ * later indices. Returns the removed records for use in the callers.
+ */
+function clearPhotoFilesForDriveFile(driveFileId: string): PhotosFileRecord[] {
+  const config  = getConfig();
+  const name    = config.SHEET_NAMES.PHOTO_FILES;
+
+  const allRows = getAllRows(name);
+  const matches: { rowIndex: number; record: PhotosFileRecord }[] = [];
+
+  for (let i = 0; i < allRows.length; i++) {
+    const rec = toPhotosFileRecord(allRows[i]);
+    if (rec && rec.driveFileId === driveFileId) {
+      matches.push({ rowIndex: i, record: rec });
+    }
+  }
+
+  if (matches.length === 0) return [];
+
+  // Delete from sheet in reverse order (highest index first) to keep indices
+  // stable as rows are removed.
+  /* global SpreadsheetApp */
+  const ss    = SpreadsheetApp.openById(config.SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(name);
+  if (sheet) {
+    for (let i = matches.length - 1; i >= 0; i--) {
+      // +2: +1 for 0→1-base, +1 for header row
+      sheet.deleteRow(matches[i].rowIndex + 2);
+    }
+  }
+
+  return matches.map((m) => m.record);
+}
+
+/**
+ * Removes a Drive file from all Google Photos albums it was synced to, then
+ * clears its Photo_Files rows so it is no longer tracked as synced.
+ *
+ * Called by deleteService after a file is soft-deleted. Non-fatal: Photos API
+ * failures are logged but never thrown — the Deleted_Files record has already
+ * been written and the Drive file is already trashed.
+ *
+ * Returns SUCCESS even if no Photo_Files records existed (file was never synced).
+ */
+export function removeFileFromPhotos(
+  driveFileId: string,
+): ServiceResult<{ albumsUpdated: number }> {
+  try {
+    const records = clearPhotoFilesForDriveFile(driveFileId);
+
+    let albumsUpdated = 0;
+    for (const record of records) {
+      if (record.mediaItemId && record.albumId) {
+        if (apiRemoveMediaItemFromAlbum(record.albumId, record.mediaItemId)) {
+          albumsUpdated++;
+        }
+      }
+    }
+
+    Logger.log(
+      `[PhotosService.removeFileFromPhotos] driveFileId=${driveFileId}: ` +
+      `removed from ${albumsUpdated}/${records.length} album(s), cleared ${records.length} Photo_Files row(s)`,
+    );
+
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `Removed from ${albumsUpdated} album(s)`,
+      data: { albumsUpdated },
+    };
+  } catch (err) {
+    const msg = String(err);
+    Logger.log(`[PhotosService.removeFileFromPhotos] ERROR: ${msg}`);
+    return { status: ResultStatus.ERROR, message: msg };
+  }
+}
+
+/**
+ * Clears Photo_Files sync records for a Drive file without calling the Photos
+ * API. Used when restoring a file from trash: the old media item IDs in Photos
+ * were removed when the file was deleted, so the records are stale. Clearing
+ * them allows the next batch sync to re-upload the file as a fresh media item.
+ *
+ * Returns the number of records cleared.
+ */
+export function clearSyncRecordsForFile(
+  driveFileId: string,
+): ServiceResult<{ recordsCleared: number }> {
+  try {
+    const records = clearPhotoFilesForDriveFile(driveFileId);
+    Logger.log(
+      `[PhotosService.clearSyncRecordsForFile] driveFileId=${driveFileId}: ` +
+      `cleared ${records.length} stale Photo_Files row(s)`,
+    );
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `Cleared ${records.length} sync record(s)`,
+      data: { recordsCleared: records.length },
+    };
+  } catch (err) {
+    const msg = String(err);
+    Logger.log(`[PhotosService.clearSyncRecordsForFile] ERROR: ${msg}`);
+    return { status: ResultStatus.ERROR, message: msg };
+  }
+}

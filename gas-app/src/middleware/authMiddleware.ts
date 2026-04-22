@@ -1,30 +1,40 @@
 import { ResultStatus, UserRole, UserStatus } from '../types/enums';
-import { UserRecord } from '../types/models';
+import { UserRecord, UploadLinkRecord } from '../types/models';
 import { ServiceResult } from '../types/responses';
 import { getCurrentUserEmail } from '../services/authService';
 import { getAllRows } from '../services/sheetService';
 import { toUserRecord } from '../utils/sheetMapper';
 import { getConfig } from '../config/constants';
 import { lookupSession } from '../services/sessionService';
+import { findByToken } from '../services/uploadLinkService';
 
 /**
  * AuthMiddleware — request authentication and user resolution pipeline.
  *
- * Every incoming request (doGet / doPost) runs through these two steps
- * before reaching a route handler:
+ * Three authentication paths:
  *
- *   Step 1: getCurrentUser()   — verify GAS session, extract email
- *   Step 2: resolveUser(email) — look up user in Sheets, check status
+ *   Path A — GAS native session (Session.getActiveUser).
+ *     Works when the Web App is deployed with "Execute as: Anyone with Google account".
  *
- * If either step fails, the router returns an appropriate error page / JSON.
+ *   Path B — Session token (CacheService).
+ *     Used with the GIS client-side login flow. After the ID token is verified
+ *     server-side and a session is created, every subsequent call passes the
+ *     session token.
+ *
+ *   Path C — Upload link token.
+ *     Used by volunteers on the upload page. A valid, non-revoked upload link
+ *     token grants upload access scoped to the (event, club) pair in the link.
+ *     The volunteer's identity is the Google account they authenticate with
+ *     during the upload session — they are NOT stored in the Users sheet.
+ *
+ * If any step fails, the router returns an appropriate error page / JSON.
  * This keeps auth logic out of route handlers entirely.
  */
 
+// ─── Path A/B — Admin authentication ─────────────────────────────────────────
+
 /**
  * Step 1 — Extracts and validates the current user's email from the GAS session.
- *
- * Returns SUCCESS with { email } on authentication, ERROR otherwise.
- * The email is normalized to lowercase before being returned.
  */
 export function getCurrentUser(): ServiceResult<{ email: string }> {
   return getCurrentUserEmail();
@@ -34,11 +44,8 @@ export function getCurrentUser(): ServiceResult<{ email: string }> {
  * Step 2 — Looks up the email in the Users sheet and returns the full UserRecord.
  *
  * Returns ERROR if:
- *   - No record found → user is not registered in the system
- *   - Record exists but status is INACTIVE → user has been deactivated
- *
- * This is a linear scan of the Users sheet. For Phase 1 (< 500 users)
- * this is acceptable. Phase 2 can add an in-memory cache.
+ *   - No record found → not registered as an admin
+ *   - Record exists but status is INACTIVE → account deactivated
  */
 export function resolveUser(email: string): ServiceResult<UserRecord> {
   const config = getConfig();
@@ -87,7 +94,7 @@ export function resolveUser(email: string): ServiceResult<UserRecord> {
  *
  * Auth priority:
  *   1. GAS session (Session.getActiveUser) — works with USER_ACCESSING deployment
- *   2. Session token — used with USER_DEPLOYING + GIS client-side login (Path A)
+ *   2. Session token — used with USER_DEPLOYING + GIS client-side login (Path B)
  *
  * Pass the sessionToken from the client payload when calling from google.script.run.
  */
@@ -121,70 +128,85 @@ export function authenticateBySession(sessionToken: string): ServiceResult<UserR
   return resolveUser(session.email);
 }
 
+// ─── Path C — Upload link authentication ─────────────────────────────────────
+
 /**
- * Phase 5 — API key authentication.
- *
- * GAS web apps do not expose HTTP request headers to the script, so the API
- * key is passed as a query-string parameter (`?api_key=<key>`) rather than
- * an `X-Api-Key` header. The value is the registered email of an API_CLIENT
- * user in the Users sheet.
- *
- * Authentication rules:
- *   1. The key must be a non-empty string.
- *   2. A Users row must exist with email === key AND role === API_CLIENT.
- *   3. The user must be ACTIVE.
- *
- * Returns SUCCESS with the UserRecord on valid auth, ERROR otherwise.
- * Callers must then perform rate-limit checking before executing the request.
+ * Context returned for a volunteer authenticated via an upload link.
+ * Volunteers are not stored in the Users sheet — they are identified by their
+ * Google email (captured from the OAuth session) and the link scope.
  */
-export function authenticateApiKey(apiKey: string): ServiceResult<UserRecord> {
-  const key = (apiKey ?? '').trim().toLowerCase();
-  if (!key) {
+export interface UploadLinkContext {
+  readonly email: string;             // Volunteer's Google account email
+  readonly linkId: string;            // Upload link ID (stable across rotations)
+  readonly linkVersion: number;       // Version of the token used (for audit forensics)
+  readonly eventId: string;           // Event scope from the link
+  readonly clubName: string;          // Club scope from the link
+}
+
+/**
+ * Authenticates a request using an upload link token and the caller's
+ * current Google session email.
+ *
+ * Steps:
+ *   1. Validate the token (must exist and not be revoked).
+ *   2. Extract the caller's Google email from the GAS session.
+ *
+ * Returns SUCCESS with an UploadLinkContext on valid auth.
+ * Returns ERROR if the token is invalid/revoked or no Google session exists.
+ */
+export function authenticateByUploadLink(
+  token: string,
+  callerEmail: string
+): ServiceResult<UploadLinkContext> {
+  if (!token || !token.trim()) {
+    return { status: ResultStatus.ERROR, message: 'Upload link token is required.' };
+  }
+
+  if (!callerEmail || !callerEmail.trim()) {
     return {
       status: ResultStatus.ERROR,
-      message: 'Missing api_key parameter. Include ?api_key=<your-key> in the request.',
+      message: 'Google authentication is required to use this upload link.',
     };
   }
 
-  const config = getConfig();
-  let rows: unknown[][];
-  try {
-    rows = getAllRows(config.SHEET_NAMES.USERS);
-  } catch (err) {
+  const link: UploadLinkRecord | null = findByToken(token.trim());
+
+  if (!link) {
     return {
       status: ResultStatus.ERROR,
-      message: `Failed to read Users sheet: ${String(err)}`,
+      message: 'This upload link is not recognized.',
     };
   }
 
-  const user = rows
-    .map(toUserRecord)
-    .find((r): r is UserRecord => r !== null && r.email === key);
-
-  if (!user) {
+  if (link.revokedAt) {
     return {
       status: ResultStatus.ERROR,
-      message: 'Invalid API key. The key is not registered in this system.',
-    };
-  }
-
-  if (user.role !== UserRole.API_CLIENT) {
-    return {
-      status: ResultStatus.ERROR,
-      message: 'Forbidden. This key does not have API_CLIENT privileges.',
-    };
-  }
-
-  if (user.status === UserStatus.INACTIVE) {
-    return {
-      status: ResultStatus.ERROR,
-      message: 'API key is deactivated. Contact an administrator to restore access.',
+      message:
+        'This upload link has been revoked. Please contact your club administrator for a new link.',
     };
   }
 
   return {
     status: ResultStatus.SUCCESS,
-    message: 'API key authenticated',
-    data: user,
+    message: 'Upload link authenticated',
+    data: {
+      email:       callerEmail.trim().toLowerCase(),
+      linkId:      link.linkId,
+      linkVersion: link.version,
+      eventId:     link.eventId,
+      clubName:    link.clubName,
+    },
   };
+}
+
+/**
+ * Checks whether the given admin is allowed to manage links for the given club.
+ *
+ * Super admins can manage any club's links.
+ * Club admins can only manage their own club.
+ */
+export function canManageClubLinks(admin: UserRecord, clubName: string): boolean {
+  if (admin.role === UserRole.SUPER_ADMIN) return true;
+  if (admin.role === UserRole.CLUB_ADMIN && admin.clubId === clubName) return true;
+  return false;
 }

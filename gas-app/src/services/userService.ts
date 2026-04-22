@@ -12,22 +12,16 @@ import { toIsoDate } from '../utils/dateFormatter';
 /**
  * UserService — CRUD operations on the Users sheet.
  *
+ * Only admins (super_admin / club_admin) are stored here.
+ * Volunteers (uploaders) access the system via upload links and are never
+ * pre-registered — their Google identity is captured per-session by the upload flow.
+ *
  * All public functions return ServiceResult<T> — never throw.
  * Callers (route handlers) check result.status to branch on success/error.
- *
- * Data access pattern:
- *   getAllRows() → map(toUserRecord) → filter(non-null) → business logic
- *
- * Write pattern:
- *   build UserRecord → fromUserRecord() → appendRow() or updateRow()
  */
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-/**
- * Returns all valid UserRecords from the Users sheet.
- * Malformed rows are silently skipped (logged in sheetMapper).
- */
 function loadAllUsers(): UserRecord[] {
   const config = getConfig();
   const rows = getAllRows(config.SHEET_NAMES.USERS);
@@ -60,15 +54,25 @@ export function listAll(page = 1, pageSize = 50): PaginatedResult<UserRecord> {
 }
 
 /**
+ * Returns all active admin emails (used by emailService for CC lists, etc.)
+ */
+export function listAllAdminEmails(): string[] {
+  return loadAllUsers()
+    .filter((u) => u.status === UserStatus.ACTIVE)
+    .map((u) => u.email);
+}
+
+/**
  * Creates a new user record in the Users sheet.
  *
  * Validation checks:
  *   - Valid email format
- *   - Running club provided
- *   - Role is a known UserRole
+ *   - First/last name provided
+ *   - Role is a known UserRole (SUPER_ADMIN or CLUB_ADMIN)
+ *   - CLUB_ADMIN must have a non-empty clubId
+ *   - SUPER_ADMIN must have an empty clubId
  *   - No duplicate email already in the sheet
- *
- * The admin email is pulled from the active GAS session.
+ *   - A club cannot have two different club admins (one-club-per-admin)
  */
 export function createUser(
   input: CreateUserInput,
@@ -87,13 +91,36 @@ export function createUser(
     };
   }
 
+  const clubId = (input.clubId ?? '').trim();
+
+  // Enforce one-club-per-club-admin
+  if (input.role === UserRole.CLUB_ADMIN && clubId) {
+    const conflict = loadAllUsers().find(
+      (u) =>
+        u.role === UserRole.CLUB_ADMIN &&
+        u.clubId === clubId &&
+        u.status === UserStatus.ACTIVE
+    );
+    if (conflict) {
+      return {
+        status: ResultStatus.ERROR,
+        message:
+          `Club "${clubId}" already has an active club admin (${conflict.email}). ` +
+          'Deactivate the existing admin first, or promote this person to super admin.',
+      };
+    }
+  }
+
   const record: UserRecord = {
-    email: normalizedEmail,
-    runningClub: input.runningClub.trim(),
-    role: input.role,
-    status: UserStatus.ACTIVE,
-    addedDate: toIsoDate(new Date()),
-    addedBy: adminEmail.trim().toLowerCase(),
+    email:       normalizedEmail,
+    firstName:   input.firstName.trim(),
+    lastName:    input.lastName.trim(),
+    role:        input.role,
+    status:      UserStatus.ACTIVE,
+    clubId,
+    addedDate:   toIsoDate(new Date()),
+    addedBy:     adminEmail.trim().toLowerCase(),
+    lastLoginAt: '',
   };
 
   const config = getConfig();
@@ -103,10 +130,10 @@ export function createUser(
 }
 
 /**
- * Updates an existing user's club, role, or status.
+ * Updates an existing user's name, role, status, or club.
  * Only supplied fields are changed; omitted fields retain their current value.
  *
- * Returns ERROR if the user does not exist or the sheet row cannot be located.
+ * Returns ERROR if the user does not exist or validation fails.
  */
 export function updateUser(
   input: UpdateUserInput,
@@ -117,7 +144,6 @@ export function updateUser(
     return { status: ResultStatus.ERROR, message: `User "${input.email}" not found` };
   }
 
-  // Validate any new values
   const errors: ValidationError[] = [];
   if (input.role !== undefined && !Object.values(UserRole).includes(input.role)) {
     errors.push({ field: 'role', message: 'Invalid role', value: input.role });
@@ -129,13 +155,38 @@ export function updateUser(
     return { status: ResultStatus.ERROR, message: 'Validation failed', errors };
   }
 
+  const newRole  = input.role   ?? existing.role;
+  const newClubId = input.clubId !== undefined ? input.clubId.trim() : existing.clubId;
+
+  // Enforce one-club-per-club-admin when club is being set/changed
+  if (newRole === UserRole.CLUB_ADMIN && newClubId && newClubId !== existing.clubId) {
+    const conflict = loadAllUsers().find(
+      (u) =>
+        u.email  !== existing.email &&
+        u.role   === UserRole.CLUB_ADMIN &&
+        u.clubId === newClubId &&
+        u.status === UserStatus.ACTIVE
+    );
+    if (conflict) {
+      return {
+        status: ResultStatus.ERROR,
+        message:
+          `Club "${newClubId}" already has an active club admin (${conflict.email}). ` +
+          'A person cannot be club admin for more than one club.',
+      };
+    }
+  }
+
   const updated: UserRecord = {
-    email: existing.email,
-    runningClub: input.runningClub?.trim() ?? existing.runningClub,
-    role: input.role ?? existing.role,
-    status: input.status ?? existing.status,
-    addedDate: existing.addedDate,
-    addedBy: existing.addedBy,
+    email:       existing.email,
+    firstName:   input.firstName?.trim()  ?? existing.firstName,
+    lastName:    input.lastName?.trim()   ?? existing.lastName,
+    role:        newRole,
+    status:      input.status ?? existing.status,
+    clubId:      newRole === UserRole.SUPER_ADMIN ? '' : newClubId,
+    addedDate:   existing.addedDate,
+    addedBy:     existing.addedBy,
+    lastLoginAt: existing.lastLoginAt,
   };
 
   const config = getConfig();
@@ -150,6 +201,23 @@ export function updateUser(
   updateRow(config.SHEET_NAMES.USERS, rowIndex, fromUserRecord(updated));
 
   return { status: ResultStatus.SUCCESS, message: 'User updated successfully', data: updated };
+}
+
+/**
+ * Records the user's most recent login timestamp.
+ * Called on each successful authentication. Non-fatal — update failure is logged
+ * but does not block the login.
+ */
+export function recordLogin(email: string): void {
+  const existing = findByEmail(email);
+  if (!existing) return;
+
+  const config = getConfig();
+  const rowIndex = findRowIndex(config.SHEET_NAMES.USERS, 0, email.trim().toLowerCase());
+  if (rowIndex < 0) return;
+
+  const updated: UserRecord = { ...existing, lastLoginAt: new Date().toISOString() };
+  updateRow(config.SHEET_NAMES.USERS, rowIndex, fromUserRecord(updated));
 }
 
 /**
@@ -201,10 +269,6 @@ export function reactivateUser(email: string): ServiceResult<UserRecord> {
 
 // ─── Validation ───────────────────────────────────────────────────────────────
 
-/**
- * Validates the fields for a new user creation.
- * Returns a list of field-level ValidationError objects (empty = valid).
- */
 export function validateCreateInput(input: CreateUserInput): ValidationError[] {
   const errors: ValidationError[] = [];
 
@@ -216,11 +280,12 @@ export function validateCreateInput(input: CreateUserInput): ValidationError[] {
     });
   }
 
-  if (!input.runningClub || !input.runningClub.trim()) {
-    errors.push({
-      field: 'runningClub',
-      message: 'Running club is required',
-    });
+  if (!input.firstName || !input.firstName.trim()) {
+    errors.push({ field: 'firstName', message: 'First name is required' });
+  }
+
+  if (!input.lastName || !input.lastName.trim()) {
+    errors.push({ field: 'lastName', message: 'Last name is required' });
   }
 
   if (!input.role || !Object.values(UserRole).includes(input.role)) {
@@ -228,6 +293,20 @@ export function validateCreateInput(input: CreateUserInput): ValidationError[] {
       field: 'role',
       message: `Role must be one of: ${Object.values(UserRole).join(', ')}`,
       value: input.role,
+    });
+  }
+
+  // Club admin must have a clubId; super admin must not
+  if (input.role === UserRole.CLUB_ADMIN && !input.clubId?.trim()) {
+    errors.push({
+      field: 'clubId',
+      message: 'clubId is required for club_admin role',
+    });
+  }
+  if (input.role === UserRole.SUPER_ADMIN && input.clubId?.trim()) {
+    errors.push({
+      field: 'clubId',
+      message: 'super_admin cannot be scoped to a club — leave clubId empty',
     });
   }
 

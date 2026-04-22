@@ -4,14 +4,15 @@ import { ServiceResult } from '../types/responses';
 /**
  * RoleGuard — enforces role-based access control on route handlers.
  *
- * The system has two hierarchical roles for Phase 1:
- *   ADMIN  > USER  > API_CLIENT
+ * Two admin tiers:
+ *   SUPER_ADMIN — full permissions across all clubs and events.
+ *   CLUB_ADMIN  — full permissions within their one assigned club's subtree.
  *
- * Admins can do everything users can do, plus user management and reporting.
- * API_CLIENT is reserved for Phase 5 machine-to-machine access.
+ * Volunteers (uploaders) are not stored as users and do not have a UserRole;
+ * they are authenticated via upload link tokens, not through this guard.
  *
  * Usage in a route handler:
- *   const guard = requireRole(user.role, UserRole.ADMIN);
+ *   const guard = requireRole(user.role, UserRole.SUPER_ADMIN);
  *   if (guard.status !== ResultStatus.SUCCESS) return accessDeniedPage(guard.message);
  */
 
@@ -26,9 +27,8 @@ import { ServiceResult } from '../types/responses';
  */
 function getRoleLevels(): Record<UserRole, number> {
   return {
-    [UserRole.API_CLIENT]: 1,
-    [UserRole.USER]: 2,
-    [UserRole.ADMIN]: 3,
+    [UserRole.CLUB_ADMIN]:  1,
+    [UserRole.SUPER_ADMIN]: 2,
   };
 }
 
@@ -54,18 +54,27 @@ export function requireRole(
 }
 
 /**
- * Returns true if the user is an admin.
- * Convenience wrapper for template rendering logic (hide/show UI elements).
+ * Returns true if the user is a super admin.
+ * Super admins have unrestricted access across all clubs and events.
  */
-export function isAdmin(role: UserRole): boolean {
-  return role === UserRole.ADMIN;
+export function isSuperAdmin(role: UserRole): boolean {
+  return role === UserRole.SUPER_ADMIN;
 }
 
 /**
- * Returns true if the user can upload photos (user or admin).
+ * Returns true if the user is a club admin.
+ * Club admins have full access within their assigned club's subtree only.
  */
-export function canUpload(role: UserRole): boolean {
-  return role === UserRole.USER || role === UserRole.ADMIN;
+export function isClubAdmin(role: UserRole): boolean {
+  return role === UserRole.CLUB_ADMIN;
+}
+
+/**
+ * Returns true if the user is any kind of admin (super or club).
+ * Convenience wrapper for template rendering logic (hide/show UI elements).
+ */
+export function isAdmin(role: UserRole): boolean {
+  return role === UserRole.SUPER_ADMIN || role === UserRole.CLUB_ADMIN;
 }
 
 /**

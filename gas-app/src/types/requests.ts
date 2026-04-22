@@ -14,11 +14,21 @@ export interface AppRequest {
 
 /**
  * Input DTO for creating a new user (admin-only action).
+ *
+ * Only admins are created through this path. Volunteers are not pre-registered;
+ * they authenticate on demand via upload links.
  */
 export interface CreateUserInput {
   readonly email: string;
-  readonly runningClub: string;
+  readonly firstName: string;
+  readonly lastName: string;
   readonly role: UserRole;
+  /**
+   * Required when role === CLUB_ADMIN: the normalizedName of the club this person administers.
+   * Must be empty (or omitted) when role === SUPER_ADMIN.
+   * A person cannot be club admin for more than one club.
+   */
+  readonly clubId?: string;
 }
 
 /**
@@ -27,9 +37,15 @@ export interface CreateUserInput {
  */
 export interface UpdateUserInput {
   readonly email: string;           // Lookup key — cannot be changed
-  readonly runningClub?: string;
+  readonly firstName?: string;
+  readonly lastName?: string;
   readonly role?: UserRole;
   readonly status?: UserStatus;
+  /**
+   * May only be set when role === CLUB_ADMIN. Pass empty string to clear.
+   * Changing clubId is validated against the one-club-per-admin rule.
+   */
+  readonly clubId?: string;
 }
 
 /**
@@ -41,8 +57,7 @@ export interface ValidateFolderNameInput {
 }
 
 /**
- * Input DTO for creating a new event (admin-only, Phase 2).
- * Defined here so the type system is complete in Phase 1.
+ * Input DTO for creating a new event (admin-only).
  */
 export interface CreateEventInput {
   readonly eventName: string;
@@ -50,7 +65,7 @@ export interface CreateEventInput {
 }
 
 /**
- * Input DTO for updating an existing event (admin-only, Phase 2).
+ * Input DTO for updating an existing event (admin-only).
  * Only eventName and eventDate can be modified — the folder name
  * and Drive folder are immutable once created.
  */
@@ -61,7 +76,7 @@ export interface UpdateEventInput {
 }
 
 /**
- * Input DTO for creating a new club (admin-only).
+ * Input DTO for creating a new club (super admin only).
  */
 export interface CreateClubInput {
   readonly displayName: string;      // UI label, e.g. "驰跑团"
@@ -69,10 +84,49 @@ export interface CreateClubInput {
 }
 
 /**
- * Input DTO for updating an existing club (admin-only).
+ * Input DTO for updating an existing club (super admin only).
  * Only the displayName can be changed; normalizedName is immutable (Drive folders depend on it).
  */
 export interface UpdateClubInput {
   readonly normalizedName: string;   // Lookup key — cannot be changed
   readonly displayName?: string;     // New UI label
+}
+
+// ─── Upload Link Management ───────────────────────────────────────────────────
+
+/**
+ * Input DTO for generating a new (event, club) upload link.
+ *
+ * Only one active link per (eventId, clubName) pair is allowed. Calling
+ * generateLink when an active link already exists returns the existing link
+ * rather than creating a duplicate.
+ *
+ * If a previously revoked link exists for the same pair, a fresh link is created.
+ */
+export interface GenerateLinkInput {
+  readonly eventId: string;    // FK → EventRecord.eventId
+  readonly clubName: string;   // Normalized club name
+}
+
+/**
+ * Input DTO for revoking an upload link.
+ *
+ * Club admins can revoke links for their own club.
+ * Super admins can revoke any link.
+ * After revocation, holders of the old URL receive a "link revoked" message.
+ *
+ * Rotation is revoke + generate: call revokeLink then generateLink to issue
+ * a fresh token for the same (event, club) pair.
+ */
+export interface RevokeLinkInput {
+  readonly linkId: string;
+  readonly reason?: string;   // Optional free-text reason logged to audit
+}
+
+/**
+ * Input DTO for looking up an upload link by its token.
+ * Used on the link landing page to show confirmation before Google login.
+ */
+export interface ValidateLinkInput {
+  readonly token: string;
 }

@@ -1,4 +1,4 @@
-import { ResultStatus, UserRole, UserStatus, EmailType } from '../types/enums';
+import { ResultStatus, UserStatus, EmailType } from '../types/enums';
 import { EmailPreferenceRecord, UserRecord } from '../types/models';
 import { ServiceResult } from '../types/responses';
 import { getConfig, EMAIL_PREFERENCES_HEADERS } from '../config/constants';
@@ -6,6 +6,7 @@ import { getAllRows, appendRow, findRowIndex, updateRow, ensureHeaders } from '.
 import { toEmailPreferenceRecord, fromEmailPreferenceRecord } from '../utils/sheetMapper';
 import { listAll as listAllUsers } from './userService';
 import { nowIsoTimestamp } from '../utils/dateFormatter';
+import { isAdmin } from '../middleware/roleGuard';
 
 /**
  * EmailPreferenceService — manages per-admin opt-in settings for
@@ -39,6 +40,7 @@ function defaultPreferences(email: string): EmailPreferenceRecord {
     userRoleChanged: true,
     userDeactivated: true,
     securityEvent:   true,
+    eventCreated:    true,   // default ON — event creation is a key coordination signal
     dailyReport:     false,
     weeklyReport:    false,
     updatedAt:       '',  // empty = never set explicitly
@@ -71,7 +73,7 @@ function loadAllPreferences(): EmailPreferenceRecord[] {
 function loadActiveAdmins(): UserRecord[] {
   const all = listAllUsers(1, 500).items;
   return all.filter(
-    (u) => u.role === UserRole.ADMIN && u.status === UserStatus.ACTIVE,
+    (u) => isAdmin(u.role) && u.status === UserStatus.ACTIVE,
   );
 }
 
@@ -199,6 +201,7 @@ export function isOptedIn(prefs: EmailPreferenceRecord, type: EmailType): boolea
     case EmailType.USER_ROLE_CHANGED: return prefs.userRoleChanged;
     case EmailType.USER_DEACTIVATED:  return prefs.userDeactivated;
     case EmailType.SECURITY_EVENT:    return prefs.securityEvent;
+    case EmailType.EVENT_CREATED:     return prefs.eventCreated;
     case EmailType.DAILY_REPORT:      return prefs.dailyReport;
     case EmailType.WEEKLY_REPORT:     return prefs.weeklyReport;
     case EmailType.WELCOME_USER:      return false; // never routed through opt-in

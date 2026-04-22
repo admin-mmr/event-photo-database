@@ -2,7 +2,7 @@ import { ResultStatus } from '../types/enums';
 import { ClubRecord } from '../types/models';
 import { CreateClubInput, UpdateClubInput } from '../types/requests';
 import { ServiceResult, PaginatedResult, ValidationError } from '../types/responses';
-import { getConfig, APPROVED_CLUBS } from '../config/constants';
+import { getConfig } from '../config/constants';
 import { getAllRows, appendRow, findRowIndex, updateRow, ensureHeaders } from './sheetService';
 import { toClubRecord, fromClubRecord } from '../utils/sheetMapper';
 import { toIsoDate } from '../utils/dateFormatter';
@@ -19,7 +19,7 @@ import { toIsoDate } from '../utils/dateFormatter';
  * Design decisions:
  *   - normalizedName is immutable once created (Drive club folders depend on it)
  *   - Clubs are deactivated, not deleted (referential integrity with Upload_Log)
- *   - On first use, the sheet is seeded with the legacy static APPROVED_CLUBS list
+ *   - Clubs are managed entirely via the admin UI; no static seed list
  */
 
 const CLUB_HEADERS = ['displayName', 'normalizedName', 'status', 'addedDate', 'addedBy'];
@@ -37,42 +37,10 @@ function sheetName(): string {
 function loadAllClubs(): ClubRecord[] {
   const name = sheetName();
   ensureHeaders(name, CLUB_HEADERS);
-
   const rows = getAllRows(name);
-
-  // Auto-seed from static fallback if the sheet has no data rows yet
-  if (rows.length === 0) {
-    seedFromStaticList(name);
-    return loadAllClubsRaw(name);
-  }
-
   return rows
     .map(toClubRecord)
     .filter((r): r is ClubRecord => r !== null);
-}
-
-function loadAllClubsRaw(name: string): ClubRecord[] {
-  return getAllRows(name)
-    .map(toClubRecord)
-    .filter((r): r is ClubRecord => r !== null);
-}
-
-/**
- * Seeds the Clubs sheet from the legacy APPROVED_CLUBS static constant.
- * Called exactly once when an empty Clubs sheet is first encountered.
- */
-function seedFromStaticList(name: string): void {
-  const today = toIsoDate(new Date());
-  for (const club of APPROVED_CLUBS) {
-    const record: ClubRecord = {
-      displayName: club.displayName,
-      normalizedName: club.normalizedName,
-      status: 'active',
-      addedDate: today,
-      addedBy: 'system',
-    };
-    appendRow(name, fromClubRecord(record));
-  }
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────

@@ -39,6 +39,8 @@ export interface CreateUploadLogInput {
   readonly skippedDuplicates: number;
   readonly skippedNonPhoto: number;
   readonly source: UploadSource;
+  /** Upload link ID associated with this upload session (empty for admin uploads). */
+  readonly linkId?: string;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -68,6 +70,7 @@ export function appendUploadLog(
       skippedNonPhoto:   input.skippedNonPhoto,
       uploadTimestamp:   nowIsoTimestamp(),
       source:            input.source,
+      linkId:            input.linkId ?? '',
     };
 
     const config = getConfig();
