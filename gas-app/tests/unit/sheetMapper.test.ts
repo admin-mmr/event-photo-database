@@ -11,6 +11,8 @@ import {
   fromAuditLogRecord,
   toPhotosFileRecord,
   fromPhotosFileRecord,
+  toEmailPreferenceRecord,
+  fromEmailPreferenceRecord,
 } from '../../src/utils/sheetMapper';
 import { UserRole, UserStatus, UploadSource, AuditAction } from '../../src/types/enums';
 import { UserRecord } from '../../src/types/models';
@@ -917,6 +919,220 @@ describe('sheetMapper — Photos Files', () => {
       const original = toPhotosFileRecord(row)!;
       const restored = toPhotosFileRecord(fromPhotosFileRecord(original));
       expect(restored!.fileName).toBe('跑步照片_001.jpg');
+    });
+  });
+});
+
+// ─── Email Preferences ────────────────────────────────────────────────────────
+
+describe('sheetMapper — Email Preferences', () => {
+  const validRow: unknown[] = [
+    'admin@mmrunners.org', true, false, true, false, true, true, '2026-04-01T10:00:00Z',
+  ];
+
+  describe('toOptInBoolean (indirectly via toEmailPreferenceRecord)', () => {
+    it('coerces boolean true', () => {
+      const row = ['test@example.com', true, true, true, true, true, true, ''];
+      const record = toEmailPreferenceRecord(row);
+      expect(record).not.toBeNull();
+      expect(record!.userCreated).toBe(true);
+    });
+
+    it('coerces boolean false', () => {
+      const row = ['test@example.com', false, false, false, false, false, false, ''];
+      const record = toEmailPreferenceRecord(row);
+      expect(record).not.toBeNull();
+      expect(record!.userCreated).toBe(false);
+    });
+
+    it('coerces string "TRUE" / "true"', () => {
+      const row1 = ['test@example.com', 'TRUE', 'true', '', '', '', '', ''];
+      const row2 = ['test@example.com', 'TRUE', 'true', '', '', '', '', ''];
+      const rec1 = toEmailPreferenceRecord(row1);
+      const rec2 = toEmailPreferenceRecord(row2);
+      expect(rec1!.userCreated).toBe(true);
+      expect(rec2!.userRoleChanged).toBe(true);
+    });
+
+    it('coerces string "FALSE" / "false"', () => {
+      const row = ['test@example.com', 'FALSE', 'false', 'FALSE', 'false', '', '', ''];
+      const record = toEmailPreferenceRecord(row);
+      expect(record!.userCreated).toBe(false);
+      expect(record!.userRoleChanged).toBe(false);
+      expect(record!.userDeactivated).toBe(false);
+      expect(record!.securityEvent).toBe(false);
+    });
+
+    it('coerces string "yes" / "no"', () => {
+      const row = ['test@example.com', 'yes', 'no', 'YES', 'NO', '', '', ''];
+      const record = toEmailPreferenceRecord(row);
+      expect(record!.userCreated).toBe(true);
+      expect(record!.userRoleChanged).toBe(false);
+      expect(record!.userDeactivated).toBe(true);
+      expect(record!.securityEvent).toBe(false);
+    });
+
+    it('coerces numeric "1" to true and "0" to false', () => {
+      const row = ['test@example.com', 1, 0, '1', '0', 1, 0, ''];
+      const record = toEmailPreferenceRecord(row);
+      expect(record!.userCreated).toBe(true);
+      expect(record!.userRoleChanged).toBe(false);
+      expect(record!.userDeactivated).toBe(true);
+      expect(record!.securityEvent).toBe(false);
+      expect(record!.dailyReport).toBe(true);
+      expect(record!.weeklyReport).toBe(false);
+    });
+
+    it('coerces empty string / undefined to false', () => {
+      const row = ['test@example.com', '', undefined, null, '   ', '', '', ''];
+      const record = toEmailPreferenceRecord(row);
+      expect(record!.userCreated).toBe(false);
+      expect(record!.userRoleChanged).toBe(false);
+      expect(record!.userDeactivated).toBe(false);
+      expect(record!.securityEvent).toBe(false);
+    });
+
+    it('unknown strings default to false', () => {
+      const row = ['test@example.com', 'unknown', 'maybe', 'y', 'n', '', '', ''];
+      const record = toEmailPreferenceRecord(row);
+      // only 'yes', 'y', 'true', '1' map to true; everything else → false
+      expect(record!.userCreated).toBe(false);
+      expect(record!.userRoleChanged).toBe(false);
+      expect(record!.userDeactivated).toBe(false);
+      expect(record!.securityEvent).toBe(false);
+    });
+  });
+
+  describe('toEmailPreferenceRecord()', () => {
+    it('maps a complete valid 8-column row', () => {
+      const record = toEmailPreferenceRecord(validRow);
+      expect(record).not.toBeNull();
+      expect(record!.email).toBe('admin@mmrunners.org');
+      expect(record!.userCreated).toBe(true);
+      expect(record!.userRoleChanged).toBe(false);
+      expect(record!.userDeactivated).toBe(true);
+      expect(record!.securityEvent).toBe(false);
+      expect(record!.dailyReport).toBe(true);
+      expect(record!.weeklyReport).toBe(true);
+      expect(record!.updatedAt).toBe('2026-04-01T10:00:00Z');
+    });
+
+    it('normalizes email to lowercase', () => {
+      const row = ['Admin@MMRUNNERS.ORG', true, true, true, true, true, true, ''];
+      const record = toEmailPreferenceRecord(row);
+      expect(record!.email).toBe('admin@mmrunners.org');
+    });
+
+    it('trims whitespace from email', () => {
+      const row = ['  admin@mmrunners.org  ', true, true, true, true, true, true, ''];
+      const record = toEmailPreferenceRecord(row);
+      expect(record!.email).toBe('admin@mmrunners.org');
+    });
+
+    it('returns null when email is empty', () => {
+      const row = ['', true, true, true, true, true, true, ''];
+      expect(toEmailPreferenceRecord(row)).toBeNull();
+    });
+
+    it('returns null when email is whitespace-only', () => {
+      const row = ['   ', true, true, true, true, true, true, ''];
+      expect(toEmailPreferenceRecord(row)).toBeNull();
+    });
+
+    it('returns null for row with fewer than 8 columns', () => {
+      expect(toEmailPreferenceRecord(['admin@x.com', true, true, true, true, true])).toBeNull();
+      expect(toEmailPreferenceRecord([])).toBeNull();
+    });
+
+    it('accepts rows with more than 8 columns (parses first 8)', () => {
+      const row = ['admin@mmrunners.org', true, false, true, false, true, true, '2026-04-01T10:00:00Z', 'extra', 'columns'];
+      const record = toEmailPreferenceRecord(row);
+      expect(record).not.toBeNull();
+      expect(record!.email).toBe('admin@mmrunners.org');
+      expect(record!.userCreated).toBe(true);
+    });
+
+    it('handles numeric cell values via String() coercion for email', () => {
+      const row = [123, true, true, true, true, true, true, ''];
+      const record = toEmailPreferenceRecord(row);
+      expect(record!.email).toBe('123');
+    });
+
+    it('treats missing cells as undefined (coerced to false for booleans)', () => {
+      const row = ['admin@mmrunners.org'];
+      const record = toEmailPreferenceRecord(row);
+      expect(record!.userCreated).toBe(false);
+      expect(record!.userRoleChanged).toBe(false);
+    });
+  });
+
+  describe('fromEmailPreferenceRecord()', () => {
+    it('produces an array of 8 elements', () => {
+      const record = toEmailPreferenceRecord(validRow)!;
+      const row = fromEmailPreferenceRecord(record);
+      expect(row).toHaveLength(8);
+    });
+
+    it('preserves all field values in correct column order', () => {
+      const record = toEmailPreferenceRecord(validRow)!;
+      const row = fromEmailPreferenceRecord(record);
+      expect(row[0]).toBe('admin@mmrunners.org');      // email
+      expect(row[1]).toBe(true);                       // userCreated
+      expect(row[2]).toBe(false);                      // userRoleChanged
+      expect(row[3]).toBe(true);                       // userDeactivated
+      expect(row[4]).toBe(false);                      // securityEvent
+      expect(row[5]).toBe(true);                       // dailyReport
+      expect(row[6]).toBe(true);                       // weeklyReport
+      expect(row[7]).toBe('2026-04-01T10:00:00Z');     // updatedAt
+    });
+
+    it('serialises booleans as native booleans (not strings)', () => {
+      const record = toEmailPreferenceRecord(validRow)!;
+      const row = fromEmailPreferenceRecord(record);
+      expect(row[1]).toBe(true);   // boolean, not "TRUE"
+      expect(row[2]).toBe(false);  // boolean, not "FALSE"
+      expect(typeof row[1]).toBe('boolean');
+      expect(typeof row[2]).toBe('boolean');
+    });
+
+    it('preserves timestamp exactly', () => {
+      const record = toEmailPreferenceRecord(validRow)!;
+      const row = fromEmailPreferenceRecord(record);
+      expect(row[7]).toBe('2026-04-01T10:00:00Z');
+    });
+  });
+
+  describe('roundtrip: toEmailPreferenceRecord → fromEmailPreferenceRecord → toEmailPreferenceRecord', () => {
+    it('produces an identical record after roundtrip', () => {
+      const original = toEmailPreferenceRecord(validRow)!;
+      const row = fromEmailPreferenceRecord(original);
+      const restored = toEmailPreferenceRecord(row);
+      expect(restored).toEqual(original);
+    });
+
+    it('roundtrip preserves all boolean combinations', () => {
+      const allTrueRow = ['admin@x.com', true, true, true, true, true, true, '2026-04-01T10:00:00Z'];
+      const allFalseRow = ['admin@y.com', false, false, false, false, false, false, '2026-04-02T11:00:00Z'];
+      const mixedRow = ['admin@z.com', true, false, true, false, true, false, '2026-04-03T12:00:00Z'];
+
+      for (const row of [allTrueRow, allFalseRow, mixedRow]) {
+        const original = toEmailPreferenceRecord(row)!;
+        const restored = toEmailPreferenceRecord(fromEmailPreferenceRecord(original));
+        expect(restored).toEqual(original);
+      }
+    });
+
+    it('roundtrip with various email formats', () => {
+      const rows = [
+        ['test@example.com', true, true, true, true, true, true, ''],
+        ['user+tag@domain.co.uk', false, false, false, false, false, false, '2026-01-01T00:00:00Z'],
+        ['admin@mmrunners.org', true, true, true, true, true, true, '2026-04-21T12:34:56Z'],
+      ];
+      for (const row of rows) {
+        const original = toEmailPreferenceRecord(row)!;
+        const restored = toEmailPreferenceRecord(fromEmailPreferenceRecord(original));
+        expect(restored).toEqual(original);
+      }
     });
   });
 });

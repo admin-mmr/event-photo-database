@@ -1,6 +1,5 @@
-import { ResultStatus, RouteAction } from '../types/enums';
+import { ResultStatus } from '../types/enums';
 import { UserRecord } from '../types/models';
-import { ServiceResult } from '../types/responses';
 import {
   validateCreateUserPayload,
   validateUpdateUserPayload,
@@ -11,9 +10,10 @@ import {
   validateUpdateClubPayload,
   sanitizePayload,
 } from '../middleware/inputValidator';
-import { createUser, updateUser, deactivateUser, reactivateUser, findByEmail } from '../services/userService';
+import { createUser, updateUser, deactivateUser, reactivateUser } from '../services/userService';
+import { deleteSession } from '../services/sessionService';
 import { createEvent, updateEvent, listAll as listAllEvents } from '../services/eventService';
-import { createClub, updateClub, deactivateClub, reactivateClub, listAll as listAllClubs } from '../services/clubService';
+import { createClub, updateClub, deactivateClub, listAll as listAllClubs } from '../services/clubService';
 import { validateFolderName } from '../utils/folderNameValidator';
 
 /* global ContentService */
@@ -47,7 +47,7 @@ function jsonError(
   errors?: unknown
 ): GoogleAppsScript.Content.TextOutput {
   return ContentService
-    .createTextOutput(JSON.stringify({ status: 'error', code, message, ...(errors && { errors }) }))
+    .createTextOutput(JSON.stringify({ status: 'error', code, message, ...(errors !== undefined ? { errors } : {}) }))
     .setMimeType(ContentService.MimeType.JSON);
 }
 
@@ -311,6 +311,21 @@ export function handleListClubs(
 ): GoogleAppsScript.Content.TextOutput {
   const result = listAllClubs(1, 100);
   return jsonOk(result, `Found ${result.total} club(s)`);
+}
+
+/**
+ * POST action=logout
+ * Available to all authenticated users.
+ * Invalidates the session token so subsequent requests are rejected.
+ */
+export function handleLogout(
+  payload: Record<string, unknown>
+): GoogleAppsScript.Content.TextOutput {
+  const token = String(payload['session'] ?? '').trim();
+  if (token) {
+    deleteSession(token);
+  }
+  return jsonOk(null, 'Logged out successfully');
 }
 
 /**

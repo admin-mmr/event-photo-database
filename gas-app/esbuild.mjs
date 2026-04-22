@@ -21,10 +21,29 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, 'dist');
 const SRC  = join(__dirname, 'src');
 
-// ── Inject build timestamp into src/buildInfo.ts before bundling ─────────────
+// ── Inject build timestamp + git SHA into src/buildInfo.ts before bundling ──
 function writeBuildInfo() {
   const now = new Date().toISOString(); // e.g. "2026-04-20T14:32:00.000Z"
-  const content = `// AUTO-GENERATED — do not edit. Rewritten on every \`npm run build\`.\nexport const BUILD_TIME = '${now}';\n`;
+
+  // Best-effort git metadata — never fail the build if git is missing or the
+  // workspace isn't a repo.
+  let sha = 'unknown';
+  let dirty = '';
+  try {
+    sha = execSync('git rev-parse --short HEAD', { cwd: __dirname })
+      .toString().trim();
+    const status = execSync('git status --porcelain', { cwd: __dirname })
+      .toString().trim();
+    if (status.length > 0) dirty = '-dirty';
+  } catch {
+    // git not available or not a repo — leave sha = 'unknown'
+  }
+
+  const content =
+`// AUTO-GENERATED — do not edit. Rewritten on every \`npm run build\`.
+export const BUILD_TIME   = '${now}';
+export const BUILD_COMMIT = '${sha}${dirty}';
+`;
   writeFileSync(join(SRC, 'buildInfo.ts'), content, 'utf-8');
 }
 

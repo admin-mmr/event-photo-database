@@ -113,7 +113,33 @@ export const COLUMNS: SheetColumnMap = {
     FILE_NAME:     6,
     SYNCED_AT:     7,
   },
+  EMAIL_PREFERENCES: {
+    EMAIL:              0,
+    USER_CREATED:       1,
+    USER_ROLE_CHANGED:  2,
+    USER_DEACTIVATED:   3,
+    SECURITY_EVENT:     4,
+    DAILY_REPORT:       5,
+    WEEKLY_REPORT:      6,
+    UPDATED_AT:         7,
+  },
 };
+
+/**
+ * Expected header row for the Email_Preferences sheet.
+ * Used by emailPreferenceService.ensureSheetHeaders() via sheetService.ensureHeaders.
+ * Keep in column order — a mismatch triggers schema-drift detection.
+ */
+export const EMAIL_PREFERENCES_HEADERS: ReadonlyArray<string> = [
+  'EMAIL',
+  'USER_CREATED',
+  'USER_ROLE_CHANGED',
+  'USER_DEACTIVATED',
+  'SECURITY_EVENT',
+  'DAILY_REPORT',
+  'WEEKLY_REPORT',
+  'UPDATED_AT',
+];
 
 /**
  * Phase 5 — API rate limiting.
@@ -160,6 +186,7 @@ export function getConfig(): AppConfig {
       AUDIT_LOG: 'Audit_Log',
       PHOTO_ALBUMS: 'Photo_Albums',
       PHOTO_FILES:  'Photo_Files',
+      EMAIL_PREFERENCES: 'Email_Preferences',
     },
     PHOTO_MIME_TYPES: [PhotoMimeType.JPEG, PhotoMimeType.PNG, PhotoMimeType.HEIC],
     MAX_FILE_SIZE_MB: 50,   // GAS hard limit per UrlFetch payload

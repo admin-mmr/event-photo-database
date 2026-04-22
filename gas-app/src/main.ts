@@ -46,6 +46,18 @@ import { appendAuditLog, getAuditLogs } from './services/auditLogService';
 import { generateSummary, summaryToCsv, buildExceptionEmailBody } from './services/summaryService';
 import { buildLayer3FolderName } from './utils/folderNameValidator';
 import { toBatchTimestamp } from './utils/dateFormatter';
+import {
+  notifyUserCreated,
+  notifyUserRoleChanged,
+  notifyUserStatusChanged,
+  notifySecurityEvent,
+  sendDailyReport as runDailyReport,
+  sendWeeklyReport as runWeeklyReport,
+  installEmailReportTriggers,
+  uninstallEmailReportTriggers,
+} from './services/emailService';
+import { findByEmail as findUserByEmail } from './services/userService';
+import { getPreferencesFor, savePreferences } from './services/emailPreferenceService';
 
 /* global Logger, DriveApp, Utilities, MailApp */
 
@@ -133,6 +145,16 @@ function serverVerifyGoogleToken(idToken: string): ServerResponse {
     const authResult = resolveUser(email);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       Logger.log(`[serverVerifyGoogleToken] User lookup failed for ${email}: ${authResult.message}`);
+      // Fire a security-event notification to opted-in admins. Non-fatal —
+      // if the email send fails the caller still gets their auth error.
+      try {
+        notifySecurityEvent(email, 'login_rejected_user_not_registered', {
+          source: 'gis',
+          authMessage: authResult.message,
+        });
+      } catch (emailErr) {
+        Logger.log(`[serverVerifyGoogleToken] notifySecurityEvent failed (non-fatal): ${String(emailErr)}`);
+      }
       return { status: 'error', message: authResult.message };
     }
 
@@ -162,12 +184,19 @@ function serverCreateUser(
       { email: payload.email, runningClub: payload.runningClub, role: payload.role as UserRole },
       auth.adminEmail
     );
-    if (result.status === ResultStatus.SUCCESS) {
+    if (result.status === ResultStatus.SUCCESS && result.data) {
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.USER_CREATED,
         resourceType: 'user', resourceId: payload.email,
         details: { email: payload.email, runningClub: payload.runningClub, role: payload.role },
       });
+      // Fire the welcome email + admin CC. Non-fatal: email failures are
+      // logged to the Audit_Log and must not roll back the user creation.
+      try {
+        notifyUserCreated(result.data, auth.adminEmail);
+      } catch (emailErr) {
+        Logger.log(`serverCreateUser: notifyUserCreated failed (non-fatal): ${String(emailErr)}`);
+      }
     }
     return { status: result.status, message: result.message, data: result.data, errors: result.errors };
   } catch (err) {
@@ -183,6 +212,9 @@ function serverUpdateUser(
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
+    // Snapshot the user's current role BEFORE mutating so we can detect a
+    // role change and send the corresponding notification.
+    const previous = findUserByEmail(payload.email as string);
     const result = updateUser(
       {
         email: payload.email,
@@ -192,7 +224,7 @@ function serverUpdateUser(
       },
       auth.adminEmail
     );
-    if (result.status === ResultStatus.SUCCESS) {
+    if (result.status === ResultStatus.SUCCESS && result.data) {
       const changes: Record<string, unknown> = { email: payload.email };
       if (payload.runningClub !== undefined) changes['runningClub'] = payload.runningClub;
       if (payload.role       !== undefined) changes['role']        = payload.role;
@@ -201,6 +233,19 @@ function serverUpdateUser(
         actorEmail: auth.adminEmail, action: AuditAction.USER_UPDATED,
         resourceType: 'user', resourceId: payload.email, details: changes,
       });
+      // Role-change notification (non-fatal).
+      try {
+        if (previous && previous.role !== result.data.role) {
+          notifyUserRoleChanged(result.data, previous.role, auth.adminEmail);
+        }
+        // Status-change notification (non-fatal). `updateUser` is the generic
+        // update path and may also flip active↔inactive.
+        if (previous && previous.status !== result.data.status) {
+          notifyUserStatusChanged(result.data, auth.adminEmail);
+        }
+      } catch (emailErr) {
+        Logger.log(`serverUpdateUser: notify* failed (non-fatal): ${String(emailErr)}`);
+      }
     }
     return { status: result.status, message: result.message, data: result.data, errors: result.errors };
   } catch (err) {
@@ -215,11 +260,16 @@ function serverDeactivateUser(payload: WithSession<{ email: string }>): ServerRe
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
     const result = deactivateUser(payload.email);
-    if (result.status === ResultStatus.SUCCESS) {
+    if (result.status === ResultStatus.SUCCESS && result.data) {
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.USER_DEACTIVATED,
         resourceType: 'user', resourceId: payload.email, details: { email: payload.email },
       });
+      try {
+        notifyUserStatusChanged(result.data, auth.adminEmail);
+      } catch (emailErr) {
+        Logger.log(`serverDeactivateUser: notifyUserStatusChanged failed (non-fatal): ${String(emailErr)}`);
+      }
     }
     return { status: result.status, message: result.message, data: result.data };
   } catch (err) {
@@ -234,11 +284,16 @@ function serverReactivateUser(payload: WithSession<{ email: string }>): ServerRe
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
     const result = reactivateUser(payload.email);
-    if (result.status === ResultStatus.SUCCESS) {
+    if (result.status === ResultStatus.SUCCESS && result.data) {
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.USER_REACTIVATED,
         resourceType: 'user', resourceId: payload.email, details: { email: payload.email },
       });
+      try {
+        notifyUserStatusChanged(result.data, auth.adminEmail);
+      } catch (emailErr) {
+        Logger.log(`serverReactivateUser: notifyUserStatusChanged failed (non-fatal): ${String(emailErr)}`);
+      }
     }
     return { status: result.status, message: result.message, data: result.data };
   } catch (err) {
@@ -1506,6 +1561,133 @@ function serverGetDriveTree(
     Logger.log(`serverGetDriveTree error: ${String(err)}`);
     return { status: 'error', message: `Internal error fetching drive tree: ${String(err)}` };
   }
+}
+
+// ─── Phase 7 — Email Preferences server functions ───────────────────────────
+
+/**
+ * Returns the calling admin's saved preferences, with defaults substituted
+ * for anything they haven't explicitly set.
+ *
+ * Admin-only. Uses the session token from the payload like every other
+ * google.script.run entry point.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverGetMyEmailPrefs(payload: WithSession): ServerResponse {
+  try {
+    const auth = requireAdminOrFail(payload?.sessionToken);
+    if (!auth.ok) return auth.response;
+    const prefs = getPreferencesFor(auth.adminEmail);
+    return { status: 'success', message: 'OK', data: prefs };
+  } catch (err) {
+    Logger.log(`serverGetMyEmailPrefs error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error fetching email preferences' };
+  }
+}
+
+/**
+ * Upserts the calling admin's email preferences.
+ *
+ * Payload carries one boolean per EmailType flag. Missing booleans are
+ * interpreted as "do not opt in" — the client is expected to send every
+ * toggle's current state on every save.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function serverUpdateMyEmailPrefs(payload: WithSession<{
+  userCreated?:     boolean;
+  userRoleChanged?: boolean;
+  userDeactivated?: boolean;
+  securityEvent?:   boolean;
+  dailyReport?:     boolean;
+  weeklyReport?:    boolean;
+}>): ServerResponse {
+  try {
+    const auth = requireAdminOrFail(payload?.sessionToken);
+    if (!auth.ok) return auth.response;
+
+    const result = savePreferences({
+      email:           auth.adminEmail,
+      userCreated:     !!payload.userCreated,
+      userRoleChanged: !!payload.userRoleChanged,
+      userDeactivated: !!payload.userDeactivated,
+      securityEvent:   !!payload.securityEvent,
+      dailyReport:     !!payload.dailyReport,
+      weeklyReport:    !!payload.weeklyReport,
+    });
+
+    if (result.status === ResultStatus.SUCCESS) {
+      appendAuditLog({
+        actorEmail: auth.adminEmail,
+        action:     AuditAction.EMAIL_PREFS_UPDATED,
+        resourceType: 'email_preferences',
+        resourceId: auth.adminEmail,
+        details: {
+          userCreated:     !!payload.userCreated,
+          userRoleChanged: !!payload.userRoleChanged,
+          userDeactivated: !!payload.userDeactivated,
+          securityEvent:   !!payload.securityEvent,
+          dailyReport:     !!payload.dailyReport,
+          weeklyReport:    !!payload.weeklyReport,
+        },
+      });
+    }
+    return { status: result.status, message: result.message, data: result.data };
+  } catch (err) {
+    Logger.log(`serverUpdateMyEmailPrefs error: ${String(err)}`);
+    return { status: 'error', message: 'Internal error saving email preferences' };
+  }
+}
+
+/**
+ * Time-driven trigger entry point — installed by installEmailReportTriggers()
+ * in emailService.ts and invoked once per day by GAS.
+ *
+ * Must be a top-level global function (GAS triggers cannot reference methods
+ * on imported modules directly), which is why it's declared here and simply
+ * delegates to the service.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function dailyReportTrigger(): void {
+  try {
+    const result = runDailyReport();
+    Logger.log(`[dailyReportTrigger] ${result.status}: ${result.message}`);
+  } catch (err) {
+    Logger.log(`[dailyReportTrigger] error: ${String(err)}`);
+  }
+}
+
+/**
+ * Time-driven trigger entry point for the weekly digest.
+ * Invoked every Monday by the trigger installed via installEmailReportTriggers().
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function weeklyReportTrigger(): void {
+  try {
+    const result = runWeeklyReport();
+    Logger.log(`[weeklyReportTrigger] ${result.status}: ${result.message}`);
+  } catch (err) {
+    Logger.log(`[weeklyReportTrigger] error: ${String(err)}`);
+  }
+}
+
+/**
+ * Editor-only helper — run once from the GAS editor to install the
+ * daily / weekly report time-triggers. Idempotent.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function installEmailTriggers(): void {
+  installEmailReportTriggers();
+  Logger.log('[installEmailTriggers] triggers installed');
+}
+
+/**
+ * Editor-only helper — remove the scheduled report triggers.
+ * Use this to pause digests without a code deploy.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function removeEmailTriggers(): void {
+  uninstallEmailReportTriggers();
+  Logger.log('[removeEmailTriggers] triggers removed');
 }
 
 // ─── Internal auth helper ─────────────────────────────────────────────────────

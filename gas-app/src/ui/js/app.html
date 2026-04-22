@@ -48,10 +48,22 @@
    * @returns {Promise<*>}
    */
   // ── Session token ──────────────────────────────────────────────────────────
-  // Stored after GIS login; injected into every server call and navigation link.
+  //
+  // The server is the source of truth. Each authenticated page render injects
+  // window.SESSION_TOKEN via the template; that token is always the current,
+  // valid one for this user as of this page load.
+  //
+  // sessionStorage acts only as a fallback for the edge case where a page
+  // somehow renders without window.SESSION_TOKEN. We keep it in sync with
+  // the server-injected value on every page load — otherwise a stale token
+  // from an earlier login survives in sessionStorage and hijacks every
+  // subsequent navigate() call, redirecting users to the login page with
+  // "Session expired or invalid" even though they just signed in.
 
   function getSessionToken() {
-    return sessionStorage.getItem('gasSessionToken') || (window.SESSION_TOKEN || '');
+    // Prefer the server-injected token (authoritative for THIS page render).
+    // Fall back to sessionStorage only if the server didn't inject one.
+    return (window.SESSION_TOKEN || '') || sessionStorage.getItem('gasSessionToken') || '';
   }
 
   function setSessionToken(token) {
@@ -59,11 +71,14 @@
     window.SESSION_TOKEN = token;
   }
 
-  // On page load, seed from server-injected window.SESSION_TOKEN (if present).
-  // The server passes sessionToken via renderTemplate, and each page template
-  // writes it into window.SESSION_TOKEN before including app.html.
+  // On every page load, overwrite sessionStorage with the server-injected
+  // token so a stale value from a prior login can never leak into navigate().
+  // This MUST overwrite unconditionally — NOT "only if sessionStorage is
+  // empty" — because the whole bug class is: old token in sessionStorage,
+  // new token from server, old one wins because of the `!sessionStorage…`
+  // guard that used to be here.
   document.addEventListener('DOMContentLoaded', function () {
-    if (window.SESSION_TOKEN && !sessionStorage.getItem('gasSessionToken')) {
+    if (window.SESSION_TOKEN) {
       sessionStorage.setItem('gasSessionToken', window.SESSION_TOKEN);
     }
   });
@@ -168,11 +183,13 @@
     });
   });
 
-  // ── Mobile nav hamburger toggle ───────────────────────────────────────────
+  // ── Nav hamburger toggle ──────────────────────────────────────────────────
   //
-  // On narrow viewports (iPhone portrait etc.) the header nav collapses
-  // behind a hamburger button. Clicking the button toggles the .nav-open
-  // class on the header row, which reveals the dropdown panel via CSS.
+  // On viewports narrower than the breakpoint in styles.html (currently
+  // 1024px — wide enough to cover tablets and narrow laptops, not just
+  // phones) the header nav collapses behind a hamburger button. Clicking
+  // the button toggles the .nav-open class on the header row, which
+  // reveals the dropdown panel via CSS.
   document.addEventListener('DOMContentLoaded', function () {
     var toggles = document.querySelectorAll('.nav-toggle');
     toggles.forEach(function (toggle) {

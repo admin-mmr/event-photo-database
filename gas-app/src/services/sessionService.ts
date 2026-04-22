@@ -7,14 +7,17 @@
  * The client stores the token in sessionStorage and passes it with every
  * google.script.run call and every page navigation (?session=TOKEN).
  *
- * Sessions expire after SESSION_TTL_SECONDS (30 min) of inactivity.
+ * Sessions expire after SESSION_TTL_SECONDS (30 min) of INACTIVITY — every
+ * successful lookup refreshes the TTL (sliding expiration), so an active
+ * user stays logged in indefinitely while an idle session still times out.
+ *
  * The cache is shared across all users (Script Cache) keyed by a UUID token,
  * so there is no cross-user data leakage.
  */
 
 /* global CacheService, Utilities */
 
-const SESSION_TTL_SECONDS = 1800; // 30 minutes
+const SESSION_TTL_SECONDS = 1800; // 30 minutes of inactivity
 const CACHE_PREFIX = 'xsd_sess_';
 
 interface SessionPayload {
@@ -38,16 +41,27 @@ export function createSession(email: string, role: string): string {
 
 /**
  * Looks up a session token and returns {email, role} or null if missing/expired.
+ *
+ * On a successful lookup, the cache entry is re-written with the full TTL
+ * (sliding expiration). This ensures an active user's session does not hit
+ * a hard 30-minute wall from login time — only real inactivity expires them.
  */
 export function lookupSession(token: string): SessionPayload | null {
   if (!token || token.trim() === '') return null;
-  const raw = CacheService.getScriptCache().get(CACHE_PREFIX + token.trim());
+  const key = CACHE_PREFIX + token.trim();
+  const raw = CacheService.getScriptCache().get(key);
   if (!raw) return null;
+  let payload: SessionPayload;
   try {
-    return JSON.parse(raw) as SessionPayload;
+    payload = JSON.parse(raw) as SessionPayload;
   } catch {
     return null;
   }
+  // Sliding expiration: refresh the TTL on every successful read so that
+  // active users stay logged in. Only idle sessions (>30 min without any
+  // request) will expire.
+  CacheService.getScriptCache().put(key, raw, SESSION_TTL_SECONDS);
+  return payload;
 }
 
 /**

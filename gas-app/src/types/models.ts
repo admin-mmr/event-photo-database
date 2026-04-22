@@ -116,6 +116,32 @@ export interface PhotosFileRecord {
 }
 
 /**
+ * A row in the "Email_Preferences" sheet.
+ *
+ * One row per admin (keyed by email) storing a boolean opt-in flag per
+ * EmailType. Values are stored as "TRUE" / "FALSE" strings in the sheet so
+ * the cell remains human-editable; the mapper coerces to booleans.
+ *
+ * Default policy when a row is absent:
+ *   - transactional notifications (USER_*, SECURITY_*) → opted IN
+ *   - scheduled digests (DAILY_REPORT, WEEKLY_REPORT) → opted OUT
+ *
+ * These defaults are applied in emailPreferenceService.getPreferencesFor()
+ * and match the rollout plan: admins get critical events automatically and
+ * can silently opt OUT; they must explicitly opt IN to recurring digests.
+ */
+export interface EmailPreferenceRecord {
+  readonly email: string;                    // Admin email (lowercase, primary key)
+  readonly userCreated: boolean;             // CC on new-user notifications
+  readonly userRoleChanged: boolean;         // CC on role-change notifications
+  readonly userDeactivated: boolean;         // CC on deactivation notifications
+  readonly securityEvent: boolean;           // Receive failed-login alerts
+  readonly dailyReport: boolean;             // Receive the daily digest
+  readonly weeklyReport: boolean;            // Receive the weekly digest
+  readonly updatedAt: string;                // ISO 8601 timestamp of last change
+}
+
+/**
  * A row in the "Clubs" sheet.
  * Clubs managed here replace the static APPROVED_CLUBS constant.
  * Admins can add/deactivate clubs via the admin UI without a code deploy.

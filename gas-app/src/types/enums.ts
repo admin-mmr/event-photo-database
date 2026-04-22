@@ -89,6 +89,12 @@ export enum RouteAction {
 
   // Drive file system tree (all authenticated users)
   DRIVE_TREE = 'drive_tree',            // Visual hierarchy browser: Event → Club → Batch
+
+  // Phase 7 — Email communication preferences (admin only)
+  ADMIN_EMAIL_PREFS = 'admin_email_prefs',
+
+  // Session management
+  LOGOUT = 'logout',                    // Invalidate the current session token
 }
 
 /**
@@ -121,6 +127,30 @@ export enum AuditAction {
   ALBUM_SYNCED     = 'ALBUM_SYNCED',     // Photos synced to album for one event
   ALBUM_BACKFILLED = 'ALBUM_BACKFILLED', // Full backfill of all event albums completed
   ALBUM_ERROR      = 'ALBUM_ERROR',      // A Google Photos album operation failed
+
+  // Phase 7 — Email communication
+  EMAIL_SENT              = 'EMAIL_SENT',               // A notification email was dispatched
+  EMAIL_FAILED            = 'EMAIL_FAILED',             // MailApp send failed for one recipient
+  EMAIL_PREFS_UPDATED     = 'EMAIL_PREFS_UPDATED',      // An admin changed their opt-in settings
+  SECURITY_EVENT_DETECTED = 'SECURITY_EVENT_DETECTED',  // Failed login / unknown account probe
+}
+
+/**
+ * Email notification categories. Each value is both an opt-in flag on
+ * Email_Preferences and a label for the MailApp subject prefix.
+ *
+ * USER_ events fire on user-management mutations (create / role-change /
+ * deactivate). DAILY / WEEKLY fire on scheduled time triggers.
+ * SECURITY fires on auth failures from a seemingly valid Google account.
+ */
+export enum EmailType {
+  WELCOME_USER      = 'welcome_user',        // Sent TO a newly-created user
+  USER_CREATED      = 'user_created',        // Sent TO admins when a user is added
+  USER_ROLE_CHANGED = 'user_role_changed',   // Sent TO admins when a role changes
+  USER_DEACTIVATED  = 'user_deactivated',    // Sent TO admins when a user is deactivated
+  SECURITY_EVENT    = 'security_event',      // Sent TO admins on auth anomalies
+  DAILY_REPORT      = 'daily_report',        // Scheduled digest, once per day
+  WEEKLY_REPORT     = 'weekly_report',       // Scheduled digest, once per week
 }
 
 /**

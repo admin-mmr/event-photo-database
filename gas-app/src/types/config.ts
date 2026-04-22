@@ -24,6 +24,7 @@ export interface SheetNames {
   readonly AUDIT_LOG: string;
   readonly PHOTO_ALBUMS: string;
   readonly PHOTO_FILES: string;
+  readonly EMAIL_PREFERENCES: string;
 }
 
 /**
@@ -40,6 +41,18 @@ export interface SheetColumnMap {
   readonly AUDIT_LOG: AuditLogSheetColumns;
   readonly PHOTO_ALBUMS: PhotosAlbumsSheetColumns;
   readonly PHOTO_FILES: PhotosFilesSheetColumns;
+  readonly EMAIL_PREFERENCES: EmailPreferencesSheetColumns;
+}
+
+export interface EmailPreferencesSheetColumns {
+  readonly EMAIL:              0;  // Admin email (primary key, lowercase)
+  readonly USER_CREATED:       1;  // TRUE / FALSE
+  readonly USER_ROLE_CHANGED:  2;
+  readonly USER_DEACTIVATED:   3;
+  readonly SECURITY_EVENT:     4;
+  readonly DAILY_REPORT:       5;
+  readonly WEEKLY_REPORT:      6;
+  readonly UPDATED_AT:         7;  // ISO 8601 timestamp
 }
 
 export interface AuditLogSheetColumns {

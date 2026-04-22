@@ -6,10 +6,10 @@ import { listAll as listAllEvents } from '../services/eventService';
 import { listAll as listAllClubs, listActive as listActiveClubs } from '../services/clubService';
 import { generateSummary } from '../services/summaryService';
 import { listAllAlbums } from '../services/photosService';
+import { getPreferencesFor } from '../services/emailPreferenceService';
 import { getCanonicalScriptUrl } from '../utils/scriptUrl';
-import { BUILD_TIME } from '../buildInfo';
-
-/* global HtmlService, Session, PropertiesService */
+import { BUILD_TIME, BUILD_COMMIT } from '../buildInfo';
+/* global HtmlService, PropertiesService */
 
 /**
  * PageRoutes — handlers that return HtmlOutput for doGet routes.
@@ -57,12 +57,15 @@ function renderTemplate(
 /**
  * Login / welcome page shown to unauthenticated users.
  */
-export function loginPage(errorMessage = '', detectedEmail = ''): GoogleAppsScript.HTML.HtmlOutput {
-  let effectiveEmail = '';
+export function loginPage(errorMessage = ''): GoogleAppsScript.HTML.HtmlOutput {
   let clientId = '';
-  try { effectiveEmail = Session.getEffectiveUser().getEmail(); } catch { effectiveEmail = 'error'; }
   try { clientId = PropertiesService.getScriptProperties().getProperty('GOOGLE_CLIENT_ID') ?? ''; } catch { clientId = ''; }
-  return renderTemplate('login', { errorMessage, detectedEmail, effectiveEmail, buildTime: BUILD_TIME, clientId });
+  return renderTemplate('login', {
+    errorMessage,
+    clientId,
+    buildTime:   BUILD_TIME,
+    buildCommit: BUILD_COMMIT,
+  });
 }
 
 /**
@@ -251,6 +254,26 @@ export function driveTreePage(user: UserRecord, sessionToken = ""): GoogleAppsSc
     userRole:  user.role,
     isAdmin:   user.role === UserRole.ADMIN,
     events:    JSON.stringify(events.items),
+  });
+}
+
+/**
+ * Admin — Email Preferences page (Phase 7).
+ *
+ * Pre-loads the calling admin's own preferences so the toggles render in
+ * their saved state. Saves go through serverUpdateMyEmailPrefs via
+ * google.script.run on form submit.
+ *
+ * Admin-only; role is enforced at the router level before this is called.
+ */
+export function adminEmailPrefsPage(user: UserRecord, sessionToken = ''): GoogleAppsScript.HTML.HtmlOutput {
+  const prefs = getPreferencesFor(user.email);
+  return renderTemplate('admin/email_prefs', {
+    sessionToken,
+    userEmail: user.email,
+    userRole:  user.role,
+    isAdmin:   user.role === UserRole.ADMIN,
+    prefs:     JSON.stringify(prefs),
   });
 }
 

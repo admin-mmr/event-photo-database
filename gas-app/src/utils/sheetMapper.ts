@@ -1,5 +1,5 @@
 import { UserRole, UserStatus, UploadSource, AuditAction } from '../types/enums';
-import { UserRecord, EventRecord, UploadLogRecord, ClubRecord, AuditLogRecord, PhotosAlbumRecord, PhotosFileRecord } from '../types/models';
+import { UserRecord, EventRecord, UploadLogRecord, ClubRecord, AuditLogRecord, PhotosAlbumRecord, PhotosFileRecord, EmailPreferenceRecord } from '../types/models';
 import { COLUMNS } from '../config/constants';
 
 /**
@@ -370,5 +370,63 @@ export function fromPhotosFileRecord(record: PhotosFileRecord): unknown[] {
     record.clubName,
     record.fileName,
     record.syncedAt,
+  ];
+}
+
+// ─── Email Preferences ────────────────────────────────────────────────────────
+
+/**
+ * Coerces a Sheets cell to a boolean opt-in flag.
+ *
+ * Sheets may return booleans natively when users click the checkbox UI, or
+ * strings like "TRUE" / "FALSE" / "yes" / "no" / "1" / "0" when a human types
+ * into the cell. Normalise all of these; default empty/unknown values to false
+ * so that absent rows are treated as not-opted-in.
+ */
+function toOptInBoolean(value: unknown): boolean {
+  if (value === true) return true;
+  if (value === false) return false;
+  const s = String(value ?? '').trim().toLowerCase();
+  return s === 'true' || s === 'yes' || s === 'y' || s === '1';
+}
+
+/**
+ * Converts a raw Sheets row to an EmailPreferenceRecord.
+ * Returns null if the row is missing its email key.
+ */
+export function toEmailPreferenceRecord(row: unknown[]): EmailPreferenceRecord | null {
+  const COL = COLUMNS.EMAIL_PREFERENCES;
+  if (row.length <= COL.UPDATED_AT) return null;
+
+  const email = String(row[COL.EMAIL] ?? '').trim().toLowerCase();
+  if (!email) return null;
+
+  return {
+    email,
+    userCreated:     toOptInBoolean(row[COL.USER_CREATED]),
+    userRoleChanged: toOptInBoolean(row[COL.USER_ROLE_CHANGED]),
+    userDeactivated: toOptInBoolean(row[COL.USER_DEACTIVATED]),
+    securityEvent:   toOptInBoolean(row[COL.SECURITY_EVENT]),
+    dailyReport:     toOptInBoolean(row[COL.DAILY_REPORT]),
+    weeklyReport:    toOptInBoolean(row[COL.WEEKLY_REPORT]),
+    updatedAt:       String(row[COL.UPDATED_AT] ?? '').trim(),
+  };
+}
+
+/**
+ * Converts an EmailPreferenceRecord back to a Sheets row array.
+ * Booleans are written as native booleans — Sheets renders them as checkboxes
+ * if the column is formatted as such, and stores them as TRUE/FALSE otherwise.
+ */
+export function fromEmailPreferenceRecord(record: EmailPreferenceRecord): unknown[] {
+  return [
+    record.email,
+    record.userCreated,
+    record.userRoleChanged,
+    record.userDeactivated,
+    record.securityEvent,
+    record.dailyReport,
+    record.weeklyReport,
+    record.updatedAt,
   ];
 }

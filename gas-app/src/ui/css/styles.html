@@ -224,12 +224,15 @@
 
   /* ── Header nav toggle (hamburger) ───────────────────────────────────────── */
   /*
-   * The hamburger button is hidden on desktop. On narrow viewports
-   * (iPhone portrait etc.) the nav links collapse behind this button
-   * and drop down from the header when tapped.
+   * The hamburger button is hidden on wide desktops. Below the breakpoint
+   * defined in the media query further down (currently 1024px), the nav
+   * links collapse behind this button and drop down from the header when
+   * tapped. The breakpoint is set wide enough that admin pages (which can
+   * have 8-9 nav links) plus the Chinese title and user email chip never
+   * get clipped at the right edge before the hamburger takes over.
    */
   .nav-toggle {
-    display: none;                 /* desktop: hidden */
+    display: none;                 /* wide desktop: hidden */
     background: transparent;
     border: 0;
     color: inherit;
@@ -260,8 +263,14 @@
     align-items: center;
   }
 
-  /* ── Collapsed mobile nav (iPhone portrait etc.) ─────────────────────────── */
-  @media (max-width: 600px) {
+  /* ── Collapsed nav (tablets, narrow laptops, phones) ─────────────────────── */
+  /*
+   * Breakpoint chosen so the horizontal nav doesn't get clipped at medium
+   * widths. Admin pages have up to 9 links plus a Chinese title and the
+   * user's email chip — together they need ~1100px to lay out cleanly, so
+   * we switch to the hamburger dropdown below 1024px.
+   */
+  @media (max-width: 1024px) {
 
     /* Show the hamburger toggle */
     .nav-toggle {

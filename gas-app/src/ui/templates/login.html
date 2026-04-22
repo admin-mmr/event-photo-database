@@ -77,16 +77,18 @@
       font-size: 13px;
       color: #999;
     }
-    .debug-box {
-      background: #f3f3f3;
-      border-radius: 4px;
-      padding: 8px 12px;
-      margin-bottom: 16px;
-      font-size: 12px;
-      color: #555;
-      text-align: left;
-      font-family: monospace;
-      line-height: 1.8;
+    .build-stamp {
+      margin-top: 18px;
+      font-family: "SF Mono", "Menlo", monospace;
+      font-size: 11px;
+      color: #bbb;
+      letter-spacing: 0.3px;
+    }
+    .build-stamp code {
+      background: #f5f5f5;
+      padding: 1px 6px;
+      border-radius: 3px;
+      color: #666;
     }
   </style>
 </head>
@@ -106,30 +108,6 @@
         <?= errorMessage ?>
       </div>
       <? } ?>
-
-      <!-- Debug block — always shown during OAuth rollout so you can see the
-           exact redirect_uri that will be sent to Google. Remove once stable. -->
-      <div class="debug-box">
-        <strong>Debug — Auth check:</strong><br>
-        Active user (visitor):&nbsp;
-        <? if (typeof detectedEmail !== 'undefined' && detectedEmail) { ?>
-          <span style="color:#2e7d32;font-weight:bold;"><?= detectedEmail ?></span>
-          <span style="color:#888;">(→ blocked at user lookup)</span>
-        <? } else { ?>
-          <span style="color:#b71c1c;font-weight:bold;">(empty)</span>
-        <? } ?><br>
-        Effective user (executeAs):&nbsp;
-        <? if (typeof effectiveEmail !== 'undefined' && effectiveEmail) { ?>
-          <span style="color:#1565c0;font-weight:bold;"><?= effectiveEmail ?></span>
-          <span style="color:#888;">(USER_DEPLOYING — owner runs script ✓)</span>
-        <? } else { ?>
-          <span style="color:#b71c1c;">(empty)</span>
-        <? } ?><br>
-        Build:&nbsp;<span style="color:#555;"><?= (typeof buildTime !== 'undefined') ? buildTime : '—' ?></span><br>
-        GIS client ID:&nbsp;<span style="color:#555;"><?= (typeof clientId !== 'undefined' && clientId) ? clientId : 'NOT SET' ?></span><br>
-        redirect_uri (will send to Google):<br>
-        <span style="color:#0d47a1;font-weight:bold;word-break:break-all;"><?= (typeof scriptUrl !== 'undefined' && scriptUrl) ? scriptUrl : 'NOT SET' ?></span>
-      </div>
 
       <p style="color:#555;font-size:14px;margin-bottom:20px;">
         This system is restricted to registered members.<br>
@@ -163,10 +141,51 @@
         <a href="mailto:cathy.lin@mmrunners.org">Contact the administrator</a>
         to request access.
       </p>
+
+      <!-- Build stamp — lets us verify which deployment version is actually live -->
+      <? if (typeof buildTime !== 'undefined' && buildTime) { ?>
+      <p class="build-stamp">
+        build <code><?= buildCommit ?></code>
+        · <span id="build-time-local" data-utc="<?= buildTime ?>"><?= buildTime ?></span>
+      </p>
+      <? } ?>
     </div>
   </div>
 
   <script>
+    /**
+     * Reformat the UTC build timestamp into the viewer's local timezone.
+     * The raw UTC ISO is kept as a title attribute (hover tooltip) so we can
+     * still cross-reference against git/CI logs which are timezone-agnostic.
+     *
+     * Example output:  "Apr 21, 2026, 8:14 PM PDT (UTC 2026-04-22T03:14:35Z)"
+     */
+    (function () {
+      var el = document.getElementById('build-time-local');
+      if (!el) return;
+      var utc = el.getAttribute('data-utc');
+      var d = new Date(utc);
+      if (isNaN(d.getTime())) return; // bad input — leave raw UTC in place
+
+      try {
+        var localFmt = new Intl.DateTimeFormat(undefined, {
+          year:   'numeric',
+          month:  'short',
+          day:    'numeric',
+          hour:   'numeric',
+          minute: '2-digit',
+          hour12: true,
+          timeZoneName: 'short', // e.g. "PDT", "CST", "GMT+8"
+        });
+        el.textContent = localFmt.format(d);
+        el.title = 'UTC ' + utc; // hover to see original
+      } catch (e) {
+        // Older browsers — fallback to default locale string
+        el.textContent = d.toString();
+        el.title = 'UTC ' + utc;
+      }
+    })();
+
     /**
      * Initiates the OAuth 2.0 Authorization Code flow.
      *
@@ -195,24 +214,6 @@
         'prompt=select_account'
       ].join('&');
       var authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + params;
-
-      // ── Debug logging — remove once OAuth is stable ────────────────────────
-      // These values are ALSO visible in the debug box above the button, but
-      // we log them here so (a) they appear in DevTools Console, and
-      // (b) you can copy the exact redirect_uri from the confirm dialog before
-      //     navigation to compare against the GCP-registered list.
-      console.log('[OAuth] client_id     =', clientId);
-      console.log('[OAuth] redirect_uri  =', scriptUrl);
-      console.log('[OAuth] full auth URL =', authUrl);
-      var proceed = confirm(
-        'About to send this redirect_uri to Google:\n\n' +
-        scriptUrl + '\n\n' +
-        'This exact URI must be listed in the GCP OAuth client\'s\n' +
-        '"Authorized redirect URIs". Click OK to continue, or Cancel\n' +
-        'to copy it from the debug box above first.'
-      );
-      if (!proceed) return;
-      // ────────────────────────────────────────────────────────────────────────
 
       window.top.location.href = authUrl;
     }

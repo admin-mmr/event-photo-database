@@ -92,24 +92,33 @@ export const DEFAULT_AUDIT_ROWS: unknown[][] = [
   ],
 ];
 
+/** Default Email_Preferences sheet rows for tests that need pre-existing preferences */
+export const DEFAULT_EMAIL_PREFERENCES_ROWS: unknown[][] = [
+  [TEST_ADMIN_EMAIL, true, true, true, true, false, false, '2026-04-01T10:00:00Z'],
+];
+
 /** Active mock sheet instances — tests can access these to verify calls */
 export const mockSheets: Record<string, ReturnType<typeof createMockSheet>> = {
-  Users:      createMockSheet(DEFAULT_USERS_ROWS),
-  Events:     createMockSheet(DEFAULT_EVENTS_ROWS),
-  Upload_Log: createMockSheet([]),
-  Rate_Limit: createMockSheet([]),
-  Audit_Log:  createMockSheet([]),
+  Users:              createMockSheet(DEFAULT_USERS_ROWS),
+  Events:             createMockSheet(DEFAULT_EVENTS_ROWS),
+  Upload_Log:         createMockSheet([]),
+  Rate_Limit:         createMockSheet([]),
+  Audit_Log:          createMockSheet([]),
+  Email_Preferences:  createMockSheet(DEFAULT_EMAIL_PREFERENCES_ROWS),
 };
 
 /** Resets all mock sheets to their default data */
 export function resetMockSheets(): void {
   Object.assign(mockSheets, {
-    Users:      createMockSheet(DEFAULT_USERS_ROWS),
-    Events:     createMockSheet(DEFAULT_EVENTS_ROWS),
-    Upload_Log: createMockSheet([]),
-    Rate_Limit: createMockSheet([]),
-    Audit_Log:  createMockSheet([]),
+    Users:              createMockSheet(DEFAULT_USERS_ROWS),
+    Events:             createMockSheet(DEFAULT_EVENTS_ROWS),
+    Upload_Log:         createMockSheet([]),
+    Rate_Limit:         createMockSheet([]),
+    Audit_Log:          createMockSheet([]),
+    Email_Preferences:  createMockSheet(DEFAULT_EMAIL_PREFERENCES_ROWS),
   });
+  resetMockMailApp();
+  resetMockScriptApp();
 }
 
 // ─── Mock SpreadsheetApp ──────────────────────────────────────────────────────
@@ -255,9 +264,119 @@ const mockLogger = {
 
 // ─── Mock MailApp ─────────────────────────────────────────────────────────────
 
+let _mockRemainingQuota = 100;
+
 const mockMailApp = {
   sendEmail: jest.fn(),
+  getRemainingDailyQuota: jest.fn().mockImplementation(() => _mockRemainingQuota),
 };
+
+/** Helper: reset MailApp mocks and restore quota to 100 */
+export function resetMockMailApp(): void {
+  mockMailApp.sendEmail.mockClear();
+  mockMailApp.getRemainingDailyQuota.mockClear();
+  _mockRemainingQuota = 100;
+}
+
+/** Helper: set the mock daily quota (for testing quota exhaustion) */
+export function setMockMailAppQuota(quota: number): void {
+  _mockRemainingQuota = quota;
+}
+
+// ─── Mock CacheService ────────────────────────────────────────────────────────
+
+/** In-memory store backing the script cache mock */
+const _cacheStore: Record<string, string> = {};
+
+export const mockScriptCache = {
+  put:    jest.fn().mockImplementation((key: string, value: string) => { _cacheStore[key] = value; }),
+  get:    jest.fn().mockImplementation((key: string) => _cacheStore[key] ?? null),
+  remove: jest.fn().mockImplementation((key: string) => { delete _cacheStore[key]; }),
+};
+
+export const mockCacheService = {
+  getScriptCache: jest.fn().mockReturnValue(mockScriptCache),
+};
+
+/** Clears all cached entries between tests */
+export function resetMockCache(): void {
+  Object.keys(_cacheStore).forEach(k => delete _cacheStore[k]);
+  mockScriptCache.put.mockClear();
+  mockScriptCache.get.mockClear();
+  mockScriptCache.remove.mockClear();
+}
+
+// ─── Mock ScriptApp ───────────────────────────────────────────────────────────
+
+/** Module-level storage for installed triggers (populated by newTrigger builder) */
+export const mockInstalledTriggers: Array<{
+  handlerName: string;
+  schedule: string;
+}> = [];
+
+/**
+ * Mock trigger builder — chainable interface for defining schedules.
+ * Returns a builder that records the handler name and schedule on create().
+ */
+function makeMockTriggerBuilder(handlerName: string) {
+  return {
+    timeBased: jest.fn().mockReturnThis(),
+    everyDays: jest.fn().mockImplementation((n: number) => ({
+      atHour: jest.fn().mockReturnValue({
+        create: jest.fn().mockImplementation(() => {
+          mockInstalledTriggers.push({ handlerName, schedule: `everyDays(${n})@hour(7)` });
+          return { getHandlerFunction: jest.fn().mockReturnValue(handlerName) };
+        }),
+      }),
+    })),
+    onWeekDay: jest.fn().mockImplementation((day: string) => ({
+      atHour: jest.fn().mockReturnValue({
+        create: jest.fn().mockImplementation(() => {
+          mockInstalledTriggers.push({ handlerName, schedule: `onWeekDay(${day})@hour(7)` });
+          return { getHandlerFunction: jest.fn().mockReturnValue(handlerName) };
+        }),
+      }),
+    })),
+  };
+}
+
+const mockScriptApp = {
+  newTrigger: jest.fn().mockImplementation((name: string) => makeMockTriggerBuilder(name)),
+  getProjectTriggers: jest.fn().mockImplementation(() =>
+    mockInstalledTriggers.map(t => ({
+      getHandlerFunction: jest.fn().mockReturnValue(t.handlerName),
+      getEventType: jest.fn().mockReturnValue('ON_TIME_INTERVAL'),
+    }))
+  ),
+  deleteTrigger: jest.fn().mockImplementation((_trigger: unknown) => {
+    // Just clear the installed triggers for simplicity in tests
+    mockInstalledTriggers.length = 0;
+  }),
+  WeekDay: {
+    MONDAY: 'MONDAY',
+    TUESDAY: 'TUESDAY',
+    WEDNESDAY: 'WEDNESDAY',
+    THURSDAY: 'THURSDAY',
+    FRIDAY: 'FRIDAY',
+    SATURDAY: 'SATURDAY',
+    SUNDAY: 'SUNDAY',
+  },
+};
+
+/** Helper: reset ScriptApp mocks */
+export function resetMockScriptApp(): void {
+  mockInstalledTriggers.length = 0;
+  mockScriptApp.newTrigger.mockClear();
+  mockScriptApp.getProjectTriggers.mockClear();
+  mockScriptApp.deleteTrigger.mockClear();
+}
+
+// ─── Email Preferences sheet fixture ───────────────────────────────────────────
+
+/** Helper: install a mock Email_Preferences sheet */
+export function setupEmailPreferencesSheet(rows: unknown[][] = DEFAULT_EMAIL_PREFERENCES_ROWS): void {
+  mockSheets.Email_Preferences = createMockSheet(rows);
+}
 
 // ─── Install globals ──────────────────────────────────────────────────────────
 
@@ -271,6 +390,8 @@ g['ContentService']      = mockContentService;
 g['HtmlService']         = mockHtmlService;
 g['Logger']              = mockLogger;
 g['MailApp']             = mockMailApp;
+g['CacheService']        = mockCacheService;
+g['ScriptApp']           = mockScriptApp;
 
 // ─── Exports for use in test files ───────────────────────────────────────────
 
@@ -286,6 +407,12 @@ export {
   mockHtmlService,
   mockLogger,
   mockMailApp,
-  // makeMockDriveFile is already a named export via the function declaration above
-  // mockSpreadsheet is now a named export via the `export const` declaration above
+  mockScriptApp,
+  // The following are exported as named exports (see declarations above):
+  // - makeMockDriveFile
+  // - mockSpreadsheet
+  // - mockCacheService, mockScriptCache, resetMockCache
+  // - mockScriptApp, resetMockScriptApp, mockInstalledTriggers
+  // - DEFAULT_EMAIL_PREFERENCES_ROWS, setupEmailPreferencesSheet
+  // - setMockMailAppQuota, resetMockMailApp
 };

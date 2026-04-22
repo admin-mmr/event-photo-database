@@ -5,6 +5,7 @@ import { exchangeOAuthCode } from '../services/tokenService';
 import { createSession } from '../services/sessionService';
 import { requireRole } from '../middleware/roleGuard';
 import { getCanonicalScriptUrl } from '../utils/scriptUrl';
+import { notifySecurityEvent } from '../services/emailService';
 import {
   loginPage,
   accessDeniedPage,
@@ -16,6 +17,7 @@ import {
   adminClubsPage,
   adminSummaryPage,
   adminAuditPage,
+  adminEmailPrefsPage,
   adminPhotosPage,
   driveTreePage,
   uploadPage,
@@ -32,6 +34,7 @@ import {
   handleUpdateClub,
   handleDeactivateClub,
   handleListClubs,
+  handleLogout,
   handleUnknownAction,
   handleForbidden,
 } from './apiRoutes';
@@ -75,6 +78,7 @@ function getGetRoutes(): Readonly<Record<string, RouteConfig>> {
     [RouteAction.ADMIN_SUMMARY]: { requiredRole: UserRole.ADMIN },
     [RouteAction.ADMIN_AUDIT]:   { requiredRole: UserRole.ADMIN },
     [RouteAction.ADMIN_PHOTOS]:  { requiredRole: UserRole.ADMIN },
+    [RouteAction.ADMIN_EMAIL_PREFS]: { requiredRole: UserRole.ADMIN },
     [RouteAction.DRIVE_TREE]:    { requiredRole: null }, // all authenticated users
     [RouteAction.UPLOAD]:        { requiredRole: null }, // all authenticated users
   };
@@ -93,6 +97,7 @@ function getPostRoutes(): Readonly<Record<string, RouteConfig>> {
     [RouteAction.UPDATE_CLUB]:           { requiredRole: UserRole.ADMIN },
     [RouteAction.DEACTIVATE_CLUB]:       { requiredRole: UserRole.ADMIN },
     [RouteAction.LIST_CLUBS]:            { requiredRole: null }, // all authenticated users
+    [RouteAction.LOGOUT]:                { requiredRole: null }, // all authenticated users
   };
 }
 
@@ -166,7 +171,7 @@ export function handleGet(
 
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       Logger.log(`[Router.handleGet] Auth failed — redirecting to login`);
-      return loginPage(authResult.message, detectedEmail);
+      return loginPage(authResult.message);
     }
 
     const user = authResult.data;
@@ -242,6 +247,8 @@ function dispatchGetHandler(
       return adminAuditPage(user, sessionToken);
     case RouteAction.ADMIN_PHOTOS:
       return adminPhotosPage(user, sessionToken);
+    case RouteAction.ADMIN_EMAIL_PREFS:
+      return adminEmailPrefsPage(user, sessionToken);
     case RouteAction.DRIVE_TREE:
       return driveTreePage(user, sessionToken);
     case RouteAction.UPLOAD:
@@ -269,10 +276,28 @@ export function handlePost(
       return jsonError('Missing required parameter: action', 400);
     }
 
-    // Authenticate
+    // Parse request body BEFORE authenticating so we can extract sessionToken.
+    // Under USER_DEPLOYING, Session.getActiveUser() returns empty and the
+    // client-side GIS token is the only credential we have — it lives in the
+    // JSON body (payload.sessionToken), not in e.parameter.
+    let payload: Record<string, unknown> = {};
+    if (e.postData?.contents) {
+      try {
+        payload = JSON.parse(e.postData.contents) as Record<string, unknown>;
+        Logger.log(`[Router.handlePost] Parsed payload keys: ${Object.keys(payload).join(', ')}`);
+      } catch {
+        Logger.log(`[Router.handlePost] Failed to parse request body`);
+        return jsonError('Request body must be valid JSON', 400);
+      }
+    }
+
+    // Authenticate (pass sessionToken from payload for USER_DEPLOYING + GIS)
     Logger.log(`[Router.handlePost] Authenticating request…`);
-    const authResult = authenticateRequest();
-    Logger.log(`[Router.handlePost] Auth result: status=${authResult.status} email=${authResult.data?.email ?? 'n/a'} role=${authResult.data?.role ?? 'n/a'}`);
+    const sessionToken = typeof payload.sessionToken === 'string'
+      ? payload.sessionToken
+      : undefined;
+    const authResult = authenticateRequest(sessionToken);
+    Logger.log(`[Router.handlePost] Auth result: status=${authResult.status} email=${authResult.data?.email ?? 'n/a'} role=${authResult.data?.role ?? 'n/a'} sessionTokenPresent=${!!sessionToken}`);
 
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       Logger.log(`[Router.handlePost] Auth failed: ${authResult.message}`);
@@ -295,18 +320,6 @@ export function handlePost(
       if (guard.status !== ResultStatus.SUCCESS) {
         Logger.log(`[Router.handlePost] Role check failed: ${guard.message}`);
         return handleForbidden(guard.message);
-      }
-    }
-
-    // Parse request body
-    let payload: Record<string, unknown> = {};
-    if (e.postData?.contents) {
-      try {
-        payload = JSON.parse(e.postData.contents) as Record<string, unknown>;
-        Logger.log(`[Router.handlePost] Parsed payload keys: ${Object.keys(payload).join(', ')}`);
-      } catch {
-        Logger.log(`[Router.handlePost] Failed to parse request body`);
-        return jsonError('Request body must be valid JSON', 400);
       }
     }
 
@@ -352,6 +365,8 @@ function dispatchPostHandler(
     case RouteAction.API_UPLOAD_FILE:
       // Phase 5: API upload; auth is inside the handler (api_key in body)
       return handleApiUploadFile(payload);
+    case RouteAction.LOGOUT:
+      return handleLogout(payload);
     default:
       return handleUnknownAction(action);
   }
@@ -387,9 +402,18 @@ function handleOAuthCallback(code: string): GoogleAppsScript.HTML.HtmlOutput {
   Logger.log(`[Router.handleOAuthCallback] user lookup: status=${userResult.status} role=${userResult.data?.role ?? 'n/a'}`);
 
   if (userResult.status !== ResultStatus.SUCCESS || !userResult.data) {
+    // Fire a security-event notification to opted-in admins. Non-fatal —
+    // the user still sees the normal "not registered" login message.
+    try {
+      notifySecurityEvent(email, 'login_rejected_user_not_registered', {
+        source: 'oauth_callback',
+        authMessage: userResult.message,
+      });
+    } catch (emailErr) {
+      Logger.log(`[Router.handleOAuthCallback] notifySecurityEvent failed (non-fatal): ${String(emailErr)}`);
+    }
     return loginPage(
-      userResult.message ?? 'Your account is not registered. Contact the administrator.',
-      email
+      userResult.message ?? 'Your account is not registered. Contact the administrator.'
     );
   }
 
