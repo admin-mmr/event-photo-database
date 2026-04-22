@@ -92,7 +92,11 @@
             <a class="mdl-navigation__link" href="?action=admin_clubs">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>
               Clubs
+            </a>            <a class="mdl-navigation__link" href="?action=admin_links">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">link</i>
+              Links
             </a>
+
             <a class="mdl-navigation__link" href="?action=admin_photos">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">photo_library</i>
               Photos
@@ -213,6 +217,21 @@
                   </div>
                 </div>
               </div>
+
+              <div class="pref-row">
+                <label class="mdl-switch mdl-js-switch mdl-js-ripple-effect pref-row__toggle"
+                       for="toggle-eventCreated">
+                  <input type="checkbox" id="toggle-eventCreated" class="mdl-switch__input">
+                  <span class="mdl-switch__label"></span>
+                </label>
+                <div class="pref-row__body">
+                  <div class="pref-row__label">New event created</div>
+                  <div class="pref-row__desc">
+                    When any admin creates a new event. On by default — this is
+                    the cue for club admins to generate upload links for their club.
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- Group 2: Recurring digests -->
@@ -297,6 +316,7 @@
       'userRoleChanged',
       'userDeactivated',
       'securityEvent',
+      'eventCreated',
       'dailyReport',
       'weeklyReport'
     ];

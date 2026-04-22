@@ -379,7 +379,11 @@
             <a class="mdl-navigation__link" href="?action=admin_clubs">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>
               Clubs
+            </a>            <a class="mdl-navigation__link" href="?action=admin_links">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">link</i>
+              Links
             </a>
+
             <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=admin_photos">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">photo_library</i>
               Photos
@@ -522,6 +526,32 @@
           </table>
         </div>
 
+        <!-- Sync Queue Status Card (Phase 4) -->
+        <div id="sync-queue-card" style="
+          background:#fff;
+          border-radius:4px;
+          box-shadow:0 1px 3px rgba(0,0,0,.12);
+          margin-bottom:20px;
+          overflow:hidden;
+          display:none;
+        ">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;
+                      border-bottom:1px solid #f0f0f0;background:#f9fbe7;">
+            <span style="font-weight:600;font-size:.92rem;display:flex;align-items:center;gap:6px;">
+              <i class="material-icons" style="color:#827717;font-size:18px;">queue</i>
+              Async Sync Queue
+            </span>
+            <button class="mdl-button mdl-js-button" style="font-size:.78rem;"
+                    onclick="refreshSyncQueueStatus()">
+              <i class="material-icons" style="font-size:16px;vertical-align:middle;">refresh</i>
+              Refresh
+            </button>
+          </div>
+          <div id="sync-queue-body" style="padding:14px 16px;font-size:.87rem;color:#555;">
+            Loading…
+          </div>
+        </div>
+
         <!-- Event rows -->
         <div id="events-list"></div>
         <div id="no-events" style="display:none;">
@@ -620,6 +650,72 @@
         '<strong style="color:#e65100;">' + val + '</strong> ' + label +
         '</div>';
     }
+
+    // ── Sync Queue Status (Phase 4) ───────────────────────────────────────────
+
+    /**
+     * Loads and renders the async Sync_Queue status card.
+     * Called on page load and whenever the user clicks "Refresh".
+     * The card is hidden if the total queue is empty (nothing to show).
+     */
+    function refreshSyncQueueStatus() {
+      var body = document.getElementById('sync-queue-body');
+      body.innerHTML = '<span style="color:#999;">Loading…</span>';
+      callServer('serverGetSyncQueueStatus', {}, function(res) {
+        var card = document.getElementById('sync-queue-card');
+        if (!res || !res.data) {
+          body.innerHTML = '<span style="color:#c62828;">Failed to load queue status.</span>';
+          card.style.display = 'block';
+          return;
+        }
+        var d = res.data;
+        if (d.total === 0) {
+          card.style.display = 'none';
+          return;
+        }
+        card.style.display = 'block';
+
+        var parts = [];
+        parts.push(queuePill('pending',    '#f57f17', '#fff8e1', d.pending,    'pending'));
+        if (d.inProgress > 0) {
+          parts.push(queuePill('sync',     '#1565c0', '#e3f2fd', d.inProgress, 'in progress'));
+        }
+        parts.push(queuePill('check_circle', '#2e7d32', '#e8f5e9', d.done,    'done'));
+        if (d.failed > 0) {
+          parts.push(queuePill('error',    '#b71c1c', '#ffebee', d.failed,    'failed'));
+        }
+
+        var olderNote = '';
+        if (d.oldestPendingAt) {
+          var age = Math.round((Date.now() - new Date(d.oldestPendingAt).getTime()) / 60000);
+          olderNote = '<span style="color:#999;font-size:.8rem;margin-left:8px;">oldest pending: ' + age + ' min ago</span>';
+        }
+
+        body.innerHTML =
+          '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">' +
+          parts.join('') + olderNote +
+          '</div>' +
+          (d.failed > 0
+            ? '<p style="margin:10px 0 0;font-size:.82rem;color:#b71c1c;">' +
+              '<i class="material-icons" style="font-size:14px;vertical-align:middle;">info</i> ' +
+              'Failed items have exhausted retries. Use <strong>Backfill All</strong> or ' +
+              '<strong>Sync Albums</strong> on the individual event to manually re-sync them.' +
+              '</p>'
+            : '');
+      });
+    }
+
+    function queuePill(icon, color, bg, count, label) {
+      return '<div style="display:inline-flex;align-items:center;gap:5px;' +
+        'background:' + bg + ';border-radius:20px;padding:4px 12px;font-size:.84rem;">' +
+        '<i class="material-icons" style="font-size:15px;color:' + color + ';">' + icon + '</i>' +
+        '<strong style="color:' + color + ';">' + count + '</strong>' +
+        '<span style="color:#555;">' + label + '</span>' +
+        '</div>';
+    }
+
+    // Load queue status on page load
+    refreshSyncQueueStatus();
 
     // ── Render event rows ──────────────────────────────────────────────────────
     (function renderEvents() {

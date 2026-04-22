@@ -209,6 +209,9 @@
           <a class="mdl-navigation__link" href="?action=admin_clubs">
             <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>Clubs
           </a>
+          <a class="mdl-navigation__link" href="?action=admin_links">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">link</i>Links
+          </a>
           <? } ?>
           <a class="mdl-navigation__link" href="?action=drive_tree">
             <i class="material-icons" style="vertical-align:middle;margin-right:4px;">account_tree</i>File System
@@ -234,9 +237,44 @@
       <!-- Page header -->
       <div style="margin-bottom:20px;">
         <h4 style="margin:0 0 4px;">Upload Photos</h4>
-        <p style="margin:0;color:#777;font-size:14px;">
-          Club: <strong><?= runningClub ?></strong>
+        <p style="margin:0;color:#777;font-size:14px;" id="header-club-line">
+          Club: <strong id="header-club-name"><?= runningClub || (isSuperAdmin ? 'select below ↓' : '') ?></strong>
         </p>
+      </div>
+
+      <? if (isSuperAdmin) { ?>
+      <!-- Super-admin club selection — required before upload can begin.
+           Design §3 / §7: super admins must upload to a real club, not the admin club. -->
+      <div class="card" id="super-admin-club-picker" style="margin-bottom:16px;">
+        <h5 style="margin:0 0 12px;font-size:15px;display:flex;align-items:center;gap:8px;">
+          <i class="material-icons" style="color:#e65100;">warning</i>
+          Select your upload club
+        </h5>
+        <p style="margin:0 0 14px;color:#555;font-size:14px;">
+          You are signed in as a <strong>super admin</strong>. Before uploading, choose
+          which club's folder these photos belong to. Uploads to the admin account
+          are not permitted.
+        </p>
+        <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label"
+             style="width:100%;max-width:360px;">
+          <select id="super-admin-club-select" class="mdl-textfield__input"
+                  onchange="onSuperAdminClubChange(this.value)">
+            <option value="">— choose a club —</option>
+            <? var clubs = JSON.parse(approvedClubs); for (var ci = 0; ci < clubs.length; ci++) { ?>
+            <option value="<?= clubs[ci].value ?>"><?= clubs[ci].display ?></option>
+            <? } ?>
+          </select>
+          <label class="mdl-textfield__label" for="super-admin-club-select">Club</label>
+        </div>
+      </div>
+      <? } ?>
+
+      <!-- Confirmation banner: shown once event + club are both selected -->
+      <div id="upload-confirm-banner" style="display:none;background:#e8f5e9;border-left:4px solid #388e3c;
+           border-radius:4px;padding:12px 16px;margin-bottom:16px;font-size:14px;">
+        <i class="material-icons" style="vertical-align:middle;margin-right:6px;color:#388e3c;font-size:18px;">check_circle</i>
+        Uploading photos for <strong id="confirm-event-name">—</strong>
+        &nbsp;/&nbsp;<strong id="confirm-club-name">—</strong>
       </div>
 
       <!-- Step indicator (hidden on summary) -->
@@ -507,9 +545,10 @@
 <script>
 // ── Constants & state ──────────────────────────────────────────────────────────
 
-var ALL_EVENTS = <?!= events ?>;
-var RUNNING_CLUB = '<?= runningClub ?>';
-var USER_EMAIL = '<?= userEmail ?>';
+var ALL_EVENTS    = <?!= events ?>;
+var RUNNING_CLUB  = '<?= runningClub ?>'; // empty for super admins until they pick a club
+var IS_SUPER_ADMIN = <?!= isSuperAdmin ? 'true' : 'false' ?>;
+var USER_EMAIL    = '<?= userEmail ?>';
 var ACCEPTED_EXTS = ['.jpg','.jpeg','.png','.heic','.cr2','.arw','.nef'];
 var MAX_FILE_SIZE_MB = 50;
 var MAX_BATCH_MB = 500;
@@ -564,9 +603,39 @@ function goToStep1() {
   updateStepIndicator(1);
 }
 
+// ── Super-admin club selector ─────────────────────────────────────────────────
+
+/**
+ * Called when the super-admin chooses a club from the dropdown.
+ * Updates RUNNING_CLUB so all subsequent upload calls use the right club.
+ */
+function onSuperAdminClubChange(value) {
+  RUNNING_CLUB = value;
+  document.getElementById('header-club-name').textContent = value || 'select below ↓';
+  refreshConfirmBanner();
+}
+
+/** Shows or hides the confirmation banner based on whether event + club are both set. */
+function refreshConfirmBanner() {
+  var banner = document.getElementById('upload-confirm-banner');
+  if (!banner) return;
+  if (state.selectedEvent && RUNNING_CLUB) {
+    document.getElementById('confirm-event-name').textContent = state.selectedEvent.eventName;
+    document.getElementById('confirm-club-name').textContent = RUNNING_CLUB;
+    banner.style.display = '';
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
 function goToStep2() {
   if (!state.selectedEvent) {
     document.getElementById('step1-error').textContent = 'Please select an event first.';
+    return;
+  }
+  if (!RUNNING_CLUB) {
+    document.getElementById('step1-error').textContent =
+      'Super admins must select a club before proceeding.';
     return;
   }
   document.getElementById('step1-error').textContent = '';
@@ -650,6 +719,7 @@ function selectEvent(event) {
   filterEventList();
   document.getElementById('btn-step1-next').disabled = false;
   document.getElementById('step1-error').textContent = '';
+  refreshConfirmBanner();
 }
 
 // ── Step 2: Club folder tree ───────────────────────────────────────────────────
