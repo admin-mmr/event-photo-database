@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Upload Links — 湘舍动公益文件系统</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.indigo-pink.min.css">
+  <?!= HtmlService.createHtmlOutputFromFile('ui/css/styles').getContent() ?>
+  <style>
+    .link-url-box {
+      background: #e8f5e9;
+      border: 1px solid #a5d6a7;
+      border-radius: 4px;
+      padding: 12px 16px;
+      font-family: monospace;
+      font-size: 13px;
+      word-break: break-all;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .link-url-box .url-text {
+      flex: 1;
+      color: #1b5e20;
+    }
+    .link-status-active  { color: #2e7d32; font-weight: 500; }
+    .link-status-revoked { color: #b71c1c; font-weight: 500; }
+    .link-card {
+      border: 1px solid #e0e0e0;
+      border-radius: 4px;
+      padding: 16px;
+      margin-bottom: 12px;
+      background: #fff;
+    }
+    .link-card.active  { border-left: 4px solid #4caf50; }
+    .link-card.revoked { border-left: 4px solid #ef5350; background: #fafafa; }
+    .link-meta {
+      font-size: 12px;
+      color: #777;
+      margin-top: 6px;
+    }
+    .link-actions {
+      margin-top: 12px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .section-divider {
+      border: none;
+      border-top: 1px solid #e0e0e0;
+      margin: 24px 0;
+    }
+    .empty-state {
+      text-align: center;
+      padding: 40px 24px;
+      color: #999;
+    }
+    .empty-state .material-icons { font-size: 48px; display: block; margin-bottom: 12px; }
+    .filter-card {
+      padding: 16px;
+      margin-bottom: 20px;
+      display: flex;
+      gap: 16px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
+    .version-badge {
+      display: inline-block;
+      background: #e3f2fd;
+      color: #1565c0;
+      border-radius: 10px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-left: 6px;
+    }
+    .revoked-badge {
+      display: inline-block;
+      background: #ffebee;
+      color: #c62828;
+      border-radius: 10px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .active-badge {
+      display: inline-block;
+      background: #e8f5e9;
+      color: #2e7d32;
+      border-radius: 10px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
+    <header class="mdl-layout__header">
+      <div class="mdl-layout__header-row">
+        <a href="?action=dashboard" class="mdl-layout-title"
+           style="color:inherit;text-decoration:none;">
+          湘舍动公益文件系统
+        </a>
+        <div class="mdl-layout-spacer"></div>
+        <div class="nav-panel">
+          <nav class="mdl-navigation">
+            <a class="mdl-navigation__link" href="?action=dashboard">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">home</i>
+              Home
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_users">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>
+              Users
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_events">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
+              Events
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_clubs">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>
+              Clubs
+            </a>
+            <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=admin_links">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">link</i>
+              Links
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_photos">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">photo_library</i>
+              Photos
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_audit">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">history</i>
+              Audit Log
+            </a>
+            <a class="mdl-navigation__link" href="?action=drive_tree">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">account_tree</i>
+              File System
+            </a>
+          </nav>
+          <span class="mdl-chip" style="margin-left:12px;">
+            <span class="mdl-chip__text"><?= userEmail ?></span>
+          </span>
+        </div>
+        <button class="nav-toggle" type="button"
+                aria-label="Toggle menu" aria-expanded="false">
+          <i class="material-icons">menu</i>
+        </button>
+      </div>
+    </header>
+
+    <main class="mdl-layout__content">
+      <div class="page-content">
+
+        <!-- Page header -->
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+          <h4 style="margin:0;">
+            <i class="material-icons" style="vertical-align:middle;margin-right:8px;color:#3f51b5;">link</i>
+            Upload Link Management
+          </h4>
+        </div>
+
+        <!-- Info banner -->
+        <div class="card" style="background:#e8eaf6;border-left:4px solid #3f51b5;margin-bottom:20px;padding:12px 16px;">
+          <div style="display:flex;gap:10px;align-items:flex-start;">
+            <i class="material-icons" style="color:#3f51b5;flex-shrink:0;">info_outline</i>
+            <div style="font-size:14px;line-height:1.5;">
+              Each upload link is scoped to one <strong>event + club</strong> pair.
+              Links are permanent and bearer-token based — anyone with the URL and a Google account can upload.
+              Rotate a link to invalidate the old URL; the event–club pair is preserved and all prior
+              audit records remain intact.
+            </div>
+          </div>
+        </div>
+
+        <!-- Filter / selector card -->
+        <div class="card filter-card">
+
+          <!-- Event selector -->
+          <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label is-dirty"
+               style="min-width:240px;flex:2;padding:0;">
+            <select id="sel-event" class="mdl-textfield__input" onchange="onEventChange()">
+              <option value="">— Select event —</option>
+            </select>
+            <label class="mdl-textfield__label" for="sel-event">Event</label>
+          </div>
+
+          <!-- Club selector (hidden for club admins — their club is locked) -->
+          <? if (isSuperAdmin) { ?>
+          <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label is-dirty"
+               style="min-width:200px;flex:1;padding:0;">
+            <select id="sel-club" class="mdl-textfield__input" onchange="onClubChange()">
+              <option value="">— All clubs —</option>
+            </select>
+            <label class="mdl-textfield__label" for="sel-club">Club</label>
+          </div>
+          <? } else { ?>
+          <!-- Club admin: locked to their own club -->
+          <div style="display:flex;align-items:center;gap:8px;min-width:180px;">
+            <i class="material-icons" style="color:#666;font-size:20px;">lock</i>
+            <span style="font-size:14px;color:#555;">
+              Club: <strong><?= clubId ?></strong>
+            </span>
+          </div>
+          <? } ?>
+
+          <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                  id="btn-load" onclick="loadLinks()" style="height:36px;align-self:flex-end;">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">search</i>
+            Load Links
+          </button>
+          <div class="spinner hidden" id="load-spinner" style="align-self:center;"></div>
+        </div>
+
+        <!-- Links content (hidden until Load is clicked) -->
+        <div id="links-content" style="display:none;">
+
+          <!-- Active link section -->
+          <div id="active-link-section">
+            <!-- Populated by JS -->
+          </div>
+
+          <!-- Generate new link button (shown when no active link) -->
+          <div id="generate-section" style="display:none;margin-bottom:20px;">
+            <div class="card" style="border:2px dashed #c8e6c9;background:#f9fbe7;padding:20px;text-align:center;">
+              <i class="material-icons" style="font-size:40px;color:#a5d6a7;display:block;margin-bottom:8px;">add_link</i>
+              <p style="margin:0 0 16px;color:#555;font-size:14px;">
+                No active upload link exists for this event and club.
+              </p>
+              <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                      id="btn-generate" onclick="generateLink()">
+                <i class="material-icons" style="vertical-align:middle;margin-right:4px;">add_link</i>
+                Generate Upload Link
+              </button>
+              <div class="spinner hidden" id="generate-spinner" style="display:inline-block;margin-left:8px;"></div>
+            </div>
+          </div>
+
+          <!-- Link history (revoked links) -->
+          <div id="history-section" style="display:none;">
+            <h5 style="margin:0 0 12px;color:#666;font-size:15px;">
+              <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;">history</i>
+              Link History (Revoked)
+            </h5>
+            <div id="history-list">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Pre-loaded initial state (club admins only) -->
+        <? if (!isSuperAdmin && initialLinks && JSON.parse(initialLinks).length > 0) { ?>
+        <div id="initial-hint" class="card" style="padding:12px 16px;background:#fff8e1;border-left:4px solid #ffb300;margin-bottom:16px;">
+          <div style="display:flex;gap:8px;align-items:center;">
+            <i class="material-icons" style="color:#f57f17;font-size:20px;">tips_and_updates</i>
+            <span style="font-size:13px;">
+              Select an event above and click <strong>Load Links</strong> to manage upload links for <strong><?= clubId ?></strong>.
+              You have <?= JSON.parse(initialLinks).length ?> link(s) on record.
+            </span>
+          </div>
+        </div>
+        <? } ?>
+
+      </div>
+    </main>
+
+    <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
+
+    <!-- Revoke confirmation dialog -->
+    <dialog id="revoke-dialog" style="border:none;border-radius:8px;padding:0;box-shadow:0 8px 32px rgba(0,0,0,.2);max-width:440px;width:90%;">
+      <div style="padding:24px;">
+        <h5 style="margin:0 0 12px;color:#c62828;">
+          <i class="material-icons" style="vertical-align:middle;margin-right:6px;">link_off</i>
+          Revoke Upload Link
+        </h5>
+        <p style="font-size:14px;color:#555;margin:0 0 16px;">
+          Holders of the current URL will immediately receive a "link revoked" message.
+          The event–club pair is preserved; generate a new link afterward if needed.
+        </p>
+        <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label" style="width:100%;">
+          <input type="text" id="revoke-reason" class="mdl-textfield__input" maxlength="200">
+          <label class="mdl-textfield__label" for="revoke-reason">Reason (optional)</label>
+        </div>
+        <input type="hidden" id="revoke-link-id">
+        <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+          <button class="mdl-button mdl-js-button" onclick="closeRevokeDialog()">Cancel</button>
+          <button class="mdl-button mdl-js-button mdl-button--raised"
+                  style="background:#c62828;color:#fff;"
+                  id="btn-confirm-revoke" onclick="confirmRevoke()">
+            Revoke Link
+          </button>
+          <div class="spinner hidden" id="revoke-spinner"></div>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- Rotate confirmation dialog -->
+    <dialog id="rotate-dialog" style="border:none;border-radius:8px;padding:0;box-shadow:0 8px 32px rgba(0,0,0,.2);max-width:440px;width:90%;">
+      <div style="padding:24px;">
+        <h5 style="margin:0 0 12px;color:#e65100;">
+          <i class="material-icons" style="vertical-align:middle;margin-right:6px;">autorenew</i>
+          Rotate Upload Link
+        </h5>
+        <p style="font-size:14px;color:#555;margin:0 0 16px;">
+          The current URL will be invalidated and a new one generated for the same event and club.
+          All prior audit records remain intact — the rotation is noted in the audit log.
+        </p>
+        <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label" style="width:100%;">
+          <input type="text" id="rotate-reason" class="mdl-textfield__input" maxlength="200">
+          <label class="mdl-textfield__label" for="rotate-reason">Reason (optional)</label>
+        </div>
+        <input type="hidden" id="rotate-link-id">
+        <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+          <button class="mdl-button mdl-js-button" onclick="closeRotateDialog()">Cancel</button>
+          <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                  id="btn-confirm-rotate" onclick="confirmRotate()">
+            Rotate Link
+          </button>
+          <div class="spinner hidden" id="rotate-spinner"></div>
+        </div>
+      </div>
+    </dialog>
+
+  </div>
+
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.min.js"></script>
+  <script>
+    window.APP_URL = '<?= scriptUrl ?>';
+    window.SESSION_TOKEN = '<?= (typeof sessionToken !== "undefined" && sessionToken) ? sessionToken : "" ?>';
+  </script>
+  <?!= HtmlService.createHtmlOutputFromFile('ui/js/app').getContent() ?>
+
+  <script>
+    // ─── State ────────────────────────────────────────────────────────────────
+    var events      = JSON.parse('<?!= events ?>');
+    var clubs       = JSON.parse('<?!= clubs ?>');
+    var IS_SUPER    = <?= isSuperAdmin ? 'true' : 'false' ?>;
+    var MY_CLUB_ID  = '<?= clubId ?>';
+
+    // Currently selected event and club
+    var selectedEventId  = '';
+    var selectedClubName = IS_SUPER ? '' : MY_CLUB_ID;
+    var currentLinks     = [];  // Last result from serverListLinks
+
+    // ─── Init ─────────────────────────────────────────────────────────────────
+    document.addEventListener('DOMContentLoaded', function() {
+      populateEventSelector();
+      if (IS_SUPER) populateClubSelector();
+    });
+
+    function populateEventSelector() {
+      var sel = document.getElementById('sel-event');
+      events.forEach(function(ev) {
+        var opt = document.createElement('option');
+        opt.value = ev.eventId;
+        opt.textContent = ev.eventDate + ' — ' + ev.eventName;
+        sel.appendChild(opt);
+      });
+    }
+
+    function populateClubSelector() {
+      var sel = document.getElementById('sel-club');
+      clubs.forEach(function(c) {
+        var opt = document.createElement('option');
+        opt.value = c.normalizedName;
+        opt.textContent = c.displayName + ' (' + c.normalizedName + ')';
+        sel.appendChild(opt);
+      });
+    }
+
+    function onEventChange() {
+      selectedEventId = document.getElementById('sel-event').value;
+    }
+
+    function onClubChange() {
+      if (IS_SUPER) {
+        selectedClubName = document.getElementById('sel-club').value;
+      }
+    }
+
+    // ─── Load links ───────────────────────────────────────────────────────────
+    function loadLinks() {
+      if (!selectedEventId) {
+        showToast('Please select an event first.', 'warning');
+        return;
+      }
+      // For club admins, club is always MY_CLUB_ID
+      var clubName = IS_SUPER ? selectedClubName : MY_CLUB_ID;
+
+      var btn     = document.getElementById('btn-load');
+      var spinner = document.getElementById('load-spinner');
+
+      callServer('serverListLinks', {
+        eventId:  selectedEventId,
+        clubName: clubName || undefined,
+      }, btn, spinner).then(function(result) {
+        if (result.status === 'success') {
+          currentLinks = result.data.items || [];
+          renderLinks(currentLinks);
+        } else {
+          showToast(result.message, 'error');
+        }
+      }).catch(function(err) {
+        showToast('Failed to load links: ' + String(err), 'error');
+      });
+    }
+
+    // ─── Render helpers ───────────────────────────────────────────────────────
+    function buildUploadUrl(token) {
+      var base = (window.APP_URL || '').split('?')[0];
+      return base + '?action=upload_link&token=' + encodeURIComponent(token);
+    }
+
+    function renderLinks(links) {
+      // Filter to the currently-selected (event, club) pair if both are set.
+      var filtered = links;
+      if (selectedEventId) {
+        filtered = filtered.filter(function(l) { return l.eventId === selectedEventId; });
+      }
+      if (!IS_SUPER) {
+        filtered = filtered.filter(function(l) { return l.clubName === MY_CLUB_ID; });
+      } else if (selectedClubName) {
+        filtered = filtered.filter(function(l) { return l.clubName === selectedClubName; });
+      }
+
+      var activeLink = filtered.find(function(l) { return !l.revokedAt; });
+      var revokedLinks = filtered.filter(function(l) { return !!l.revokedAt; });
+
+      renderActiveLink(activeLink);
+      renderHistory(revokedLinks);
+      document.getElementById('links-content').style.display = 'block';
+      document.getElementById('initial-hint') && (document.getElementById('initial-hint').style.display = 'none');
+    }
+
+    function renderActiveLink(link) {
+      var section = document.getElementById('active-link-section');
+      var genSection = document.getElementById('generate-section');
+
+      if (!link) {
+        section.innerHTML = '';
+        genSection.style.display = 'block';
+        return;
+      }
+
+      genSection.style.display = 'none';
+
+      var url = buildUploadUrl(link.token);
+      var canRevoke = !link.revokedAt;
+      var canRotate = !link.revokedAt;
+
+      section.innerHTML =
+        '<h5 style="margin:0 0 12px;font-size:15px;">' +
+          '<span class="active-badge">● Active Link</span>' +
+          '<span class="version-badge">v' + link.version + '</span>' +
+        '</h5>' +
+        '<div class="link-card active">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">' +
+            '<div>' +
+              '<strong style="font-size:14px;">' + escHtml(getEventName(link.eventId)) + '</strong>' +
+              ' &mdash; ' +
+              '<span style="color:#555;">' + escHtml(link.clubName) + '</span>' +
+            '</div>' +
+            '<span class="active-badge">Active</span>' +
+          '</div>' +
+          '<div class="link-meta">' +
+            'Generated by ' + escHtml(link.generatedBy) + ' &bull; ' + formatDate(link.generatedAt) +
+          '</div>' +
+
+          '<div style="margin-top:12px;">' +
+            '<div style="font-size:12px;color:#666;margin-bottom:6px;">Upload URL</div>' +
+            '<div class="link-url-box">' +
+              '<span class="url-text" id="link-url-text-' + link.linkId + '">' + escHtml(url) + '</span>' +
+              '<button class="mdl-button mdl-js-button mdl-button--icon" title="Copy URL"' +
+                ' onclick="copyUrl(\'' + escHtml(url) + '\')">' +
+                '<i class="material-icons">content_copy</i>' +
+              '</button>' +
+            '</div>' +
+          '</div>' +
+
+          '<div class="link-actions">' +
+            '<button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"' +
+              ' onclick="copyUrl(\'' + escAttr(url) + '\')">' +
+              '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">content_copy</i>' +
+              'Copy URL' +
+            '</button>' +
+            (canRotate ?
+              '<button class="mdl-button mdl-js-button mdl-button--raised"' +
+                ' style="background:#ff9800;color:#fff;"' +
+                ' onclick="openRotateDialog(\'' + escAttr(link.linkId) + '\')">' +
+                '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">autorenew</i>' +
+                'Rotate' +
+              '</button>' : '') +
+            (canRevoke ?
+              '<button class="mdl-button mdl-js-button mdl-button--raised"' +
+                ' style="background:#e53935;color:#fff;"' +
+                ' onclick="openRevokeDialog(\'' + escAttr(link.linkId) + '\')">' +
+                '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">link_off</i>' +
+                'Revoke' +
+              '</button>' : '') +
+          '</div>' +
+        '</div>';
+    }
+
+    function renderHistory(revokedLinks) {
+      var section = document.getElementById('history-section');
+      var list    = document.getElementById('history-list');
+
+      if (!revokedLinks || revokedLinks.length === 0) {
+        section.style.display = 'none';
+        return;
+      }
+
+      section.style.display = 'block';
+
+      list.innerHTML = revokedLinks.map(function(link) {
+        return '<div class="link-card revoked">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">' +
+            '<div>' +
+              '<strong style="font-size:13px;color:#555;">' + escHtml(getEventName(link.eventId)) + '</strong>' +
+              ' &mdash; ' +
+              '<span style="color:#777;font-size:13px;">' + escHtml(link.clubName) + '</span>' +
+              '<span class="version-badge">v' + link.version + '</span>' +
+            '</div>' +
+            '<span class="revoked-badge">Revoked</span>' +
+          '</div>' +
+          '<div class="link-meta">' +
+            'Generated by ' + escHtml(link.generatedBy) + ' &bull; ' + formatDate(link.generatedAt) +
+          '</div>' +
+          (link.revokedAt ?
+            '<div class="link-meta" style="color:#c62828;">' +
+              '<i class="material-icons" style="font-size:13px;vertical-align:middle;">link_off</i> ' +
+              'Revoked by ' + escHtml(link.revokedBy) + ' &bull; ' + formatDate(link.revokedAt) +
+              (link.revokedReason ? ' &bull; "' + escHtml(link.revokedReason) + '"' : '') +
+            '</div>' : '') +
+        '</div>';
+      }).join('');
+    }
+
+    // ─── Generate link ────────────────────────────────────────────────────────
+    function generateLink() {
+      if (!selectedEventId) {
+        showToast('Please select an event first.', 'warning');
+        return;
+      }
+      var clubName = IS_SUPER ? selectedClubName : MY_CLUB_ID;
+      if (!clubName) {
+        showToast('Please select a club first.', 'warning');
+        return;
+      }
+
+      var btn     = document.getElementById('btn-generate');
+      var spinner = document.getElementById('generate-spinner');
+      spinner.classList.remove('hidden');
+      if (btn) btn.disabled = true;
+
+      callServer('serverGenerateLink', {
+        eventId:  selectedEventId,
+        clubName: clubName,
+      }).then(function(result) {
+        spinner.classList.add('hidden');
+        if (btn) btn.disabled = false;
+
+        if (result.status === 'success') {
+          showToast('Upload link generated!', 'success', 6000);
+          currentLinks = currentLinks.filter(function(l) {
+            return !(l.eventId === result.data.eventId && l.clubName === result.data.clubName && !l.revokedAt);
+          });
+          currentLinks.unshift(result.data);
+          renderLinks(currentLinks);
+        } else {
+          showToast(result.message, 'error');
+        }
+      }).catch(function(err) {
+        spinner.classList.add('hidden');
+        if (btn) btn.disabled = false;
+        showToast('Failed to generate link: ' + String(err), 'error');
+      });
+    }
+
+    // ─── Revoke dialog ────────────────────────────────────────────────────────
+    function openRevokeDialog(linkId) {
+      document.getElementById('revoke-link-id').value = linkId;
+      document.getElementById('revoke-reason').value = '';
+      var dialog = document.getElementById('revoke-dialog');
+      if (dialog.showModal) {
+        dialog.showModal();
+      } else {
+        dialog.setAttribute('open', '');
+      }
+    }
+
+    function closeRevokeDialog() {
+      var dialog = document.getElementById('revoke-dialog');
+      if (dialog.close) dialog.close(); else dialog.removeAttribute('open');
+    }
+
+    function confirmRevoke() {
+      var linkId  = document.getElementById('revoke-link-id').value;
+      var reason  = document.getElementById('revoke-reason').value.trim();
+      var btn     = document.getElementById('btn-confirm-revoke');
+      var spinner = document.getElementById('revoke-spinner');
+
+      callServer('serverRevokeLink', { linkId: linkId, reason: reason }, btn, spinner)
+        .then(function(result) {
+          closeRevokeDialog();
+          if (result.status === 'success') {
+            showToast('Link revoked.', 'success');
+            var idx = currentLinks.findIndex(function(l) { return l.linkId === linkId; });
+            if (idx >= 0) currentLinks[idx] = result.data;
+            renderLinks(currentLinks);
+          } else {
+            showToast(result.message, 'error');
+          }
+        }).catch(function(err) {
+          closeRevokeDialog();
+          showToast('Failed to revoke link: ' + String(err), 'error');
+        });
+    }
+
+    // ─── Rotate dialog ────────────────────────────────────────────────────────
+    function openRotateDialog(linkId) {
+      document.getElementById('rotate-link-id').value = linkId;
+      document.getElementById('rotate-reason').value = '';
+      var dialog = document.getElementById('rotate-dialog');
+      if (dialog.showModal) {
+        dialog.showModal();
+      } else {
+        dialog.setAttribute('open', '');
+      }
+    }
+
+    function closeRotateDialog() {
+      var dialog = document.getElementById('rotate-dialog');
+      if (dialog.close) dialog.close(); else dialog.removeAttribute('open');
+    }
+
+    function confirmRotate() {
+      var linkId  = document.getElementById('rotate-link-id').value;
+      var reason  = document.getElementById('rotate-reason').value.trim();
+      var btn     = document.getElementById('btn-confirm-rotate');
+      var spinner = document.getElementById('rotate-spinner');
+
+      callServer('serverRotateLink', { linkId: linkId, reason: reason || 'Rotated' }, btn, spinner)
+        .then(function(result) {
+          closeRotateDialog();
+          if (result.status === 'success') {
+            showToast('Link rotated — new URL is ready to copy.', 'success', 6000);
+            // Reload current links to reflect both the revoked old one and the new one
+            currentLinks = currentLinks.map(function(l) {
+              return l.linkId === linkId ? Object.assign({}, l, { revokedAt: new Date().toISOString() }) : l;
+            });
+            currentLinks.unshift(result.data);
+            renderLinks(currentLinks);
+          } else {
+            showToast(result.message, 'error');
+          }
+        }).catch(function(err) {
+          closeRotateDialog();
+          showToast('Failed to rotate link: ' + String(err), 'error');
+        });
+    }
+
+    // ─── Copy URL ─────────────────────────────────────────────────────────────
+    function copyUrl(url) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(function() {
+          showToast('Upload URL copied to clipboard!', 'success');
+        }).catch(function() {
+          fallbackCopy(url);
+        });
+      } else {
+        fallbackCopy(url);
+      }
+    }
+
+    function fallbackCopy(text) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        showToast('Upload URL copied to clipboard!', 'success');
+      } catch (e) {
+        showToast('Copy failed — please select and copy the URL manually.', 'warning');
+      }
+      document.body.removeChild(ta);
+    }
+
+    // ─── Utility ──────────────────────────────────────────────────────────────
+    function escHtml(s) {
+      var d = document.createElement('div');
+      d.textContent = String(s);
+      return d.innerHTML;
+    }
+
+    function escAttr(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function formatDate(iso) {
+      if (!iso) return '';
+      try {
+        return new Date(iso).toLocaleString();
+      } catch (e) {
+        return iso;
+      }
+    }
+
+    function getEventName(eventId) {
+      var ev = events.find(function(e) { return e.eventId === eventId; });
+      return ev ? ev.eventName : eventId;
+    }
+  </script>
+</body>
+</html>

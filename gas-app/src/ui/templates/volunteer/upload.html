@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Upload Photos — <?= eventName ?></title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f0f4f8;
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    .page-header {
+      max-width: 640px;
+      margin: 0 auto 20px;
+    }
+
+    .page-header h1 {
+      font-size: 20px;
+      font-weight: 600;
+      color: #1b5e20;
+    }
+
+    .page-header .meta {
+      font-size: 13px;
+      color: #666;
+      margin-top: 4px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.1);
+      max-width: 640px;
+      margin: 0 auto 20px;
+      overflow: hidden;
+    }
+
+    .card-body { padding: 28px 32px; }
+
+    /* Drop zone */
+    .drop-zone {
+      border: 2px dashed #a5d6a7;
+      border-radius: 8px;
+      padding: 40px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+      background: #f9fbe7;
+    }
+
+    .drop-zone.drag-over {
+      border-color: #2e7d32;
+      background: #e8f5e9;
+    }
+
+    .drop-zone.has-files {
+      border-color: #2e7d32;
+    }
+
+    .drop-zone .icon { font-size: 40px; margin-bottom: 10px; }
+
+    .drop-zone .primary {
+      font-size: 16px;
+      font-weight: 500;
+      color: #2e7d32;
+      margin-bottom: 4px;
+    }
+
+    .drop-zone .secondary {
+      font-size: 13px;
+      color: #777;
+    }
+
+    .drop-zone input[type="file"] { display: none; }
+
+    /* File list */
+    .file-list {
+      margin-top: 16px;
+      max-height: 200px;
+      overflow-y: auto;
+      border: 1px solid #e8ecf0;
+      border-radius: 6px;
+    }
+
+    .file-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      font-size: 13px;
+      border-bottom: 1px solid #f0f4f8;
+    }
+
+    .file-item:last-child { border-bottom: none; }
+    .file-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #333; }
+    .file-item .size { color: #999; font-size: 12px; flex-shrink: 0; }
+    .file-item .status { width: 18px; flex-shrink: 0; text-align: center; }
+
+    /* Progress */
+    .progress-section {
+      margin-top: 20px;
+      display: none;
+    }
+
+    .progress-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 6px;
+    }
+
+    .progress-bar-wrap {
+      height: 8px;
+      background: #e0e0e0;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .progress-bar {
+      height: 100%;
+      background: #2e7d32;
+      border-radius: 4px;
+      transition: width .2s;
+      width: 0%;
+    }
+
+    .progress-bar.error { background: #c62828; }
+
+    /* Actions */
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .btn {
+      padding: 12px 24px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      border: none;
+      cursor: pointer;
+      transition: background .15s;
+    }
+
+    .btn-primary { background: #2e7d32; color: #fff; flex: 1; }
+    .btn-primary:hover:not(:disabled) { background: #1b5e20; }
+    .btn-primary:disabled { background: #a5d6a7; cursor: not-allowed; }
+
+    .btn-secondary { background: #f5f5f5; color: #555; }
+    .btn-secondary:hover { background: #ececec; }
+
+    /* Status messages */
+    .status-msg {
+      margin-top: 14px;
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      display: none;
+    }
+
+    .status-msg.info    { background: #e3f2fd; color: #0d47a1; }
+    .status-msg.success { background: #e8f5e9; color: #1b5e20; }
+    .status-msg.error   { background: #ffebee; color: #b71c1c; }
+
+    /* Receipt */
+    .receipt-section {
+      display: none;
+      padding: 28px 32px;
+      border-top: 1px solid #e8ecf0;
+    }
+
+    .receipt-section h2 {
+      font-size: 18px;
+      font-weight: 600;
+      color: #1b5e20;
+      margin-bottom: 16px;
+    }
+
+    .receipt-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .receipt-stat {
+      background: #f9fbe7;
+      border-radius: 8px;
+      padding: 14px 16px;
+      text-align: center;
+    }
+
+    .receipt-stat .value {
+      font-size: 28px;
+      font-weight: 700;
+      color: #2e7d32;
+    }
+
+    .receipt-stat .label {
+      font-size: 12px;
+      color: #666;
+      margin-top: 2px;
+    }
+
+    .receipt-note {
+      font-size: 13px;
+      color: #666;
+      line-height: 1.6;
+    }
+
+    .receipt-note strong { color: #333; }
+
+    @media (max-width: 520px) {
+      .card-body, .receipt-section { padding: 20px; }
+      .receipt-grid { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page-header">
+    <h1>📷 Upload Photos</h1>
+    <div class="meta">
+      <strong><?= eventName ?></strong>
+      <? if (eventDate) { ?> · <?= eventDate ?><? } ?>
+      &nbsp;·&nbsp; <?= clubName ?>
+    </div>
+  </div>
+
+  <div class="card" id="uploadCard">
+    <div class="card-body">
+      <!-- Drop zone -->
+      <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+        <div class="icon">📁</div>
+        <div class="primary">Drag & drop photos and videos here</div>
+        <div class="secondary" id="dropHint">or click to browse · JPG, PNG, HEIC, WEBP, MP4, MOV</div>
+        <input type="file" id="fileInput" multiple accept=".jpg,.jpeg,.png,.heic,.webp,.mp4,.mov,image/*,video/mp4,video/quicktime" />
+      </div>
+
+      <!-- File list (shown after selection) -->
+      <div class="file-list" id="fileList" style="display:none;"></div>
+
+      <!-- Progress bar -->
+      <div class="progress-section" id="progressSection">
+        <div class="progress-label">
+          <span id="progressText">Preparing…</span>
+          <span id="progressPct">0%</span>
+        </div>
+        <div class="progress-bar-wrap">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+      </div>
+
+      <!-- Status messages -->
+      <div class="status-msg" id="statusMsg"></div>
+
+      <!-- Actions -->
+      <div class="actions" id="actions">
+        <button class="btn btn-primary" id="uploadBtn" disabled onclick="startUpload()">
+          Upload Photos
+        </button>
+        <button class="btn btn-secondary" id="clearBtn" style="display:none" onclick="clearFiles()">
+          Clear
+        </button>
+      </div>
+    </div>
+
+    <!-- Receipt (shown after successful upload) -->
+    <div class="receipt-section" id="receiptSection">
+      <h2>✅ Upload Complete</h2>
+      <div class="receipt-grid">
+        <div class="receipt-stat">
+          <div class="value" id="rcFileCount">0</div>
+          <div class="label">Photos/Videos Uploaded</div>
+        </div>
+        <div class="receipt-stat">
+          <div class="value" id="rcSize">0 MB</div>
+          <div class="label">Total Size</div>
+        </div>
+      </div>
+      <p class="receipt-note" id="rcNote">
+        Your photos have been saved. They may take a few minutes to appear in the
+        public album while the sync runs in the background.
+      </p>
+      <p class="receipt-note" style="margin-top:10px; font-size:12px; color:#aaa;">
+        Uploaded by <strong id="rcEmail"></strong> ·
+        <span id="rcTime"></span>
+      </p>
+    </div>
+  </div>
+
+  <script>
+    var VSESSION = '<?= vsession ?>';
+    var UPLOADER_EMAIL = '<?= uploaderEmail ?>';
+
+    // Accepted MIME types for the upload pipeline
+    var ACCEPTED_TYPES = [
+      'image/jpeg', 'image/png', 'image/heic', 'image/webp',
+      'video/mp4', 'video/quicktime'
+    ];
+
+    var selectedFiles = [];
+    var uploadAborted = false;
+
+    // ── File selection ────────────────────────────────────────────────────────
+
+    var dropZone = document.getElementById('dropZone');
+    var fileInput = document.getElementById('fileInput');
+
+    fileInput.addEventListener('change', function() {
+      handleFiles(Array.from(this.files));
+    });
+
+    dropZone.addEventListener('dragover', function(e) {
+      e.preventDefault();
+      dropZone.classList.add('drag-over');
+    });
+
+    dropZone.addEventListener('dragleave', function() {
+      dropZone.classList.remove('drag-over');
+    });
+
+    dropZone.addEventListener('drop', function(e) {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      handleFiles(Array.from(e.dataTransfer.files));
+    });
+
+    function handleFiles(files) {
+      selectedFiles = files;
+      renderFileList();
+      document.getElementById('uploadBtn').disabled = files.length === 0;
+      document.getElementById('clearBtn').style.display = files.length > 0 ? '' : 'none';
+      dropZone.classList.toggle('has-files', files.length > 0);
+      document.getElementById('dropHint').textContent =
+        files.length + ' file' + (files.length === 1 ? '' : 's') + ' selected';
+      hideStatus();
+    }
+
+    function renderFileList() {
+      var list = document.getElementById('fileList');
+      if (selectedFiles.length === 0) { list.style.display = 'none'; return; }
+      list.style.display = '';
+      list.innerHTML = selectedFiles.map(function(f, i) {
+        var accepted = ACCEPTED_TYPES.indexOf(f.type) >= 0 || f.type === '';
+        return '<div class="file-item" id="fi-' + i + '">' +
+          '<span class="status">' + (accepted ? '📎' : '⚠️') + '</span>' +
+          '<span class="name" title="' + escHtml(f.name) + '">' + escHtml(f.name) + '</span>' +
+          '<span class="size">' + fmtSize(f.size) + '</span>' +
+        '</div>';
+      }).join('');
+    }
+
+    function clearFiles() {
+      selectedFiles = [];
+      fileInput.value = '';
+      document.getElementById('fileList').style.display = 'none';
+      document.getElementById('uploadBtn').disabled = true;
+      document.getElementById('clearBtn').style.display = 'none';
+      dropZone.classList.remove('has-files');
+      document.getElementById('dropHint').textContent = 'or click to browse · JPG, PNG, HEIC, WEBP, MP4, MOV';
+      hideStatus();
+    }
+
+    // ── Upload flow ───────────────────────────────────────────────────────────
+
+    function startUpload() {
+      if (selectedFiles.length === 0) return;
+      uploadAborted = false;
+      setUiState('uploading');
+      showProgress(0, 'Getting upload token…');
+
+      // Step 1: get Drive access token + batch folder from server
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.error) {
+            setUiState('idle');
+            showStatus('error', result.error);
+            return;
+          }
+          uploadFiles(result.accessToken, result.batchFolderId, result.batchFolderName, result.linkId);
+        })
+        .withFailureHandler(function(err) {
+          setUiState('idle');
+          showStatus('error', 'Failed to get upload token: ' + err.message);
+        })
+        .serverGetVolunteerDriveToken(VSESSION);
+    }
+
+    function uploadFiles(accessToken, batchFolderId, batchFolderName, linkId) {
+      var files = selectedFiles;
+      var total = files.length;
+      var uploaded = 0;
+      var skippedNonMedia = 0;
+      var skippedDuplicates = 0;
+      var totalBytes = 0;
+
+      // Upload files sequentially to avoid hitting Drive quota limits
+      function uploadNext(idx) {
+        if (uploadAborted) {
+          showStatus('error', 'Upload cancelled.');
+          setUiState('idle');
+          return;
+        }
+
+        if (idx >= total) {
+          // All done — notify server
+          completeUpload(batchFolderName, batchFolderId, linkId, uploaded, totalBytes, skippedDuplicates, skippedNonMedia);
+          return;
+        }
+
+        var file = files[idx];
+        showProgress(idx / total, 'Uploading ' + (idx + 1) + ' of ' + total + ' — ' + file.name);
+        updateFileStatus(idx, '⏫');
+
+        // Skip unsupported file types
+        if (file.type && ACCEPTED_TYPES.indexOf(file.type) < 0) {
+          skippedNonMedia++;
+          updateFileStatus(idx, '⏭️');
+          uploadNext(idx + 1);
+          return;
+        }
+
+        uploadToDrive(file, accessToken, batchFolderId)
+          .then(function() {
+            uploaded++;
+            totalBytes += file.size;
+            updateFileStatus(idx, '✅');
+            uploadNext(idx + 1);
+          })
+          .catch(function(err) {
+            updateFileStatus(idx, '❌');
+            // Continue with remaining files even on individual failure
+            skippedNonMedia++;
+            uploadNext(idx + 1);
+          });
+      }
+
+      uploadNext(0);
+    }
+
+    /**
+     * Removes EXIF (APP1) and IPTC (APP13) metadata segments from a JPEG
+     * ArrayBuffer. Returns the original buffer for non-JPEG files or if any
+     * parse error is encountered (so uploads always proceed).
+     *
+     * GPS coordinates embedded in phone camera EXIF can dox photo locations,
+     * which is especially sensitive when minors may be present. Stripping is
+     * applied to every JPEG before it leaves the browser.
+     *
+     * HEIC files are passed through: their metadata is inside an ISOBMFF
+     * container that requires a dedicated parser. Google Photos transcodes
+     * HEIC to JPEG for display so this is an accepted gap.
+     */
+    function stripJpegExif(buffer) {
+      var view = new DataView(buffer);
+      // Fast path: not a JPEG (magic bytes FF D8).
+      if (view.byteLength < 4 || view.getUint8(0) !== 0xff || view.getUint8(1) !== 0xd8) {
+        return buffer;
+      }
+      var STRIP = new Set([0xffe1, 0xffed]); // APP1=EXIF/XMP, APP13=IPTC
+      var keepRanges = [[0, 2]]; // always keep SOI
+      var offset = 2;
+      try {
+        while (offset < view.byteLength - 1) {
+          if (view.getUint8(offset) !== 0xff) return buffer; // lost sync
+          var mb = view.getUint8(offset + 1);
+          var marker = (0xff00 | mb) >>> 0;
+          // Markers with no length field.
+          if (mb === 0xd8 || mb === 0xd9 || (mb >= 0xd0 && mb <= 0xd7)) {
+            keepRanges.push([offset, offset + 2]);
+            offset += 2;
+            continue;
+          }
+          // SOS: image data runs to end of file — keep everything from here.
+          if (mb === 0xda) { keepRanges.push([offset, view.byteLength]); break; }
+          if (offset + 3 >= view.byteLength) return buffer;
+          var len = view.getUint16(offset + 2, false);
+          if (len < 2) return buffer;
+          var segEnd = offset + 2 + len;
+          if (segEnd > view.byteLength) return buffer;
+          if (!STRIP.has(marker)) keepRanges.push([offset, segEnd]);
+          offset = segEnd;
+        }
+      } catch (e) { return buffer; }
+      var totalSize = keepRanges.reduce(function(s, r) { return s + (r[1] - r[0]); }, 0);
+      var out = new Uint8Array(totalSize);
+      var writePos = 0;
+      for (var i = 0; i < keepRanges.length; i++) {
+        var r = keepRanges[i];
+        out.set(new Uint8Array(buffer, r[0], r[1] - r[0]), writePos);
+        writePos += r[1] - r[0];
+      }
+      return out.buffer;
+    }
+
+    function uploadToDrive(file, accessToken, folderId) {
+      return new Promise(function(resolve, reject) {
+        // Use the Drive Files API multipart upload endpoint
+        var boundary = '-------boundary' + Date.now();
+        var delimiter = '\r\n--' + boundary + '\r\n';
+        var closeDelim = '\r\n--' + boundary + '--';
+
+        var metadata = JSON.stringify({ name: file.name, parents: [folderId] });
+
+        var reader = new FileReader();
+        reader.onload = function(e) {
+          // Strip EXIF/IPTC metadata from JPEG files before upload.
+          // GPS coordinates in EXIF can expose photo locations; stripping
+          // is on by default per the privacy policy (design §7).
+          var fileData = stripJpegExif(e.target.result);
+          // Build multipart body as ArrayBuffer
+          var encoder = new TextEncoder();
+          var metaPart = encoder.encode(
+            delimiter +
+            'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+            metadata +
+            delimiter +
+            'Content-Type: ' + (file.type || 'application/octet-stream') + '\r\n' +
+            'Content-Transfer-Encoding: base64\r\n\r\n'
+          );
+
+          // Encode file bytes as base64 for the multipart body
+          var bytes = new Uint8Array(fileData);
+          var binary = '';
+          for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+          var b64 = btoa(binary);
+
+          var closePart = encoder.encode(closeDelim);
+          var bodyStr = metaPart.reduce(function(s, b) { return s + String.fromCharCode(b); }, '') +
+                        b64 +
+                        closePart.reduce(function(s, b) { return s + String.fromCharCode(b); }, '');
+
+          var xhr = new XMLHttpRequest();
+          xhr.open('POST', 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart');
+          xhr.setRequestHeader('Authorization', 'Bearer ' + accessToken);
+          xhr.setRequestHeader('Content-Type', 'multipart/related; boundary=' + boundary);
+
+          xhr.onload = function() {
+            if (xhr.status === 200) {
+              resolve(JSON.parse(xhr.responseText));
+            } else {
+              reject(new Error('Drive API error: ' + xhr.status + ' ' + xhr.responseText.substring(0, 100)));
+            }
+          };
+          xhr.onerror = function() { reject(new Error('Network error during upload')); };
+          xhr.send(bodyStr);
+        };
+        reader.onerror = function() { reject(new Error('Failed to read file: ' + file.name)); };
+        reader.readAsArrayBuffer(file);
+      });
+    }
+
+    function completeUpload(batchFolderName, batchFolderId, linkId, fileCount, totalBytes, skippedDuplicates, skippedNonMedia) {
+      showProgress(0.95, 'Saving upload record…');
+
+      var totalSizeMb = Math.round(totalBytes / (1024 * 1024) * 100) / 100;
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.error) {
+            showProgress(1, 'Upload complete (receipt save failed)');
+            showStatus('error', 'Photos uploaded but the record could not be saved: ' + result.error);
+            setUiState('done');
+            return;
+          }
+          showProgress(1, 'Done!');
+          showReceipt(result.receiptData);
+          setUiState('done');
+        })
+        .withFailureHandler(function(err) {
+          showProgress(1, 'Upload complete (receipt save failed)');
+          showStatus('error', 'Photos uploaded but the record could not be saved: ' + err.message);
+          setUiState('done');
+        })
+        .serverCompleteVolunteerUpload({
+          vsession:        VSESSION,
+          batchFolderId:   batchFolderId,
+          batchFolderName: batchFolderName,
+          linkId:          linkId,
+          fileCount:       fileCount,
+          totalSizeMb:     totalSizeMb,
+          skippedDuplicates: skippedDuplicates,
+          skippedNonMedia:   skippedNonMedia,
+        });
+    }
+
+    // ── Receipt ───────────────────────────────────────────────────────────────
+
+    function showReceipt(data) {
+      document.getElementById('rcFileCount').textContent = data.fileCount || 0;
+      document.getElementById('rcSize').textContent = (data.totalSizeMb || 0).toFixed(1) + ' MB';
+      document.getElementById('rcEmail').textContent = UPLOADER_EMAIL;
+      var d = data.uploadedAt ? new Date(data.uploadedAt) : new Date();
+      document.getElementById('rcTime').textContent = d.toLocaleString();
+
+      var skips = [];
+      if (data.skippedDuplicates > 0)
+        skips.push(data.skippedDuplicates + ' duplicate' + (data.skippedDuplicates === 1 ? '' : 's') + ' skipped');
+      if (data.skippedNonMedia > 0)
+        skips.push(data.skippedNonMedia + ' unsupported file' + (data.skippedNonMedia === 1 ? '' : 's') + ' skipped');
+
+      var note = 'Your photos have been saved to <strong>' +
+        escHtml(data.eventName || '') + ' — ' + escHtml(data.clubName || '') +
+        '</strong>. They may take a few minutes to appear in the public album while the sync runs.';
+      if (skips.length > 0) note += ' (' + skips.join(', ') + ')';
+      document.getElementById('rcNote').innerHTML = note;
+
+      document.getElementById('receiptSection').style.display = '';
+    }
+
+    // ── UI helpers ────────────────────────────────────────────────────────────
+
+    function setUiState(state) {
+      var isUploading = state === 'uploading';
+      var isDone      = state === 'done';
+      document.getElementById('uploadBtn').disabled = isUploading || isDone;
+      document.getElementById('uploadBtn').textContent = isUploading ? 'Uploading…' : 'Upload Photos';
+      document.getElementById('clearBtn').style.display = (isDone || isUploading) ? 'none' : '';
+      document.getElementById('dropZone').style.pointerEvents = isUploading ? 'none' : '';
+      document.getElementById('progressSection').style.display = isUploading ? '' : (isDone ? '' : 'none');
+      if (isDone) {
+        document.getElementById('actions').style.display = 'none';
+      }
+    }
+
+    function showProgress(fraction, text) {
+      document.getElementById('progressSection').style.display = '';
+      var pct = Math.round(fraction * 100);
+      document.getElementById('progressBar').style.width = pct + '%';
+      document.getElementById('progressPct').textContent = pct + '%';
+      document.getElementById('progressText').textContent = text;
+    }
+
+    function updateFileStatus(idx, icon) {
+      var el = document.querySelector('#fi-' + idx + ' .status');
+      if (el) el.textContent = icon;
+    }
+
+    function showStatus(type, msg) {
+      var el = document.getElementById('statusMsg');
+      el.className = 'status-msg ' + type;
+      el.textContent = msg;
+      el.style.display = '';
+    }
+
+    function hideStatus() {
+      document.getElementById('statusMsg').style.display = 'none';
+    }
+
+    function fmtSize(bytes) {
+      if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+      if (bytes >= 1024)    return (bytes / 1024).toFixed(0) + ' KB';
+      return bytes + ' B';
+    }
+
+    function escHtml(s) {
+      return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+  </script>
+</body>
+</html>
