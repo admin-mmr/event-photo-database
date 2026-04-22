@@ -5,15 +5,10 @@ import { UserRecord } from '../../src/types/models';
 import { UserRole, UserStatus } from '../../src/types/enums';
 import {
   resetMockSheets,
-  setupEmailPreferencesSheet,
   TEST_ADMIN_EMAIL,
   mockHtmlService,
   mockHtmlTemplate,
 } from '../mocks/gasGlobals';
-
-const mockSpreadsheetApp = (global as Record<string, unknown>)['SpreadsheetApp'] as {
-  openById: jest.Mock;
-};
 
 // Mock the emailPreferenceService
 jest.mock('../../src/services/emailPreferenceService', () => ({
@@ -42,11 +37,14 @@ describe('pageRoutes — adminEmailPrefsPage()', () => {
 
   const testAdmin: UserRecord = {
     email: TEST_ADMIN_EMAIL,
-    runningClub: 'Admin',
-    role: UserRole.ADMIN,
+    firstName: 'Test',
+    lastName: 'Admin',
+    clubId: '',
+    role: UserRole.SUPER_ADMIN,
     status: UserStatus.ACTIVE,
     addedDate: '2025-01-01',
     addedBy: 'system',
+    lastLoginAt: '',
   };
 
   it('calls getPreferencesFor(user.email)', () => {
@@ -62,7 +60,7 @@ describe('pageRoutes — adminEmailPrefsPage()', () => {
   });
 
   it('injects prefs as JSON via template scope', () => {
-    const result = adminEmailPrefsPage(testAdmin, 'session-token-123');
+    adminEmailPrefsPage(testAdmin, 'session-token-123');
     // The function assigns properties to the template object, which we can't easily
     // verify directly. Instead, we verify that the template was created and evaluated.
     expect(mockHtmlService.createTemplateFromFile).toHaveBeenCalled();
@@ -87,19 +85,19 @@ describe('pageRoutes — adminEmailPrefsPage()', () => {
     expect(mockHtmlTemplate.evaluate).toHaveBeenCalled();
   });
 
-  it('passes isAdmin=true for admin users', () => {
+  it('passes isAdmin=true for super_admin users', () => {
     const admin: UserRecord = {
       ...testAdmin,
-      role: UserRole.ADMIN,
+      role: UserRole.SUPER_ADMIN,
     };
     adminEmailPrefsPage(admin, 'token');
     expect(mockHtmlTemplate.evaluate).toHaveBeenCalled();
   });
 
-  it('passes isAdmin=false for non-admin users (if called with them)', () => {
+  it('passes isAdmin=true for club_admin users', () => {
     const user: UserRecord = {
       ...testAdmin,
-      role: UserRole.USER,
+      role: UserRole.CLUB_ADMIN,
     };
     adminEmailPrefsPage(user, 'token');
     expect(mockHtmlTemplate.evaluate).toHaveBeenCalled();

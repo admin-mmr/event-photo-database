@@ -15,18 +15,23 @@
 // ─── Default test data ────────────────────────────────────────────────────────
 
 export const TEST_ADMIN_EMAIL      = 'admin@mmrunners.org';
-export const TEST_USER_EMAIL       = 'user1@example.com';
+export const TEST_CLUB_ADMIN_EMAIL = 'club-admin@example.com';
+export const TEST_USER_EMAIL       = 'user1@example.com'; // kept for backward compat (same as club admin)
 export const TEST_INACTIVE_EMAIL   = 'inactive@example.com';
-export const TEST_API_CLIENT_EMAIL = 'api-client@partnerorg.com';
 export const TEST_SPREADSHEET_ID   = 'mock-spreadsheet-id-12345';
 export const TEST_ROOT_FOLDER_ID   = 'mock-root-folder-id-67890';
 
-/** Default Users sheet rows (header excluded) */
+/**
+ * Default Users sheet rows (header excluded).
+ * New 9-column schema: email | firstName | lastName | role | status | clubId | addedDate | addedBy | lastLoginAt
+ */
 export const DEFAULT_USERS_ROWS: unknown[][] = [
-  [TEST_ADMIN_EMAIL,      'Admin',   'admin',      'active',   '2025-01-01', 'system'],
-  [TEST_USER_EMAIL,       'New_Bee', 'user',       'active',   '2025-02-01', TEST_ADMIN_EMAIL],
-  [TEST_INACTIVE_EMAIL,   'Nankai',  'user',       'inactive', '2025-01-15', TEST_ADMIN_EMAIL],
-  [TEST_API_CLIENT_EMAIL, 'New_Bee', 'api_client', 'active',   '2025-06-01', TEST_ADMIN_EMAIL],
+  // super admin — no clubId
+  [TEST_ADMIN_EMAIL,      'Test', 'Admin',    'super_admin', 'active',   '',        '2025-01-01', 'system',         ''],
+  // club admin — scoped to New_Bee
+  [TEST_USER_EMAIL,       'Test', 'User',     'club_admin',  'active',   'New_Bee', '2025-02-01', TEST_ADMIN_EMAIL, ''],
+  // inactive club admin
+  [TEST_INACTIVE_EMAIL,   'Test', 'Inactive', 'club_admin',  'inactive', 'Nankai',  '2025-01-15', TEST_ADMIN_EMAIL, ''],
 ];
 
 /** Default Events sheet rows — 3 events for sort/pagination/duplicate testing */
@@ -78,7 +83,7 @@ export const DEFAULT_AUDIT_ROWS: unknown[][] = [
   [
     'audit-uuid-001', '2026-04-18T10:00:00.000Z', TEST_ADMIN_EMAIL,
     'USER_CREATED', 'user', 'newuser@example.com',
-    '{"email":"newuser@example.com","runningClub":"New_Bee","role":"user"}',
+    '{"email":"newuser@example.com","clubId":"New_Bee","role":"club_admin"}',
   ],
   [
     'audit-uuid-002', '2026-04-17T08:30:00.000Z', TEST_ADMIN_EMAIL,
@@ -102,9 +107,11 @@ export const mockSheets: Record<string, ReturnType<typeof createMockSheet>> = {
   Users:              createMockSheet(DEFAULT_USERS_ROWS),
   Events:             createMockSheet(DEFAULT_EVENTS_ROWS),
   Upload_Log:         createMockSheet([]),
+  Upload_Links:       createMockSheet([]),
   Rate_Limit:         createMockSheet([]),
   Audit_Log:          createMockSheet([]),
   Email_Preferences:  createMockSheet(DEFAULT_EMAIL_PREFERENCES_ROWS),
+  Deleted_Files:      createMockSheet([]),
 };
 
 /** Resets all mock sheets to their default data */
@@ -113,9 +120,11 @@ export function resetMockSheets(): void {
     Users:              createMockSheet(DEFAULT_USERS_ROWS),
     Events:             createMockSheet(DEFAULT_EVENTS_ROWS),
     Upload_Log:         createMockSheet([]),
+    Upload_Links:       createMockSheet([]),
     Rate_Limit:         createMockSheet([]),
     Audit_Log:          createMockSheet([]),
     Email_Preferences:  createMockSheet(DEFAULT_EMAIL_PREFERENCES_ROWS),
+    Deleted_Files:      createMockSheet([]),
   });
   resetMockMailApp();
   resetMockScriptApp();
@@ -194,9 +203,18 @@ export const mockFolder = {
   getFiles: jest.fn().mockReturnValue({ hasNext: jest.fn().mockReturnValue(false) }),
 };
 
+/** Reusable mock file returned by DriveApp.getFileById(). Supports setTrashed(). */
+export const mockDriveFile = {
+  getId:      jest.fn().mockReturnValue('mock-file-id'),
+  getName:    jest.fn().mockReturnValue('mock-file.jpg'),
+  getSize:    jest.fn().mockReturnValue(204800),
+  setTrashed: jest.fn(),
+};
+
 const mockDriveApp = {
   getFolderById: jest.fn().mockReturnValue(mockFolder),
   getRootFolder: jest.fn().mockReturnValue(mockFolder),
+  getFileById:   jest.fn().mockReturnValue(mockDriveFile),
 };
 
 // ─── Mock Utilities ───────────────────────────────────────────────────────────
@@ -211,6 +229,11 @@ const mockUtilities = {
    * Tests that exercise actual content should provide their own mock value.
    */
   base64Decode: jest.fn().mockReturnValue(new Uint8Array([0x00])),
+  /**
+   * base64EncodeWebSafe mock — returns a fixed short token string.
+   * Used by uploadLinkService.generateToken().
+   */
+  base64EncodeWebSafe: jest.fn().mockReturnValue('mock-token-base64url'),
   /**
    * newBlob mock — returns a minimal object shaped like a GAS Blob.
    * The createFile mock on mockFolder reads `.getName()` from this.
@@ -247,13 +270,14 @@ const mockHtmlOutput = {
   setXFrameOptionsMode: jest.fn().mockReturnThis(),
 };
 
-const mockHtmlTemplate = {
+export const mockHtmlTemplate = {
   evaluate: jest.fn().mockReturnValue(mockHtmlOutput),
 };
 
 const mockHtmlService = {
   createTemplateFromFile: jest.fn().mockReturnValue(mockHtmlTemplate),
-  XFrameOptionsMode: { DENY: 'DENY' },
+  createHtmlOutput: jest.fn().mockReturnValue(mockHtmlOutput),
+  XFrameOptionsMode: { DENY: 'DENY', ALLOWALL: 'ALLOWALL', DEFAULT: 'DEFAULT' },
 };
 
 // ─── Mock Logger ──────────────────────────────────────────────────────────────
@@ -341,6 +365,7 @@ function makeMockTriggerBuilder(handlerName: string) {
 }
 
 const mockScriptApp = {
+  getOAuthToken: jest.fn().mockReturnValue('mock-oauth-access-token'),
   newTrigger: jest.fn().mockImplementation((name: string) => makeMockTriggerBuilder(name)),
   getProjectTriggers: jest.fn().mockImplementation(() =>
     mockInstalledTriggers.map(t => ({
@@ -351,6 +376,9 @@ const mockScriptApp = {
   deleteTrigger: jest.fn().mockImplementation((_trigger: unknown) => {
     // Just clear the installed triggers for simplicity in tests
     mockInstalledTriggers.length = 0;
+  }),
+  getService: jest.fn().mockReturnValue({
+    getUrl: jest.fn().mockReturnValue('https://script.google.com/macros/s/mock-deploy-id/exec'),
   }),
   WeekDay: {
     MONDAY: 'MONDAY',

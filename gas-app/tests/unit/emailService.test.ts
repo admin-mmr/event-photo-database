@@ -8,7 +8,7 @@ import {
   installEmailReportTriggers,
   uninstallEmailReportTriggers,
 } from '../../src/services/emailService';
-import { EmailType, ResultStatus, UserRole, UserStatus } from '../../src/types/enums';
+import { ResultStatus, UserRole, UserStatus } from '../../src/types/enums';
 import { UserRecord } from '../../src/types/models';
 import {
   mockSheets,
@@ -17,6 +17,7 @@ import {
   mockMailApp,
   setMockMailAppQuota,
   TEST_ADMIN_EMAIL,
+  TEST_USER_EMAIL,
   mockScriptApp,
   mockInstalledTriggers,
 } from '../mocks/gasGlobals';
@@ -33,17 +34,22 @@ function useMockSheets() {
 }
 
 // Mock the summaryService and other dependencies
-jest.mock('../../src/services/summaryService', () => ({
-  generateSummary: jest.fn().mockReturnValue({
-    status: ResultStatus.SUCCESS,
-    data: {
-      totalPhotos: 100,
-      eventsWithUploads: [],
-      eventsWithoutUploads: [],
-      violations: [],
-    },
-  }),
-}));
+// Note: jest.mock() is hoisted before imports, so ResultStatus cannot be referenced
+// directly — use jest.requireActual() to access the enum safely inside the factory.
+jest.mock('../../src/services/summaryService', () => {
+  const { ResultStatus } = jest.requireActual('../../src/types/enums') as typeof import('../../src/types/enums');
+  return {
+    generateSummary: jest.fn().mockReturnValue({
+      status: ResultStatus.SUCCESS,
+      data: {
+        totalPhotos: 100,
+        eventsWithUploads: [],
+        eventsWithoutUploads: [],
+        violations: [],
+      },
+    }),
+  };
+});
 
 jest.mock('../../src/utils/scriptUrl', () => ({
   getCanonicalScriptUrl: jest.fn().mockReturnValue('https://example.test/script'),
@@ -62,12 +68,15 @@ describe('emailService', () => {
   });
 
   const testUser: UserRecord = {
-    email: 'newuser@example.com',
-    runningClub: 'New_Bee',
-    role: UserRole.USER,
-    status: UserStatus.ACTIVE,
-    addedDate: '2026-04-01',
-    addedBy: TEST_ADMIN_EMAIL,
+    email:       'newuser@example.com',
+    firstName:   'New',
+    lastName:    'User',
+    clubId:      'New_Bee',
+    role:        UserRole.CLUB_ADMIN,
+    status:      UserStatus.ACTIVE,
+    addedDate:   '2026-04-01',
+    addedBy:     TEST_ADMIN_EMAIL,
+    lastLoginAt: '',
   };
 
   // ── notifyUserCreated ──────────────────────────────────────────────────────
@@ -108,7 +117,7 @@ describe('emailService', () => {
 
     it('HTML contains a link built from getCanonicalScriptUrl()', () => {
       mockGetCanonicalScriptUrl.mockReturnValue('https://example.test/script');
-      const result = notifyUserCreated(testUser, TEST_ADMIN_EMAIL);
+      notifyUserCreated(testUser, TEST_ADMIN_EMAIL);
       const call = mockMailApp.sendEmail.mock.calls[0][0] as Record<string, unknown>;
       expect(String(call.htmlBody)).toContain('https://example.test/script');
     });
@@ -155,7 +164,7 @@ describe('emailService', () => {
     });
 
     it('TO is the opted-in admins only', () => {
-      const result = notifyUserRoleChanged(testUser, UserRole.USER, TEST_ADMIN_EMAIL);
+      const result = notifyUserRoleChanged(testUser, UserRole.CLUB_ADMIN, TEST_ADMIN_EMAIL);
       expect(result.status).toBe(ResultStatus.SUCCESS);
       const call = mockMailApp.sendEmail.mock.calls[0][0] as Record<string, unknown>;
       expect(call.to).toContain(TEST_ADMIN_EMAIL);
@@ -164,19 +173,20 @@ describe('emailService', () => {
     it('returns SUCCESS with empty recipients and no MailApp call when no admin opted in', () => {
       setupEmailPreferencesSheet([
         [TEST_ADMIN_EMAIL, true, false, true, true, false, false, '2026-04-01T10:00:00Z'],
+        [TEST_USER_EMAIL,  true, false, true, true, false, false, '2026-04-01T10:00:00Z'],
       ]);
-      const result = notifyUserRoleChanged(testUser, UserRole.USER, TEST_ADMIN_EMAIL);
+      const result = notifyUserRoleChanged(testUser, UserRole.CLUB_ADMIN, TEST_ADMIN_EMAIL);
       expect(result.status).toBe(ResultStatus.SUCCESS);
       expect(result.data?.to).toEqual([]);
       expect(mockMailApp.sendEmail).not.toHaveBeenCalled();
     });
 
     it('HTML references both old and new role', () => {
-      notifyUserRoleChanged(testUser, UserRole.ADMIN, TEST_ADMIN_EMAIL);
+      notifyUserRoleChanged(testUser, UserRole.SUPER_ADMIN, TEST_ADMIN_EMAIL);
       const call = mockMailApp.sendEmail.mock.calls[0][0] as Record<string, unknown>;
       const html = String(call.htmlBody);
-      expect(html).toContain('admin'); // previous role
-      expect(html).toContain('user');  // new role
+      expect(html).toContain('super_admin'); // previous role
+      expect(html).toContain('club_admin');  // new role
     });
   });
 
@@ -237,6 +247,7 @@ describe('emailService', () => {
     it('still writes SECURITY_EVENT_DETECTED audit when no admins opted in', () => {
       setupEmailPreferencesSheet([
         [TEST_ADMIN_EMAIL, true, true, true, false, false, false, '2026-04-01T10:00:00Z'],
+        [TEST_USER_EMAIL,  true, true, true, false, false, false, '2026-04-01T10:00:00Z'],
       ]);
       notifySecurityEvent('unknown@example.com', 'Unknown email');
       expect(mockSheets.Audit_Log.appendRow).toHaveBeenCalled();
@@ -256,8 +267,9 @@ describe('emailService', () => {
 
   describe('sendDailyReport()', () => {
     beforeEach(() => {
+      // 9-col: email, UC, URC, UD, SE, EC(new), DR, WR, updatedAt  — DR=true
       setupEmailPreferencesSheet([
-        [TEST_ADMIN_EMAIL, true, true, true, true, true, false, '2026-04-01T10:00:00Z'],
+        [TEST_ADMIN_EMAIL, true, true, true, true, true, true, false, '2026-04-01T10:00:00Z'],
       ]);
     });
 
@@ -312,8 +324,9 @@ describe('emailService', () => {
 
   describe('sendWeeklyReport()', () => {
     beforeEach(() => {
+      // 9-col: email, UC, URC, UD, SE, EC(new), DR, WR, updatedAt  — WR=true
       setupEmailPreferencesSheet([
-        [TEST_ADMIN_EMAIL, true, true, true, true, false, true, '2026-04-01T10:00:00Z'],
+        [TEST_ADMIN_EMAIL, true, true, true, true, true, false, true, '2026-04-01T10:00:00Z'],
       ]);
     });
 
@@ -434,7 +447,7 @@ describe('emailService', () => {
     it('removes CC addresses that also appear in TO', () => {
       // If the new user's email somehow ended up in the admin list (edge case),
       // it should be removed from CC since it's already in TO
-      const result = notifyUserCreated(testUser, TEST_ADMIN_EMAIL);
+      notifyUserCreated(testUser, TEST_ADMIN_EMAIL);
       const call = mockMailApp.sendEmail.mock.calls[0][0] as Record<string, unknown>;
       const toList = String(call.to).split(',').map(s => s.trim());
       const ccList = String(call.cc || '').split(',').filter(s => s.trim()).map(s => s.trim());
@@ -444,7 +457,7 @@ describe('emailService', () => {
     });
 
     it('lowercases and trims all addresses', () => {
-      const result = notifyUserCreated(testUser, TEST_ADMIN_EMAIL);
+      notifyUserCreated(testUser, TEST_ADMIN_EMAIL);
       const call = mockMailApp.sendEmail.mock.calls[0][0] as Record<string, unknown>;
       expect(call.to).toMatch(/^[a-z0-9@.,]+$/);
     });

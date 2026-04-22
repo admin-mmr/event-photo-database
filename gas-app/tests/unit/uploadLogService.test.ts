@@ -45,13 +45,14 @@ function makeLogRow(overrides: Partial<UploadLogRecord> = {}): unknown[] {
     skippedNonPhoto:   0,
     uploadTimestamp:   '2025-11-03T09:35:00.000Z',
     source:            UploadSource.WEB_APP,
+    linkId:            '',
     ...overrides,
   };
   return [
     record.logId, record.eventId, record.clubName, record.uploadedBy,
     record.batchFolderName, record.batchFolderId,
     record.fileCount, record.totalSizeMb, record.skippedDuplicates,
-    record.skippedNonPhoto, record.uploadTimestamp, record.source,
+    record.skippedNonPhoto, record.uploadTimestamp, record.source, record.linkId,
   ];
 }
 
@@ -100,10 +101,10 @@ describe('appendUploadLog()', () => {
     expect(mockSheets.Upload_Log.appendRow).toHaveBeenCalledTimes(1);
   });
 
-  it('the appended row has 12 columns (matching sheet schema)', () => {
+  it('the appended row has 13 columns (matching sheet schema)', () => {
     appendUploadLog(makeInput());
     const row = mockSheets.Upload_Log.appendRow.mock.calls[0][0] as unknown[];
-    expect(row).toHaveLength(12);
+    expect(row).toHaveLength(13);
   });
 
   it('returns ERROR when the sheet cannot be opened', () => {

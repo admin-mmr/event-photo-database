@@ -189,78 +189,87 @@ describe('inputValidator', () => {
   // ── validateCreateUserPayload ─────────────────────────────────────────────
 
   describe('validateCreateUserPayload()', () => {
-    it('returns SUCCESS with sanitized data for valid input', () => {
+    it('returns SUCCESS with sanitized data for valid club_admin input', () => {
       const result = validateCreateUserPayload({
-        email: '  Alice@Example.COM  ',
-        runningClub: 'New_Bee',
-        role: 'user',
+        email:     '  Alice@Example.COM  ',
+        firstName: 'Alice',
+        lastName:  'Smith',
+        role:      'club_admin',
+        clubId:    'New_Bee',
       });
       expect(result.status).toBe(ResultStatus.SUCCESS);
       expect(result.data!.email).toBe('alice@example.com');
-      expect(result.data!.runningClub).toBe('New_Bee');
-      expect(result.data!.role).toBe(UserRole.USER);
+      expect(result.data!.firstName).toBe('Alice');
+      expect(result.data!.role).toBe(UserRole.CLUB_ADMIN);
     });
 
     it('returns ERROR when email is missing', () => {
-      const result = validateCreateUserPayload({ runningClub: 'New_Bee', role: 'user' });
+      const result = validateCreateUserPayload({ firstName: 'F', lastName: 'L', role: 'club_admin', clubId: 'X' });
       expect(result.status).toBe(ResultStatus.ERROR);
       expect(result.errors!.some((e) => e.field === 'email')).toBe(true);
     });
 
     it('returns ERROR when email format is invalid', () => {
-      const result = validateCreateUserPayload({ email: 'bad-email', runningClub: 'New_Bee', role: 'user' });
+      const result = validateCreateUserPayload({ email: 'bad-email', firstName: 'F', lastName: 'L', role: 'club_admin', clubId: 'X' });
       expect(result.status).toBe(ResultStatus.ERROR);
       expect(result.errors!.some((e) => e.field === 'email')).toBe(true);
     });
 
-    it('returns ERROR when runningClub is missing', () => {
-      const result = validateCreateUserPayload({ email: 'a@b.com', role: 'user' });
+    it('returns ERROR when firstName is missing', () => {
+      const result = validateCreateUserPayload({ email: 'a@b.com', firstName: '', lastName: 'L', role: 'club_admin', clubId: 'X' });
       expect(result.status).toBe(ResultStatus.ERROR);
-      expect(result.errors!.some((e) => e.field === 'runningClub')).toBe(true);
+      expect(result.errors!.some((e) => e.field === 'firstName')).toBe(true);
+    });
+
+    it('returns ERROR when lastName is missing', () => {
+      const result = validateCreateUserPayload({ email: 'a@b.com', firstName: 'F', lastName: '', role: 'club_admin', clubId: 'X' });
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.errors!.some((e) => e.field === 'lastName')).toBe(true);
     });
 
     it('returns ERROR for invalid role', () => {
-      const result = validateCreateUserPayload({ email: 'a@b.com', runningClub: 'New_Bee', role: 'overlord' });
+      const result = validateCreateUserPayload({ email: 'a@b.com', firstName: 'F', lastName: 'L', role: 'overlord', clubId: 'X' });
       expect(result.status).toBe(ResultStatus.ERROR);
       expect(result.errors!.some((e) => e.field === 'role')).toBe(true);
     });
 
-    it('strips HTML from runningClub value', () => {
+    it('strips HTML from firstName value', () => {
       const result = validateCreateUserPayload({
-        email: 'a@b.com',
-        runningClub: '<b>New_Bee</b>',
-        role: 'user',
+        email:     'a@b.com',
+        firstName: '<b>Alice</b>',
+        lastName:  'Smith',
+        role:      'super_admin',
       });
       expect(result.status).toBe(ResultStatus.SUCCESS);
-      expect(result.data!.runningClub).toBe('New_Bee');
+      expect(result.data!.firstName).toBe('Alice');
     });
   });
 
   // ── validateUpdateUserPayload ─────────────────────────────────────────────
 
   describe('validateUpdateUserPayload()', () => {
-    it('returns SUCCESS when only runningClub is updated', () => {
+    it('returns SUCCESS when only clubId is updated', () => {
       const result = validateUpdateUserPayload({
-        email: 'user@example.com',
-        runningClub: 'Misty_Mountain',
+        email:  'user@example.com',
+        clubId: 'Misty_Mountain',
       });
       expect(result.status).toBe(ResultStatus.SUCCESS);
-      expect(result.data!.runningClub).toBe('Misty_Mountain');
+      expect(result.data!.clubId).toBe('Misty_Mountain');
       expect(result.data!.role).toBeUndefined();
     });
 
     it('returns SUCCESS when only role is updated', () => {
       const result = validateUpdateUserPayload({
         email: 'user@example.com',
-        role: 'admin',
+        role:  'super_admin',
       });
       expect(result.status).toBe(ResultStatus.SUCCESS);
-      expect(result.data!.role).toBe(UserRole.ADMIN);
+      expect(result.data!.role).toBe(UserRole.SUPER_ADMIN);
     });
 
     it('returns SUCCESS when only status is updated', () => {
       const result = validateUpdateUserPayload({
-        email: 'user@example.com',
+        email:  'user@example.com',
         status: 'inactive',
       });
       expect(result.status).toBe(ResultStatus.SUCCESS);
@@ -268,7 +277,7 @@ describe('inputValidator', () => {
     });
 
     it('returns ERROR when email is missing', () => {
-      const result = validateUpdateUserPayload({ runningClub: 'New_Bee' });
+      const result = validateUpdateUserPayload({ clubId: 'New_Bee' });
       expect(result.status).toBe(ResultStatus.ERROR);
       expect(result.errors!.some((e) => e.field === 'email')).toBe(true);
     });

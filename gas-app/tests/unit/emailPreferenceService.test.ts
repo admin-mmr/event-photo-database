@@ -46,8 +46,9 @@ describe('emailPreferenceService', () => {
     });
 
     it('returns sheet-backed record when one exists', () => {
+      // 9-col: email, UC, URC, UD, SE, EC(new), DR, WR, updatedAt
       setupEmailPreferencesSheet([
-        [TEST_ADMIN_EMAIL, true, true, true, true, true, false, '2026-04-01T10:00:00Z'],
+        [TEST_ADMIN_EMAIL, true, true, true, true, true, true, false, '2026-04-01T10:00:00Z'],
       ]);
       const prefs = getPreferencesFor(TEST_ADMIN_EMAIL);
       expect(prefs.email).toBe(TEST_ADMIN_EMAIL);
@@ -75,6 +76,7 @@ describe('emailPreferenceService', () => {
         userRoleChanged: true,
         userDeactivated: true,
         securityEvent: true,
+        eventCreated: true,
         dailyReport: false,
         weeklyReport: false,
       });
@@ -89,6 +91,7 @@ describe('emailPreferenceService', () => {
         userRoleChanged: false,
         userDeactivated: true,
         securityEvent: false,
+        eventCreated: true,
         dailyReport: true,
         weeklyReport: false,
       });
@@ -110,6 +113,7 @@ describe('emailPreferenceService', () => {
         userRoleChanged: true,
         userDeactivated: true,
         securityEvent: true,
+        eventCreated: true,
         dailyReport: true,
         weeklyReport: true,
       });
@@ -125,6 +129,7 @@ describe('emailPreferenceService', () => {
         userRoleChanged: true,
         userDeactivated: true,
         securityEvent: true,
+        eventCreated: true,
         dailyReport: false,
         weeklyReport: false,
       });
@@ -140,6 +145,7 @@ describe('emailPreferenceService', () => {
         userRoleChanged: false,
         userDeactivated: true,
         securityEvent: false,
+        eventCreated: true,
         dailyReport: true,
         weeklyReport: false,
       });
@@ -198,13 +204,13 @@ describe('emailPreferenceService', () => {
 
   describe('listAllAdminEmails()', () => {
     it('returns every active admin, ignoring preferences', () => {
-      // Users sheet has TEST_ADMIN_EMAIL as active admin
+      // Users sheet has TEST_ADMIN_EMAIL (super_admin) and TEST_USER_EMAIL (club_admin) as active admins
       const admins = listAllAdminEmails();
       expect(admins).toContain(TEST_ADMIN_EMAIL);
+      // TEST_USER_EMAIL is club_admin — also an admin
+      expect(admins).toContain(TEST_USER_EMAIL);
       // TEST_INACTIVE_EMAIL is inactive, should not appear
       expect(admins).not.toContain(TEST_INACTIVE_EMAIL);
-      // TEST_USER_EMAIL is a regular user, not admin
-      expect(admins).not.toContain(TEST_USER_EMAIL);
     });
   });
 

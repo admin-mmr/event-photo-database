@@ -55,6 +55,19 @@ const UNAUTHENTICATED_TEMPLATES: ReadonlySet<string> = new Set([
   'access_denied.html',  // rendered after auth succeeds but role check fails
   'not_found.html',      // 404 — may render pre-auth if URL is malformed
   'error.html',          // 500 — rendered from catch blocks, sometimes pre-auth
+
+  // Volunteer upload flow — all three pages are intentionally unauthenticated
+  // (volunteers are not admin users; they authenticate via a per-session vsession
+  // token embedded in the page URL, not via the admin SESSION_TOKEN mechanism).
+  'volunteer/confirm.html',    // Step 1: pre-OAuth confirmation page shown to link bearer
+  'volunteer/upload.html',     // Step 3: post-OAuth upload interface (uses vsession, not sessionToken)
+  'volunteer/link_error.html', // Error page shown when link is revoked or invalid
+
+  // Public album index — gated by Google login (any Google account) but NOT by
+  // an admin session. All data is server-injected via GAS scriptlets (entries,
+  // totalEvents, totalAlbums, viewerEmail). The page makes no google.script.run
+  // calls at all, so window.SESSION_TOKEN is not needed here.
+  'public/album_index.html',
 ]);
 
 /**

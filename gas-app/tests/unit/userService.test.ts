@@ -42,7 +42,7 @@ describe('userService', () => {
       const user = findByEmail(TEST_ADMIN_EMAIL);
       expect(user).not.toBeNull();
       expect(user!.email).toBe(TEST_ADMIN_EMAIL);
-      expect(user!.role).toBe(UserRole.ADMIN);
+      expect(user!.role).toBe(UserRole.SUPER_ADMIN);
     });
 
     it('is case-insensitive (normalizes to lowercase)', () => {
@@ -89,8 +89,7 @@ describe('userService', () => {
 
     it('paginates correctly: page 2 of 2 items each', () => {
       const result = listAll(2, 2);
-      // With 4 rows and pageSize=2, page 2 has 2 items
-      expect(result.items).toHaveLength(2);
+      expect(result.items).toHaveLength(1); // 3 rows total → page 2 has 1
     });
 
     it('returns empty items array beyond the last page', () => {
@@ -109,9 +108,9 @@ describe('userService', () => {
   // ── createUser ────────────────────────────────────────────────────────────
 
   describe('createUser()', () => {
-    it('creates a user and returns SUCCESS with the new record', () => {
+    it('creates a club_admin and returns SUCCESS with the new record', () => {
       const result = createUser(
-        { email: 'new@example.com', runningClub: 'New_Bee', role: UserRole.USER },
+        { email: 'new@example.com', firstName: 'New', lastName: 'User', role: UserRole.CLUB_ADMIN, clubId: 'Freshpix' },
         TEST_ADMIN_EMAIL
       );
       expect(result.status).toBe(ResultStatus.SUCCESS);
@@ -122,9 +121,19 @@ describe('userService', () => {
       expect(mockSheets['Users'].appendRow).toHaveBeenCalledTimes(1);
     });
 
+    it('creates a super_admin (no clubId required)', () => {
+      const result = createUser(
+        { email: 'super@example.com', firstName: 'Super', lastName: 'Admin', role: UserRole.SUPER_ADMIN },
+        TEST_ADMIN_EMAIL
+      );
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.role).toBe(UserRole.SUPER_ADMIN);
+      expect(result.data!.clubId).toBe('');
+    });
+
     it('normalizes the email to lowercase', () => {
       const result = createUser(
-        { email: 'New@Example.COM', runningClub: 'New_Bee', role: UserRole.USER },
+        { email: 'New@Example.COM', firstName: 'New', lastName: 'User', role: UserRole.CLUB_ADMIN, clubId: 'Freshpix' },
         TEST_ADMIN_EMAIL
       );
       expect(result.status).toBe(ResultStatus.SUCCESS);
@@ -133,7 +142,7 @@ describe('userService', () => {
 
     it('returns ERROR and does NOT append if email already exists', () => {
       const result = createUser(
-        { email: TEST_USER_EMAIL, runningClub: 'New_Bee', role: UserRole.USER },
+        { email: TEST_USER_EMAIL, firstName: 'Dup', lastName: 'User', role: UserRole.CLUB_ADMIN, clubId: 'New_Bee' },
         TEST_ADMIN_EMAIL
       );
       expect(result.status).toBe(ResultStatus.ERROR);
@@ -143,7 +152,7 @@ describe('userService', () => {
 
     it('returns ERROR with field errors for invalid email format', () => {
       const result = createUser(
-        { email: 'not-an-email', runningClub: 'New_Bee', role: UserRole.USER },
+        { email: 'not-an-email', firstName: 'Test', lastName: 'User', role: UserRole.CLUB_ADMIN, clubId: 'New_Bee' },
         TEST_ADMIN_EMAIL
       );
       expect(result.status).toBe(ResultStatus.ERROR);
@@ -151,18 +160,36 @@ describe('userService', () => {
       expect(result.errors!.some((e) => e.field === 'email')).toBe(true);
     });
 
-    it('returns ERROR when runningClub is empty', () => {
+    it('returns ERROR when firstName is empty', () => {
       const result = createUser(
-        { email: 'x@x.com', runningClub: '', role: UserRole.USER },
+        { email: 'x@x.com', firstName: '', lastName: 'User', role: UserRole.CLUB_ADMIN, clubId: 'New_Bee' },
         TEST_ADMIN_EMAIL
       );
       expect(result.status).toBe(ResultStatus.ERROR);
-      expect(result.errors!.some((e) => e.field === 'runningClub')).toBe(true);
+      expect(result.errors!.some((e) => e.field === 'firstName')).toBe(true);
+    });
+
+    it('returns ERROR when club_admin has no clubId', () => {
+      const result = createUser(
+        { email: 'x@x.com', firstName: 'X', lastName: 'Y', role: UserRole.CLUB_ADMIN },
+        TEST_ADMIN_EMAIL
+      );
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.errors!.some((e) => e.field === 'clubId')).toBe(true);
+    });
+
+    it('returns ERROR when super_admin has a clubId', () => {
+      const result = createUser(
+        { email: 'x@x.com', firstName: 'X', lastName: 'Y', role: UserRole.SUPER_ADMIN, clubId: 'SomeClub' },
+        TEST_ADMIN_EMAIL
+      );
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.errors!.some((e) => e.field === 'clubId')).toBe(true);
     });
 
     it('returns ERROR for an invalid role', () => {
       const result = createUser(
-        { email: 'x@x.com', runningClub: 'New_Bee', role: 'superadmin' as UserRole },
+        { email: 'x@x.com', firstName: 'X', lastName: 'Y', role: 'superadmin' as UserRole },
         TEST_ADMIN_EMAIL
       );
       expect(result.status).toBe(ResultStatus.ERROR);
@@ -171,23 +198,32 @@ describe('userService', () => {
 
     it('accumulates multiple validation errors in a single response', () => {
       const result = createUser(
-        { email: '', runningClub: '', role: 'bad' as UserRole },
+        { email: '', firstName: '', lastName: '', role: 'bad' as UserRole },
         TEST_ADMIN_EMAIL
       );
       expect(result.status).toBe(ResultStatus.ERROR);
-      expect(result.errors!.length).toBeGreaterThanOrEqual(2);
+      expect(result.errors!.length).toBeGreaterThanOrEqual(3);
     });
 
     it('sets addedDate to today in ISO format', () => {
-      // Use the same toIsoDate helper that userService uses (local-time, not UTC)
       const { toIsoDate } = require('../../src/utils/dateFormatter') as
         { toIsoDate: (d: Date) => string };
       const today = toIsoDate(new Date());
       const result = createUser(
-        { email: 'dated@x.com', runningClub: 'New_Bee', role: UserRole.USER },
+        { email: 'dated@x.com', firstName: 'Dated', lastName: 'User', role: UserRole.CLUB_ADMIN, clubId: 'Freshpix' },
         TEST_ADMIN_EMAIL
       );
       expect(result.data!.addedDate).toBe(today);
+    });
+
+    it('enforces one-club-per-club-admin: returns ERROR if club already has an active admin', () => {
+      // TEST_USER_EMAIL is already club_admin for New_Bee
+      const result = createUser(
+        { email: 'another@x.com', firstName: 'Another', lastName: 'Admin', role: UserRole.CLUB_ADMIN, clubId: 'New_Bee' },
+        TEST_ADMIN_EMAIL
+      );
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.message).toContain('already has an active club admin');
     });
   });
 
@@ -195,7 +231,6 @@ describe('userService', () => {
 
   describe('updateUser()', () => {
     beforeEach(() => {
-      // Mock findRowIndex to return row 2 (the first user row after header)
       mockSheets['Users'].getRange.mockImplementation(
         (_r: number, _c: number, _nr?: number, _nc?: number) => ({
           getValues: jest.fn().mockReturnValue(DEFAULT_USERS_ROWS),
@@ -204,27 +239,28 @@ describe('userService', () => {
       );
     });
 
-    it('updates runningClub and returns the updated record', () => {
+    it('updates firstName and returns the updated record', () => {
       const result = updateUser(
-        { email: TEST_USER_EMAIL, runningClub: 'Misty_Mountain' },
+        { email: TEST_USER_EMAIL, firstName: 'Updated' },
         TEST_ADMIN_EMAIL
       );
       expect(result.status).toBe(ResultStatus.SUCCESS);
-      expect(result.data!.runningClub).toBe('Misty_Mountain');
+      expect(result.data!.firstName).toBe('Updated');
     });
 
-    it('updates role to admin', () => {
+    it('updates role to super_admin and clears clubId', () => {
       const result = updateUser(
-        { email: TEST_USER_EMAIL, role: UserRole.ADMIN },
+        { email: TEST_USER_EMAIL, role: UserRole.SUPER_ADMIN },
         TEST_ADMIN_EMAIL
       );
       expect(result.status).toBe(ResultStatus.SUCCESS);
-      expect(result.data!.role).toBe(UserRole.ADMIN);
+      expect(result.data!.role).toBe(UserRole.SUPER_ADMIN);
+      expect(result.data!.clubId).toBe('');
     });
 
     it('returns ERROR for unknown email', () => {
       const result = updateUser(
-        { email: 'ghost@example.com', runningClub: 'New_Bee' },
+        { email: 'ghost@example.com', firstName: 'Ghost' },
         TEST_ADMIN_EMAIL
       );
       expect(result.status).toBe(ResultStatus.ERROR);
@@ -251,12 +287,12 @@ describe('userService', () => {
 
     it('preserves unchanged fields when only updating one field', () => {
       const result = updateUser(
-        { email: TEST_USER_EMAIL, role: UserRole.ADMIN },
+        { email: TEST_USER_EMAIL, role: UserRole.SUPER_ADMIN },
         TEST_ADMIN_EMAIL
       );
       expect(result.status).toBe(ResultStatus.SUCCESS);
-      // runningClub unchanged
-      expect(result.data!.runningClub).toBe('New_Bee');
+      // lastName unchanged
+      expect(result.data!.lastName).toBe('User');
     });
   });
 
@@ -306,11 +342,23 @@ describe('userService', () => {
   // ── validateCreateInput ───────────────────────────────────────────────────
 
   describe('validateCreateInput()', () => {
-    it('returns empty array for fully valid input', () => {
+    it('returns empty array for valid club_admin input', () => {
       const errors = validateCreateInput({
-        email: 'valid@example.com',
-        runningClub: 'New_Bee',
-        role: UserRole.USER,
+        email:     'valid@example.com',
+        firstName: 'Valid',
+        lastName:  'User',
+        role:      UserRole.CLUB_ADMIN,
+        clubId:    'New_Bee',
+      });
+      expect(errors).toHaveLength(0);
+    });
+
+    it('returns empty array for valid super_admin input (no clubId)', () => {
+      const errors = validateCreateInput({
+        email:     'super@example.com',
+        firstName: 'Super',
+        lastName:  'Admin',
+        role:      UserRole.SUPER_ADMIN,
       });
       expect(errors).toHaveLength(0);
     });
@@ -318,30 +366,46 @@ describe('userService', () => {
     it('flags invalid email formats', () => {
       const cases = ['', 'no-at-sign', '@missing-local', 'missing@', 'a@b'];
       cases.forEach((email) => {
-        const errors = validateCreateInput({ email, runningClub: 'New_Bee', role: UserRole.USER });
+        const errors = validateCreateInput({ email, firstName: 'F', lastName: 'L', role: UserRole.CLUB_ADMIN, clubId: 'X' });
         expect(errors.some((e) => e.field === 'email')).toBe(true);
       });
     });
 
-    it('flags missing runningClub', () => {
-      const errors = validateCreateInput({ email: 'a@b.com', runningClub: '', role: UserRole.USER });
-      expect(errors.some((e) => e.field === 'runningClub')).toBe(true);
+    it('flags missing firstName', () => {
+      const errors = validateCreateInput({ email: 'a@b.com', firstName: '', lastName: 'L', role: UserRole.CLUB_ADMIN, clubId: 'X' });
+      expect(errors.some((e) => e.field === 'firstName')).toBe(true);
+    });
+
+    it('flags missing lastName', () => {
+      const errors = validateCreateInput({ email: 'a@b.com', firstName: 'F', lastName: '', role: UserRole.CLUB_ADMIN, clubId: 'X' });
+      expect(errors.some((e) => e.field === 'lastName')).toBe(true);
+    });
+
+    it('flags club_admin missing clubId', () => {
+      const errors = validateCreateInput({ email: 'a@b.com', firstName: 'F', lastName: 'L', role: UserRole.CLUB_ADMIN });
+      expect(errors.some((e) => e.field === 'clubId')).toBe(true);
+    });
+
+    it('flags super_admin with non-empty clubId', () => {
+      const errors = validateCreateInput({ email: 'a@b.com', firstName: 'F', lastName: 'L', role: UserRole.SUPER_ADMIN, clubId: 'SomeClub' });
+      expect(errors.some((e) => e.field === 'clubId')).toBe(true);
     });
 
     it('flags invalid role', () => {
       const errors = validateCreateInput({
-        email: 'a@b.com',
-        runningClub: 'New_Bee',
+        email: 'a@b.com', firstName: 'F', lastName: 'L',
         role: 'god' as UserRole,
       });
       expect(errors.some((e) => e.field === 'role')).toBe(true);
     });
 
-    it('accepts all defined UserRole values', () => {
-      Object.values(UserRole).forEach((role) => {
-        const errors = validateCreateInput({ email: 'a@b.com', runningClub: 'New_Bee', role });
-        expect(errors.some((e) => e.field === 'role')).toBe(false);
-      });
+    it('accepts all defined UserRole values with appropriate clubId', () => {
+      // super_admin — no clubId
+      expect(validateCreateInput({ email: 'a@b.com', firstName: 'F', lastName: 'L', role: UserRole.SUPER_ADMIN })
+        .some((e) => e.field === 'role')).toBe(false);
+      // club_admin — requires clubId
+      expect(validateCreateInput({ email: 'a@b.com', firstName: 'F', lastName: 'L', role: UserRole.CLUB_ADMIN, clubId: 'X' })
+        .some((e) => e.field === 'role')).toBe(false);
     });
   });
 });

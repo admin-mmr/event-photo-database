@@ -5,7 +5,7 @@ import {
   resetMockSheets,
   mockSheets,
   createMockSheet,
-  TEST_API_CLIENT_EMAIL,
+  TEST_CLUB_ADMIN_EMAIL,
 } from '../mocks/gasGlobals';
 import { ResultStatus } from '../../src/types/enums';
 import { RATE_LIMIT_WINDOW_MS } from '../../src/config/constants';
@@ -29,7 +29,7 @@ describe('checkAndIncrementRateLimit()', () => {
   });
 
   it('allows a new key and creates a row with count = 1', () => {
-    const result = checkAndIncrementRateLimit(TEST_API_CLIENT_EMAIL);
+    const result = checkAndIncrementRateLimit(TEST_CLUB_ADMIN_EMAIL);
     expect(result.status).toBe(ResultStatus.SUCCESS);
     expect(result.data!.allowed).toBe(true);
     expect(result.data!.requestCount).toBe(1);
@@ -39,9 +39,9 @@ describe('checkAndIncrementRateLimit()', () => {
 
   it('increments count for an existing key within the window', () => {
     const now = new Date();
-    seedRateLimitRow(TEST_API_CLIENT_EMAIL, now, 5);
+    seedRateLimitRow(TEST_CLUB_ADMIN_EMAIL, now, 5);
 
-    const result = checkAndIncrementRateLimit(TEST_API_CLIENT_EMAIL);
+    const result = checkAndIncrementRateLimit(TEST_CLUB_ADMIN_EMAIL);
     expect(result.status).toBe(ResultStatus.SUCCESS);
     expect(result.data!.allowed).toBe(true);
     expect(result.data!.requestCount).toBe(6);
@@ -50,9 +50,9 @@ describe('checkAndIncrementRateLimit()', () => {
   it('resets the window and allows when window has expired', () => {
     // Window started 2 hours ago — should be expired
     const oldWindow = new Date(Date.now() - 2 * RATE_LIMIT_WINDOW_MS);
-    seedRateLimitRow(TEST_API_CLIENT_EMAIL, oldWindow, 59);
+    seedRateLimitRow(TEST_CLUB_ADMIN_EMAIL, oldWindow, 59);
 
-    const result = checkAndIncrementRateLimit(TEST_API_CLIENT_EMAIL);
+    const result = checkAndIncrementRateLimit(TEST_CLUB_ADMIN_EMAIL);
     expect(result.status).toBe(ResultStatus.SUCCESS);
     expect(result.data!.allowed).toBe(true);
     expect(result.data!.requestCount).toBe(1); // reset to 1
@@ -60,26 +60,26 @@ describe('checkAndIncrementRateLimit()', () => {
 
   it('denies the request when count equals the limit (60)', () => {
     const now = new Date();
-    seedRateLimitRow(TEST_API_CLIENT_EMAIL, now, 60);
+    seedRateLimitRow(TEST_CLUB_ADMIN_EMAIL, now, 60);
 
-    const result = checkAndIncrementRateLimit(TEST_API_CLIENT_EMAIL);
+    const result = checkAndIncrementRateLimit(TEST_CLUB_ADMIN_EMAIL);
     expect(result.status).toBe(ResultStatus.SUCCESS);
     expect(result.data!.allowed).toBe(false);
     expect(result.data!.requestCount).toBe(60); // not incremented
   });
 
   it('includes limitPerHour in the result', () => {
-    const result = checkAndIncrementRateLimit(TEST_API_CLIENT_EMAIL);
+    const result = checkAndIncrementRateLimit(TEST_CLUB_ADMIN_EMAIL);
     expect(result.data!.limitPerHour).toBe(60);
   });
 
   it('includes windowStart as a valid ISO string', () => {
-    const result = checkAndIncrementRateLimit(TEST_API_CLIENT_EMAIL);
+    const result = checkAndIncrementRateLimit(TEST_CLUB_ADMIN_EMAIL);
     expect(new Date(result.data!.windowStart).getTime()).not.toBeNaN();
   });
 
   it('includes windowResetsAt approximately 1 hour after windowStart', () => {
-    const result = checkAndIncrementRateLimit(TEST_API_CLIENT_EMAIL);
+    const result = checkAndIncrementRateLimit(TEST_CLUB_ADMIN_EMAIL);
     const start  = new Date(result.data!.windowStart).getTime();
     const resets = new Date(result.data!.windowResetsAt).getTime();
     expect(resets - start).toBeCloseTo(RATE_LIMIT_WINDOW_MS, -3); // within 1 second
@@ -88,7 +88,7 @@ describe('checkAndIncrementRateLimit()', () => {
   it('returns ERROR when the Rate_Limit sheet cannot be read', () => {
     // Remove the sheet from the mock
     delete mockSheets.Rate_Limit;
-    const result = checkAndIncrementRateLimit(TEST_API_CLIENT_EMAIL);
+    const result = checkAndIncrementRateLimit(TEST_CLUB_ADMIN_EMAIL);
     expect(result.status).toBe(ResultStatus.ERROR);
     expect(result.message).toMatch(/Rate limit sheet unavailable/i);
     // Restore for other tests

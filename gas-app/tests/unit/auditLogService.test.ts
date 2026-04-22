@@ -51,10 +51,10 @@ describe('appendAuditLog()', () => {
     expect(mockSheets.Audit_Log.appendRow).toHaveBeenCalledTimes(1);
   });
 
-  it('the appended row has 7 columns matching the schema', () => {
+  it('the appended row has 10 columns matching the schema', () => {
     appendAuditLog(makeInput());
     const row = mockSheets.Audit_Log.appendRow.mock.calls[0][0] as unknown[];
-    expect(row).toHaveLength(7);
+    expect(row).toHaveLength(10);
   });
 
   it('writes the correct action string to column 3', () => {

@@ -88,14 +88,14 @@ describe('AuthMiddleware — resolveUser()', () => {
     const result = resolveUser(TEST_ADMIN_EMAIL);
     expect(result.status).toBe(ResultStatus.SUCCESS);
     expect(result.data?.email).toBe(TEST_ADMIN_EMAIL);
-    expect(result.data?.role).toBe(UserRole.ADMIN);
+    expect(result.data?.role).toBe(UserRole.SUPER_ADMIN);
     expect(result.data?.status).toBe(UserStatus.ACTIVE);
   });
 
-  it('returns SUCCESS for a registered active regular user', () => {
+  it('returns SUCCESS for a registered active club admin user', () => {
     const result = resolveUser(TEST_USER_EMAIL);
     expect(result.status).toBe(ResultStatus.SUCCESS);
-    expect(result.data?.role).toBe(UserRole.USER);
+    expect(result.data?.role).toBe(UserRole.CLUB_ADMIN);
   });
 
   it('returns ERROR for an unregistered email', () => {
@@ -145,7 +145,7 @@ describe('AuthMiddleware — authenticateRequest()', () => {
     const result = authenticateRequest();
     expect(result.status).toBe(ResultStatus.SUCCESS);
     expect(result.data?.email).toBe(TEST_ADMIN_EMAIL);
-    expect(result.data?.role).toBe(UserRole.ADMIN);
+    expect(result.data?.role).toBe(UserRole.SUPER_ADMIN);
   });
 
   it('returns ERROR when session has no email (step 1 fails)', () => {

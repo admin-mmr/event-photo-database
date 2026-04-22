@@ -20,8 +20,9 @@ import { UserRecord } from '../../src/types/models';
 // ─── Users ────────────────────────────────────────────────────────────────────
 
 describe('sheetMapper — Users', () => {
+  // New 9-column schema: email | firstName | lastName | role | status | clubId | addedDate | addedBy | lastLoginAt
   const validRow: unknown[] = [
-    'admin@mmrunners.org', 'Admin', 'admin', 'active', '2025-01-01', 'system',
+    'admin@mmrunners.org', 'Test', 'Admin', 'super_admin', 'active', '', '2025-01-01', 'system', '',
   ];
 
   describe('toUserRecord()', () => {
@@ -29,47 +30,50 @@ describe('sheetMapper — Users', () => {
       const record = toUserRecord(validRow);
       expect(record).not.toBeNull();
       expect(record!.email).toBe('admin@mmrunners.org');
-      expect(record!.runningClub).toBe('Admin');
-      expect(record!.role).toBe(UserRole.ADMIN);
+      expect(record!.firstName).toBe('Test');
+      expect(record!.lastName).toBe('Admin');
+      expect(record!.role).toBe(UserRole.SUPER_ADMIN);
       expect(record!.status).toBe(UserStatus.ACTIVE);
+      expect(record!.clubId).toBe('');
       expect(record!.addedDate).toBe('2025-01-01');
       expect(record!.addedBy).toBe('system');
     });
 
     it('normalizes email to lowercase', () => {
-      const row = ['Admin@EXAMPLE.COM', 'New_Bee', 'user', 'active', '', ''];
+      const row = ['Admin@EXAMPLE.COM', 'First', 'Last', 'club_admin', 'active', 'New_Bee', '', '', ''];
       const record = toUserRecord(row);
       expect(record!.email).toBe('admin@example.com');
     });
 
     it('trims whitespace from all string fields', () => {
-      const row = ['  alice@example.com  ', '  New_Bee  ', 'user', 'active', '', ''];
+      const row = ['  alice@example.com  ', '  Alice  ', '  Smith  ', 'club_admin', 'active', '  New_Bee  ', '', '', ''];
       const record = toUserRecord(row);
       expect(record!.email).toBe('alice@example.com');
-      expect(record!.runningClub).toBe('New_Bee');
+      expect(record!.firstName).toBe('Alice');
+      expect(record!.clubId).toBe('New_Bee');
     });
 
     it('returns null for empty email', () => {
-      const row = ['', 'New_Bee', 'user', 'active', '', ''];
+      const row = ['', 'First', 'Last', 'super_admin', 'active', '', '', '', ''];
       expect(toUserRecord(row)).toBeNull();
     });
 
     it('returns null for whitespace-only email', () => {
-      const row = ['   ', 'New_Bee', 'user', 'active', '', ''];
+      const row = ['   ', 'First', 'Last', 'club_admin', 'active', 'New_Bee', '', '', ''];
       expect(toUserRecord(row)).toBeNull();
     });
 
     it('returns null for invalid role', () => {
-      const row = ['alice@example.com', 'New_Bee', 'superadmin', 'active', '', ''];
+      const row = ['alice@example.com', 'Alice', 'Smith', 'admin', 'active', '', '', '', ''];
       expect(toUserRecord(row)).toBeNull();
     });
 
     it('returns null for invalid status', () => {
-      const row = ['alice@example.com', 'New_Bee', 'user', 'pending', '', ''];
+      const row = ['alice@example.com', 'Alice', 'Smith', 'club_admin', 'pending', 'New_Bee', '', '', ''];
       expect(toUserRecord(row)).toBeNull();
     });
 
-    it('returns null for row with fewer than 6 columns', () => {
+    it('returns null for row with fewer than 9 columns', () => {
       expect(toUserRecord(['a', 'b', 'c'])).toBeNull();
       expect(toUserRecord([])).toBeNull();
     });
@@ -80,8 +84,8 @@ describe('sheetMapper — Users', () => {
       // Date.toString() locale string like "Thu Apr 09 2026 00:00:00 GMT-0400".
       const localDate = new Date(2025, 1, 1); // Feb 1 2025 in local time
       const row: unknown[] = [
-        'alice@example.com', 'New_Bee', 'user', 'active',
-        localDate, 'admin@mmrunners.org',
+        'alice@example.com', 'Alice', 'Smith', 'club_admin', 'active', 'New_Bee',
+        localDate, 'admin@mmrunners.org', '',
       ];
       const record = toUserRecord(row);
       expect(record).not.toBeNull();
@@ -93,8 +97,8 @@ describe('sheetMapper — Users', () => {
       // locale string like "Sat Feb 01 2025 00:00:00 GMT-0500 (EST)".
       const localDate = new Date(2025, 3, 9); // Apr 9 2025 in local time
       const row: unknown[] = [
-        'bob@example.com', 'Admin', 'admin', 'active',
-        localDate, 'system',
+        'bob@example.com', 'Bob', 'Smith', 'super_admin', 'active', '',
+        localDate, 'system', '',
       ];
       const record = toUserRecord(row);
       expect(record!.addedDate).not.toContain('GMT');
@@ -104,8 +108,8 @@ describe('sheetMapper — Users', () => {
 
     it('preserves plain ISO string addedDate unchanged', () => {
       const row: unknown[] = [
-        'carol@example.com', 'New_Bee', 'user', 'active',
-        '2025-06-15', 'admin@mmrunners.org',
+        'carol@example.com', 'Carol', 'Smith', 'club_admin', 'active', 'New_Bee',
+        '2025-06-15', 'admin@mmrunners.org', '',
       ];
       const record = toUserRecord(row);
       expect(record!.addedDate).toBe('2025-06-15');
@@ -113,32 +117,34 @@ describe('sheetMapper — Users', () => {
 
     it('accepts all valid UserRole values', () => {
       for (const role of Object.values(UserRole)) {
-        const row = ['alice@example.com', 'Club', role, 'active', '', ''];
+        const row = ['alice@example.com', 'Alice', 'Smith', role, 'active', '', '', '', ''];
         expect(toUserRecord(row)).not.toBeNull();
       }
     });
 
     it('accepts all valid UserStatus values', () => {
       for (const status of Object.values(UserStatus)) {
-        const row = ['alice@example.com', 'Club', 'user', status, '', ''];
+        const row = ['alice@example.com', 'Alice', 'Smith', 'super_admin', status, '', '', '', ''];
         expect(toUserRecord(row)).not.toBeNull();
       }
     });
   });
 
   describe('fromUserRecord()', () => {
-    it('produces an array of 6 elements', () => {
+    it('produces an array of 9 elements', () => {
       const record = toUserRecord(validRow)!;
       const row = fromUserRecord(record);
-      expect(row).toHaveLength(6);
+      expect(row).toHaveLength(9);
     });
 
     it('preserves all field values', () => {
       const record = toUserRecord(validRow)!;
       const row = fromUserRecord(record);
-      expect(row[0]).toBe('admin@mmrunners.org');
-      expect(row[2]).toBe('admin');
-      expect(row[3]).toBe('active');
+      expect(row[0]).toBe('admin@mmrunners.org'); // email
+      expect(row[1]).toBe('Test');                // firstName
+      expect(row[2]).toBe('Admin');               // lastName
+      expect(row[3]).toBe('super_admin');          // role
+      expect(row[4]).toBe('active');               // status
     });
   });
 
@@ -152,12 +158,15 @@ describe('sheetMapper — Users', () => {
 
     it('roundtrip preserves all UserRole values', () => {
       const record: UserRecord = {
-        email: 'test@example.com',
-        runningClub: 'New_Bee',
-        role: UserRole.API_CLIENT,
-        status: UserStatus.INACTIVE,
-        addedDate: '2025-03-01',
-        addedBy: 'admin@mmrunners.org',
+        email:       'test@example.com',
+        firstName:   'Test',
+        lastName:    'User',
+        role:        UserRole.CLUB_ADMIN,
+        status:      UserStatus.INACTIVE,
+        clubId:      'New_Bee',
+        addedDate:   '2025-03-01',
+        addedBy:     'admin@mmrunners.org',
+        lastLoginAt: '',
       };
       const restored = toUserRecord(fromUserRecord(record));
       expect(restored).toEqual(record);
@@ -386,11 +395,11 @@ describe('sheetMapper — Upload Log', () => {
       expect(record!.source).toBe(UploadSource.WEB_APP);
     });
 
-    it('accepts api source', () => {
+    it('accepts link source', () => {
       const row = [...validRow];
-      row[11] = 'api';
+      row[11] = 'link';
       const record = toUploadLogRecord(row);
-      expect(record!.source).toBe(UploadSource.API);
+      expect(record!.source).toBe(UploadSource.LINK);
     });
 
     it('returns null for unrecognized source', () => {
@@ -572,6 +581,9 @@ describe('sheetMapper — Audit Log', () => {
     'user',
     'newuser@example.com',
     '{"email":"newuser@example.com","role":"user"}',
+    '',            // linkId
+    '',            // ipAddress
+    '',            // reason
   ];
 
   describe('toAuditLogRecord()', () => {
@@ -676,10 +688,10 @@ describe('sheetMapper — Audit Log', () => {
   });
 
   describe('fromAuditLogRecord()', () => {
-    it('produces an array of 7 elements', () => {
+    it('produces an array of 10 elements', () => {
       const record = toAuditLogRecord(validRow)!;
       const row = fromAuditLogRecord(record);
-      expect(row).toHaveLength(7);
+      expect(row).toHaveLength(10);
     });
 
     it('preserves all field values in the correct column order', () => {
@@ -692,6 +704,9 @@ describe('sheetMapper — Audit Log', () => {
       expect(row[4]).toBe('user');                         // resourceType
       expect(row[5]).toBe('newuser@example.com');          // resourceId
       expect(row[6]).toBe('{"email":"newuser@example.com","role":"user"}'); // details
+      expect(row[7]).toBe('');                             // linkId
+      expect(row[8]).toBe('');                             // ipAddress
+      expect(row[9]).toBe('');                             // reason
     });
   });
 
@@ -926,8 +941,9 @@ describe('sheetMapper — Photos Files', () => {
 // ─── Email Preferences ────────────────────────────────────────────────────────
 
 describe('sheetMapper — Email Preferences', () => {
+  // 9-column row: email, UC, URC, UD, SE, EC(new), DR, WR, updatedAt
   const validRow: unknown[] = [
-    'admin@mmrunners.org', true, false, true, false, true, true, '2026-04-01T10:00:00Z',
+    'admin@mmrunners.org', true, false, true, false, true, true, false, '2026-04-01T10:00:00Z',
   ];
 
   describe('toOptInBoolean (indirectly via toEmailPreferenceRecord)', () => {
@@ -973,7 +989,8 @@ describe('sheetMapper — Email Preferences', () => {
     });
 
     it('coerces numeric "1" to true and "0" to false', () => {
-      const row = ['test@example.com', 1, 0, '1', '0', 1, 0, ''];
+      // 9-col row: email, UC, URC, UD, SE, EC, DR, WR, updatedAt
+      const row = ['test@example.com', 1, 0, '1', '0', false, 1, 0, ''];
       const record = toEmailPreferenceRecord(row);
       expect(record!.userCreated).toBe(true);
       expect(record!.userRoleChanged).toBe(false);
@@ -993,7 +1010,7 @@ describe('sheetMapper — Email Preferences', () => {
     });
 
     it('unknown strings default to false', () => {
-      const row = ['test@example.com', 'unknown', 'maybe', 'y', 'n', '', '', ''];
+      const row = ['test@example.com', 'unknown', 'maybe', 'nope', 'no', '', '', ''];
       const record = toEmailPreferenceRecord(row);
       // only 'yes', 'y', 'true', '1' map to true; everything else → false
       expect(record!.userCreated).toBe(false);
@@ -1004,7 +1021,7 @@ describe('sheetMapper — Email Preferences', () => {
   });
 
   describe('toEmailPreferenceRecord()', () => {
-    it('maps a complete valid 8-column row', () => {
+    it('maps a complete valid 9-column row', () => {
       const record = toEmailPreferenceRecord(validRow);
       expect(record).not.toBeNull();
       expect(record!.email).toBe('admin@mmrunners.org');
@@ -1012,8 +1029,9 @@ describe('sheetMapper — Email Preferences', () => {
       expect(record!.userRoleChanged).toBe(false);
       expect(record!.userDeactivated).toBe(true);
       expect(record!.securityEvent).toBe(false);
+      expect(record!.eventCreated).toBe(true);
       expect(record!.dailyReport).toBe(true);
-      expect(record!.weeklyReport).toBe(true);
+      expect(record!.weeklyReport).toBe(false);
       expect(record!.updatedAt).toBe('2026-04-01T10:00:00Z');
     });
 
@@ -1039,8 +1057,8 @@ describe('sheetMapper — Email Preferences', () => {
       expect(toEmailPreferenceRecord(row)).toBeNull();
     });
 
-    it('returns null for row with fewer than 8 columns', () => {
-      expect(toEmailPreferenceRecord(['admin@x.com', true, true, true, true, true])).toBeNull();
+    it('returns null for row with fewer than 5 columns', () => {
+      expect(toEmailPreferenceRecord(['admin@x.com', true, true, true])).toBeNull();
       expect(toEmailPreferenceRecord([])).toBeNull();
     });
 
@@ -1058,19 +1076,21 @@ describe('sheetMapper — Email Preferences', () => {
       expect(record!.email).toBe('123');
     });
 
-    it('treats missing cells as undefined (coerced to false for booleans)', () => {
-      const row = ['admin@mmrunners.org'];
+    it('treats undefined/null cells in a full-length row as false for booleans', () => {
+      // Row has 8 columns but booleans are undefined/null
+      const row = ['admin@mmrunners.org', undefined, null, undefined, null, undefined, null, ''];
       const record = toEmailPreferenceRecord(row);
+      expect(record).not.toBeNull();
       expect(record!.userCreated).toBe(false);
       expect(record!.userRoleChanged).toBe(false);
     });
   });
 
   describe('fromEmailPreferenceRecord()', () => {
-    it('produces an array of 8 elements', () => {
+    it('produces an array of 9 elements', () => {
       const record = toEmailPreferenceRecord(validRow)!;
       const row = fromEmailPreferenceRecord(record);
-      expect(row).toHaveLength(8);
+      expect(row).toHaveLength(9);
     });
 
     it('preserves all field values in correct column order', () => {
@@ -1081,9 +1101,10 @@ describe('sheetMapper — Email Preferences', () => {
       expect(row[2]).toBe(false);                      // userRoleChanged
       expect(row[3]).toBe(true);                       // userDeactivated
       expect(row[4]).toBe(false);                      // securityEvent
-      expect(row[5]).toBe(true);                       // dailyReport
-      expect(row[6]).toBe(true);                       // weeklyReport
-      expect(row[7]).toBe('2026-04-01T10:00:00Z');     // updatedAt
+      expect(row[5]).toBe(true);                       // eventCreated
+      expect(row[6]).toBe(true);                       // dailyReport
+      expect(row[7]).toBe(false);                      // weeklyReport
+      expect(row[8]).toBe('2026-04-01T10:00:00Z');     // updatedAt
     });
 
     it('serialises booleans as native booleans (not strings)', () => {
@@ -1098,7 +1119,7 @@ describe('sheetMapper — Email Preferences', () => {
     it('preserves timestamp exactly', () => {
       const record = toEmailPreferenceRecord(validRow)!;
       const row = fromEmailPreferenceRecord(record);
-      expect(row[7]).toBe('2026-04-01T10:00:00Z');
+      expect(row[8]).toBe('2026-04-01T10:00:00Z');
     });
   });
 
