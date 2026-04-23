@@ -132,6 +132,74 @@
 
     .progress-bar.error { background: #c62828; }
 
+    /* ── Animated stripe overlay on progress bar ─────── */
+    @keyframes progress-stripes {
+      from { background-position: 40px 0; }
+      to   { background-position: 0 0; }
+    }
+
+    .progress-bar.animating {
+      background-image: linear-gradient(
+        45deg,
+        rgba(255,255,255,.22) 25%, transparent 25%,
+        transparent 50%, rgba(255,255,255,.22) 50%,
+        rgba(255,255,255,.22) 75%, transparent 75%,
+        transparent
+      );
+      background-size: 40px 40px;
+      animation: progress-stripes 0.9s linear infinite;
+    }
+
+    /* ── Do-not-close warning banner ────────────────── */
+    @keyframes hourglass-flip {
+      0%,  48% { transform: rotate(0deg);   }
+      50%, 98% { transform: rotate(180deg); }
+      100%     { transform: rotate(360deg); }
+    }
+
+    .upload-warning-banner {
+      background: linear-gradient(135deg, #e65100, #f57c00);
+      color: #fff;
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin: 0 auto 16px;
+      max-width: 640px;
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      box-shadow: 0 4px 18px rgba(230, 81, 0, .45);
+    }
+
+    .upload-warning-banner .hglass {
+      font-size: 34px;
+      flex-shrink: 0;
+      animation: hourglass-flip 2s ease-in-out infinite;
+      line-height: 1;
+    }
+
+    .upload-warning-banner .warn-main {
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.5;
+      margin-bottom: 5px;
+    }
+
+    .upload-warning-banner .warn-sub {
+      font-size: 13px;
+      opacity: .92;
+      line-height: 1.6;
+      margin-bottom: 8px;
+    }
+
+    .upload-warning-banner .warn-eta {
+      display: inline-block;
+      font-size: 13px;
+      font-weight: 600;
+      background: rgba(0, 0, 0, .22);
+      padding: 3px 12px;
+      border-radius: 20px;
+    }
+
     /* Actions */
     .actions {
       display: flex;
@@ -217,6 +285,57 @@
 
     .receipt-note strong { color: #333; }
 
+    /* ── Album index CTA (shown in receipt) ─────────────────── */
+    .album-cta {
+      margin-top: 20px;
+      background: #e3f2fd;
+      border: 1px solid #90caf9;
+      border-radius: 8px;
+      padding: 16px 18px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .album-cta-icon { font-size: 26px; flex-shrink: 0; line-height: 1.2; }
+
+    .album-cta-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #0d47a1;
+      margin-bottom: 6px;
+    }
+
+    .album-cta-body {
+      font-size: 13px;
+      color: #555;
+      line-height: 1.6;
+      margin-bottom: 12px;
+    }
+
+    .album-cta-body .zh { color: #777; }
+
+    .btn-album {
+      display: inline-block;
+      background: #1565c0;
+      color: #fff;
+      text-decoration: none;
+      padding: 9px 18px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      transition: background .15s;
+    }
+
+    .btn-album:hover { background: #0d47a1; }
+
+    .album-sync-note {
+      margin-top: 8px;
+      font-size: 11px;
+      color: #888;
+      line-height: 1.5;
+    }
+
     @media (max-width: 520px) {
       .card-body, .receipt-section { padding: 20px; }
       .receipt-grid { grid-template-columns: 1fr 1fr; }
@@ -230,6 +349,22 @@
       <strong><?= eventName ?></strong>
       <? if (eventDate) { ?> · <?= eventDate ?><? } ?>
       &nbsp;·&nbsp; <?= clubName ?>
+    </div>
+  </div>
+
+  <!-- ── Do-not-close warning (shown only while uploading) ─────────────── -->
+  <div class="upload-warning-banner" id="doNotCloseWarning" style="display:none;" role="alert">
+    <div class="hglass" aria-hidden="true">⏳</div>
+    <div>
+      <div class="warn-main">
+        ⚠️ Upload in progress — DO NOT close this window!<br>
+        ⚠️ 正在上传 — 请勿关闭此窗口！
+      </div>
+      <div class="warn-sub">
+        Closing or refreshing this tab will cancel your upload and all photos will be lost.<br>
+        关闭或刷新此标签页将中断上传，所有照片将会丢失。
+      </div>
+      <span class="warn-eta" id="warningEta">Calculating time remaining… / 正在计算剩余时间…</span>
     </div>
   </div>
 
@@ -292,12 +427,39 @@
         Uploaded by <strong id="rcEmail"></strong> ·
         <span id="rcTime"></span>
       </p>
+
+      <!-- ── Album browse CTA ──────────────────────────────────────────────── -->
+      <div class="album-cta">
+        <div class="album-cta-icon">📸</div>
+        <div>
+          <div class="album-cta-title">
+            Want to see the photos? &nbsp;/&nbsp; 想浏览相册？
+          </div>
+          <div class="album-cta-body">
+            We're syncing your photos to our shared Google Photos album for
+            <strong id="rcAlbumEventLabel"></strong>.
+            It usually takes a few minutes to appear.<br>
+            <span class="zh">
+              您的照片正在同步到我们的 Google 相册，通常几分钟内即可看到。
+            </span>
+          </div>
+          <a class="btn-album" id="rcAlbumBtn" href="#" target="_blank" rel="noopener">
+            Browse Photo Albums &nbsp;/&nbsp; 浏览相册 →
+          </a>
+          <div class="album-sync-note">
+            You may be asked to sign in with your Google account to view the albums.<br>
+            浏览相册可能需要用 Google 账号登录。
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
   <script>
     var VSESSION = '<?= vsession ?>';
     var UPLOADER_EMAIL = '<?= uploaderEmail ?>';
+    // scriptUrl is injected by renderVolunteerTemplate() (volunteerRoutes.ts line 75)
+    var ALBUM_INDEX_URL = '<?= scriptUrl ?>?action=album_index';
 
     // Accepted MIME types for the upload pipeline
     var ACCEPTED_TYPES = [
@@ -305,8 +467,66 @@
       'video/mp4', 'video/quicktime'
     ];
 
+    // Max files uploaded simultaneously.  3 is a good balance: meaningfully
+    // faster than sequential (1×) without overwhelming Drive rate limits or
+    // saturating a typical mobile connection.
+    var VOLUNTEER_CONCURRENCY = 3;
+
     var selectedFiles = [];
     var uploadAborted = false;
+
+    // ── Upload-in-progress guard (blocks accidental tab close) ────────────
+    var uploadInProgress = false;
+
+    window.addEventListener('beforeunload', function(e) {
+      if (!uploadInProgress) return;
+      var msg = 'Upload in progress! Closing will cancel your upload and photos will be lost.\n' +
+                '正在上传！关闭将中断上传，照片将会丢失。';
+      e.preventDefault();
+      e.returnValue = msg;
+      return msg;
+    });
+
+    // ── ETA tracker (bytes-based, more accurate for photos) ───────────────
+    var _etaStartTime  = null;
+    var _etaTotalBytes = 0;
+    var _etaDoneBytes  = 0;
+
+    function _etaStart(files) {
+      _etaStartTime  = Date.now();
+      _etaTotalBytes = files.reduce(function(s, f) { return s + f.size; }, 0);
+      _etaDoneBytes  = 0;
+      _etaRender(null);
+    }
+
+    function _etaTick(fileSizeBytes) {
+      _etaDoneBytes += (fileSizeBytes || 0);
+      var elapsed = (Date.now() - _etaStartTime) / 1000;
+      if (elapsed < 1 || _etaDoneBytes === 0) return;
+      var rate      = _etaDoneBytes / elapsed;                    // bytes/sec
+      var remaining = (_etaTotalBytes - _etaDoneBytes) / rate;   // seconds
+      _etaRender(remaining);
+    }
+
+    function _etaRender(seconds) {
+      var el = document.getElementById('warningEta');
+      if (!el) return;
+      if (seconds === null) {
+        el.textContent = 'Calculating… / 计算中…';
+        return;
+      }
+      if (seconds <= 3) {
+        el.textContent = 'Almost done… / 即将完成…';
+        return;
+      }
+      var m = Math.floor(seconds / 60);
+      var s = Math.ceil(seconds % 60);
+      if (m === 0) {
+        el.textContent = '~' + s + ' sec remaining  /  约 ' + s + ' 秒';
+      } else {
+        el.textContent = '~' + m + ' min ' + s + ' sec remaining  /  约 ' + m + ' 分 ' + s + ' 秒';
+      }
+    }
 
     // ── File selection ────────────────────────────────────────────────────────
 
@@ -400,30 +620,43 @@
       var skippedNonMedia = 0;
       var skippedDuplicates = 0;
       var totalBytes = 0;
+      var nextIdx    = 0;   // next file index to dispatch
+      var activeCount = 0;  // currently in-flight XHR calls
+      var doneCount   = 0;  // files fully settled (success, skip, or error)
 
-      // Upload files sequentially to avoid hitting Drive quota limits
-      function uploadNext(idx) {
+      _etaStart(files);
+
+      // Called once per file when it finishes (any outcome).
+      function settle(fileSize) {
+        activeCount--;
+        doneCount++;
+        _etaTick(fileSize);
+        showProgress(doneCount / total,
+          'Uploading… ' + doneCount + ' / ' + total + '  (' + VOLUNTEER_CONCURRENCY + '× parallel)');
+        if (doneCount >= total) {
+          completeUpload(batchFolderName, batchFolderId, linkId,
+            uploaded, totalBytes, skippedDuplicates, skippedNonMedia);
+          return;
+        }
+        pump();
+      }
+
+      // Starts one upload slot for file at `idx`.
+      function processFile(idx) {
         if (uploadAborted) {
-          showStatus('error', 'Upload cancelled.');
+          showStatus('error', 'Upload cancelled. / 上传已取消。');
           setUiState('idle');
           return;
         }
 
-        if (idx >= total) {
-          // All done — notify server
-          completeUpload(batchFolderName, batchFolderId, linkId, uploaded, totalBytes, skippedDuplicates, skippedNonMedia);
-          return;
-        }
-
         var file = files[idx];
-        showProgress(idx / total, 'Uploading ' + (idx + 1) + ' of ' + total + ' — ' + file.name);
         updateFileStatus(idx, '⏫');
 
         // Skip unsupported file types
         if (file.type && ACCEPTED_TYPES.indexOf(file.type) < 0) {
           skippedNonMedia++;
           updateFileStatus(idx, '⏭️');
-          uploadNext(idx + 1);
+          settle(file.size);
           return;
         }
 
@@ -432,17 +665,26 @@
             uploaded++;
             totalBytes += file.size;
             updateFileStatus(idx, '✅');
-            uploadNext(idx + 1);
+            settle(file.size);
           })
           .catch(function(err) {
             updateFileStatus(idx, '❌');
-            // Continue with remaining files even on individual failure
-            skippedNonMedia++;
-            uploadNext(idx + 1);
+            skippedNonMedia++;   // count errors as skipped so receipt is accurate
+            settle(file.size);
           });
       }
 
-      uploadNext(0);
+      // Launch up to VOLUNTEER_CONCURRENCY slots at once; called after each
+      // file settles to refill the pool.
+      function pump() {
+        while (activeCount < VOLUNTEER_CONCURRENCY && nextIdx < total) {
+          activeCount++;
+          processFile(nextIdx++);
+        }
+      }
+
+      showProgress(0, 'Starting ' + VOLUNTEER_CONCURRENCY + ' parallel uploads…');
+      pump();
     }
 
     /**
@@ -502,40 +744,32 @@
 
     function uploadToDrive(file, accessToken, folderId) {
       return new Promise(function(resolve, reject) {
-        // Use the Drive Files API multipart upload endpoint
-        var boundary = '-------boundary' + Date.now();
-        var delimiter = '\r\n--' + boundary + '\r\n';
-        var closeDelim = '\r\n--' + boundary + '--';
-
+        var mimeType = file.type || 'application/octet-stream';
         var metadata = JSON.stringify({ name: file.name, parents: [folderId] });
+        // Use a unique boundary per upload to avoid collisions across parallel calls.
+        var boundary = 'mmr_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2);
+        var CRLF = '\r\n';
 
         var reader = new FileReader();
         reader.onload = function(e) {
-          // Strip EXIF/IPTC metadata from JPEG files before upload.
-          // GPS coordinates in EXIF can expose photo locations; stripping
-          // is on by default per the privacy policy (design §7).
-          var fileData = stripJpegExif(e.target.result);
-          // Build multipart body as ArrayBuffer
-          var encoder = new TextEncoder();
-          var metaPart = encoder.encode(
-            delimiter +
-            'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
-            metadata +
-            delimiter +
-            'Content-Type: ' + (file.type || 'application/octet-stream') + '\r\n' +
-            'Content-Transfer-Encoding: base64\r\n\r\n'
-          );
+          // Strip EXIF (APP1) and IPTC (APP13) segments from JPEG before upload.
+          // GPS coordinates in EXIF can expose photo locations — design §7.
+          var fileBuffer = stripJpegExif(e.target.result);
 
-          // Encode file bytes as base64 for the multipart body
-          var bytes = new Uint8Array(fileData);
-          var binary = '';
-          for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-          var b64 = btoa(binary);
-
-          var closePart = encoder.encode(closeDelim);
-          var bodyStr = metaPart.reduce(function(s, b) { return s + String.fromCharCode(b); }, '') +
-                        b64 +
-                        closePart.reduce(function(s, b) { return s + String.fromCharCode(b); }, '');
+          // Build the multipart/related body using Blob so file bytes are sent
+          // as binary (not base64). Benefits:
+          //   • ~33 % smaller payload → faster upload over the wire
+          //   • no btoa() loop → no O(n) JS string allocation for large files
+          //   • no TextEncoder juggling → simpler code path
+          var body = new Blob([
+            '--' + boundary + CRLF +
+            'Content-Type: application/json; charset=UTF-8' + CRLF + CRLF +
+            metadata + CRLF +
+            '--' + boundary + CRLF +
+            'Content-Type: ' + mimeType + CRLF + CRLF,
+            new Blob([fileBuffer], { type: mimeType }),
+            CRLF + '--' + boundary + '--'
+          ]);
 
           var xhr = new XMLHttpRequest();
           xhr.open('POST', 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart');
@@ -546,11 +780,11 @@
             if (xhr.status === 200) {
               resolve(JSON.parse(xhr.responseText));
             } else {
-              reject(new Error('Drive API error: ' + xhr.status + ' ' + xhr.responseText.substring(0, 100)));
+              reject(new Error('Drive API error: ' + xhr.status + ' ' + xhr.responseText.substring(0, 120)));
             }
           };
           xhr.onerror = function() { reject(new Error('Network error during upload')); };
-          xhr.send(bodyStr);
+          xhr.send(body);
         };
         reader.onerror = function() { reject(new Error('Failed to read file: ' + file.name)); };
         reader.readAsArrayBuffer(file);
@@ -612,6 +846,11 @@
       if (skips.length > 0) note += ' (' + skips.join(', ') + ')';
       document.getElementById('rcNote').innerHTML = note;
 
+      // Album CTA
+      var albumLabel = escHtml((data.eventName || '') + (data.clubName ? ' — ' + data.clubName : ''));
+      document.getElementById('rcAlbumEventLabel').innerHTML = albumLabel;
+      document.getElementById('rcAlbumBtn').href = ALBUM_INDEX_URL;
+
       document.getElementById('receiptSection').style.display = '';
     }
 
@@ -621,10 +860,20 @@
       var isUploading = state === 'uploading';
       var isDone      = state === 'done';
       document.getElementById('uploadBtn').disabled = isUploading || isDone;
-      document.getElementById('uploadBtn').textContent = isUploading ? 'Uploading…' : 'Upload Photos';
+      document.getElementById('uploadBtn').textContent = isUploading ? 'Uploading… / 上传中…' : 'Upload Photos';
       document.getElementById('clearBtn').style.display = (isDone || isUploading) ? 'none' : '';
       document.getElementById('dropZone').style.pointerEvents = isUploading ? 'none' : '';
       document.getElementById('progressSection').style.display = isUploading ? '' : (isDone ? '' : 'none');
+
+      // Warning banner
+      uploadInProgress = isUploading;
+      document.getElementById('doNotCloseWarning').style.display = isUploading ? '' : 'none';
+
+      // Animated stripes on the progress bar
+      var bar = document.getElementById('progressBar');
+      if (isUploading) bar.classList.add('animating');
+      else             bar.classList.remove('animating');
+
       if (isDone) {
         document.getElementById('actions').style.display = 'none';
       }
