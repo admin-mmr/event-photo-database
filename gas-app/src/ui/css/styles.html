@@ -224,15 +224,20 @@
 
   /* ── Header nav toggle (hamburger) ───────────────────────────────────────── */
   /*
-   * The hamburger button is hidden on wide desktops. Below the breakpoint
-   * defined in the media query further down (currently 1024px), the nav
-   * links collapse behind this button and drop down from the header when
-   * tapped. The breakpoint is set wide enough that admin pages (which can
-   * have 8-9 nav links) plus the Chinese title and user email chip never
-   * get clipped at the right edge before the hamburger takes over.
+   * The header uses a measure-based responsive strategy (see app.html): a
+   * ResizeObserver watches the header row and adds .nav-collapsed to the
+   * row whenever the inline nav links would overflow. That way the collapse
+   * point adapts to the actual content — admin pages with 9 links collapse
+   * sooner than volunteer pages with 3 — and there's no "dead zone"
+   * between the media breakpoint and the true overflow width.
+   *
+   * Wide state  (no .nav-collapsed):  title | nav links | user menu (avatar + email)
+   * Collapsed state (.nav-collapsed): title | user menu (avatar only) | hamburger
+   *                                           └─ click hamburger → .nav-open reveals
+   *                                              nav as a dropdown below the header
    */
   .nav-toggle {
-    display: none;                 /* wide desktop: hidden */
+    display: none;                 /* hidden unless .nav-collapsed */
     background: transparent;
     border: 0;
     color: inherit;
@@ -253,113 +258,188 @@
     vertical-align: middle;
   }
 
-  /*
-   * .nav-panel wraps the nav links AND the user-email chip. On desktop it is
-   * a transparent inline flex container so the layout is unchanged. On
-   * mobile (iPhone portrait) the whole panel collapses behind the hamburger.
-   */
+  /* .nav-panel wraps only the nav links. Inline on wide layouts; dropdown
+   * below the header when .nav-collapsed + .nav-open are set on the row. */
   .nav-panel {
     display: inline-flex;
     align-items: center;
   }
 
-  /* ── Collapsed nav (tablets, narrow laptops, phones) ─────────────────────── */
+  /* ── User menu (always visible, even when nav is collapsed) ──────────────── */
   /*
-   * Breakpoint chosen so the horizontal nav doesn't get clipped at medium
-   * widths. Admin pages have up to 9 links plus a Chinese title and the
-   * user's email chip — together they need ~1100px to lay out cleanly, so
-   * we switch to the hamburger dropdown below 1024px.
+   * The user menu sits in the header at every width. On wide layouts it shows
+   * avatar + email inline; when .nav-collapsed is set on the header row, the
+   * email text hides and only the avatar remains, so the user's identity is
+   * never lost behind a hamburger. Tapping the avatar opens a popover that
+   * shows the full email.
    */
-  @media (max-width: 1024px) {
+  .user-menu {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    margin-left: 12px;
+    flex-shrink: 0;
+  }
 
-    /* Show the hamburger toggle */
-    .nav-toggle {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-    }
+  .user-menu-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    padding: 4px 8px 4px 4px;
+    border-radius: 20px;
+    cursor: pointer;
+    font: inherit;
+    line-height: 1;
+  }
 
-    /*
-     * Allow the absolutely-positioned nav-panel dropdown to escape the header.
-     * MDL sets overflow:hidden on the header by default, which clips the panel.
-     */
-    .mdl-layout__header {
-      overflow: visible;
-    }
+  .user-menu-trigger:hover,
+  .user-menu-trigger:focus {
+    background: rgba(255, 255, 255, 0.12);
+    outline: none;
+  }
 
-    /* Keep header row tidy; position:relative anchors the nav-panel dropdown */
-    .mdl-layout__header-row {
-      padding: 0 12px;
-      position: relative;
-    }
+  .user-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+    font-weight: 600;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
 
-    .mdl-layout-title {
-      font-size: 16px;
-    }
+  .user-email-inline {
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.9);
+    max-width: 220px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
-    /*
-     * The whole nav-panel (links + email chip) becomes a dropdown that is
-     * hidden by default and revealed when .nav-open is set on the header-row
-     * (toggled via JS).
-     */
-    .mdl-layout__header .nav-panel {
-      display: none;
-      position: absolute;
-      top: 100%;                   /* just below the header row */
-      left: 0;
-      right: 0;
-      flex-direction: column;
-      align-items: stretch;
-      background: #3f51b5;
-      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.25);
-      padding: 4px 0;
-      z-index: 1000;
-    }
+  .user-menu-caret {
+    font-size: 20px !important;
+    opacity: 0.75;
+    margin-left: -4px;
+  }
 
-    .mdl-layout__header-row.nav-open .nav-panel {
-      display: flex;
-    }
+  .user-menu-popover {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    min-width: 220px;
+    background: #fff;
+    color: #333;
+    border-radius: 4px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    padding: 12px 16px;
+    z-index: 1100;
+  }
 
-    /* Nav itself becomes a plain vertical stack inside the panel */
-    .mdl-layout__header .nav-panel .mdl-navigation {
-      display: flex;
-      flex-direction: column;
-      width: 100%;
-    }
+  .user-menu-popover[hidden] {
+    display: none;
+  }
 
-    .mdl-layout__header .nav-panel .mdl-navigation__link {
-      padding: 14px 20px;
-      line-height: 1.2;
-      height: auto;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-      width: 100%;
-      box-sizing: border-box;
-      text-align: left;
-    }
+  .user-menu-popover-label {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+  }
 
-    .mdl-layout__header .nav-panel .mdl-navigation__link--current {
-      background: rgba(255, 255, 255, 0.12);
-    }
+  .user-menu-popover-email {
+    font-size: 14px;
+    color: #333;
+    word-break: break-all;
+  }
 
-    /* Email chip: render as last "row" in the dropdown */
-    .mdl-layout__header .nav-panel .mdl-chip {
-      display: flex;
-      align-items: center;
-      margin: 0 !important;
-      padding: 14px 20px;
-      width: 100%;
-      box-sizing: border-box;
-      background: transparent;
-      color: rgba(255, 255, 255, 0.85);
-      border-radius: 0;
-      border-top: 1px solid rgba(255, 255, 255, 0.15);
-      height: auto;
-      font-size: 13px;
-    }
+  /* ── Collapsed nav state (class toggled by ResizeObserver) ───────────────── */
+  /*
+   * The ResizeObserver in app.html adds .nav-collapsed to .mdl-layout__header-row
+   * when the inline nav links would overflow the available space. These rules
+   * switch the header into hamburger mode regardless of viewport width.
+   */
+  .mdl-layout__header-row.nav-collapsed {
+    padding: 0 12px;
+    position: relative;
+  }
 
-    .mdl-layout__header .nav-panel .mdl-chip .mdl-chip__text {
-      color: inherit;
-    }
+  .mdl-layout__header-row.nav-collapsed .nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Allow the dropdown to escape MDL's default overflow:hidden on the header.
+   * We set this unconditionally — the nav-panel dropdown only escapes the
+   * header when .nav-collapsed + .nav-open are both set, so this is safe. */
+  .mdl-layout__header {
+    overflow: visible;
+  }
+
+  .mdl-layout__header-row.nav-collapsed .nav-panel {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    background: #3f51b5;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.25);
+    padding: 4px 0;
+    z-index: 1000;
+  }
+
+  .mdl-layout__header-row.nav-collapsed.nav-open .nav-panel {
+    display: flex;
+  }
+
+  .mdl-layout__header-row.nav-collapsed .nav-panel .mdl-navigation {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .mdl-layout__header-row.nav-collapsed .nav-panel .mdl-navigation__link {
+    padding: 14px 20px;
+    line-height: 1.2;
+    height: auto;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    width: 100%;
+    box-sizing: border-box;
+    text-align: left;
+  }
+
+  .mdl-layout__header-row.nav-collapsed .nav-panel .mdl-navigation__link--current {
+    background: rgba(255, 255, 255, 0.12);
+  }
+
+  /* When collapsed, hide the email text beside the avatar — only the
+   * circle remains in the header. Full email is still reachable via
+   * the popover and via the dropdown (nav items only, not identity). */
+  .mdl-layout__header-row.nav-collapsed .user-email-inline,
+  .mdl-layout__header-row.nav-collapsed .user-menu-caret {
+    display: none;
+  }
+
+  .mdl-layout__header-row.nav-collapsed .user-menu {
+    margin-left: 4px;
+  }
+
+  /* Title shrinks slightly in collapsed mode so it never pushes other
+   * content out (Chinese characters are fixed-width and can't ellipsize
+   * mid-word, so we rely on a smaller font size instead). */
+  .mdl-layout__header-row.nav-collapsed .mdl-layout-title {
+    font-size: 16px;
   }
 
   /* ── Responsive ──────────────────────────────────────────────────────────── */

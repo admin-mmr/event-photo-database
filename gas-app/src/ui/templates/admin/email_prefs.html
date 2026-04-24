@@ -119,9 +119,19 @@
               Email Prefs
             </a>
           </nav>
-          <span class="mdl-chip" style="margin-left:12px;">
-            <span class="mdl-chip__text"><?= userEmail ?></span>
-          </span>
+        </div>
+        <div class="user-menu">
+          <button class="user-menu-trigger" type="button"
+                  aria-label="Account menu" aria-haspopup="true"
+                  aria-expanded="false">
+            <span class="user-avatar" aria-hidden="true"><?= userEmail.charAt(0).toUpperCase() ?></span>
+            <span class="user-email-inline"><?= userEmail ?></span>
+            <i class="material-icons user-menu-caret" aria-hidden="true">arrow_drop_down</i>
+          </button>
+          <div class="user-menu-popover" role="menu" hidden>
+            <div class="user-menu-popover-label">Signed in as</div>
+            <div class="user-menu-popover-email" role="menuitem" tabindex="-1"><?= userEmail ?></div>
+          </div>
         </div>
         <button class="nav-toggle" type="button"
                 aria-label="Toggle menu" aria-expanded="false">

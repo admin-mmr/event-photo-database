@@ -185,32 +185,118 @@
 
   // ── Nav hamburger toggle ──────────────────────────────────────────────────
   //
-  // On viewports narrower than the breakpoint in styles.html (currently
-  // 1024px — wide enough to cover tablets and narrow laptops, not just
-  // phones) the header nav collapses behind a hamburger button. Clicking
-  // the button toggles the .nav-open class on the header row, which
-  // reveals the dropdown panel via CSS.
+  // Responsive strategy: instead of a fixed media-query breakpoint, a
+  // ResizeObserver measures the header row and flips it into "collapsed"
+  // mode (hamburger) the moment the inline nav links would overflow the
+  // available space. That removes the dead zone between a static breakpoint
+  // and the actual overflow width, and adapts to per-role nav link counts.
+  //
+  //   - .nav-collapsed  → added by JS when inline nav would overflow;
+  //                       CSS hides nav-panel, shows hamburger toggle.
+  //   - .nav-open       → added on hamburger click; CSS reveals nav-panel
+  //                       as a dropdown below the header.
+  //   - .user-menu      → always visible in the header. Clicking the avatar
+  //                       opens a popover with the full email.
   document.addEventListener('DOMContentLoaded', function () {
-    var toggles = document.querySelectorAll('.nav-toggle');
+    var row = document.querySelector('.mdl-layout__header-row');
+    if (!row) return;
+
+    // ── Responsive collapse (measure-based) ────────────────────────────────
+    //
+    // Decide collapsed state by removing the class, measuring the natural
+    // width of the row, and re-adding the class if the children overflow.
+    // Everything happens inside a single requestAnimationFrame so the
+    // intermediate "uncollapsed" layout is never painted.
+    var collapseRaf = 0;
+    function updateNavCollapse() {
+      if (collapseRaf) return;
+      collapseRaf = requestAnimationFrame(function () {
+        collapseRaf = 0;
+        // Test the uncollapsed layout. We toggle synchronously within one
+        // frame; the browser won't paint until this RAF completes.
+        var wasCollapsed = row.classList.contains('nav-collapsed');
+        row.classList.remove('nav-collapsed');
+        // +2px fudge for sub-pixel rounding
+        var overflows = row.scrollWidth > row.clientWidth + 2;
+        if (overflows) {
+          row.classList.add('nav-collapsed');
+          // If the layout grew and we were showing the mobile dropdown,
+          // closing state is unnecessary — but if we just switched INTO
+          // collapsed mode we don't want a stale .nav-open either.
+        } else if (wasCollapsed) {
+          // Switched to inline mode — clean up any dropdown state.
+          row.classList.remove('nav-open');
+          var t = row.querySelector('.nav-toggle');
+          if (t) t.setAttribute('aria-expanded', 'false');
+        }
+      });
+    }
+
+    // Initial measurement + observe subsequent size changes and nav mutations
+    // (the nav-links list is populated by each page template after load).
+    updateNavCollapse();
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(updateNavCollapse).observe(row);
+    } else {
+      // Fallback for older browsers
+      window.addEventListener('resize', updateNavCollapse);
+    }
+    var navLinks = row.querySelector('#nav-links');
+    if (navLinks && typeof MutationObserver !== 'undefined') {
+      new MutationObserver(updateNavCollapse).observe(navLinks, { childList: true, subtree: true });
+    }
+
+    // ── Hamburger toggle ───────────────────────────────────────────────────
+    var toggles = row.querySelectorAll('.nav-toggle');
     toggles.forEach(function (toggle) {
       toggle.addEventListener('click', function (e) {
         e.stopPropagation();
-        var row = toggle.closest('.mdl-layout__header-row');
-        if (!row) return;
         var isOpen = row.classList.toggle('nav-open');
         toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
       });
     });
 
-    // Tap outside the nav closes it.
+    // Tap outside the nav dropdown closes it.
     document.addEventListener('click', function (e) {
-      document.querySelectorAll('.mdl-layout__header-row.nav-open').forEach(function (row) {
-        if (row.contains(e.target)) return;
-        row.classList.remove('nav-open');
-        var tgl = row.querySelector('.nav-toggle');
+      document.querySelectorAll('.mdl-layout__header-row.nav-open').forEach(function (r) {
+        if (r.contains(e.target)) return;
+        r.classList.remove('nav-open');
+        var tgl = r.querySelector('.nav-toggle');
         if (tgl) tgl.setAttribute('aria-expanded', 'false');
       });
     });
+
+    // ── User menu popover ──────────────────────────────────────────────────
+    var userTrigger = row.querySelector('.user-menu-trigger');
+    var userPopover = row.querySelector('.user-menu-popover');
+    if (userTrigger && userPopover) {
+      userTrigger.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var open = userPopover.hasAttribute('hidden');
+        if (open) {
+          userPopover.removeAttribute('hidden');
+          userTrigger.setAttribute('aria-expanded', 'true');
+        } else {
+          userPopover.setAttribute('hidden', '');
+          userTrigger.setAttribute('aria-expanded', 'false');
+        }
+      });
+      // Close on outside click
+      document.addEventListener('click', function (e) {
+        if (userPopover.hasAttribute('hidden')) return;
+        if (userPopover.contains(e.target) || userTrigger.contains(e.target)) return;
+        userPopover.setAttribute('hidden', '');
+        userTrigger.setAttribute('aria-expanded', 'false');
+      });
+      // Close on Escape
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        if (userPopover.hasAttribute('hidden')) return;
+        userPopover.setAttribute('hidden', '');
+        userTrigger.setAttribute('aria-expanded', 'false');
+        userTrigger.focus();
+      });
+    }
   });
 
   // ── Confirmation helper ────────────────────────────────────────────────────
