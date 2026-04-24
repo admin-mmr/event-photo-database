@@ -217,7 +217,7 @@ Other Cloud Run notes:
 1. ✅ **Dedup sheet reads in `photosService.ts`** — `PHOTO_ALBUMS` pre-loaded once in `syncBatchToAlbums` and threaded through `ensureEventAlbum`, `ensureClubAlbum`, and both `updateAlbumSyncStats` calls. Photo_Albums reads: 4 → 1 per call. Characterization tests added first (30 tests in `photosService.test.ts`) to make the refactor safe.
 2. ✅ **Move `SUPER_ADMINS` + `CLOUD_RUN_URL` to Script Properties** — `superAdmins.ts`: `getSuperAdmins()`, `getCloudRunUrl()`, `isCloudRunConfigured()`; fallback to hardcoded defaults so existing deploys keep working.
 3. ✅ **Set `Image.MAX_IMAGE_PIXELS`** — capped at 500 MP in `cloud-run/main.py` (configurable via `MAX_IMAGE_PIXELS` env var).
-4. ⚠️ **Add tests for `cloudRunClient.ts`, `tokenService.ts`, `syncJobService.ts`, `syncQueueService.ts`, and `photosService.ts`'s public API surface** — `cloudRunClient.test.ts` (8 tests), `photosService.test.ts` (30 tests), and `tokenService.test.ts` (30 tests) done. Still missing: `syncJobService.ts`, `syncQueueService.ts`.
+4. ✅ **Add tests for `cloudRunClient.ts`, `tokenService.ts`, `syncJobService.ts`, `syncQueueService.ts`, and `photosService.ts`'s public API surface** — all done: `cloudRunClient.test.ts` (8), `photosService.test.ts` (30), `tokenService.test.ts` (30), `syncJobService.test.ts` (43), `syncQueueService.test.ts` (31).
 
 ### Should fix (High)
 
@@ -298,7 +298,7 @@ Placeholder refusal, happy path, non-JSON response, retry on 503, retry on excep
 Priority order:
 
 1. ✅ **Tests: `tokenService.ts`** — `tokenService.test.ts` added (30 tests): all error paths for `verifyGoogleIdToken` and `exchangeOAuthCode`, including network failures, claim validation, expiry, aud mismatch, and happy paths. Commit `669e199`.
-2. **Tests: `syncJobService.ts` + `syncQueueService.ts`** — progress tracking and retry queue; stale-job and concurrency bugs are currently invisible
+2. ✅ **Tests: `syncJobService.ts` + `syncQueueService.ts`** — `syncJobService.test.ts` (43 tests): full coverage of createJob, getJob, updateJob, incrementJobCounters, completeJob, requestCancel, isCancelRequested, sweepExpired. `syncQueueService.test.ts` (31 tests): enqueueBatchSync, getAllQueueItems, loadPendingItems (stuck-item reset, FIFO, batch-size cap), markInProgress, markDone, markAttemptFailed (retry/exhaust/truncate), getQueueStatus. Commit `f2ac563`. — progress tracking and retry queue; stale-job and concurrency bugs are currently invisible
 3. **Batch writes in `syncQueueService`** (§3.3) — add `batchUpdateRows(sheetName, updates: {rowIndex, row}[])` to `sheetService.ts`; restructure `drainSyncQueueTrigger` to pre-load rows once, write all `markInProgress` in one batch, and write all terminal-state updates in one batch
 4. **Guard `debugClientId` / `debugConfig`** (§1.6 / polish item 19) — add `requireAdminOrFail` check or move behind an editor-only function
 5. **Single source of truth for MIME types** (§1.6 medium) — export one canonical list from `constants.ts` and import it in `photosService.ts`; document the Python equivalent in `cloud-run/main.py`
