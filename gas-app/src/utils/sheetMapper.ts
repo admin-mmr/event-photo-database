@@ -225,9 +225,12 @@ export function fromUploadLogRecord(record: UploadLogRecord): unknown[] {
  * Converts a raw Sheets row to a ClubRecord.
  * Returns null if required fields are missing or status is invalid.
  *
- * Column order: club_id(0) display_name(1) normalized_name(2)
- *   drive_folder_id(3) photos_album_prefix(4) status(5)
- *   added_date(6) added_by(7)
+ * Column order: display_name(0) normalized_name(1)
+ *   drive_folder_id(2) photos_album_prefix(3) status(4)
+ *   added_date(5) added_by(6)
+ *
+ * normalizedName is the de-facto primary key — it's unique, immutable,
+ * and used as the Drive folder name.
  */
 export function toClubRecord(row: unknown[]): ClubRecord | null {
   const COL = COLUMNS.CLUBS;
@@ -252,18 +255,16 @@ export function toClubRecord(row: unknown[]): ClubRecord | null {
 /**
  * Converts a ClubRecord back to a Sheets row array.
  * Column order must match COLUMNS.CLUBS exactly.
- * club_id(0), drive_folder_id(3), and photos_album_prefix(4) are
- * sheet-managed — pass empty strings so existing values are preserved
- * via the caller reading them first when doing an update.
+ * drive_folder_id(2) and photos_album_prefix(3) are sheet-managed — the
+ * caller should read the existing row and pass the current values through
+ * on update so they are not clobbered.
  */
 export function fromClubRecord(
   record: ClubRecord,
-  clubId = '',
   driveFolderId = '',
   photosAlbumPrefix = ''
 ): unknown[] {
   return [
-    clubId,
     record.displayName,
     record.normalizedName,
     driveFolderId,

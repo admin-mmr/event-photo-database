@@ -143,6 +143,10 @@ export const mockSpreadsheet = {
 
 const mockSpreadsheetApp = {
   openById: jest.fn().mockReturnValue(mockSpreadsheet),
+  // flush() forces pending Sheets writes to commit. In production this is
+  // critical so subsequent reads (even across executions) see the change;
+  // in tests it's a no-op.
+  flush: jest.fn(),
 };
 
 // ─── Mock Session ─────────────────────────────────────────────────────────────

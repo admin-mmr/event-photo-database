@@ -14,7 +14,8 @@ import { toIsoDate } from '../utils/dateFormatter';
  * Admins manage clubs from the admin UI; changes take effect immediately without
  * a code deploy (unlike the old static APPROVED_CLUBS constant).
  *
- * Sheet headers: displayName | normalizedName | status | addedDate | addedBy
+ * Sheet headers: display_name | normalized_name | drive_folder_id |
+ *                photos_album_prefix | status | added_date | added_by
  *
  * Design decisions:
  *   - normalizedName is immutable once created (Drive club folders depend on it)
@@ -24,7 +25,7 @@ import { toIsoDate } from '../utils/dateFormatter';
 
 // Must match the actual Clubs sheet header row exactly (case-sensitive).
 const CLUB_HEADERS = [
-  'club_id', 'display_name', 'normalized_name',
+  'display_name', 'normalized_name',
   'drive_folder_id', 'photos_album_prefix',
   'status', 'added_date', 'added_by',
 ];
@@ -167,10 +168,9 @@ export function updateClub(
   }
 
   const rawRow = getRow(name, rowIndex);
-  const clubId           = String(rawRow[COLUMNS.CLUBS.CLUB_ID]             ?? '');
-  const driveFolderId    = String(rawRow[COLUMNS.CLUBS.DRIVE_FOLDER_ID]     ?? '');
+  const driveFolderId     = String(rawRow[COLUMNS.CLUBS.DRIVE_FOLDER_ID]     ?? '');
   const photosAlbumPrefix = String(rawRow[COLUMNS.CLUBS.PHOTOS_ALBUM_PREFIX] ?? '');
-  updateRow(name, rowIndex, fromClubRecord(updated, clubId, driveFolderId, photosAlbumPrefix));
+  updateRow(name, rowIndex, fromClubRecord(updated, driveFolderId, photosAlbumPrefix));
 
   return {
     status: ResultStatus.SUCCESS,
@@ -210,10 +210,9 @@ export function deactivateClub(normalizedName: string): ServiceResult<ClubRecord
   }
 
   const rawRow = getRow(name, rowIndex);
-  const clubId            = String(rawRow[COLUMNS.CLUBS.CLUB_ID]             ?? '');
   const driveFolderId     = String(rawRow[COLUMNS.CLUBS.DRIVE_FOLDER_ID]     ?? '');
   const photosAlbumPrefix = String(rawRow[COLUMNS.CLUBS.PHOTOS_ALBUM_PREFIX] ?? '');
-  updateRow(name, rowIndex, fromClubRecord(updated, clubId, driveFolderId, photosAlbumPrefix));
+  updateRow(name, rowIndex, fromClubRecord(updated, driveFolderId, photosAlbumPrefix));
 
   return {
     status: ResultStatus.SUCCESS,
@@ -252,10 +251,9 @@ export function reactivateClub(normalizedName: string): ServiceResult<ClubRecord
   }
 
   const rawRow = getRow(name, rowIndex);
-  const clubId            = String(rawRow[COLUMNS.CLUBS.CLUB_ID]             ?? '');
   const driveFolderId     = String(rawRow[COLUMNS.CLUBS.DRIVE_FOLDER_ID]     ?? '');
   const photosAlbumPrefix = String(rawRow[COLUMNS.CLUBS.PHOTOS_ALBUM_PREFIX] ?? '');
-  updateRow(name, rowIndex, fromClubRecord(updated, clubId, driveFolderId, photosAlbumPrefix));
+  updateRow(name, rowIndex, fromClubRecord(updated, driveFolderId, photosAlbumPrefix));
 
   return {
     status: ResultStatus.SUCCESS,

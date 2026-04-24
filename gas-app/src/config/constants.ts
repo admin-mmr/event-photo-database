@@ -89,16 +89,15 @@ export const COLUMNS: SheetColumnMap = {
   },
   CLUBS: {
     // Sheet columns (0-based):
-    //   club_id(0) display_name(1) normalized_name(2) drive_folder_id(3)
-    //   photos_album_prefix(4) status(5) added_date(6) added_by(7)
-    CLUB_ID:             0,
-    DISPLAY_NAME:        1,
-    NORMALIZED_NAME:     2,
-    DRIVE_FOLDER_ID:     3,
-    PHOTOS_ALBUM_PREFIX: 4,
-    STATUS:              5,
-    ADDED_DATE:          6,
-    ADDED_BY:            7,
+    //   display_name(0) normalized_name(1) drive_folder_id(2)
+    //   photos_album_prefix(3) status(4) added_date(5) added_by(6)
+    DISPLAY_NAME:        0,
+    NORMALIZED_NAME:     1,
+    DRIVE_FOLDER_ID:     2,
+    PHOTOS_ALBUM_PREFIX: 3,
+    STATUS:              4,
+    ADDED_DATE:          5,
+    ADDED_BY:            6,
   },
   AUDIT_LOG: {
     AUDIT_ID:      0,

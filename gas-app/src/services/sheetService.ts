@@ -68,6 +68,11 @@ export function appendRow(sheetName: string, row: unknown[]): void {
   const sheet = getSheet(sheetName);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sheet.appendRow(row as any[]);
+  // Force the write to commit before this function returns. Without flush(),
+  // subsequent reads (including from the next page request) may see the
+  // pre-append state of the sheet — new rows appear to "disappear" until the
+  // Sheets backend catches up. See sheetService docstring.
+  SpreadsheetApp.flush();
 }
 
 /**
@@ -112,6 +117,8 @@ export function updateRow(
   sheet
     .getRange(rowIndex, 1, 1, row.length)
     .setValues([row]);
+  // Force commit so subsequent reads (same or next execution) see the update.
+  SpreadsheetApp.flush();
 }
 
 /**
@@ -193,6 +200,8 @@ export function batchUpdateRows(
 
   // Single setValues call covering the entire span
   sheet.getRange(minRow, 1, numRows, numCols).setValues(baseValues);
+  // Force commit so subsequent reads see the batch update.
+  SpreadsheetApp.flush();
 }
 
 /**
