@@ -245,7 +245,7 @@ Other Cloud Run notes:
 
 ---
 
-## 6. All fixes applied (latest commit `6a36d3a` + Pass 5)
+## 6. All fixes applied (latest commit `6b3043f` + Pass 6)
 
 All 1,151 tests pass across 39 suites; `tsc --noEmit` clean.
 
@@ -320,12 +320,24 @@ Writes a span of rows in one `setValues()` call. Accepts optional `preloadedRows
 **25. Archive stale files**
 `STALE_*` files moved to `archive/`.
 
+### Pass 6
+
+**26. Split `main.ts`** (§1.1 — High)
+`main.ts`: 2,488 lines → 203 lines (92% reduction). 75+ `serverXxx` handlers extracted into six per-area route modules:
+- `routes/userHandlers.ts` (219 lines) — auth + user CRUD
+- `routes/eventHandlers.ts` (281 lines) — events, clubs, Drive scan
+- `routes/uploadHandlers.ts` (275 lines) — upload pipeline + Drive tree
+- `routes/photosHandlers.ts` (363 lines) — Photos albums, sync jobs, queue triggers
+- `routes/reportHandlers.ts` (228 lines) — summaries, audit log, email prefs, triggers
+- `routes/linkHandlers.ts` (140 lines) — upload link management
+
+`ServerResponse` + `WithSession` promoted to `types/responses.ts`; `AdminCheckResult`, `requireAdminOrFail`, `requireSuperAdminOrFail` promoted to `middleware/authMiddleware.ts`. `main.ts` retains only: `doGet`/`doPost`, debug helpers, `onOpen`, upload-prep wrappers, maintenance triggers, and side-effect imports pulling all handler modules into the esbuild bundle.
+
 ---
 
 ## 7. Remaining work (pick up here next session)
 
 | # | Item | §ref | Priority |
 |---|------|------|----------|
-| 1 | `main.ts` split — extract 75+ `serverXxx` handlers into per-area route modules | §1.1 | High |
-| 2 | Input validation for `google.script.run` handlers — route `serverXxx` payloads through `inputValidator.ts` | §1.5 | Medium |
-| 3 | `emailService.ts` + `photosService.ts` god-file splits — sequence after `main.ts` split | §1.1 | Medium |
+| 1 | Input validation for `google.script.run` handlers — route `serverXxx` payloads through `inputValidator.ts` | §1.5 | Medium |
+| 2 | `emailService.ts` + `photosService.ts` god-file splits | §1.1 | Medium |
