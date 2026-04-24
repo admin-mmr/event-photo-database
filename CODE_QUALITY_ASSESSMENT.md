@@ -214,59 +214,96 @@ Other Cloud Run notes:
 
 ### Must fix (Critical)
 
-1. **Dedup sheet reads in `photosService.ts`** — load `PHOTO_ALBUMS` / `PHOTO_FILES` once per sync operation and pass through. Biggest single performance win; unblocks large-event sync from timing out.
-2. **Move `SUPER_ADMINS` + `CLOUD_RUN_URL` to Script Properties**, with validation at startup. No more code edits to change the admin list; no more `REPLACE_ME` shipping to prod.
-3. **Set `Image.MAX_IMAGE_PIXELS`** to a finite value in `cloud-run/main.py` and validate dimensions before Pillow decodes.
-4. **Add tests for `cloudRunClient.ts`, `tokenService.ts`, `syncJobService.ts`, `syncQueueService.ts`, and at least `photosService.ts`'s public API surface** (dedup, album lookup, happy-path `syncBatchToAlbums`).
+1. ✅ **Dedup sheet reads in `photosService.ts`** — `PHOTO_ALBUMS` pre-loaded once in `syncBatchToAlbums` and threaded through `ensureEventAlbum`, `ensureClubAlbum`, and both `updateAlbumSyncStats` calls. Photo_Albums reads: 4 → 1 per call. Characterization tests added first (30 tests in `photosService.test.ts`) to make the refactor safe.
+2. ✅ **Move `SUPER_ADMINS` + `CLOUD_RUN_URL` to Script Properties** — `superAdmins.ts`: `getSuperAdmins()`, `getCloudRunUrl()`, `isCloudRunConfigured()`; fallback to hardcoded defaults so existing deploys keep working.
+3. ✅ **Set `Image.MAX_IMAGE_PIXELS`** — capped at 500 MP in `cloud-run/main.py` (configurable via `MAX_IMAGE_PIXELS` env var).
+4. ⚠️ **Add tests for `cloudRunClient.ts`, `tokenService.ts`, `syncJobService.ts`, `syncQueueService.ts`, and `photosService.ts`'s public API surface** — `cloudRunClient.test.ts` (8 tests) and `photosService.test.ts` (30 tests) done. Still missing: `tokenService.ts`, `syncJobService.ts`, `syncQueueService.ts`.
 
 ### Should fix (High)
 
-5. **Split `main.ts`** — move `serverXxx` handlers into per-area modules, leaving only the dispatcher.
-6. **Retry + backoff in `cloudRunClient.ts`** for 429/5xx; parse `error` field from response so callers can distinguish retriable vs fatal.
-7. **Cache `getEventDriveTree()`** output in `PropertiesService` for 10 min.
-8. **Batch `updateRow` writes** in `syncQueueService.drainSyncQueue`.
-9. **Surface non-fatal side-effect failures** in `serverCreateEvent`, `serverCreateUser`, `serverVerifyGoogleToken` — return warnings on the success envelope instead of swallowing.
+5. ❌ **Split `main.ts`** — move `serverXxx` handlers into per-area modules, leaving only the dispatcher. Not yet done; sequence after more test coverage lands.
+6. ✅ **Retry + backoff in `cloudRunClient.ts`** — 3 attempts, exponential backoff (750 ms → 1.5 s → 3 s) for 429/5xx; upstream `error` field preserved so callers distinguish retriable vs fatal.
+7. ✅ **Cache `getEventDriveTree()`** — 10-min PropertiesService cache keyed by `eventId`; `invalidateEventDriveTreeCache()` called from `serverCompleteUpload` after each upload.
+8. ❌ **Batch `updateRow` writes in `syncQueueService.drainSyncQueue`** — not yet done. Each `markInProgress` / `markDone` / `markAttemptFailed` still does a separate `getAllRows` + `updateRow`. Requires adding a `batchUpdateRows` helper to `sheetService` and restructuring the drain loop.
+9. ✅ **Surface non-fatal side-effect failures** — `warnings?: string[]` added to `ServerResponse`; `serverVerifyGoogleToken`, `serverCreateUser`, and `serverCreateEvent` now return warnings for email/album failures instead of swallowing them.
 
 ### Nice to have (Medium)
 
-10. Split `photosService.ts` and `emailService.ts` along the lines in §1.1.
-11. Single source of truth for accepted MIME types.
-12. Input validation for `google.script.run` handlers (same validator as `doPost`).
-13. Move `UrlFetchApp` + file iterator helpers into `gasGlobals.ts`.
-14. Bound the email retry queue size.
+10. ❌ Split `photosService.ts` and `emailService.ts` along the lines in §1.1.
+11. ❌ Single source of truth for accepted MIME types (`MEDIA_MIME_TYPES` in `constants.ts`, `PHOTO_MIME_TYPES` in `photosService.ts`, `PILLOW_MIMES` in `cloud-run/main.py` still in sync by convention only).
+12. ❌ Input validation for `google.script.run` handlers (route through same `inputValidator.ts` as `doPost`).
+13. ✅ `UrlFetchApp` mock added to `gasGlobals.ts` — `deleteProperty` and `resetMockScriptProperties()` helper added; `makeMockFileIter` still duplicated per test file (not yet consolidated).
+14. ❌ Bound the email retry queue size (unbounded PropertiesService growth for repeatedly-failing recipients).
+15. ✅ **`CacheService` → `PropertiesService` for `uploadPrepService` run state** — `saveRunState` / `loadRunState` / `deleteRunState` now use script-scoped `PropertiesService` so any admin can resume a run started by a different admin.
 
 ### Polish (Low)
 
-15. Delete or archive `STALE_*` files; add Excel lock-file to `.gitignore`.
-16. Delete deprecated `authMiddleware.apiKey.test.ts` / `apiClientHandlers.test.ts` stubs.
-17. Guard `debugClientId` / `debugConfig`.
+16. ⚠️ **Delete or archive `STALE_*` files** — `STALE_README.md`, `STALE_USER_GUIDE.*`, `STALE_XSD_Partner_Overview.pdf`, `STALE_flowcharts.html` still present; owner decision needed on git history.
+17. ✅ **Deleted deprecated test stubs** — `authMiddleware.apiKey.test.ts` and `apiClientHandlers.test.ts` removed.
+18. ✅ **Excel lock-file added to `.gitignore`** — `.~lock.*#` pattern added.
+19. ❌ Guard `debugClientId` / `debugConfig` — still exported in production with no auth check.
 
 ---
 
-## 6. Fixes applied in this pass
+## 6. All fixes applied (commit `e96555d`)
 
-These are the changes made in the same session as this assessment. All 1,017 tests still pass; `tsc --noEmit` is clean.
+All 1,047 tests pass; `tsc --noEmit` clean.
 
-**1. Cloud Run decompression-bomb guard** — `cloud-run/main.py`
-Set `Image.MAX_IMAGE_PIXELS` to 500 MP (configurable via `MAX_IMAGE_PIXELS` env var) instead of `None`. Stops a malformed or hostile image from OOMing the container.
+### Pass 1 (original assessment session)
 
-**2. Super-admin allowlist → Script Properties** — `gas-app/src/config/superAdmins.ts`, `main.ts`, `services/uploadPrepService.ts`
-Added `getSuperAdmins()` which reads `SUPER_ADMINS` from Script Properties (comma- or newline-separated), with the previous hardcoded email as a fallback so existing deploys don't break. `SUPER_ADMINS` is kept as a Proxy export for back-compat with any out-of-tree callers. Admins can now be added/removed without a redeploy.
+**1. Cloud Run decompression-bomb guard** (`cloud-run/main.py`)
+`Image.MAX_IMAGE_PIXELS = 500_000_000` (configurable via `MAX_IMAGE_PIXELS` env var).
 
-**3. Cloud Run URL → Script Properties + placeholder guard** — same file + `cloudRunClient.ts`
-Added `getCloudRunUrl()` and `isCloudRunConfigured()`. `convertImage()` refuses to call the placeholder and returns a distinct `error: 'not_configured'` so the failure is obvious in logs instead of looking like a generic upstream failure.
+**2. Super-admin allowlist → Script Properties** (`superAdmins.ts`)
+`getSuperAdmins()` reads `SUPER_ADMINS` from Script Properties; falls back to hardcoded default so existing deploys don't break. Proxy export for back-compat.
+
+**3. Cloud Run URL → Script Properties + placeholder guard** (`superAdmins.ts`, `cloudRunClient.ts`)
+`getCloudRunUrl()`, `isCloudRunConfigured()`; `convertImage()` returns `error: 'not_configured'` instead of hitting a non-existent URL.
 
 **4. Retry + backoff in `cloudRunClient.ts`**
-Up to 3 attempts with exponential backoff (750 ms → 1.5 s → 3 s) for HTTP 429/500/502/503/504 and `UrlFetchApp` exceptions. Non-retriable responses (401/404, etc.) are returned immediately with the upstream `error` field preserved, so callers can finally distinguish *why* a file was skipped. On exhaustion, a synthesized error envelope is returned rather than whatever body the upstream sent.
+3 attempts, 750 ms → 1.5 s → 3 s backoff for 429/5xx and thrown exceptions. Non-retriable 4xx returned immediately with upstream `error` field intact.
 
-**5. New test file: `tests/unit/cloudRunClient.test.ts`** (8 tests)
-Covers: placeholder refusal, happy path + auth header wiring, non-JSON upstream response, retry on 503, retry on thrown exception, give-up after max attempts, no-retry on 401, no-retry on 404.
+**5. `cloudRunClient.test.ts`** (8 tests)
+Placeholder refusal, happy path, non-JSON response, retry on 503, retry on exception, give-up after max attempts, no-retry on 401/404.
 
-**6. Minor hygiene**
-Removed pre-existing unused import `findClubByNormalizedName` in `main.ts` (was causing a `tsc --noEmit` failure in the checked-in tree; unrelated to the fixes above).
+**6. Removed unused import** in `main.ts` (`findClubByNormalizedName`).
 
-### What I deliberately didn't fix
+### Pass 2
 
-- **`photosService.ts` sheet-read dedup** — the biggest single performance win (see §3.1), but touching this 1,388-line service with zero test coverage is high risk. The right sequence is to add characterization tests first, then refactor. It's still the top Critical item in the action list.
-- **`main.ts` split** — extracting the 75+ `serverXxx` handlers is a larger refactor and should be sequenced after the photos-service tests land.
-- **Deleting `STALE_*` and describe-skip-stub test files** — these are documentation/git-history calls the repo owner should make.
+**7. `warnings` field on `ServerResponse`** (`main.ts`)
+`serverVerifyGoogleToken`, `serverCreateUser`, `serverCreateEvent` collect non-fatal side-effect failures (email send, album creation) and return them as `warnings` so the UI can surface a non-blocking banner.
+
+**8. `getEventDriveTree()` cache** (`driveService.ts`)
+10-min PropertiesService cache per `eventId`. `invalidateEventDriveTreeCache(eventId)` called from `serverCompleteUpload`. `mockScriptProperties` mock extended with `deleteProperty`; `resetMockScriptProperties()` helper added to `gasGlobals.ts`; `driveService.test.ts` calls it in `beforeEach` to prevent inter-test cache leakage.
+
+**9. `uploadPrepService` run state → `PropertiesService`** (`uploadPrepService.ts`)
+`saveRunState` / `loadRunState` / `deleteRunState` use script-scoped `PropertiesService` instead of user-scoped `CacheService`.
+
+**10. `.gitignore`** — `.~lock.*#` pattern added.
+
+**11. Deleted deprecated `describe.skip` stubs** — `apiClientHandlers.test.ts`, `authMiddleware.apiKey.test.ts`.
+
+### Pass 3 (§3.1)
+
+**12. `photosService.test.ts`** (30 characterization tests)
+`findAlbumByEvent`, `findAlbumsByEvent`, `ensureEventAlbum` (5 tests), `ensureClubAlbum` (6 tests), `syncBatchToAlbums` (11 tests including three `[§3.1 baseline]` sheet-read-count assertions).
+
+**13. `photosService.ts` sheet-read dedup** (`syncBatchToAlbums`)
+`Photo_Albums` pre-loaded once; optional `preloadedAlbums` param added to `ensureEventAlbum` and `ensureClubAlbum`; optional `preloadedRows` param added to `updateAlbumSyncStats`. Newly-created album rows appended to local cache so stat updates don't miss them. Photo_Albums reads per `syncBatchToAlbums` call: **4 → 1**.
+
+---
+
+## 7. Remaining work (pick up here next session)
+
+Priority order:
+
+1. **Tests: `tokenService.ts`** (security-critical, pure functions, easy to mock `UrlFetchApp`) — add `tokenService.test.ts`
+2. **Tests: `syncJobService.ts` + `syncQueueService.ts`** — progress tracking and retry queue; stale-job and concurrency bugs are currently invisible
+3. **Batch writes in `syncQueueService`** (§3.3) — add `batchUpdateRows(sheetName, updates: {rowIndex, row}[])` to `sheetService.ts`; restructure `drainSyncQueueTrigger` to pre-load rows once, write all `markInProgress` in one batch, and write all terminal-state updates in one batch
+4. **Guard `debugClientId` / `debugConfig`** (§1.6 / polish item 19) — add `requireAdminOrFail` check or move behind an editor-only function
+5. **Single source of truth for MIME types** (§1.6 medium) — export one canonical list from `constants.ts` and import it in `photosService.ts`; document the Python equivalent in `cloud-run/main.py`
+6. **Input validation for `google.script.run` handlers** (§1.5 medium) — route `serverXxx` payloads through `inputValidator.ts`
+7. **`main.ts` split** (§1.1 high) — extract `serverXxx` handlers into per-area route modules; tackle after the above tests land
+8. **`emailService.ts` + `photosService.ts` god-file splits** (§1.1 medium) — sequence after `main.ts` split is done
+9. **Email retry queue size bound** (§2.6 medium)
+10. **Archive/delete `STALE_*` files** — owner decision
