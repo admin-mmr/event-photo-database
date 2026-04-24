@@ -542,10 +542,17 @@ describe('driveService', () => {
     }
 
     // The Clubs sheet needs to be wired up so listAllClubs() can find approved names.
-    const CLUBS_HEADERS = ['displayName', 'normalizedName', 'status', 'addedDate', 'addedBy'];
+    // 8-column schema matching CLUB_HEADERS in clubService.ts:
+    // club_id(0) display_name(1) normalized_name(2) drive_folder_id(3)
+    //   photos_album_prefix(4) status(5) added_date(6) added_by(7)
+    const CLUBS_HEADERS = [
+      'club_id', 'display_name', 'normalized_name',
+      'drive_folder_id', 'photos_album_prefix',
+      'status', 'added_date', 'added_by',
+    ];
     const CLUBS_DATA: unknown[][] = [
-      ['新蜂', 'New_Bee',        'active', '2025-01-01', 'system'],
-      ['岚山', 'Misty_Mountain', 'active', '2025-01-01', 'system'],
+      ['', '新蜂', 'New_Bee',        '', '', 'active', '2025-01-01', 'system'],
+      ['', '岚山', 'Misty_Mountain', '', '', 'active', '2025-01-01', 'system'],
     ];
 
     const { mockSheets: ms } = require('../mocks/gasGlobals');
@@ -557,7 +564,7 @@ describe('driveService', () => {
         getLastColumn: jest.fn().mockReturnValue(CLUBS_HEADERS.length),
         getRange: jest.fn().mockImplementation((rowStart: number, _c: number, numRows?: number, numCols?: number) => {
           if (rowStart === 1 && numRows === 1) {
-            return { getValues: jest.fn().mockReturnValue([CLUBS_HEADERS.slice(0, numCols ?? 5)]), setValues: jest.fn() };
+            return { getValues: jest.fn().mockReturnValue([CLUBS_HEADERS.slice(0, numCols ?? CLUBS_HEADERS.length)]), setValues: jest.fn() };
           }
           const slice = CLUBS_DATA.slice(rowStart - 2, numRows ? (rowStart - 2) + numRows : undefined);
           return { getValues: jest.fn().mockReturnValue(slice), setValues: jest.fn() };

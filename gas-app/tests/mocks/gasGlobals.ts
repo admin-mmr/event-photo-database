@@ -25,13 +25,16 @@ export const TEST_ROOT_FOLDER_ID   = 'mock-root-folder-id-67890';
  * Default Users sheet rows (header excluded).
  * New 9-column schema: email | firstName | lastName | role | status | clubId | addedDate | addedBy | lastLoginAt
  */
+// Schema: email(0) firstName(1) lastName(2) role(3) clubId(4)
+//         notify_new_events(5) notify_daily_digest(6) status(7)
+//         added_date(8) added_by(9) last_login_at(10)
 export const DEFAULT_USERS_ROWS: unknown[][] = [
   // super admin — no clubId
-  [TEST_ADMIN_EMAIL,      'Test', 'Admin',    'super_admin', 'active',   '',        '2025-01-01', 'system',         ''],
+  [TEST_ADMIN_EMAIL,      'Test', 'Admin',    'super_admin', '',        '', '', 'active',   '2025-01-01', 'system',         ''],
   // club admin — scoped to New_Bee
-  [TEST_USER_EMAIL,       'Test', 'User',     'club_admin',  'active',   'New_Bee', '2025-02-01', TEST_ADMIN_EMAIL, ''],
+  [TEST_USER_EMAIL,       'Test', 'User',     'club_admin',  'New_Bee', '', '', 'active',   '2025-02-01', TEST_ADMIN_EMAIL, ''],
   // inactive club admin
-  [TEST_INACTIVE_EMAIL,   'Test', 'Inactive', 'club_admin',  'inactive', 'Nankai',  '2025-01-15', TEST_ADMIN_EMAIL, ''],
+  [TEST_INACTIVE_EMAIL,   'Test', 'Inactive', 'club_admin',  'Nankai',  '', '', 'inactive', '2025-01-15', TEST_ADMIN_EMAIL, ''],
 ];
 
 /** Default Events sheet rows — 3 events for sort/pagination/duplicate testing */

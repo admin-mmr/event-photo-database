@@ -20,9 +20,11 @@ import { UserRecord } from '../../src/types/models';
 // ─── Users ────────────────────────────────────────────────────────────────────
 
 describe('sheetMapper — Users', () => {
-  // New 9-column schema: email | firstName | lastName | role | status | clubId | addedDate | addedBy | lastLoginAt
+  // 11-column schema: email(0) firstName(1) lastName(2) role(3) clubId(4)
+  //   notify_new_events(5) notify_daily_digest(6) status(7)
+  //   added_date(8) added_by(9) last_login_at(10)
   const validRow: unknown[] = [
-    'admin@mmrunners.org', 'Test', 'Admin', 'super_admin', 'active', '', '2025-01-01', 'system', '',
+    'admin@mmrunners.org', 'Test', 'Admin', 'super_admin', '', '', '', 'active', '2025-01-01', 'system', '',
   ];
 
   describe('toUserRecord()', () => {
@@ -40,13 +42,13 @@ describe('sheetMapper — Users', () => {
     });
 
     it('normalizes email to lowercase', () => {
-      const row = ['Admin@EXAMPLE.COM', 'First', 'Last', 'club_admin', 'active', 'New_Bee', '', '', ''];
+      const row = ['Admin@EXAMPLE.COM', 'First', 'Last', 'club_admin', 'New_Bee', '', '', 'active', '', '', ''];
       const record = toUserRecord(row);
       expect(record!.email).toBe('admin@example.com');
     });
 
     it('trims whitespace from all string fields', () => {
-      const row = ['  alice@example.com  ', '  Alice  ', '  Smith  ', 'club_admin', 'active', '  New_Bee  ', '', '', ''];
+      const row = ['  alice@example.com  ', '  Alice  ', '  Smith  ', 'club_admin', '  New_Bee  ', '', '', 'active', '', '', ''];
       const record = toUserRecord(row);
       expect(record!.email).toBe('alice@example.com');
       expect(record!.firstName).toBe('Alice');
@@ -54,26 +56,26 @@ describe('sheetMapper — Users', () => {
     });
 
     it('returns null for empty email', () => {
-      const row = ['', 'First', 'Last', 'super_admin', 'active', '', '', '', ''];
+      const row = ['', 'First', 'Last', 'super_admin', '', '', '', 'active', '', '', ''];
       expect(toUserRecord(row)).toBeNull();
     });
 
     it('returns null for whitespace-only email', () => {
-      const row = ['   ', 'First', 'Last', 'club_admin', 'active', 'New_Bee', '', '', ''];
+      const row = ['   ', 'First', 'Last', 'club_admin', 'New_Bee', '', '', 'active', '', '', ''];
       expect(toUserRecord(row)).toBeNull();
     });
 
     it('returns null for invalid role', () => {
-      const row = ['alice@example.com', 'Alice', 'Smith', 'admin', 'active', '', '', '', ''];
+      const row = ['alice@example.com', 'Alice', 'Smith', 'admin', '', '', '', 'active', '', '', ''];
       expect(toUserRecord(row)).toBeNull();
     });
 
     it('returns null for invalid status', () => {
-      const row = ['alice@example.com', 'Alice', 'Smith', 'club_admin', 'pending', 'New_Bee', '', '', ''];
+      const row = ['alice@example.com', 'Alice', 'Smith', 'club_admin', 'New_Bee', '', '', 'pending', '', '', ''];
       expect(toUserRecord(row)).toBeNull();
     });
 
-    it('returns null for row with fewer than 9 columns', () => {
+    it('returns null for row with fewer than 10 columns', () => {
       expect(toUserRecord(['a', 'b', 'c'])).toBeNull();
       expect(toUserRecord([])).toBeNull();
     });
@@ -84,7 +86,7 @@ describe('sheetMapper — Users', () => {
       // Date.toString() locale string like "Thu Apr 09 2026 00:00:00 GMT-0400".
       const localDate = new Date(2025, 1, 1); // Feb 1 2025 in local time
       const row: unknown[] = [
-        'alice@example.com', 'Alice', 'Smith', 'club_admin', 'active', 'New_Bee',
+        'alice@example.com', 'Alice', 'Smith', 'club_admin', 'New_Bee', '', '', 'active',
         localDate, 'admin@mmrunners.org', '',
       ];
       const record = toUserRecord(row);
@@ -97,7 +99,7 @@ describe('sheetMapper — Users', () => {
       // locale string like "Sat Feb 01 2025 00:00:00 GMT-0500 (EST)".
       const localDate = new Date(2025, 3, 9); // Apr 9 2025 in local time
       const row: unknown[] = [
-        'bob@example.com', 'Bob', 'Smith', 'super_admin', 'active', '',
+        'bob@example.com', 'Bob', 'Smith', 'super_admin', '', '', '', 'active',
         localDate, 'system', '',
       ];
       const record = toUserRecord(row);
@@ -108,7 +110,7 @@ describe('sheetMapper — Users', () => {
 
     it('preserves plain ISO string addedDate unchanged', () => {
       const row: unknown[] = [
-        'carol@example.com', 'Carol', 'Smith', 'club_admin', 'active', 'New_Bee',
+        'carol@example.com', 'Carol', 'Smith', 'club_admin', 'New_Bee', '', '', 'active',
         '2025-06-15', 'admin@mmrunners.org', '',
       ];
       const record = toUserRecord(row);
@@ -117,24 +119,24 @@ describe('sheetMapper — Users', () => {
 
     it('accepts all valid UserRole values', () => {
       for (const role of Object.values(UserRole)) {
-        const row = ['alice@example.com', 'Alice', 'Smith', role, 'active', '', '', '', ''];
+        const row = ['alice@example.com', 'Alice', 'Smith', role, '', '', '', 'active', '', '', ''];
         expect(toUserRecord(row)).not.toBeNull();
       }
     });
 
     it('accepts all valid UserStatus values', () => {
       for (const status of Object.values(UserStatus)) {
-        const row = ['alice@example.com', 'Alice', 'Smith', 'super_admin', status, '', '', '', ''];
+        const row = ['alice@example.com', 'Alice', 'Smith', 'super_admin', '', '', '', status, '', '', ''];
         expect(toUserRecord(row)).not.toBeNull();
       }
     });
   });
 
   describe('fromUserRecord()', () => {
-    it('produces an array of 9 elements', () => {
+    it('produces an array of 11 elements', () => {
       const record = toUserRecord(validRow)!;
       const row = fromUserRecord(record);
-      expect(row).toHaveLength(9);
+      expect(row).toHaveLength(11);
     });
 
     it('preserves all field values', () => {
@@ -144,7 +146,10 @@ describe('sheetMapper — Users', () => {
       expect(row[1]).toBe('Test');                // firstName
       expect(row[2]).toBe('Admin');               // lastName
       expect(row[3]).toBe('super_admin');          // role
-      expect(row[4]).toBe('active');               // status
+      expect(row[4]).toBe('');                     // clubId
+      expect(row[7]).toBe('active');               // status (col 7)
+      expect(row[8]).toBe('2025-01-01');           // addedDate
+      expect(row[9]).toBe('system');               // addedBy
     });
   });
 
@@ -475,8 +480,10 @@ describe('sheetMapper — Upload Log', () => {
 // ─── Clubs ────────────────────────────────────────────────────────────────────
 
 describe('sheetMapper — Clubs', () => {
+  // 8-column schema: clubId(0) displayName(1) normalizedName(2) driveFolderId(3)
+  //   photosAlbumPrefix(4) status(5) addedDate(6) addedBy(7)
   const validRow: unknown[] = [
-    '新蜂', 'New_Bee', 'active', '2025-01-01', 'system',
+    '', '新蜂', 'New_Bee', '', '', 'active', '2025-01-01', 'system',
   ];
 
   describe('toClubRecord()', () => {
@@ -491,7 +498,7 @@ describe('sheetMapper — Clubs', () => {
     });
 
     it('maps an inactive club correctly', () => {
-      const row = ['驰跑团', 'CHI', 'inactive', '2025-06-01', 'admin@mmrunners.org'];
+      const row = ['', '驰跑团', 'CHI', '', '', 'inactive', '2025-06-01', 'admin@mmrunners.org'];
       const record = toClubRecord(row);
       expect(record).not.toBeNull();
       expect(record!.status).toBe('inactive');
@@ -499,47 +506,47 @@ describe('sheetMapper — Clubs', () => {
     });
 
     it('normalizes addedBy to lowercase', () => {
-      const row = ['Club', 'Club_Name', 'active', '2025-01-01', 'ADMIN@MMRUNNERS.ORG'];
+      const row = ['', 'Club', 'Club_Name', '', '', 'active', '2025-01-01', 'ADMIN@MMRUNNERS.ORG'];
       const record = toClubRecord(row);
       expect(record!.addedBy).toBe('admin@mmrunners.org');
     });
 
     it('trims whitespace from all fields', () => {
-      const row = ['  新蜂  ', '  New_Bee  ', 'active', '2025-01-01', 'system'];
+      const row = ['', '  新蜂  ', '  New_Bee  ', '', '', 'active', '2025-01-01', 'system'];
       const record = toClubRecord(row);
       expect(record!.displayName).toBe('新蜂');
       expect(record!.normalizedName).toBe('New_Bee');
     });
 
     it('returns null when displayName is empty', () => {
-      const row = ['', 'New_Bee', 'active', '2025-01-01', 'system'];
+      const row = ['', '', 'New_Bee', '', '', 'active', '2025-01-01', 'system'];
       expect(toClubRecord(row)).toBeNull();
     });
 
     it('returns null when normalizedName is empty', () => {
-      const row = ['新蜂', '', 'active', '2025-01-01', 'system'];
+      const row = ['', '新蜂', '', '', '', 'active', '2025-01-01', 'system'];
       expect(toClubRecord(row)).toBeNull();
     });
 
     it('returns null for invalid status', () => {
-      const row = ['新蜂', 'New_Bee', 'pending', '2025-01-01', 'system'];
+      const row = ['', '新蜂', 'New_Bee', '', '', 'pending', '2025-01-01', 'system'];
       expect(toClubRecord(row)).toBeNull();
     });
 
-    it('returns null for row with fewer than 5 columns', () => {
+    it('returns null for row with fewer than 8 columns', () => {
       expect(toClubRecord(['Club', 'Club_Name'])).toBeNull();
       expect(toClubRecord([])).toBeNull();
     });
 
     it('accepts both "active" and "inactive" as valid statuses', () => {
-      const active   = toClubRecord(['A', 'A_Club', 'active',   '2025-01-01', 'sys']);
-      const inactive = toClubRecord(['A', 'A_Club', 'inactive', '2025-01-01', 'sys']);
+      const active   = toClubRecord(['', 'A', 'A_Club', '', '', 'active',   '2025-01-01', 'sys']);
+      const inactive = toClubRecord(['', 'A', 'A_Club', '', '', 'inactive', '2025-01-01', 'sys']);
       expect(active!.status).toBe('active');
       expect(inactive!.status).toBe('inactive');
     });
 
     it('handles numeric cell values via String() coercion', () => {
-      const row: unknown[] = [123, 456, 'active', '2025-01-01', 'system'];
+      const row: unknown[] = ['', 123, 456, '', '', 'active', '2025-01-01', 'system'];
       const record = toClubRecord(row);
       expect(record!.displayName).toBe('123');
       expect(record!.normalizedName).toBe('456');
@@ -548,7 +555,7 @@ describe('sheetMapper — Clubs', () => {
     it('handles Sheets returning Date objects for addedDate', () => {
       // Same formatSheetDate() fix applies to Club rows — regression guard.
       const localDate = new Date(2025, 0, 1); // Jan 1 2025 local time
-      const row: unknown[] = ['新蜂', 'New_Bee', 'active', localDate, 'system'];
+      const row: unknown[] = ['', '新蜂', 'New_Bee', '', '', 'active', localDate, 'system'];
       const record = toClubRecord(row);
       expect(record).not.toBeNull();
       expect(record!.addedDate).toBe('2025-01-01');
@@ -557,7 +564,7 @@ describe('sheetMapper — Clubs', () => {
 
     it('does not store the full Date.toString() locale string for addedDate', () => {
       const localDate = new Date(2025, 5, 15); // Jun 15 2025 local time
-      const row: unknown[] = ['岚山', 'Lanshan', 'active', localDate, 'admin@mmrunners.org'];
+      const row: unknown[] = ['', '岚山', 'Lanshan', '', '', 'active', localDate, 'admin@mmrunners.org'];
       const record = toClubRecord(row);
       expect(record!.addedDate).not.toContain('GMT');
       expect(record!.addedDate).not.toContain(':');
@@ -566,20 +573,23 @@ describe('sheetMapper — Clubs', () => {
   });
 
   describe('fromClubRecord()', () => {
-    it('produces an array of 5 elements', () => {
+    it('produces an array of 8 elements', () => {
       const record = toClubRecord(validRow)!;
       const row = fromClubRecord(record);
-      expect(row).toHaveLength(5);
+      expect(row).toHaveLength(8);
     });
 
     it('preserves all field values in correct column order', () => {
       const record = toClubRecord(validRow)!;
       const row = fromClubRecord(record);
-      expect(row[0]).toBe('新蜂');         // displayName
-      expect(row[1]).toBe('New_Bee');     // normalizedName
-      expect(row[2]).toBe('active');      // status
-      expect(row[3]).toBe('2025-01-01'); // addedDate
-      expect(row[4]).toBe('system');     // addedBy
+      expect(row[0]).toBe('');           // clubId (sheet-managed, empty by default)
+      expect(row[1]).toBe('新蜂');       // displayName
+      expect(row[2]).toBe('New_Bee');   // normalizedName
+      expect(row[3]).toBe('');           // driveFolderId (sheet-managed)
+      expect(row[4]).toBe('');           // photosAlbumPrefix (sheet-managed)
+      expect(row[5]).toBe('active');    // status
+      expect(row[6]).toBe('2025-01-01'); // addedDate
+      expect(row[7]).toBe('system');    // addedBy
     });
   });
 
@@ -591,7 +601,7 @@ describe('sheetMapper — Clubs', () => {
     });
 
     it('roundtrip preserves inactive status', () => {
-      const row: unknown[] = ['驰跑团', 'CHI', 'inactive', '2025-06-01', 'admin@mmrunners.org'];
+      const row: unknown[] = ['', '驰跑团', 'CHI', '', '', 'inactive', '2025-06-01', 'admin@mmrunners.org'];
       const original = toClubRecord(row)!;
       const restored = toClubRecord(fromClubRecord(original));
       expect(restored).toEqual(original);

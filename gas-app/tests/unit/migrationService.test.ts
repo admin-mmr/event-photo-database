@@ -28,8 +28,13 @@ const UPLOAD_LOG_HEADERS = [
   'SKIPPED_NON_PHOTO','UPLOAD_TIMESTAMP','SOURCE','LINK_ID',
 ];
 
+// 11-column schema matching COLUMNS.USERS:
+// email(0) firstName(1) lastName(2) role(3) clubId(4)
+// notify_new_events(5) notify_daily_digest(6) status(7)
+// added_date(8) added_by(9) last_login_at(10)
 const USERS_HEADERS = [
-  'EMAIL','FIRST_NAME','LAST_NAME','ROLE','STATUS','CLUB_ID',
+  'EMAIL','FIRST_NAME','LAST_NAME','ROLE','CLUB_ID',
+  'NOTIFY_NEW_EVENTS','NOTIFY_DAILY_DIGEST','STATUS',
   'ADDED_DATE','ADDED_BY','LAST_LOGIN_AT',
 ];
 
@@ -83,8 +88,10 @@ function makeUserRow(
   status = 'active',
   includeLastLogin = true
 ): unknown[] {
+  // New 11-column schema: email, firstName, lastName, role, clubId,
+  //   notifyNew, notifyDigest, status, addedDate, addedBy, [lastLoginAt?]
   const row: unknown[] = [
-    email, 'First', 'Last', role, status, 'New_Bee',
+    email, 'First', 'Last', role, 'New_Bee', '', '', status,
     '2025-01-01', TEST_ADMIN_EMAIL,
   ];
   if (includeLastLogin) row.push('');
@@ -224,8 +231,8 @@ describe('migrateFromLegacy() — commit mode (dryRun=false)', () => {
     const sheet = mockSheets['Users'] as unknown as { _setValuesMock: jest.Mock };
     expect(sheet._setValuesMock).toHaveBeenCalledTimes(1);
     const written = (sheet._setValuesMock.mock.calls[0][0] as unknown[][])[0];
-    expect(written).toHaveLength(9);
-    expect(written[8]).toBe(''); // LAST_LOGIN_AT padded to ''
+    expect(written).toHaveLength(11);
+    expect(written[10]).toBe(''); // LAST_LOGIN_AT padded to '' (col 10)
   });
 
   it('normalises invalid status to active', () => {
@@ -238,7 +245,7 @@ describe('migrateFromLegacy() — commit mode (dryRun=false)', () => {
     const sheet = mockSheets['Users'] as unknown as { _setValuesMock: jest.Mock };
     expect(sheet._setValuesMock).toHaveBeenCalledTimes(1);
     const written = (sheet._setValuesMock.mock.calls[0][0] as unknown[][])[0];
-    expect(written[4]).toBe(UserStatus.ACTIVE);
+    expect(written[7]).toBe(UserStatus.ACTIVE); // status is at col 7 in new schema
     // Should show up in changes
     expect(result.changes.some(c => c.includes('defaulted'))).toBe(true);
   });

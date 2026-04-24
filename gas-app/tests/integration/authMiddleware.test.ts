@@ -101,7 +101,7 @@ describe('AuthMiddleware — resolveUser()', () => {
   it('returns ERROR for an unregistered email', () => {
     const result = resolveUser('nobody@example.com');
     expect(result.status).toBe(ResultStatus.ERROR);
-    expect(result.message).toContain('not registered');
+    expect(result.message).toContain('added');
   });
 
   it('returns ERROR for an inactive user', () => {
@@ -130,7 +130,7 @@ describe('AuthMiddleware — resolveUser()', () => {
     setupUsersSheet([]);
     const result = resolveUser(TEST_ADMIN_EMAIL);
     expect(result.status).toBe(ResultStatus.ERROR);
-    expect(result.message).toContain('not registered');
+    expect(result.message).toContain('added');
   });
 });
 
@@ -159,7 +159,7 @@ describe('AuthMiddleware — authenticateRequest()', () => {
     setMockUser('stranger@gmail.com');
     const result = authenticateRequest();
     expect(result.status).toBe(ResultStatus.ERROR);
-    expect(result.message).toContain('not registered');
+    expect(result.message).toContain('added');
   });
 
   it('returns ERROR when user is inactive (step 2 fails)', () => {
