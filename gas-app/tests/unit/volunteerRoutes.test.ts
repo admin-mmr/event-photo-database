@@ -537,6 +537,20 @@ describe('serverCompleteVolunteerUpload()', () => {
     );
   });
 
+  it('forwards durationMs from the client to the upload log', () => {
+    const vsession = createVolunteerSession('volunteer@example.com', VALID_TOKEN);
+    mockValidateLink.mockReturnValue({ status: ResultStatus.SUCCESS, data: VALID_LINK });
+    mockFindEventById.mockReturnValue(VALID_EVENT);
+    mockAppendUploadLog.mockReturnValue({ status: ResultStatus.SUCCESS });
+    mockEnqueueBatchSync.mockReturnValue(undefined);
+
+    serverCompleteVolunteerUpload({ ...basePayload, vsession, durationMs: 73_500 });
+
+    expect(mockAppendUploadLog).toHaveBeenCalledWith(
+      expect.objectContaining({ durationMs: 73_500 })
+    );
+  });
+
   it('writes audit log on success', () => {
     const vsession = createVolunteerSession('volunteer@example.com', VALID_TOKEN);
     mockValidateLink.mockReturnValue({ status: ResultStatus.SUCCESS, data: VALID_LINK });

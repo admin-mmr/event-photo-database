@@ -384,6 +384,9 @@ export interface CompleteUploadPayload {
   totalSizeMb:      number;
   skippedDuplicates: number;
   skippedNonMedia:  number;
+  /** Wall-clock upload duration in ms, measured in the browser. Optional for
+   *  backward-compat with older client bundles; treated as 0 (unknown) if absent. */
+  durationMs?:      number;
 }
 
 /**
@@ -411,6 +414,7 @@ export function serverCompleteVolunteerUpload(
       totalSizeMb,
       skippedDuplicates,
       skippedNonMedia,
+      durationMs,
     } = payload;
 
     // Validate session
@@ -448,6 +452,7 @@ export function serverCompleteVolunteerUpload(
       skippedNonPhoto:  skippedNonMedia,
       source:           UploadSource.LINK,
       linkId,
+      durationMs,
     });
 
     // Write Audit_Log entry

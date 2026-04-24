@@ -46,13 +46,15 @@ function makeLogRow(overrides: Partial<UploadLogRecord> = {}): unknown[] {
     uploadTimestamp:   '2025-11-03T09:35:00.000Z',
     source:            UploadSource.WEB_APP,
     linkId:            '',
+    durationMs:        0,
     ...overrides,
   };
   return [
     record.logId, record.eventId, record.clubName, record.uploadedBy,
     record.batchFolderName, record.batchFolderId,
     record.fileCount, record.totalSizeMb, record.skippedDuplicates,
-    record.skippedNonPhoto, record.uploadTimestamp, record.source, record.linkId,
+    record.skippedNonPhoto, record.uploadTimestamp, record.source,
+    record.linkId, record.durationMs,
   ];
 }
 
@@ -101,10 +103,32 @@ describe('appendUploadLog()', () => {
     expect(mockSheets.Upload_Log.appendRow).toHaveBeenCalledTimes(1);
   });
 
-  it('the appended row has 13 columns (matching sheet schema)', () => {
+  it('the appended row has 14 columns (matching sheet schema)', () => {
     appendUploadLog(makeInput());
     const row = mockSheets.Upload_Log.appendRow.mock.calls[0][0] as unknown[];
-    expect(row).toHaveLength(13);
+    expect(row).toHaveLength(14);
+  });
+
+  it('records durationMs when provided', () => {
+    const result = appendUploadLog(makeInput({ durationMs: 42_000 }));
+    expect(result.data!.durationMs).toBe(42000);
+    const row = mockSheets.Upload_Log.appendRow.mock.calls[0][0] as unknown[];
+    expect(row[13]).toBe(42000);
+  });
+
+  it('defaults durationMs to 0 when omitted', () => {
+    const result = appendUploadLog(makeInput());
+    expect(result.data!.durationMs).toBe(0);
+  });
+
+  it('clamps negative or non-finite durationMs to 0', () => {
+    expect(appendUploadLog(makeInput({ durationMs: -500 })).data!.durationMs).toBe(0);
+    expect(appendUploadLog(makeInput({ durationMs: NaN })).data!.durationMs).toBe(0);
+  });
+
+  it('rounds fractional durationMs to a whole integer', () => {
+    const result = appendUploadLog(makeInput({ durationMs: 1234.7 }));
+    expect(result.data!.durationMs).toBe(1235);
   });
 
   it('returns ERROR when the sheet cannot be opened', () => {

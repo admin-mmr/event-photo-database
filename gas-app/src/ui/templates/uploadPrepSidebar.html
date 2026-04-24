@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Google Sans, Roboto, Arial, sans-serif;
+      font-size: 13px;
+      color: #202124;
+      padding: 12px;
+      background: #fff;
+    }
+
+    h2 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: #1a73e8;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 500;
+      color: #5f6368;
+      margin-bottom: 4px;
+    }
+
+    select, button {
+      width: 100%;
+      font-size: 13px;
+      border-radius: 4px;
+    }
+
+    select {
+      padding: 6px 8px;
+      border: 1px solid #dadce0;
+      color: #202124;
+      background: #fff;
+      margin-bottom: 10px;
+    }
+
+    select:focus { outline: 2px solid #1a73e8; border-color: transparent; }
+
+    .stats-panel {
+      background: #f8f9fa;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      padding: 8px 10px;
+      margin-bottom: 10px;
+      font-size: 12px;
+      color: #5f6368;
+    }
+
+    .stats-panel .stat {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 3px;
+    }
+
+    .stats-panel .stat:last-child { margin-bottom: 0; }
+    .stats-panel .val { font-weight: 600; color: #202124; }
+
+    .options {
+      margin-bottom: 12px;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: #5f6368;
+    }
+
+    .checkbox-row input[type="checkbox"] { width: auto; margin: 0; }
+
+    button#runBtn {
+      padding: 8px 0;
+      background: #1a73e8;
+      color: #fff;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      margin-bottom: 12px;
+    }
+
+    button#runBtn:hover { background: #1558b0; }
+    button#runBtn:disabled { background: #dadce0; color: #80868b; cursor: default; }
+
+    .progress-section { display: none; margin-bottom: 10px; }
+
+    .progress-bar-wrap {
+      background: #e8eaed;
+      border-radius: 4px;
+      height: 8px;
+      overflow: hidden;
+      margin-bottom: 6px;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: #1a73e8;
+      border-radius: 4px;
+      transition: width 0.3s ease;
+      width: 0%;
+    }
+
+    .progress-text {
+      font-size: 11px;
+      color: #5f6368;
+      margin-bottom: 6px;
+    }
+
+    .log-area {
+      background: #f8f9fa;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-family: monospace;
+      font-size: 11px;
+      max-height: 160px;
+      overflow-y: auto;
+      color: #3c4043;
+    }
+
+    .log-line { margin-bottom: 2px; }
+    .log-line.error { color: #d93025; }
+    .log-line.success { color: #188038; }
+
+    .summary-card {
+      display: none;
+      background: #e6f4ea;
+      border: 1px solid #ceead6;
+      border-radius: 4px;
+      padding: 10px;
+      font-size: 12px;
+      margin-top: 10px;
+    }
+
+    .summary-card h3 { font-size: 13px; color: #188038; margin-bottom: 6px; }
+    .summary-card .stat { margin-bottom: 3px; }
+
+    .summary-card a {
+      display: inline-block;
+      margin-top: 8px;
+      color: #1a73e8;
+      text-decoration: none;
+      font-size: 12px;
+    }
+
+    .summary-card a:hover { text-decoration: underline; }
+
+    .error-banner {
+      display: none;
+      background: #fce8e6;
+      border: 1px solid #f28b82;
+      border-radius: 4px;
+      padding: 8px 10px;
+      color: #d93025;
+      font-size: 12px;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h2>Prep Upload Files</h2>
+
+  <!-- Event selector -->
+  <label for="eventSelect">Event</label>
+  <select id="eventSelect" disabled>
+    <option value="">Loading events…</option>
+  </select>
+
+  <!-- Pre-run stats -->
+  <div class="stats-panel" id="statsPanel" style="display:none">
+    <div class="stat"><span>Source files</span><span class="val" id="statTotal">—</span></div>
+    <div class="stat"><span>Already prepped</span><span class="val" id="statDone">—</span></div>
+    <div class="stat"><span>New / changed</span><span class="val" id="statNew">—</span></div>
+    <div class="stat"><span>Last run</span><span class="val" id="statLastRun">—</span></div>
+  </div>
+
+  <!-- Options -->
+  <div class="options">
+    <div class="checkbox-row">
+      <input type="checkbox" id="forceCheck">
+      <label for="forceCheck" style="margin:0">Force re-process all files</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="dryRunCheck">
+      <label for="dryRunCheck" style="margin:0">Dry run (no files created)</label>
+    </div>
+  </div>
+
+  <button id="runBtn" disabled>Run</button>
+
+  <!-- Progress -->
+  <div class="progress-section" id="progressSection">
+    <div class="progress-bar-wrap">
+      <div class="progress-bar-fill" id="progressFill"></div>
+    </div>
+    <div class="progress-text" id="progressText">Starting…</div>
+    <div class="log-area" id="logArea"></div>
+  </div>
+
+  <!-- Summary card (shown on completion) -->
+  <div class="summary-card" id="summaryCard">
+    <h3>✓ Run complete</h3>
+    <div class="stat" id="sumTotal"></div>
+    <div class="stat" id="sumCopied"></div>
+    <div class="stat" id="sumConverted"></div>
+    <div class="stat" id="sumSkipped"></div>
+    <div class="stat" id="sumErrored"></div>
+    <a id="folderLink" href="#" target="_blank">Open _UploadPrep folder ↗</a>
+  </div>
+
+  <!-- Error banner -->
+  <div class="error-banner" id="errorBanner"></div>
+
+  <script>
+    // ─── State ───────────────────────────────────────────────────────────────
+    var state = {
+      events: [],
+      runId: null,
+      continuationToken: null,
+      eventFolderId: null,
+      eventName: null,
+      running: false,
+      totalFiles: 0,
+      counts: { total: 0, copied: 0, converted: 0, skipped: 0, errored: 0 }
+    };
+
+    // ─── DOM refs ────────────────────────────────────────────────────────────
+    var sel      = document.getElementById('eventSelect');
+    var runBtn   = document.getElementById('runBtn');
+    var statsPanel = document.getElementById('statsPanel');
+    var forceChk = document.getElementById('forceCheck');
+    var dryChk   = document.getElementById('dryRunCheck');
+    var progSec  = document.getElementById('progressSection');
+    var progFill = document.getElementById('progressFill');
+    var progText = document.getElementById('progressText');
+    var logArea  = document.getElementById('logArea');
+    var sumCard  = document.getElementById('summaryCard');
+    var errBan   = document.getElementById('errorBanner');
+
+    // ─── Init ────────────────────────────────────────────────────────────────
+    google.script.run
+      .withSuccessHandler(onEventsLoaded)
+      .withFailureHandler(onError)
+      .uploadPrep_listEvents();
+
+    function onEventsLoaded(resp) {
+      if (resp.status !== 'success') { showError(resp.message); return; }
+      state.events = resp.data || [];
+      sel.innerHTML = '<option value="">— select an event —</option>';
+      state.events.forEach(function(e) {
+        var opt = document.createElement('option');
+        opt.value = e.id;
+        opt.textContent = e.name;
+        sel.appendChild(opt);
+      });
+      sel.disabled = false;
+    }
+
+    // ─── Event selection ─────────────────────────────────────────────────────
+    sel.addEventListener('change', function() {
+      var folderId = sel.value;
+      if (!folderId) {
+        statsPanel.style.display = 'none';
+        runBtn.disabled = true;
+        return;
+      }
+      runBtn.disabled = true;
+      statsPanel.style.display = 'none';
+      google.script.run
+        .withSuccessHandler(onStatusLoaded)
+        .withFailureHandler(onError)
+        .uploadPrep_getStatus(folderId);
+    });
+
+    function onStatusLoaded(resp) {
+      if (resp.status !== 'success') { showError(resp.message); return; }
+      var s = resp.data;
+      document.getElementById('statTotal').textContent   = s.sourceFileCount;
+      document.getElementById('statDone').textContent    = s.alreadyPreppedCount;
+      document.getElementById('statNew').textContent     = s.newOrChangedCount;
+      document.getElementById('statLastRun').textContent = s.lastRunAt
+        ? new Date(s.lastRunAt).toLocaleString() : 'Never';
+      state.totalFiles = s.sourceFileCount;
+      statsPanel.style.display = 'block';
+      runBtn.disabled = false;
+    }
+
+    // ─── Run ─────────────────────────────────────────────────────────────────
+    runBtn.addEventListener('click', function() {
+      var folderId = sel.value;
+      if (!folderId || state.running) return;
+
+      state.running         = true;
+      state.eventFolderId   = folderId;
+      state.eventName       = sel.options[sel.selectedIndex].textContent;
+      state.continuationToken = null;
+      state.counts          = { total: 0, copied: 0, converted: 0, skipped: 0, errored: 0 };
+
+      runBtn.disabled = true;
+      sel.disabled    = true;
+      forceChk.disabled = true;
+      dryChk.disabled   = true;
+
+      sumCard.style.display  = 'none';
+      errBan.style.display   = 'none';
+      logArea.innerHTML      = '';
+      progSec.style.display  = 'block';
+      setProgress(0, 'Starting…');
+
+      var opts = { dryRun: dryChk.checked, force: forceChk.checked };
+
+      logLine('Starting run for: ' + state.eventName + (dryChk.checked ? ' [DRY RUN]' : ''));
+
+      google.script.run
+        .withSuccessHandler(onBatchDone)
+        .withFailureHandler(onError)
+        .uploadPrep_start(folderId, opts);
+    });
+
+    // ─── Batch loop ───────────────────────────────────────────────────────────
+    function onBatchDone(resp) {
+      if (resp.status !== 'success') { finishWithError(resp.message); return; }
+      var result = resp.data;
+
+      state.runId = result.runId;
+
+      var t = result.totalSoFar;
+      state.counts = { total: t.total, copied: t.copied, converted: t.converted, skipped: t.skipped, errored: t.errored };
+
+      var pct = state.totalFiles > 0 ? Math.min(100, Math.round(t.total / state.totalFiles * 100)) : 0;
+      setProgress(pct,
+        t.total + ' processed — ' +
+        t.copied + ' copied, ' +
+        t.converted + ' converted, ' +
+        t.skipped + ' skipped' +
+        (t.errored > 0 ? ', ' + t.errored + ' errors' : '')
+      );
+
+      var b = result.batchCounts;
+      logLine('Batch: +' + b.processed + ' files (' + b.copied + ' copied, ' + b.converted + ' converted, ' + b.skipped + ' skipped' + (b.errored > 0 ? ', ' + b.errored + ' errors' : '') + ')');
+
+      if (result.done) {
+        onRunComplete(result);
+      } else {
+        state.continuationToken = result.continuationToken;
+        var opts = { dryRun: dryChk.checked, force: forceChk.checked };
+        google.script.run
+          .withSuccessHandler(onBatchDone)
+          .withFailureHandler(onError)
+          .uploadPrep_runBatch(state.runId, state.eventFolderId, state.continuationToken, opts);
+      }
+    }
+
+    function onRunComplete(result) {
+      var t = result.totalSoFar;
+      setProgress(100, 'Done! ' + t.total + ' files processed.');
+      logLine('Run complete!', 'success');
+
+      document.getElementById('sumTotal').textContent     = 'Total files: ' + t.total;
+      document.getElementById('sumCopied').textContent    = 'Copied (JPG): ' + t.copied;
+      document.getElementById('sumConverted').textContent = 'Converted: ' + t.converted;
+      document.getElementById('sumSkipped').textContent   = 'Skipped: ' + t.skipped;
+      document.getElementById('sumErrored').textContent   = 'Errors: ' + t.errored;
+
+      // Link to the Drive folder (open root _UploadPrep search)
+      var link = document.getElementById('folderLink');
+      link.href = 'https://drive.google.com/drive/search?q=' +
+        encodeURIComponent('_UploadPrep ' + result.eventName);
+
+      sumCard.style.display = 'block';
+      resetControls();
+    }
+
+    // ─── UI helpers ───────────────────────────────────────────────────────────
+    function setProgress(pct, text) {
+      progFill.style.width = pct + '%';
+      progText.textContent  = text;
+    }
+
+    function logLine(msg, cls) {
+      var el = document.createElement('div');
+      el.className = 'log-line' + (cls ? ' ' + cls : '');
+      el.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+      logArea.appendChild(el);
+      logArea.scrollTop = logArea.scrollHeight;
+    }
+
+    function showError(msg) {
+      errBan.textContent    = 'Error: ' + msg;
+      errBan.style.display  = 'block';
+    }
+
+    function finishWithError(msg) {
+      logLine('Error: ' + msg, 'error');
+      showError(msg);
+      resetControls();
+    }
+
+    function onError(err) {
+      finishWithError(String(err));
+    }
+
+    function resetControls() {
+      state.running = false;
+      runBtn.disabled  = !sel.value;
+      sel.disabled     = false;
+      forceChk.disabled = false;
+      dryChk.disabled   = false;
+    }
+  </script>
+</body>
+</html>

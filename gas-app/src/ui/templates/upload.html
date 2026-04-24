@@ -1215,6 +1215,11 @@ function startUploadFlow(filesToUpload, skippedDuplicates) {
       var batchFolderName = sessionResult.data.batchFolderName;
       batchNames.push(batchFolderName);
 
+      // Wall-clock start for this round — captured after the session folder
+      // is created so the number reflects actual byte-transfer time rather
+      // than folder-creation latency.
+      var roundStartMs = Date.now();
+
       uploadFilesConcurrently(
         batch, batchFolderId, globalOffset, UPLOAD_CONCURRENCY,
         /* onFileDone */  function() {
@@ -1240,6 +1245,7 @@ function startUploadFlow(filesToUpload, skippedDuplicates) {
             // attribute the skip counts only to the first round's log row
             skippedDuplicates: roundIdx === 0 ? skippedDuplicates : 0,
             skippedNonPhoto:   roundIdx === 0 ? oversizedCount     : 0,
+            durationMs:        Date.now() - roundStartMs,
           }).catch(function() { /* log failure is non-fatal */ });
 
           processRound(roundIdx + 1);

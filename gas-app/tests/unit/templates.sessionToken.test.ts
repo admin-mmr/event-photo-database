@@ -68,6 +68,12 @@ const UNAUTHENTICATED_TEMPLATES: ReadonlySet<string> = new Set([
   // totalEvents, totalAlbums, viewerEmail). The page makes no google.script.run
   // calls at all, so window.SESSION_TOKEN is not needed here.
   'public/album_index.html',
+
+  // Upload Prep sidebar — opened via a spreadsheet menu (onOpen trigger).
+  // Runs under USER_ACCESSING so google.script.run calls are automatically
+  // authenticated as the current Google user; no SESSION_TOKEN mechanism needed.
+  // Server-side assertSuperAdmin() enforces access independently.
+  'uploadPrepSidebar.html',
 ]);
 
 /**

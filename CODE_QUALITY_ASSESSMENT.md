@@ -245,9 +245,9 @@ Other Cloud Run notes:
 
 ---
 
-## 6. All fixes applied (commit `e96555d`)
+## 6. All fixes applied (latest commit `6a36d3a`)
 
-All 1,047 tests pass; `tsc --noEmit` clean.
+All 1,151 tests pass across 39 suites; `tsc --noEmit` clean.
 
 ### Pass 1 (original assessment session)
 
@@ -291,19 +291,26 @@ Placeholder refusal, happy path, non-JSON response, retry on 503, retry on excep
 **13. `photosService.ts` sheet-read dedup** (`syncBatchToAlbums`)
 `Photo_Albums` pre-loaded once; optional `preloadedAlbums` param added to `ensureEventAlbum` and `ensureClubAlbum`; optional `preloadedRows` param added to `updateAlbumSyncStats`. Newly-created album rows appended to local cache so stat updates don't miss them. Photo_Albums reads per `syncBatchToAlbums` call: **4 → 1**.
 
+### Pass 4 (security + queue tests)
+
+**14. `tokenService.test.ts`** (30 tests, commit `669e199`)
+Full coverage of `verifyGoogleIdToken`: empty token, network error, Google rejection, error field on 200, unparseable body, missing email, email_verified false/string, expiry, aud mismatch, aud check skipped, happy path, URL encoding. Full coverage of `exchangeOAuthCode`: empty code, missing credentials, network error, non-200, unparseable, no id_token, happy path, correct POST fields, error propagation.
+
+**15. `syncJobService.test.ts`** (43 tests) + **`syncQueueService.test.ts`** (31 tests, commit `f2ac563`)
+`syncJobService`: createJob (counters, TTL), getJob (null/corrupt/default-merge), updateJob (pending→running, error append), incrementJobCounters (deltas, currentStep), completeJob (all terminal states, TTL extension), requestCancel (terminal guard), isCancelRequested, sweepExpired (expired+corrupt removal, non-job key safety).
+`syncQueueService`: enqueueBatchSync, getAllQueueItems (malformed row handling), loadPendingItems (stuck-item reset, FIFO order, SYNC_DRAIN_BATCH_SIZE cap), markInProgress (attempts++, IN_PROGRESS), markDone, markAttemptFailed (retry/exhaust at MAX_SYNC_ATTEMPTS/truncate), getQueueStatus (per-status counts, oldestPendingAt).
+
 ---
 
 ## 7. Remaining work (pick up here next session)
 
-Priority order:
-
-1. ✅ **Tests: `tokenService.ts`** — `tokenService.test.ts` added (30 tests): all error paths for `verifyGoogleIdToken` and `exchangeOAuthCode`, including network failures, claim validation, expiry, aud mismatch, and happy paths. Commit `669e199`.
-2. ✅ **Tests: `syncJobService.ts` + `syncQueueService.ts`** — `syncJobService.test.ts` (43 tests): full coverage of createJob, getJob, updateJob, incrementJobCounters, completeJob, requestCancel, isCancelRequested, sweepExpired. `syncQueueService.test.ts` (31 tests): enqueueBatchSync, getAllQueueItems, loadPendingItems (stuck-item reset, FIFO, batch-size cap), markInProgress, markDone, markAttemptFailed (retry/exhaust/truncate), getQueueStatus. Commit `f2ac563`. — progress tracking and retry queue; stale-job and concurrency bugs are currently invisible
-3. **Batch writes in `syncQueueService`** (§3.3) — add `batchUpdateRows(sheetName, updates: {rowIndex, row}[])` to `sheetService.ts`; restructure `drainSyncQueueTrigger` to pre-load rows once, write all `markInProgress` in one batch, and write all terminal-state updates in one batch
-4. **Guard `debugClientId` / `debugConfig`** (§1.6 / polish item 19) — add `requireAdminOrFail` check or move behind an editor-only function
-5. **Single source of truth for MIME types** (§1.6 medium) — export one canonical list from `constants.ts` and import it in `photosService.ts`; document the Python equivalent in `cloud-run/main.py`
-6. **Input validation for `google.script.run` handlers** (§1.5 medium) — route `serverXxx` payloads through `inputValidator.ts`
-7. **`main.ts` split** (§1.1 high) — extract `serverXxx` handlers into per-area route modules; tackle after the above tests land
-8. **`emailService.ts` + `photosService.ts` god-file splits** (§1.1 medium) — sequence after `main.ts` split is done
-9. **Email retry queue size bound** (§2.6 medium)
-10. **Archive/delete `STALE_*` files** — owner decision
+| # | Item | §ref | Priority |
+|---|------|------|----------|
+| 1 | Batch `updateRow` writes in `drainSyncQueueTrigger` — add `batchUpdateRows()` to `sheetService.ts`; pre-load rows once, write all markInProgress in one call, all terminal-state updates in one call | §3.3 | High |
+| 2 | Guard `debugClientId` / `debugConfig` — add `requireAdminOrFail` or restrict to editor-only | §1.6 | Low |
+| 3 | Single source of truth for MIME types — one canonical list in `constants.ts`, imported by `photosService.ts`; Python list in `cloud-run/main.py` kept in sync by comment | §1.6 | Medium |
+| 4 | Input validation for `google.script.run` handlers — route `serverXxx` payloads through `inputValidator.ts` | §1.5 | Medium |
+| 5 | `main.ts` split — extract 75+ `serverXxx` handlers into per-area route modules | §1.1 | High |
+| 6 | `emailService.ts` + `photosService.ts` god-file splits — sequence after `main.ts` split | §1.1 | Medium |
+| 7 | Bound email retry queue size — add max size / age-based purge in `emailService.ts` | §2.6 | Medium |
+| 8 | Archive/delete `STALE_*` files — owner decision on git history | §4 | Low |

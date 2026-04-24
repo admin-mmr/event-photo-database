@@ -161,6 +161,13 @@ export function toUploadLogRecord(row: unknown[]): UploadLogRecord | null {
     return null;
   }
 
+  // durationMs is absent on rows written before upload-duration tracking
+  // shipped; treat those as unknown (0). Negative values are also clamped
+  // to 0 to keep downstream aggregation safe.
+  const rawDuration = Number(row[COL.DURATION_MS]);
+  const durationMs =
+    isFinite(rawDuration) && rawDuration > 0 ? Math.round(rawDuration) : 0;
+
   return {
     logId,
     eventId,
@@ -176,6 +183,7 @@ export function toUploadLogRecord(row: unknown[]): UploadLogRecord | null {
     source: source as UploadSource,
     // linkId may be absent on older rows (before Phase 2)
     linkId: String(row[COL.LINK_ID] ?? '').trim(),
+    durationMs,
   };
 }
 
@@ -197,6 +205,7 @@ export function fromUploadLogRecord(record: UploadLogRecord): unknown[] {
     record.uploadTimestamp,
     record.source,
     record.linkId,
+    record.durationMs,
   ];
 }
 

@@ -796,6 +796,12 @@
 
       var totalSizeMb = Math.round(totalBytes / (1024 * 1024) * 100) / 100;
 
+      // Client-side wall-clock duration: from the moment the first byte left
+      // the browser (recorded in _etaStart) to now. Null-safe: if the ETA
+      // tracker never initialised for some reason, we send 0 and let the
+      // server record "unknown".
+      var durationMs = _etaStartTime ? (Date.now() - _etaStartTime) : 0;
+
       google.script.run
         .withSuccessHandler(function(result) {
           if (result.error) {
@@ -822,6 +828,7 @@
           totalSizeMb:     totalSizeMb,
           skippedDuplicates: skippedDuplicates,
           skippedNonMedia:   skippedNonMedia,
+          durationMs:      durationMs,
         });
     }
 

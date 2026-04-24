@@ -64,6 +64,7 @@ export const COLUMNS: SheetColumnMap = {
     UPLOAD_TIMESTAMP: 10,
     SOURCE: 11,
     LINK_ID: 12,
+    DURATION_MS: 13,
   },
   UPLOAD_LINKS: {
     LINK_ID:        0,

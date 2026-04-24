@@ -41,6 +41,16 @@ export interface CreateUploadLogInput {
   readonly source: UploadSource;
   /** Upload link ID associated with this upload session (empty for admin uploads). */
   readonly linkId?: string;
+  /**
+   * Wall-clock upload duration in milliseconds.
+   *
+   * Volunteer / admin web uploads: measured client-side from the moment the
+   * first byte leaves the browser to when all files have settled, then passed
+   * through the finalize call. API uploads: measured server-side from handler
+   * entry to just before appendUploadLog. Omit (or pass 0) if the duration
+   * cannot be measured — the field is recorded as 0 in that case.
+   */
+  readonly durationMs?: number;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -57,6 +67,14 @@ export function appendUploadLog(
   input: CreateUploadLogInput
 ): ServiceResult<UploadLogRecord> {
   try {
+    // Clamp durationMs to a sane non-negative integer. A missing or invalid
+    // value is recorded as 0 so downstream analytics can distinguish
+    // "unknown" from "very fast".
+    const rawDuration = Number(input.durationMs);
+    const durationMs = isFinite(rawDuration) && rawDuration > 0
+      ? Math.round(rawDuration)
+      : 0;
+
     const record: UploadLogRecord = {
       logId:             generateUuid(),
       eventId:           input.eventId,
@@ -71,6 +89,7 @@ export function appendUploadLog(
       uploadTimestamp:   nowIsoTimestamp(),
       source:            input.source,
       linkId:            input.linkId ?? '',
+      durationMs,
     };
 
     const config = getConfig();

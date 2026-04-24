@@ -186,6 +186,11 @@ export function handleApiListFiles(
 export function handleApiUploadFile(
   body: Record<string, unknown>
 ): GoogleAppsScript.Content.TextOutput {
+  // Wall-clock start for this upload request. Captured at handler entry so
+  // the recorded duration covers auth, folder setup, and bytes-to-Drive —
+  // which is what partners experience as the "upload" call.
+  const handlerStartMs = Date.now();
+
   const apiKey = String(body['api_key'] ?? '').trim().toLowerCase();
   const gate = gatekeep(apiKey);
   if (!gate.ok) return gate.response;
@@ -283,6 +288,7 @@ export function handleApiUploadFile(
     skippedDuplicates: 0,
     skippedNonPhoto:   0,
     source:            UploadSource.LINK,
+    durationMs:        Date.now() - handlerStartMs,
   });
 
   Logger.log(

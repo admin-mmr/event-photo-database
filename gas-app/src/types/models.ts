@@ -52,9 +52,10 @@ export interface UploadLogRecord {
   readonly totalSizeMb: number;       // Combined size of uploaded photos
   readonly skippedDuplicates: number; // Files skipped due to duplicate detection
   readonly skippedNonPhoto: number;   // Files skipped due to wrong MIME type
-  readonly uploadTimestamp: string;   // ISO 8601 timestamp
+  readonly uploadTimestamp: string;   // ISO 8601 timestamp of session completion
   readonly source: UploadSource;
   readonly linkId: string;            // Upload link ID used for this session; empty for admin uploads
+  readonly durationMs: number;        // Wall-clock upload duration in milliseconds; 0 if not measured (legacy rows)
 }
 
 /**

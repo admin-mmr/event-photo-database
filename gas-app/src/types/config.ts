@@ -126,6 +126,7 @@ export interface UploadLogSheetColumns {
   readonly UPLOAD_TIMESTAMP: 10;
   readonly SOURCE: 11;
   readonly LINK_ID: 12;  // Upload link ID used for this session (for forensic audit after rotation)
+  readonly DURATION_MS: 13;  // Wall-clock upload duration in ms; 0 on legacy rows
 }
 
 /**

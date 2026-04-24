@@ -431,12 +431,42 @@ describe('sheetMapper — Upload Log', () => {
       const record = toUploadLogRecord(row);
       expect(record!.uploadedBy).toBe('user1@example.com');
     });
+
+    it('defaults durationMs to 0 on legacy rows without the column', () => {
+      // Legacy rows (pre-duration-tracking) have only 12 columns.
+      const record = toUploadLogRecord(validRow);
+      expect(record!.durationMs).toBe(0);
+    });
+
+    it('reads durationMs from the new column when present', () => {
+      const row: unknown[] = [
+        ...validRow,
+        'link-uuid-1',  // linkId (col 12)
+        87654,          // durationMs (col 13)
+      ];
+      const record = toUploadLogRecord(row);
+      expect(record!.durationMs).toBe(87654);
+      expect(record!.linkId).toBe('link-uuid-1');
+    });
+
+    it('clamps negative durationMs to 0', () => {
+      const row: unknown[] = [...validRow, '', -100];
+      expect(toUploadLogRecord(row)!.durationMs).toBe(0);
+    });
   });
 
   describe('roundtrip: toUploadLogRecord → fromUploadLogRecord → toUploadLogRecord', () => {
     it('produces an identical record', () => {
       const original = toUploadLogRecord(validRow)!;
       const restored = toUploadLogRecord(fromUploadLogRecord(original));
+      expect(restored).toEqual(original);
+    });
+
+    it('preserves durationMs across the roundtrip', () => {
+      const row: unknown[] = [...validRow, 'link-xyz', 12345];
+      const original = toUploadLogRecord(row)!;
+      const restored = toUploadLogRecord(fromUploadLogRecord(original));
+      expect(restored!.durationMs).toBe(12345);
       expect(restored).toEqual(original);
     });
   });
