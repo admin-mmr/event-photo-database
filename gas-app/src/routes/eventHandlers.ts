@@ -10,6 +10,15 @@ import { ResultStatus } from '../types/enums';
 import { ServerResponse, WithSession } from '../types/responses';
 import { requireAdminOrFail, authenticateRequest } from '../middleware/authMiddleware';
 import {
+  sanitizePayload,
+  sanitizeString,
+  validateCreateEventPayload,
+  validateUpdateEventPayload,
+  validateCreateClubPayload,
+  validateUpdateClubPayload,
+  requireString,
+} from '../middleware/inputValidator';
+import {
   createEvent,
   updateEvent,
   listAll as listAllEvents,
@@ -36,17 +45,21 @@ export function serverCreateEvent(payload: WithSession): ServerResponse {
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
 
-    const result = createEvent(
-      { eventName: payload.eventName as string, eventDate: payload.eventDate as string },
-      auth.adminEmail
-    );
+    const raw = sanitizePayload(payload as unknown as Record<string, unknown>);
+    const eventValidation = validateCreateEventPayload(raw);
+    if (eventValidation.status !== ResultStatus.SUCCESS || !eventValidation.data) {
+      return { status: 'error', message: eventValidation.message, errors: eventValidation.errors };
+    }
+    const eventInput = eventValidation.data;
+
+    const result = createEvent(eventInput, auth.adminEmail);
     const warnings: string[] = [];
     if (result.status === ResultStatus.SUCCESS && result.data) {
       const eventRecord = result.data as { eventId: string; eventName: string; eventDate: string };
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.EVENT_CREATED,
         resourceType: 'event', resourceId: eventRecord.eventId,
-        details: { eventName: payload.eventName, eventDate: payload.eventDate },
+        details: { eventName: eventInput.eventName, eventDate: eventInput.eventDate },
       });
       try {
         notifyEventCreated(eventRecord.eventName, eventRecord.eventDate, auth.adminEmail);
@@ -107,21 +120,19 @@ export function serverUpdateEvent(payload: WithSession): ServerResponse {
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
-    const result = updateEvent(
-      {
-        eventId: payload.eventId as string,
-        ...(payload.eventName !== undefined && { eventName: payload.eventName as string }),
-        ...(payload.eventDate !== undefined && { eventDate: payload.eventDate as string }),
-      },
-      auth.adminEmail
-    );
+    const rawUpdate = sanitizePayload(payload as unknown as Record<string, unknown>);
+    const eventUpdateValidation = validateUpdateEventPayload(rawUpdate);
+    if (eventUpdateValidation.status !== ResultStatus.SUCCESS || !eventUpdateValidation.data) {
+      return { status: 'error', message: eventUpdateValidation.message, errors: eventUpdateValidation.errors };
+    }
+    const eventUpdateInput = eventUpdateValidation.data;
+
+    const result = updateEvent(eventUpdateInput, auth.adminEmail);
     if (result.status === ResultStatus.SUCCESS) {
-      const changes: Record<string, unknown> = { eventId: payload.eventId };
-      if (payload.eventName !== undefined) changes['eventName'] = payload.eventName;
-      if (payload.eventDate !== undefined) changes['eventDate'] = payload.eventDate;
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.EVENT_UPDATED,
-        resourceType: 'event', resourceId: payload.eventId as string, details: changes,
+        resourceType: 'event', resourceId: eventUpdateInput.eventId,
+        details: eventUpdateInput as unknown as Record<string, unknown>,
       });
     }
     return { status: result.status, message: result.message, data: result.data, errors: result.errors };
@@ -195,15 +206,19 @@ export function serverCreateClub(payload: WithSession): ServerResponse {
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
-    const result = createClub(
-      { displayName: payload.displayName as string, normalizedName: payload.normalizedName as string },
-      auth.adminEmail
-    );
+    const rawClub = sanitizePayload(payload as unknown as Record<string, unknown>);
+    const clubCreateValidation = validateCreateClubPayload(rawClub);
+    if (clubCreateValidation.status !== ResultStatus.SUCCESS || !clubCreateValidation.data) {
+      return { status: 'error', message: clubCreateValidation.message, errors: clubCreateValidation.errors };
+    }
+    const clubCreateInput = clubCreateValidation.data;
+
+    const result = createClub(clubCreateInput, auth.adminEmail);
     if (result.status === ResultStatus.SUCCESS) {
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.CLUB_CREATED,
-        resourceType: 'club', resourceId: payload.normalizedName as string,
-        details: { displayName: payload.displayName, normalizedName: payload.normalizedName },
+        resourceType: 'club', resourceId: clubCreateInput.normalizedName,
+        details: { displayName: clubCreateInput.displayName, normalizedName: clubCreateInput.normalizedName },
       });
     }
     return { status: result.status, message: result.message, data: result.data, errors: result.errors };
@@ -218,19 +233,19 @@ export function serverUpdateClub(payload: WithSession): ServerResponse {
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
-    const result = updateClub(
-      {
-        normalizedName: payload.normalizedName as string,
-        ...(payload.displayName !== undefined && { displayName: payload.displayName as string }),
-      },
-      auth.adminEmail
-    );
+    const rawClubUpdate = sanitizePayload(payload as unknown as Record<string, unknown>);
+    const clubUpdateValidation = validateUpdateClubPayload(rawClubUpdate);
+    if (clubUpdateValidation.status !== ResultStatus.SUCCESS || !clubUpdateValidation.data) {
+      return { status: 'error', message: clubUpdateValidation.message, errors: clubUpdateValidation.errors };
+    }
+    const clubUpdateInput = clubUpdateValidation.data;
+
+    const result = updateClub(clubUpdateInput, auth.adminEmail);
     if (result.status === ResultStatus.SUCCESS) {
-      const changes: Record<string, unknown> = { normalizedName: payload.normalizedName };
-      if (payload.displayName !== undefined) changes['displayName'] = payload.displayName;
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.CLUB_UPDATED,
-        resourceType: 'club', resourceId: payload.normalizedName as string, details: changes,
+        resourceType: 'club', resourceId: clubUpdateInput.normalizedName,
+        details: clubUpdateInput as unknown as Record<string, unknown>,
       });
     }
     return { status: result.status, message: result.message, data: result.data, errors: result.errors };
@@ -245,12 +260,17 @@ export function serverDeactivateClub(payload: WithSession<{ normalizedName: stri
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
-    const result = deactivateClub(payload.normalizedName);
+    const nameResult = requireString(sanitizeString(payload?.normalizedName), 'normalizedName');
+    if (nameResult.status !== ResultStatus.SUCCESS) {
+      return { status: 'error', message: nameResult.message, errors: nameResult.errors };
+    }
+    const normalizedName = nameResult.data!;
+    const result = deactivateClub(normalizedName);
     if (result.status === ResultStatus.SUCCESS) {
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.CLUB_DEACTIVATED,
-        resourceType: 'club', resourceId: payload.normalizedName,
-        details: { normalizedName: payload.normalizedName },
+        resourceType: 'club', resourceId: normalizedName,
+        details: { normalizedName },
       });
     }
     return { status: result.status, message: result.message, data: result.data };
@@ -265,12 +285,17 @@ export function serverReactivateClub(payload: WithSession<{ normalizedName: stri
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
-    const result = reactivateClub(payload.normalizedName);
+    const nameResult = requireString(sanitizeString(payload?.normalizedName), 'normalizedName');
+    if (nameResult.status !== ResultStatus.SUCCESS) {
+      return { status: 'error', message: nameResult.message, errors: nameResult.errors };
+    }
+    const normalizedName = nameResult.data!;
+    const result = reactivateClub(normalizedName);
     if (result.status === ResultStatus.SUCCESS) {
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.CLUB_REACTIVATED,
-        resourceType: 'club', resourceId: payload.normalizedName,
-        details: { normalizedName: payload.normalizedName },
+        resourceType: 'club', resourceId: normalizedName,
+        details: { normalizedName },
       });
     }
     return { status: result.status, message: result.message, data: result.data };

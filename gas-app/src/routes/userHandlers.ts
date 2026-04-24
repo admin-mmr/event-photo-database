@@ -5,9 +5,16 @@
  *         serverDeactivateUser, serverReactivateUser.
  */
 
-import { ResultStatus, UserRole, UserStatus } from '../types/enums';
+import { ResultStatus } from '../types/enums';
 import { ServerResponse, WithSession } from '../types/responses';
 import { requireAdminOrFail, resolveUser } from '../middleware/authMiddleware';
+import {
+  sanitizePayload,
+  sanitizeEmail,
+  validateCreateUserPayload,
+  validateUpdateUserPayload,
+  requireString,
+} from '../middleware/inputValidator';
 import { verifyGoogleIdToken } from '../services/tokenService';
 import { createSession } from '../services/sessionService';
 import { createUser, deactivateUser, reactivateUser, updateUser, recordLogin } from '../services/userService';
@@ -85,21 +92,20 @@ export function serverCreateUser(
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
-    const result = createUser(
-      {
-        email:     payload.email,
-        firstName: payload.firstName ?? '',
-        lastName:  payload.lastName  ?? '',
-        role:      payload.role as UserRole,
-        clubId:    payload.clubId,
-      },
-      auth.adminEmail
-    );
+
+    const raw = sanitizePayload(payload as unknown as Record<string, unknown>);
+    const validation = validateCreateUserPayload(raw);
+    if (validation.status !== ResultStatus.SUCCESS || !validation.data) {
+      return { status: 'error', message: validation.message, errors: validation.errors };
+    }
+    const input = validation.data;
+
+    const result = createUser(input, auth.adminEmail);
     if (result.status === ResultStatus.SUCCESS && result.data) {
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.USER_CREATED,
-        resourceType: 'user', resourceId: payload.email,
-        details: { email: payload.email, clubId: payload.clubId, role: payload.role },
+        resourceType: 'user', resourceId: input.email,
+        details: { email: input.email, clubId: input.clubId, role: input.role },
       });
       const warnings: string[] = [];
       try {
@@ -129,28 +135,21 @@ export function serverUpdateUser(payload: WithSession): ServerResponse {
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
-    const previous = findUserByEmail(payload.email as string);
-    const result = updateUser(
-      {
-        email:     payload.email as string,
-        ...(payload.firstName !== undefined && { firstName: payload.firstName as string }),
-        ...(payload.lastName  !== undefined && { lastName:  payload.lastName  as string }),
-        ...(payload.role      !== undefined && { role:      payload.role      as UserRole }),
-        ...(payload.status    !== undefined && { status:    payload.status    as UserStatus }),
-        ...(payload.clubId    !== undefined && { clubId:    payload.clubId    as string }),
-      },
-      auth.adminEmail
-    );
+
+    const raw = sanitizePayload(payload as unknown as Record<string, unknown>);
+    const validation = validateUpdateUserPayload(raw);
+    if (validation.status !== ResultStatus.SUCCESS || !validation.data) {
+      return { status: 'error', message: validation.message, errors: validation.errors };
+    }
+    const input = validation.data;
+
+    const previous = findUserByEmail(input.email);
+    const result = updateUser(input, auth.adminEmail);
     if (result.status === ResultStatus.SUCCESS && result.data) {
-      const changes: Record<string, unknown> = { email: payload.email };
-      if (payload.firstName !== undefined) changes['firstName'] = payload.firstName;
-      if (payload.lastName  !== undefined) changes['lastName']  = payload.lastName;
-      if (payload.role      !== undefined) changes['role']      = payload.role;
-      if (payload.status    !== undefined) changes['status']    = payload.status;
-      if (payload.clubId    !== undefined) changes['clubId']    = payload.clubId;
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.USER_UPDATED,
-        resourceType: 'user', resourceId: payload.email as string, details: changes,
+        resourceType: 'user', resourceId: input.email,
+        details: input as unknown as Record<string, unknown>,
       });
       try {
         if (previous && previous.role !== result.data.role) {
@@ -175,11 +174,16 @@ export function serverDeactivateUser(payload: WithSession<{ email: string }>): S
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
-    const result = deactivateUser(payload.email);
+    const emailResult = requireString(sanitizeEmail(payload?.email), 'email');
+    if (emailResult.status !== ResultStatus.SUCCESS) {
+      return { status: 'error', message: emailResult.message, errors: emailResult.errors };
+    }
+    const email = emailResult.data!;
+    const result = deactivateUser(email);
     if (result.status === ResultStatus.SUCCESS && result.data) {
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.USER_DEACTIVATED,
-        resourceType: 'user', resourceId: payload.email, details: { email: payload.email },
+        resourceType: 'user', resourceId: email, details: { email },
       });
       try {
         notifyUserStatusChanged(result.data, auth.adminEmail);
@@ -199,11 +203,16 @@ export function serverReactivateUser(payload: WithSession<{ email: string }>): S
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
-    const result = reactivateUser(payload.email);
+    const emailResult = requireString(sanitizeEmail(payload?.email), 'email');
+    if (emailResult.status !== ResultStatus.SUCCESS) {
+      return { status: 'error', message: emailResult.message, errors: emailResult.errors };
+    }
+    const email = emailResult.data!;
+    const result = reactivateUser(email);
     if (result.status === ResultStatus.SUCCESS && result.data) {
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.USER_REACTIVATED,
-        resourceType: 'user', resourceId: payload.email, details: { email: payload.email },
+        resourceType: 'user', resourceId: email, details: { email },
       });
       try {
         notifyUserStatusChanged(result.data, auth.adminEmail);
