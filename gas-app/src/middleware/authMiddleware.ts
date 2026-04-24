@@ -1,12 +1,13 @@
 import { ResultStatus, UserRole, UserStatus } from '../types/enums';
 import { UserRecord, UploadLinkRecord } from '../types/models';
-import { ServiceResult } from '../types/responses';
+import { ServiceResult, ServerResponse } from '../types/responses';
 import { getCurrentUserEmail } from '../services/authService';
 import { getAllRows } from '../services/sheetService';
 import { toUserRecord } from '../utils/sheetMapper';
 import { getConfig } from '../config/constants';
 import { lookupSession } from '../services/sessionService';
 import { findByToken } from '../services/uploadLinkService';
+import { requireRole } from './roleGuard';
 
 /**
  * AuthMiddleware — request authentication and user resolution pipeline.
@@ -209,4 +210,50 @@ export function canManageClubLinks(admin: UserRecord, clubName: string): boolean
   if (admin.role === UserRole.SUPER_ADMIN) return true;
   if (admin.role === UserRole.CLUB_ADMIN && admin.clubId === clubName) return true;
   return false;
+}
+
+// ─── google.script.run auth helpers ──────────────────────────────────────────
+
+/**
+ * Discriminated union returned by requireAdminOrFail / requireSuperAdminOrFail.
+ */
+export type AdminCheckResult =
+  | { ok: true;  adminEmail: string; adminRole: UserRole; adminClubId: string }
+  | { ok: false; response: ServerResponse };
+
+/**
+ * Accepts any authenticated admin (super_admin or club_admin).
+ * Use for operations that both tiers can perform within their own scope.
+ */
+export function requireAdminOrFail(sessionToken?: string): AdminCheckResult {
+  const authResult = authenticateRequest(sessionToken);
+  if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+    return { ok: false, response: { status: 'error', message: 'Authentication required' } };
+  }
+  const user = authResult.data;
+  if (user.role !== UserRole.SUPER_ADMIN && user.role !== UserRole.CLUB_ADMIN) {
+    return { ok: false, response: { status: 'error', message: 'Admin access required.' } };
+  }
+  return { ok: true, adminEmail: user.email, adminRole: user.role, adminClubId: user.clubId };
+}
+
+/**
+ * Requires super_admin role specifically.
+ * Use for global operations like creating clubs or masquerading.
+ */
+export function requireSuperAdminOrFail(sessionToken?: string): AdminCheckResult {
+  const authResult = authenticateRequest(sessionToken);
+  if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+    return { ok: false, response: { status: 'error', message: 'Authentication required' } };
+  }
+  const guard = requireRole(authResult.data.role, UserRole.SUPER_ADMIN);
+  if (guard.status !== ResultStatus.SUCCESS) {
+    return { ok: false, response: { status: 'error', message: guard.message } };
+  }
+  return {
+    ok: true,
+    adminEmail:  authResult.data.email,
+    adminRole:   authResult.data.role,
+    adminClubId: authResult.data.clubId,
+  };
 }

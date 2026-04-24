@@ -1,5 +1,28 @@
 import { ResultStatus } from './enums';
 
+// ─── google.script.run shared types ──────────────────────────────────────────
+
+/**
+ * Composite result returned by all google.script.run server functions.
+ * `warnings` carries non-fatal side-effect failures (e.g. email not sent,
+ * album creation failed) so the UI can show a non-blocking banner without
+ * rolling back the primary operation.
+ */
+export type ServerResponse = {
+  status:    string;
+  message:   string;
+  data?:     unknown;
+  errors?:   unknown;
+  /** Non-fatal side-effect failures the UI may surface as warnings. */
+  warnings?: string[];
+};
+
+/**
+ * Every google.script.run payload carries an optional sessionToken so the
+ * server can authenticate the caller.
+ */
+export type WithSession<T = Record<string, unknown>> = T & { sessionToken?: string };
+
 /**
  * Standardized result envelope returned by every service method.
  *
