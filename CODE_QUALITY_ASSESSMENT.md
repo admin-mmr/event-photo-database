@@ -224,28 +224,28 @@ Other Cloud Run notes:
 5. ❌ **Split `main.ts`** — move `serverXxx` handlers into per-area modules, leaving only the dispatcher. Not yet done; sequence after more test coverage lands.
 6. ✅ **Retry + backoff in `cloudRunClient.ts`** — 3 attempts, exponential backoff (750 ms → 1.5 s → 3 s) for 429/5xx; upstream `error` field preserved so callers distinguish retriable vs fatal.
 7. ✅ **Cache `getEventDriveTree()`** — 10-min PropertiesService cache keyed by `eventId`; `invalidateEventDriveTreeCache()` called from `serverCompleteUpload` after each upload.
-8. ❌ **Batch `updateRow` writes in `syncQueueService.drainSyncQueue`** — not yet done. Each `markInProgress` / `markDone` / `markAttemptFailed` still does a separate `getAllRows` + `updateRow`. Requires adding a `batchUpdateRows` helper to `sheetService` and restructuring the drain loop.
+8. ✅ **Batch `updateRow` writes in `drainSyncQueueTrigger`** — `batchUpdateRows()` added to `sheetService.ts`; `loadPendingItemsWithContext()` + pure compute helpers (`computeInProgressUpdate`, `computeDoneUpdate`, `computeFailedUpdate`, `buildQueueRowMap`) added to `syncQueueService.ts`; drain restructured into Phase A (batch mark in_progress) / Phase B (process) / Phase C (batch terminal writes). Sheet reads reduced from ~21 to 1 per drain run; writes from ~10 to 2. Tests: `sheetService.test.ts` +6 (79 total), `syncQueueService.test.ts` +33 (64 total).
 9. ✅ **Surface non-fatal side-effect failures** — `warnings?: string[]` added to `ServerResponse`; `serverVerifyGoogleToken`, `serverCreateUser`, and `serverCreateEvent` now return warnings for email/album failures instead of swallowing them.
 
 ### Nice to have (Medium)
 
 10. ❌ Split `photosService.ts` and `emailService.ts` along the lines in §1.1.
-11. ❌ Single source of truth for accepted MIME types (`MEDIA_MIME_TYPES` in `constants.ts`, `PHOTO_MIME_TYPES` in `photosService.ts`, `PILLOW_MIMES` in `cloud-run/main.py` still in sync by convention only).
+11. ✅ **Single source of truth for accepted MIME types** — `PHOTO_MIME_TYPES` in `photosService.ts` replaced with `new Set(Object.values(PhotoMimeType))` (canonical source: `PhotoMimeType` enum in `types/enums.ts`). Sync comment added to `cloud-run/main.py`. Also fixes a latent bug: WEBP was in the enum but excluded from the local list.
 12. ❌ Input validation for `google.script.run` handlers (route through same `inputValidator.ts` as `doPost`).
 13. ✅ `UrlFetchApp` mock added to `gasGlobals.ts` — `deleteProperty` and `resetMockScriptProperties()` helper added; `makeMockFileIter` still duplicated per test file (not yet consolidated).
-14. ❌ Bound the email retry queue size (unbounded PropertiesService growth for repeatedly-failing recipients).
+14. ✅ **Bound the email retry queue size** — `MAX_RETRY_QUEUE_SIZE = 50` and `MAX_RETRY_QUEUE_AGE_HOURS = 24` added to `emailService.ts`; `enqueueRetry` now purges entries older than 24 h and evicts the oldest when the queue is full. `emailService.test.ts` +4 (38 total).
 15. ✅ **`CacheService` → `PropertiesService` for `uploadPrepService` run state** — `saveRunState` / `loadRunState` / `deleteRunState` now use script-scoped `PropertiesService` so any admin can resume a run started by a different admin.
 
 ### Polish (Low)
 
-16. ⚠️ **Delete or archive `STALE_*` files** — `STALE_README.md`, `STALE_USER_GUIDE.*`, `STALE_XSD_Partner_Overview.pdf`, `STALE_flowcharts.html` still present; owner decision needed on git history.
+16. ✅ **Archived `STALE_*` files** — `STALE_README.md`, `STALE_USER_GUIDE.*`, `STALE_XSD_Partner_Overview.pdf`, `STALE_flowcharts.html`, `STALE_使用指南.md`, `STALE_湘舍动_用户手册_v1.0.docx` moved to `archive/`.
 17. ✅ **Deleted deprecated test stubs** — `authMiddleware.apiKey.test.ts` and `apiClientHandlers.test.ts` removed.
 18. ✅ **Excel lock-file added to `.gitignore`** — `.~lock.*#` pattern added.
-19. ❌ Guard `debugClientId` / `debugConfig` — still exported in production with no auth check.
+19. ✅ **Guard `debugClientId` / `debugConfig`** — both functions now check `getSuperAdmins()` against `Session.getActiveUser().getEmail()` and return early (with a permission-denied log) for non-super-admins.
 
 ---
 
-## 6. All fixes applied (latest commit `6a36d3a`)
+## 6. All fixes applied (latest commit `6a36d3a` + Pass 5)
 
 All 1,151 tests pass across 39 suites; `tsc --noEmit` clean.
 
@@ -300,17 +300,32 @@ Full coverage of `verifyGoogleIdToken`: empty token, network error, Google rejec
 `syncJobService`: createJob (counters, TTL), getJob (null/corrupt/default-merge), updateJob (pending→running, error append), incrementJobCounters (deltas, currentStep), completeJob (all terminal states, TTL extension), requestCancel (terminal guard), isCancelRequested, sweepExpired (expired+corrupt removal, non-job key safety).
 `syncQueueService`: enqueueBatchSync, getAllQueueItems (malformed row handling), loadPendingItems (stuck-item reset, FIFO order, SYNC_DRAIN_BATCH_SIZE cap), markInProgress (attempts++, IN_PROGRESS), markDone, markAttemptFailed (retry/exhaust at MAX_SYNC_ATTEMPTS/truncate), getQueueStatus (per-status counts, oldestPendingAt).
 
+### Pass 5
+
+**20. `batchUpdateRows()` in `sheetService.ts`** (§3.3)
+Writes a span of rows in one `setValues()` call. Accepts optional `preloadedRows` to fill filler rows without an extra `getValues` read.
+
+**21. Batch drain in `drainSyncQueueTrigger`** (`syncQueueService.ts`, `main.ts`)
+`loadPendingItemsWithContext()` returns pending items + full row map from a single `getAllRows` call. Pure helpers `computeInProgressUpdate`, `computeDoneUpdate`, `computeFailedUpdate`, `buildQueueRowMap` added. Drain restructured: Phase A batch-writes all in_progress updates; Phase C batch-writes all terminal states. Sheet API calls per 5-item drain: 21 reads + 10 writes → 1 read + 2 writes.
+
+**22. Single source of truth for MIME types** (`photosService.ts`, `cloud-run/main.py`)
+`PHOTO_MIME_TYPES` replaced with `new Set(Object.values(PhotoMimeType))`; sync comment added to Python. Latent bug fixed: WEBP was in `PhotoMimeType` but absent from the local list.
+
+**23. Guard debug exports** (`main.ts`)
+`debugClientId` / `debugConfig` check `getSuperAdmins()` against caller email; non-super-admins get a permission-denied log and early return.
+
+**24. Bound email retry queue** (`emailService.ts`)
+`MAX_RETRY_QUEUE_SIZE = 50`, `MAX_RETRY_QUEUE_AGE_HOURS = 24`; `enqueueRetry` purges stale entries and evicts oldest when full.
+
+**25. Archive stale files**
+`STALE_*` files moved to `archive/`.
+
 ---
 
 ## 7. Remaining work (pick up here next session)
 
 | # | Item | §ref | Priority |
 |---|------|------|----------|
-| 1 | Batch `updateRow` writes in `drainSyncQueueTrigger` — add `batchUpdateRows()` to `sheetService.ts`; pre-load rows once, write all markInProgress in one call, all terminal-state updates in one call | §3.3 | High |
-| 2 | Guard `debugClientId` / `debugConfig` — add `requireAdminOrFail` or restrict to editor-only | §1.6 | Low |
-| 3 | Single source of truth for MIME types — one canonical list in `constants.ts`, imported by `photosService.ts`; Python list in `cloud-run/main.py` kept in sync by comment | §1.6 | Medium |
-| 4 | Input validation for `google.script.run` handlers — route `serverXxx` payloads through `inputValidator.ts` | §1.5 | Medium |
-| 5 | `main.ts` split — extract 75+ `serverXxx` handlers into per-area route modules | §1.1 | High |
-| 6 | `emailService.ts` + `photosService.ts` god-file splits — sequence after `main.ts` split | §1.1 | Medium |
-| 7 | Bound email retry queue size — add max size / age-based purge in `emailService.ts` | §2.6 | Medium |
-| 8 | Archive/delete `STALE_*` files — owner decision on git history | §4 | Low |
+| 1 | `main.ts` split — extract 75+ `serverXxx` handlers into per-area route modules | §1.1 | High |
+| 2 | Input validation for `google.script.run` handlers — route `serverXxx` payloads through `inputValidator.ts` | §1.5 | Medium |
+| 3 | `emailService.ts` + `photosService.ts` god-file splits — sequence after `main.ts` split | §1.1 | Medium |

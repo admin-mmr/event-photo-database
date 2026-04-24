@@ -1,4 +1,4 @@
-import { ResultStatus } from '../types/enums';
+import { ResultStatus, PhotoMimeType } from '../types/enums';
 import { PhotosAlbumRecord, PhotosFileRecord } from '../types/models';
 import { ServiceResult } from '../types/responses';
 import { getConfig } from '../config/constants';
@@ -55,8 +55,13 @@ import {
 
 const PHOTOS_API_BASE = 'https://photoslibrary.googleapis.com/v1';
 
-/** MIME types eligible for Photos upload (mirrors PhotoMimeType enum). */
-const PHOTO_MIME_TYPES = ['image/jpeg', 'image/png', 'image/heic'];
+/**
+ * MIME types eligible for Photos upload.
+ * Single source of truth: derived from PhotoMimeType enum in types/enums.ts.
+ * The equivalent list in cloud-run/main.py (PILLOW_MIMES + HEIC_MIMES) must be
+ * kept in sync manually when this enum changes.
+ */
+const PHOTO_MIME_TYPES: ReadonlySet<string> = new Set(Object.values(PhotoMimeType));
 
 // ─── Low-level HTTP helpers ───────────────────────────────────────────────────
 
@@ -602,7 +607,7 @@ export function syncBatchFolderToAlbum(
     const mimeType = file.getMimeType();
 
     // Skip non-photo files
-    if (!PHOTO_MIME_TYPES.includes(mimeType)) {
+    if (!PHOTO_MIME_TYPES.has(mimeType)) {
       skipped++;
       if (jobId) incrementJobCounters(jobId, { photosSkipped: 1 });
       continue;
@@ -1183,7 +1188,7 @@ export function reconcileEventPhotos(
           const fileIter = batchFolder.getFiles();
           while (fileIter.hasNext()) {
             const file = fileIter.next();
-            if (PHOTO_MIME_TYPES.includes(file.getMimeType())) {
+            if (PHOTO_MIME_TYPES.has(file.getMimeType())) {
               clubDriveCount++;
             }
           }

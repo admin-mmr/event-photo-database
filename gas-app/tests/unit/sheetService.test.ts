@@ -1,4 +1,4 @@
-import { getAllRows, appendRow, findRowIndex, updateRow, getRowCount, ensureHeaders } from '../../src/services/sheetService';
+import { getAllRows, appendRow, findRowIndex, updateRow, batchUpdateRows, getRowCount, ensureHeaders } from '../../src/services/sheetService';
 import { mockSheets, resetMockSheets, createMockSheet, DEFAULT_USERS_ROWS } from '../mocks/gasGlobals';
 
 // We need to re-import SpreadsheetApp mock to override getSheetByName per test
@@ -124,6 +124,61 @@ describe('sheetService', () => {
 
     it('throws when rowIndex is 0', () => {
       expect(() => updateRow('Users', 0, ['data'])).toThrow();
+    });
+  });
+
+  // ─── batchUpdateRows ────────────────────────────────────────────────────────
+
+  describe('batchUpdateRows()', () => {
+    it('is a no-op when updates array is empty', () => {
+      batchUpdateRows('Users', []);
+      expect(mockSheets['Users'].getRange).not.toHaveBeenCalled();
+    });
+
+    it('writes a single update as a 1-row range', () => {
+      const row = ['admin@mmrunners.org', 'Admin', 'Tester', 'super_admin', 'active', '', '2025-01-01', 'system', ''];
+      batchUpdateRows('Users', [{ rowIndex: 2, row }]);
+      expect(mockSheets['Users'].getRange).toHaveBeenCalledWith(2, 1, 1, expect.any(Number));
+    });
+
+    it('writes multiple updates as a single range spanning min→max rowIndex', () => {
+      const rowA = ['a@example.com', 'A', 'A', 'club_admin', 'active', 'X', '2025-01-01', 'sys', ''];
+      const rowB = ['b@example.com', 'B', 'B', 'club_admin', 'active', 'Y', '2025-01-01', 'sys', ''];
+      batchUpdateRows('Users', [
+        { rowIndex: 2, row: rowA },
+        { rowIndex: 4, row: rowB },
+      ]);
+      // Range should span row 2 through row 4 (numRows = 3)
+      expect(mockSheets['Users'].getRange).toHaveBeenCalledWith(2, 1, 3, expect.any(Number));
+    });
+
+    it('uses preloadedRows to fill filler rows without an extra getValues call', () => {
+      const preloaded: unknown[][] = [
+        ['admin@mmrunners.org', 'A', 'B', 'super_admin', 'active', '', '2025-01-01', 'sys', ''],
+        ['user@example.com',   'C', 'D', 'club_admin',  'active', 'X', '2025-02-01', 'sys', ''],
+        ['other@example.com',  'E', 'F', 'club_admin',  'inactive','Y','2025-03-01', 'sys', ''],
+      ];
+      const updatedRow = ['admin@mmrunners.org', 'A', 'B', 'super_admin', 'inactive', '', '2025-01-01', 'sys', ''];
+      batchUpdateRows('Users', [{ rowIndex: 2, row: updatedRow }], preloaded);
+
+      // getRange should be called exactly once (for setValues), NOT twice (no extra getValues read)
+      expect(mockSheets['Users'].getRange).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws when rowIndex is 1 (header row)', () => {
+      expect(() => batchUpdateRows('Users', [{ rowIndex: 1, row: ['data'] }])).toThrow(
+        'Cannot update row 1: row 1 is the header.'
+      );
+    });
+
+    it('is a no-op when the sheet has no columns', () => {
+      const emptySheet = createMockSheet([]);
+      emptySheet.getLastColumn.mockReturnValue(0);
+      mockSpreadsheetApp.openById.mockReturnValue({
+        getSheetByName: jest.fn().mockReturnValue(emptySheet),
+      });
+      expect(() => batchUpdateRows('Users', [{ rowIndex: 2, row: ['x'] }])).not.toThrow();
+      expect(emptySheet.getRange).not.toHaveBeenCalled();
     });
   });
 

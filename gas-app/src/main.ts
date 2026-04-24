@@ -32,12 +32,14 @@ import {
 } from './services/syncJobService';
 import {
   enqueueBatchSync,
-  loadPendingItems,
-  markInProgress,
-  markDone,
-  markAttemptFailed,
+  loadPendingItemsWithContext,
+  computeInProgressUpdate,
+  computeDoneUpdate,
+  computeFailedUpdate,
   getQueueStatus,
 } from './services/syncQueueService';
+import { batchUpdateRows } from './services/sheetService';
+import { fromSyncQueueRecord } from './utils/sheetMapper';
 import { authenticateRequest, resolveUser } from './middleware/authMiddleware';
 import { requireRole } from './middleware/roleGuard';
 import { handleGet, handlePost } from './routes/router';
@@ -108,11 +110,18 @@ export function doPost(
   return handlePost(e);
 }
 
-// ─── Debug helper (run from GAS editor: select debugConfig → Run) ────────────
+// ─── Debug helpers (run from GAS editor: select function → Run) ──────────────
+// Both functions are guarded to super-admins only so they are safe to leave
+// exported in production.  Non-super-admins see a permission-denied log line.
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function debugClientId(): void {
-  /* global PropertiesService */
+  /* global PropertiesService, Session */
+  const callerEmail = Session.getActiveUser().getEmail();
+  if (!getSuperAdmins().includes(callerEmail)) {
+    Logger.log(`[debugClientId] Permission denied for ${callerEmail}`);
+    return;
+  }
   const clientId = PropertiesService.getScriptProperties().getProperty('GOOGLE_CLIENT_ID') ?? '(not set)';
   Logger.log('GOOGLE_CLIENT_ID = [' + clientId + ']');
   Logger.log('Length = ' + clientId.length);
@@ -121,6 +130,11 @@ export function debugClientId(): void {
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function debugConfig(): void {
   /* global ScriptApp, PropertiesService, Session */
+  const callerEmail = Session.getActiveUser().getEmail();
+  if (!getSuperAdmins().includes(callerEmail)) {
+    Logger.log(`[debugConfig] Permission denied for ${callerEmail}`);
+    return;
+  }
   const clientId     = PropertiesService.getScriptProperties().getProperty('GOOGLE_CLIENT_ID')     ?? '(not set)';
   const clientSecret = PropertiesService.getScriptProperties().getProperty('GOOGLE_CLIENT_SECRET') ?? '(not set)';
   const deployUrl    = ScriptApp.getService().getUrl();
@@ -2053,7 +2067,10 @@ export function drainSyncQueueTrigger(): void {
   let failed    = 0;
 
   try {
-    const items = loadPendingItems();
+    // ── Load pending items + row map in a single getAllRows() call ────────────
+    const { items, rowMap, allRows, sheetName: sqSheetName } =
+      loadPendingItemsWithContext();
+
     if (items.length === 0) {
       Logger.log('[drainSyncQueueTrigger] Queue empty — nothing to drain');
       return;
@@ -2061,7 +2078,7 @@ export function drainSyncQueueTrigger(): void {
 
     Logger.log(`[drainSyncQueueTrigger] Processing ${items.length} item(s)`);
 
-    // Build a club display-name lookup map once (avoids repeated sheet reads)
+    // Build club display-name lookup once (avoids repeated sheet reads)
     const clubDisplayNames: Record<string, string> = {};
     try {
       listActiveClubs().forEach((c) => {
@@ -2071,30 +2088,54 @@ export function drainSyncQueueTrigger(): void {
       Logger.log(`[drainSyncQueueTrigger] Could not load clubs (non-fatal): ${String(clubErr)}`);
     }
 
+    const now = new Date();
+
+    // ── Phase A: mark all items in_progress — one batch sheet write ──────────
+    type DrainItem = { rowIndex: number; inProgress: ReturnType<typeof computeInProgressUpdate> };
+    const drainItems = new Map<string, DrainItem>();
+    const inProgressWrites: Array<{ rowIndex: number; row: unknown[] }> = [];
+
+    for (const item of items) {
+      const entry = rowMap.get(item.queueId);
+      if (!entry) {
+        Logger.log(`[drainSyncQueueTrigger] Row not found for queueId=${item.queueId} — skipping`);
+        continue;
+      }
+      const inProgress = computeInProgressUpdate(entry.record, now);
+      drainItems.set(item.queueId, { rowIndex: entry.rowIndex, inProgress });
+      inProgressWrites.push({ rowIndex: entry.rowIndex, row: fromSyncQueueRecord(inProgress) });
+    }
+
+    if (inProgressWrites.length > 0) {
+      batchUpdateRows(sqSheetName, inProgressWrites, allRows);
+    }
+
+    // ── Phase B: run each sync; collect terminal-state updates ───────────────
+    const terminalWrites: Array<{ rowIndex: number; row: unknown[] }> = [];
+
     for (const item of items) {
       processed++;
       const label = `queueId=${item.queueId} event=${item.eventId} club=${item.clubName} batch=${item.batchFolderName}`;
 
-      try {
-        // Mark in_progress (increments attempts counter)
-        const inProgressRecord = markInProgress(item.queueId);
-        if (!inProgressRecord) {
-          Logger.log(`[drainSyncQueueTrigger] Row not found for ${label} — skipping`);
-          continue;
-        }
+      const drainItem = drainItems.get(item.queueId);
+      if (!drainItem) continue; // row was not found in Phase A — already logged
 
-        // Resolve event metadata
+      const { rowIndex, inProgress } = drainItem;
+
+      try {
         const event = findEventById(item.eventId);
         if (!event) {
-          markAttemptFailed(item.queueId, `Event not found: ${item.eventId}`);
           Logger.log(`[drainSyncQueueTrigger] Event not found for ${label} — marked failed`);
           failed++;
+          terminalWrites.push({
+            rowIndex,
+            row: fromSyncQueueRecord(computeFailedUpdate(inProgress, `Event not found: ${item.eventId}`)),
+          });
           continue;
         }
 
         const clubDisplayName =
-          clubDisplayNames[item.clubName] ??
-          item.clubName.replace(/_/g, ' ');
+          clubDisplayNames[item.clubName] ?? item.clubName.replace(/_/g, ' ');
 
         // Call the Photos sync (may take up to ~1 min for large batches)
         const syncResult = syncBatchToAlbums(
@@ -2110,21 +2151,36 @@ export function drainSyncQueueTrigger(): void {
           syncResult.status === ResultStatus.SUCCESS ||
           syncResult.status === ResultStatus.WARNING
         ) {
-          markDone(item.queueId);
           Logger.log(`[drainSyncQueueTrigger] Done: ${label} — ${syncResult.message}`);
           succeeded++;
+          terminalWrites.push({
+            rowIndex,
+            row: fromSyncQueueRecord(computeDoneUpdate(inProgress, now)),
+          });
         } else {
-          markAttemptFailed(item.queueId, syncResult.message);
           Logger.log(`[drainSyncQueueTrigger] Sync error for ${label}: ${syncResult.message}`);
           failed++;
+          terminalWrites.push({
+            rowIndex,
+            row: fromSyncQueueRecord(computeFailedUpdate(inProgress, syncResult.message)),
+          });
         }
       } catch (itemErr) {
         const msg = String(itemErr);
-        markAttemptFailed(item.queueId, msg);
         Logger.log(`[drainSyncQueueTrigger] Exception for ${label}: ${msg}`);
         failed++;
+        terminalWrites.push({
+          rowIndex,
+          row: fromSyncQueueRecord(computeFailedUpdate(inProgress, msg)),
+        });
       }
     }
+
+    // ── Phase C: write all terminal states — one batch sheet write ────────────
+    if (terminalWrites.length > 0) {
+      batchUpdateRows(sqSheetName, terminalWrites);
+    }
+
   } catch (outerErr) {
     Logger.log(`[drainSyncQueueTrigger] Fatal error: ${String(outerErr)}`);
   }

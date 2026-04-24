@@ -15,6 +15,11 @@ import {
   enqueueBatchSync,
   getAllQueueItems,
   loadPendingItems,
+  loadPendingItemsWithContext,
+  buildQueueRowMap,
+  computeInProgressUpdate,
+  computeDoneUpdate,
+  computeFailedUpdate,
   markInProgress,
   markDone,
   markAttemptFailed,
@@ -453,5 +458,212 @@ describe('getQueueStatus()', () => {
       makeQueueRow('q1', 'e', 'c', 'f1', 'b', '2026-04-19T09:00:00.000Z', SyncQueueStatus.DONE),
     ]);
     expect(getQueueStatus().oldestPendingAt).toBe('');
+  });
+});
+
+// ─── loadPendingItemsWithContext() ────────────────────────────────────────────
+
+describe('loadPendingItemsWithContext()', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('returns empty items, empty rowMap, and allRows when sheet is empty', () => {
+    mockGetAllRows.mockReturnValue([]);
+    const ctx = loadPendingItemsWithContext();
+    expect(ctx.items).toHaveLength(0);
+    expect(ctx.rowMap.size).toBe(0);
+    expect(ctx.allRows).toEqual([]);
+    expect(ctx.sheetName).toBe('Sync_Queue');
+  });
+
+  it('returns the same pending items as loadPendingItems()', () => {
+    const rows = [
+      makeQueueRow('q-p1', 'evt', 'c', 'f1', 'b', '2026-04-19T08:00:00.000Z', SyncQueueStatus.PENDING),
+      makeQueueRow('q-p2', 'evt', 'c', 'f2', 'b', '2026-04-19T09:00:00.000Z', SyncQueueStatus.PENDING),
+      makeQueueRow('q-d1', 'evt', 'c', 'f3', 'b', '2026-04-19T09:00:00.000Z', SyncQueueStatus.DONE),
+    ];
+    mockGetAllRows.mockReturnValue(rows);
+    const ctx = loadPendingItemsWithContext();
+    expect(ctx.items).toHaveLength(2);
+    expect(ctx.items[0].queueId).toBe('q-p1');
+    expect(ctx.items[1].queueId).toBe('q-p2');
+  });
+
+  it('builds a rowMap containing all parseable records (pending + done + failed)', () => {
+    const rows = [
+      makeQueueRow('q-p', 'evt', 'c', 'f1', 'b', '2026-04-19T08:00:00.000Z', SyncQueueStatus.PENDING),
+      makeQueueRow('q-d', 'evt', 'c', 'f2', 'b', '2026-04-19T08:00:00.000Z', SyncQueueStatus.DONE),
+      makeQueueRow('q-f', 'evt', 'c', 'f3', 'b', '2026-04-19T08:00:00.000Z', SyncQueueStatus.FAILED),
+    ];
+    mockGetAllRows.mockReturnValue(rows);
+    const { rowMap } = loadPendingItemsWithContext();
+    expect(rowMap.size).toBe(3);
+    expect(rowMap.get('q-p')?.rowIndex).toBe(2); // row 2 = data index 0
+    expect(rowMap.get('q-d')?.rowIndex).toBe(3);
+    expect(rowMap.get('q-f')?.rowIndex).toBe(4);
+  });
+
+  it('resets stuck IN_PROGRESS items in the sheet and includes them as pending', () => {
+    const stuckAttempt = new Date(Date.now() - 20 * 60_000).toISOString();
+    mockGetAllRows.mockReturnValue([
+      makeQueueRow('q-stuck', 'evt', 'c', 'f', 'b', '2026-04-19T08:00:00.000Z',
+        SyncQueueStatus.IN_PROGRESS, 1, stuckAttempt),
+    ]);
+    const ctx = loadPendingItemsWithContext();
+    expect(ctx.items).toHaveLength(1);
+    expect(ctx.items[0].status).toBe(SyncQueueStatus.PENDING);
+    expect(mockUpdateRow).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns allRows as the raw rows from getAllRows', () => {
+    const rows = [makeQueueRow('q-1')];
+    mockGetAllRows.mockReturnValue(rows);
+    const ctx = loadPendingItemsWithContext();
+    expect(ctx.allRows).toBe(rows); // same reference
+  });
+
+  it('calls getAllRows exactly once', () => {
+    mockGetAllRows.mockReturnValue([makeQueueRow('q-1')]);
+    loadPendingItemsWithContext();
+    expect(mockGetAllRows).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── buildQueueRowMap() ───────────────────────────────────────────────────────
+
+describe('buildQueueRowMap()', () => {
+  it('returns an empty map for empty input', () => {
+    expect(buildQueueRowMap([])).toEqual(new Map());
+  });
+
+  it('maps queueId → correct 1-based rowIndex', () => {
+    const rows = [
+      makeQueueRow('q-001'), // data index 0 → sheet row 2
+      makeQueueRow('q-002'), // data index 1 → sheet row 3
+      makeQueueRow('q-003'), // data index 2 → sheet row 4
+    ];
+    const map = buildQueueRowMap(rows);
+    expect(map.get('q-001')?.rowIndex).toBe(2);
+    expect(map.get('q-002')?.rowIndex).toBe(3);
+    expect(map.get('q-003')?.rowIndex).toBe(4);
+  });
+
+  it('silently omits malformed rows', () => {
+    const rows = [[], makeQueueRow('q-good'), ['bad']];
+    const map = buildQueueRowMap(rows);
+    expect(map.size).toBe(1);
+    expect(map.has('q-good')).toBe(true);
+  });
+
+  it('stores the parsed record in the map entry', () => {
+    const rows = [makeQueueRow('q-001', 'evt-42', 'Speed_Demon')];
+    const entry = buildQueueRowMap(rows).get('q-001');
+    expect(entry?.record.eventId).toBe('evt-42');
+    expect(entry?.record.clubName).toBe('Speed_Demon');
+  });
+});
+
+// ─── computeInProgressUpdate() ───────────────────────────────────────────────
+
+describe('computeInProgressUpdate()', () => {
+  const baseRecord = {
+    queueId: 'q-001', eventId: 'evt', clubName: 'c',
+    batchFolderId: 'f', batchFolderName: 'b',
+    enqueuedAt: '2026-04-19T10:00:00.000Z',
+    status: SyncQueueStatus.PENDING,
+    attempts: 0, lastAttemptAt: '', errorMsg: '', completedAt: '',
+  };
+
+  it('sets status to IN_PROGRESS', () => {
+    expect(computeInProgressUpdate(baseRecord).status).toBe(SyncQueueStatus.IN_PROGRESS);
+  });
+
+  it('increments attempts by 1', () => {
+    expect(computeInProgressUpdate(baseRecord).attempts).toBe(1);
+    expect(computeInProgressUpdate({ ...baseRecord, attempts: 2 }).attempts).toBe(3);
+  });
+
+  it('sets lastAttemptAt to an ISO timestamp close to the provided now', () => {
+    const now = new Date('2026-04-23T12:00:00.000Z');
+    expect(computeInProgressUpdate(baseRecord, now).lastAttemptAt).toBe('2026-04-23T12:00:00.000Z');
+  });
+
+  it('does not mutate the input record', () => {
+    const copy = { ...baseRecord };
+    computeInProgressUpdate(baseRecord);
+    expect(baseRecord).toEqual(copy);
+  });
+});
+
+// ─── computeDoneUpdate() ─────────────────────────────────────────────────────
+
+describe('computeDoneUpdate()', () => {
+  const baseRecord = {
+    queueId: 'q-001', eventId: 'evt', clubName: 'c',
+    batchFolderId: 'f', batchFolderName: 'b',
+    enqueuedAt: '2026-04-19T10:00:00.000Z',
+    status: SyncQueueStatus.IN_PROGRESS,
+    attempts: 1, lastAttemptAt: '2026-04-19T10:05:00.000Z',
+    errorMsg: 'old error', completedAt: '',
+  };
+
+  it('sets status to DONE', () => {
+    expect(computeDoneUpdate(baseRecord).status).toBe(SyncQueueStatus.DONE);
+  });
+
+  it('clears errorMsg', () => {
+    expect(computeDoneUpdate(baseRecord).errorMsg).toBe('');
+  });
+
+  it('sets completedAt to the provided now', () => {
+    const now = new Date('2026-04-23T15:00:00.000Z');
+    expect(computeDoneUpdate(baseRecord, now).completedAt).toBe('2026-04-23T15:00:00.000Z');
+  });
+
+  it('does not mutate the input record', () => {
+    const copy = { ...baseRecord };
+    computeDoneUpdate(baseRecord);
+    expect(baseRecord).toEqual(copy);
+  });
+});
+
+// ─── computeFailedUpdate() ───────────────────────────────────────────────────
+
+describe('computeFailedUpdate()', () => {
+  const baseRecord = {
+    queueId: 'q-001', eventId: 'evt', clubName: 'c',
+    batchFolderId: 'f', batchFolderName: 'b',
+    enqueuedAt: '2026-04-19T10:00:00.000Z',
+    status: SyncQueueStatus.IN_PROGRESS,
+    attempts: 1, lastAttemptAt: '2026-04-19T10:05:00.000Z',
+    errorMsg: '', completedAt: '',
+  };
+
+  it('resets to PENDING when attempts < MAX_SYNC_ATTEMPTS (3)', () => {
+    expect(computeFailedUpdate({ ...baseRecord, attempts: 1 }, 'err').status)
+      .toBe(SyncQueueStatus.PENDING);
+    expect(computeFailedUpdate({ ...baseRecord, attempts: 2 }, 'err').status)
+      .toBe(SyncQueueStatus.PENDING);
+  });
+
+  it('marks FAILED when attempts >= MAX_SYNC_ATTEMPTS (3)', () => {
+    expect(computeFailedUpdate({ ...baseRecord, attempts: 3 }, 'err').status)
+      .toBe(SyncQueueStatus.FAILED);
+    expect(computeFailedUpdate({ ...baseRecord, attempts: 4 }, 'err').status)
+      .toBe(SyncQueueStatus.FAILED);
+  });
+
+  it('stores the error message', () => {
+    expect(computeFailedUpdate(baseRecord, 'Photos API down').errorMsg).toBe('Photos API down');
+  });
+
+  it('truncates errorMsg to 500 characters', () => {
+    const long = 'x'.repeat(600);
+    expect(computeFailedUpdate(baseRecord, long).errorMsg.length).toBe(500);
+  });
+
+  it('does not mutate the input record', () => {
+    const copy = { ...baseRecord };
+    computeFailedUpdate(baseRecord, 'err');
+    expect(baseRecord).toEqual(copy);
   });
 });

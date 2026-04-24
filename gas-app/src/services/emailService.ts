@@ -742,6 +742,21 @@ const MAX_RETRY_ATTEMPTS   = 3;
  */
 const RETRY_BACKOFF_HOURS = [0.5, 1, 2] as const;
 
+/**
+ * Hard cap on queue length.  If enqueueing a new item would push the queue above
+ * this limit, the oldest entry is dropped (already escalated to the audit log in a
+ * prior drain) to prevent the PropertiesService value from growing without bound.
+ * GAS script properties have a 500 KB total limit; each retry entry is ~1–2 KB.
+ */
+const MAX_RETRY_QUEUE_SIZE = 50;
+
+/**
+ * Entries older than this (in hours) are considered stale and purged during
+ * enqueue, even if they have not yet been drained.  This prevents a backlog of
+ * failed attempts from a prior outage from being re-attempted days later.
+ */
+const MAX_RETRY_QUEUE_AGE_HOURS = 24;
+
 /* global PropertiesService */
 
 function loadRetryQueue(): PendingRetry[] {
@@ -766,11 +781,39 @@ function saveRetryQueue(queue: PendingRetry[]): void {
  * The first retry will be attempted after RETRY_BACKOFF_HOURS[0] hours.
  *
  * Called by send() when a quota failure occurs (retry: true, the default).
+ *
+ * Enforces two guards before appending:
+ *   1. Age purge — entries older than MAX_RETRY_QUEUE_AGE_HOURS are dropped;
+ *      a stale backlog from a past outage should not resurface days later.
+ *   2. Size cap — if the queue would exceed MAX_RETRY_QUEUE_SIZE after the new
+ *      entry is added, the oldest item is evicted to keep PropertiesService usage
+ *      bounded (~1–2 KB/entry × 50 = well within the 500 KB total limit).
  */
 function enqueueRetry(opts: SendOptions): void {
-  const queue    = loadRetryQueue();
-  const nextAt   = new Date(Date.now() + RETRY_BACKOFF_HOURS[0] * 3600 * 1000).toISOString();
-  const id       = `retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let queue = loadRetryQueue();
+
+  // ── 1. Purge stale entries ────────────────────────────────────────────────
+  const cutoff = new Date(Date.now() - MAX_RETRY_QUEUE_AGE_HOURS * 3600 * 1000).toISOString();
+  const before = queue.length;
+  queue = queue.filter(item => item.firstFailedAt >= cutoff);
+  if (queue.length < before) {
+    Logger.log(
+      `[emailService.enqueueRetry] Purged ${before - queue.length} stale entry/entries ` +
+      `(older than ${MAX_RETRY_QUEUE_AGE_HOURS} h)`,
+    );
+  }
+
+  // ── 2. Enforce size cap ───────────────────────────────────────────────────
+  if (queue.length >= MAX_RETRY_QUEUE_SIZE) {
+    const evicted = queue.shift(); // remove oldest
+    Logger.log(
+      `[emailService.enqueueRetry] Queue at capacity (${MAX_RETRY_QUEUE_SIZE}); ` +
+      `evicted oldest entry id=${evicted?.id ?? '?'} type=${evicted?.type ?? '?'}`,
+    );
+  }
+
+  const nextAt = new Date(Date.now() + RETRY_BACKOFF_HOURS[0] * 3600 * 1000).toISOString();
+  const id     = `retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   queue.push({
     id,

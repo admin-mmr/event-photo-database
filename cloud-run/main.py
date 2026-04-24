@@ -61,7 +61,10 @@ RAW_EXTENSIONS = frozenset(
     [".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw"]
 )
 
-# MIME types we can convert via Pillow (transparency-capable types get white-fill)
+# MIME types we can convert via Pillow (transparency-capable types get white-fill).
+# Canonical source of truth for accepted upload formats is PhotoMimeType enum in
+# gas-app/src/types/enums.ts — keep this list in sync when that enum changes.
+# HEIC/HEIF are handled separately via pillow-heif (see HEIC_MIMES below).
 PILLOW_MIMES = frozenset([
     "image/png",
     "image/webp",

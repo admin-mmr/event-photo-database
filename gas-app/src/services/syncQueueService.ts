@@ -104,55 +104,160 @@ export function getAllQueueItems(): SyncQueueRecord[] {
 }
 
 /**
- * Returns queue items suitable for the next drain run:
- *   1. All rows with status = 'pending'
- *   2. Rows with status = 'in_progress' that have been stuck for more than
- *      SYNC_STUCK_THRESHOLD_MINUTES (rescheduled as pending by this call).
- *
- * Returns at most SYNC_DRAIN_BATCH_SIZE items, oldest-first, so the queue
- * drains in FIFO order.
- *
- * Side effect: stuck in_progress rows are reset to pending in the sheet
- * before this function returns, so that each row is only returned once even
- * if this function is called multiple times within a single script execution.
+ * Context returned by loadPendingItemsWithContext().
+ * Contains the pending item list plus everything the drain loop needs to
+ * perform batched sheet writes without additional getAllRows() calls.
  */
-export function loadPendingItems(): SyncQueueRecord[] {
+export interface SyncQueueDrainContext {
+  /** Items ready to process (pending + reset-stuck). At most SYNC_DRAIN_BATCH_SIZE. */
+  items:     SyncQueueRecord[];
+  /** queueId → { 1-based rowIndex, current record } for the entire sheet. */
+  rowMap:    Map<string, { rowIndex: number; record: SyncQueueRecord }>;
+  /** Raw sheet rows (0-based, no header) as loaded by this call. */
+  allRows:   unknown[][];
+  /** Sheet tab name (for passing to batchUpdateRows). */
+  sheetName: string;
+}
+
+/**
+ * Loads pending queue items and returns them alongside the full row map and
+ * raw rows — all from a single getAllRows() call.
+ *
+ * Prefer this over loadPendingItems() when the drain loop will perform batched
+ * sheet writes, since it eliminates a second sheet read.
+ *
+ * Stuck in_progress items are reset to pending with individual updateRow()
+ * calls before returning (these are rare and not worth batching).
+ */
+export function loadPendingItemsWithContext(): SyncQueueDrainContext {
   const name = sheetName();
   const allRows = getAllRows(name);
   const now = new Date();
   const stuckThresholdMs = SYNC_STUCK_THRESHOLD_MINUTES * 60 * 1000;
 
   const pending: SyncQueueRecord[] = [];
+  const rowMap = new Map<string, { rowIndex: number; record: SyncQueueRecord }>();
 
   for (let i = 0; i < allRows.length; i++) {
     const record = toSyncQueueRecord(allRows[i]);
     if (!record) continue;
 
+    const rowIndex = i + 2; // +1 for 0→1-base, +1 for skipped header
+
     if (record.status === SyncQueueStatus.PENDING) {
       pending.push(record);
+      rowMap.set(record.queueId, { rowIndex, record });
     } else if (record.status === SyncQueueStatus.IN_PROGRESS) {
-      // Check if stuck
+      let effectiveRecord = record;
       if (record.lastAttemptAt) {
-        const lastAttempt = new Date(record.lastAttemptAt);
-        const ageMs = now.getTime() - lastAttempt.getTime();
+        const ageMs = now.getTime() - new Date(record.lastAttemptAt).getTime();
         if (ageMs > stuckThresholdMs) {
-          Logger.log(`[SyncQueueService.loadPendingItems] Stuck item detected: ${record.queueId} (${Math.round(ageMs / 60000)} min old) — resetting to pending`);
-          // Reset to pending so it gets retried
-          const rowIndex = i + 2; // +1 for 0→1 base, +1 for header
-          const updated: SyncQueueRecord = {
-            ...record,
-            status: SyncQueueStatus.PENDING,
-          };
-          updateRow(name, rowIndex, fromSyncQueueRecord(updated));
-          pending.push(updated);
+          Logger.log(
+            `[SyncQueueService.loadPendingItemsWithContext] Stuck item: ${record.queueId} ` +
+            `(${Math.round(ageMs / 60000)} min) — resetting to pending`
+          );
+          effectiveRecord = { ...record, status: SyncQueueStatus.PENDING };
+          updateRow(name, rowIndex, fromSyncQueueRecord(effectiveRecord));
+          pending.push(effectiveRecord);
         }
       }
+      rowMap.set(record.queueId, { rowIndex, record: effectiveRecord });
+    } else {
+      // done / failed — include in rowMap so Phase A can find them if needed
+      rowMap.set(record.queueId, { rowIndex, record });
     }
 
     if (pending.length >= SYNC_DRAIN_BATCH_SIZE) break;
   }
 
-  return pending;
+  return { items: pending, rowMap, allRows, sheetName: name };
+}
+
+/**
+ * Returns queue items suitable for the next drain run:
+ *   1. All rows with status = 'pending'
+ *   2. Rows with status = 'in_progress' stuck for > SYNC_STUCK_THRESHOLD_MINUTES.
+ *
+ * Returns at most SYNC_DRAIN_BATCH_SIZE items, oldest-first (FIFO).
+ * Stuck items are reset to pending (single updateRow per item — rare).
+ *
+ * Delegates to loadPendingItemsWithContext(). Prefer that function when the
+ * caller also needs the row map for batched sheet writes.
+ */
+export function loadPendingItems(): SyncQueueRecord[] {
+  return loadPendingItemsWithContext().items;
+}
+
+/**
+ * Builds a queueId → { 1-based rowIndex, record } lookup from pre-loaded rows.
+ * Exported for testing and for callers that already have allRows in memory.
+ */
+export function buildQueueRowMap(
+  allRows: unknown[][]
+): Map<string, { rowIndex: number; record: SyncQueueRecord }> {
+  const map = new Map<string, { rowIndex: number; record: SyncQueueRecord }>();
+  for (let i = 0; i < allRows.length; i++) {
+    const record = toSyncQueueRecord(allRows[i]);
+    if (record) {
+      map.set(record.queueId, { rowIndex: i + 2, record });
+    }
+  }
+  return map;
+}
+
+/**
+ * Pure function — returns the in-progress version of a record.
+ * Does not touch the sheet; persist with batchUpdateRows.
+ */
+export function computeInProgressUpdate(
+  record: SyncQueueRecord,
+  now = new Date()
+): SyncQueueRecord {
+  return {
+    ...record,
+    status:        SyncQueueStatus.IN_PROGRESS,
+    attempts:      record.attempts + 1,
+    lastAttemptAt: now.toISOString(),
+  };
+}
+
+/**
+ * Pure function — returns the done version of a record.
+ */
+export function computeDoneUpdate(
+  record: SyncQueueRecord,
+  now = new Date()
+): SyncQueueRecord {
+  return {
+    ...record,
+    status:      SyncQueueStatus.DONE,
+    completedAt: now.toISOString(),
+    errorMsg:    '',
+  };
+}
+
+/**
+ * Pure function — returns the failed or re-queued version of a record after a
+ * failed sync attempt. Marks permanently FAILED if record.attempts ≥
+ * MAX_SYNC_ATTEMPTS (pass the record returned by computeInProgressUpdate so
+ * the incremented attempts count is reflected). Otherwise resets to PENDING.
+ */
+export function computeFailedUpdate(
+  record: SyncQueueRecord,
+  errorMsg: string
+): SyncQueueRecord {
+  const exhausted = record.attempts >= MAX_SYNC_ATTEMPTS;
+  if (exhausted) {
+    Logger.log(
+      `[SyncQueueService.computeFailedUpdate] queueId ${record.queueId} exhausted ` +
+      `${MAX_SYNC_ATTEMPTS} attempts — marking FAILED`
+    );
+  }
+  return {
+    ...record,
+    status:   exhausted ? SyncQueueStatus.FAILED : SyncQueueStatus.PENDING,
+    errorMsg: errorMsg.substring(0, 500),
+  };
 }
 
 /**

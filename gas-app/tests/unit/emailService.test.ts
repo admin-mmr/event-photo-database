@@ -13,8 +13,10 @@ import { UserRecord } from '../../src/types/models';
 import {
   mockSheets,
   resetMockSheets,
+  resetMockScriptProperties,
   setupEmailPreferencesSheet,
   mockMailApp,
+  mockScriptProperties,
   setMockMailAppQuota,
   TEST_ADMIN_EMAIL,
   TEST_USER_EMAIL,
@@ -460,6 +462,94 @@ describe('emailService', () => {
       notifyUserCreated(testUser, TEST_ADMIN_EMAIL);
       const call = mockMailApp.sendEmail.mock.calls[0][0] as Record<string, unknown>;
       expect(call.to).toMatch(/^[a-z0-9@.,]+$/);
+    });
+  });
+
+  // ── Email retry queue guards ───────────────────────────────────────────────
+
+  describe('enqueueRetry() — size cap and age purge', () => {
+    const RETRY_QUEUE_KEY = 'EMAIL_RETRY_QUEUE';
+
+    /** Helper — seed the PropertiesService retry queue with N fake entries. */
+    function seedRetryQueue(entries: object[]): void {
+      mockScriptProperties.setProperty(RETRY_QUEUE_KEY, JSON.stringify(entries));
+    }
+
+    /** Helper — read the retry queue back from the mock store. */
+    function readRetryQueue(): object[] {
+      const raw = mockScriptProperties.getProperty(RETRY_QUEUE_KEY);
+      return raw ? JSON.parse(raw) as object[] : [];
+    }
+
+    /** Helper — build a minimal retry entry. */
+    function makeEntry(id: string, firstFailedAt: string): object {
+      return { id, type: 'USER_CREATED', to: ['x@x.com'], cc: [], subject: 'S',
+               html: '<p></p>', resourceId: '', firstFailedAt,
+               attempts: 0, nextAttemptAt: '2099-01-01T00:00:00.000Z', lastError: '' };
+    }
+
+    beforeEach(() => {
+      resetMockScriptProperties();
+      setupEmailPreferencesSheet([
+        [TEST_ADMIN_EMAIL, true, true, true, true, false, false, '2026-04-01T10:00:00Z'],
+      ]);
+      setMockMailAppQuota(0); // force enqueueRetry to be called
+    });
+
+    it('purges entries older than 24 h before adding a new one', () => {
+      const staleAt  = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(); // 25 h ago
+      const freshAt  = new Date(Date.now() -  1 * 60 * 60 * 1000).toISOString(); // 1 h ago
+      seedRetryQueue([
+        makeEntry('stale-1', staleAt),
+        makeEntry('fresh-1', freshAt),
+      ]);
+
+      notifyUserCreated(testUser, TEST_ADMIN_EMAIL); // triggers enqueueRetry
+
+      const queue = readRetryQueue();
+      // stale entry should be gone; fresh entry + new entry should remain
+      const ids = queue.map((e) => (e as { id: string }).id);
+      expect(ids).not.toContain('stale-1');
+      expect(ids).toContain('fresh-1');
+    });
+
+    it('does not purge entries younger than 24 h', () => {
+      const recentAt = new Date(Date.now() - 23 * 60 * 60 * 1000).toISOString(); // 23 h ago
+      seedRetryQueue([makeEntry('recent-1', recentAt)]);
+
+      notifyUserCreated(testUser, TEST_ADMIN_EMAIL);
+
+      const ids = readRetryQueue().map((e) => (e as { id: string }).id);
+      expect(ids).toContain('recent-1');
+    });
+
+    it('evicts the oldest entry when queue is at MAX_RETRY_QUEUE_SIZE (50)', () => {
+      const freshAt = new Date(Date.now() - 60_000).toISOString(); // 1 min ago
+      const entries = Array.from({ length: 50 }, (_, i) =>
+        makeEntry(`entry-${i}`, freshAt)
+      );
+      seedRetryQueue(entries);
+
+      notifyUserCreated(testUser, TEST_ADMIN_EMAIL);
+
+      const queue = readRetryQueue();
+      // Queue should still be 50 (evict 1, add 1)
+      expect(queue.length).toBe(50);
+      // Oldest (entry-0) should have been evicted
+      const ids = queue.map((e) => (e as { id: string }).id);
+      expect(ids).not.toContain('entry-0');
+    });
+
+    it('does not evict when queue is below MAX_RETRY_QUEUE_SIZE', () => {
+      const freshAt = new Date(Date.now() - 60_000).toISOString();
+      const entries = Array.from({ length: 10 }, (_, i) =>
+        makeEntry(`entry-${i}`, freshAt)
+      );
+      seedRetryQueue(entries);
+
+      notifyUserCreated(testUser, TEST_ADMIN_EMAIL);
+
+      expect(readRetryQueue().length).toBe(11); // 10 existing + 1 new
     });
   });
 });

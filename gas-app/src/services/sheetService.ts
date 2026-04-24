@@ -115,6 +115,75 @@ export function updateRow(
 }
 
 /**
+ * Writes multiple rows in a single range-write API call.
+ *
+ * All updates are merged into one setValues() covering the span from the
+ * smallest to the largest rowIndex. Any intermediate rows that are not in
+ * `updates` are filled from `preloadedRows` (0-based, no header row) when
+ * provided, or fetched from the sheet with one getValues() call.
+ *
+ * Pass `preloadedRows` when you already have the sheet data in memory (e.g.
+ * the return value of getAllRows) to avoid an extra API read.
+ *
+ * @param sheetName     Target sheet tab name
+ * @param updates       Rows to write — rowIndex is 1-based (as returned by findRowIndex)
+ * @param preloadedRows Optional pre-fetched data rows (index 0 = sheet data row 2)
+ */
+export function batchUpdateRows(
+  sheetName: string,
+  updates: Array<{ rowIndex: number; row: unknown[] }>,
+  preloadedRows?: unknown[][]
+): void {
+  if (updates.length === 0) return;
+
+  const sheet = getSheet(sheetName);
+  const rowIndices = updates.map(u => u.rowIndex);
+  const minRow = Math.min(...rowIndices);
+  const maxRow = Math.max(...rowIndices);
+
+  if (minRow < 2) {
+    throw new Error(`Cannot update row ${minRow}: row 1 is the header.`);
+  }
+
+  const numCols = sheet.getLastColumn();
+  if (numCols === 0) return;
+
+  const numRows = maxRow - minRow + 1;
+
+  // Build the values matrix for the range (min..max), filling non-updated rows
+  // from the preloaded cache or a fresh sheet read.
+  let baseValues: unknown[][];
+  if (preloadedRows) {
+    // preloadedRows[0] corresponds to sheet row 2 (0-based data, header excluded)
+    baseValues = Array.from({ length: numRows }, (_, i) => {
+      const dataIdx = (minRow - 2) + i; // 1-based sheet row → 0-based data index
+      const existing = preloadedRows[dataIdx];
+      if (existing) {
+        const padded = [...existing];
+        while (padded.length < numCols) padded.push('');
+        return padded;
+      }
+      return Array<unknown>(numCols).fill('');
+    });
+  } else {
+    baseValues = sheet
+      .getRange(minRow, 1, numRows, numCols)
+      .getValues() as unknown[][];
+  }
+
+  // Overlay the caller's updates onto the matrix
+  for (const { rowIndex, row } of updates) {
+    const i = rowIndex - minRow; // 0-based index within the range
+    const padded = [...row];
+    while (padded.length < numCols) padded.push('');
+    baseValues[i] = padded;
+  }
+
+  // Single setValues call covering the entire span
+  sheet.getRange(minRow, 1, numRows, numCols).setValues(baseValues);
+}
+
+/**
  * Returns the number of data rows in a sheet (excluding header).
  */
 export function getRowCount(sheetName: string): number {
