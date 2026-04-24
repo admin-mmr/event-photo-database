@@ -475,7 +475,11 @@ function handleOAuthCallback(code: string): GoogleAppsScript.HTML.HtmlOutput {
   Logger.log(`[Router.handleOAuthCallback] token result: status=${tokenResult.status} msg="${tokenResult.message}"`);
 
   if (tokenResult.status !== ResultStatus.SUCCESS || !tokenResult.data) {
-    return loginPage(`Google sign-in failed: ${tokenResult.message ?? 'Unknown error'}`);
+    return loginPage(
+      '登录失败，请重试。如果问题持续，请联系 admin@mmrunners.org。\n' +
+      `Sign-in failed — please try again. If the problem persists, email admin@mmrunners.org.\n` +
+      `(Detail: ${tokenResult.message ?? 'Unknown error'})`
+    );
   }
 
   const email = tokenResult.data.email;
@@ -494,7 +498,8 @@ function handleOAuthCallback(code: string): GoogleAppsScript.HTML.HtmlOutput {
       Logger.log(`[Router.handleOAuthCallback] notifySecurityEvent failed (non-fatal): ${String(emailErr)}`);
     }
     return loginPage(
-      userResult.message ?? 'Your account is not registered. Contact the administrator.'
+      `您是跑团联络员吗？请联系 admin@mmrunners.org 把您的邮箱权限设置好。我们现在没找到 ${email}。\n` +
+      `Are you a club coordinator? Email admin@mmrunners.org to get ${email} added.`
     );
   }
 

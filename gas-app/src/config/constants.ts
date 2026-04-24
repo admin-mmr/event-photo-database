@@ -31,15 +31,19 @@ export const ADMIN_CLUB_ID = '__admin__';
  */
 export const COLUMNS: SheetColumnMap = {
   USERS: {
+    // Sheet columns (0-based):
+    //   email(0) first_name(1) last_name(2) role(3) club_id(4)
+    //   notify_new_events(5) notify_daily_digest(6) status(7)
+    //   added_date(8) added_by(9) last_login_at(10)
     EMAIL:         0,
     FIRST_NAME:    1,
     LAST_NAME:     2,
     ROLE:          3,
-    STATUS:        4,
-    CLUB_ID:       5,
-    ADDED_DATE:    6,
-    ADDED_BY:      7,
-    LAST_LOGIN_AT: 8,
+    CLUB_ID:       4,
+    STATUS:        7,
+    ADDED_DATE:    8,
+    ADDED_BY:      9,
+    LAST_LOGIN_AT: 10,
   },
   EVENTS: {
     EVENT_ID: 0,
@@ -84,11 +88,17 @@ export const COLUMNS: SheetColumnMap = {
     REQUEST_COUNT: 2,
   },
   CLUBS: {
-    DISPLAY_NAME: 0,
-    NORMALIZED_NAME: 1,
-    STATUS: 2,
-    ADDED_DATE: 3,
-    ADDED_BY: 4,
+    // Sheet columns (0-based):
+    //   club_id(0) display_name(1) normalized_name(2) drive_folder_id(3)
+    //   photos_album_prefix(4) status(5) added_date(6) added_by(7)
+    CLUB_ID:             0,
+    DISPLAY_NAME:        1,
+    NORMALIZED_NAME:     2,
+    DRIVE_FOLDER_ID:     3,
+    PHOTOS_ALBUM_PREFIX: 4,
+    STATUS:              5,
+    ADDED_DATE:          6,
+    ADDED_BY:            7,
   },
   AUDIT_LOG: {
     AUDIT_ID:      0,
@@ -175,8 +185,10 @@ export const USERS_HEADERS: ReadonlyArray<string> = [
   'FIRST_NAME',
   'LAST_NAME',
   'ROLE',
-  'STATUS',
   'CLUB_ID',
+  'NOTIFY_NEW_EVENTS',
+  'NOTIFY_DAILY_DIGEST',
+  'STATUS',
   'ADDED_DATE',
   'ADDED_BY',
   'LAST_LOGIN_AT',

@@ -91,15 +91,18 @@ export interface RateLimitSheetColumns {
  * Volunteers are not pre-registered; they authenticate on demand via upload links.
  */
 export interface UserSheetColumns {
+  // Sheet: email(0) first_name(1) last_name(2) role(3) club_id(4)
+  //        notify_new_events(5) notify_daily_digest(6) status(7)
+  //        added_date(8) added_by(9) last_login_at(10)
   readonly EMAIL:          0;  // Google account email (primary key, lowercase)
   readonly FIRST_NAME:     1;  // Given name from Google profile
   readonly LAST_NAME:      2;  // Family name from Google profile
   readonly ROLE:           3;  // 'super_admin' | 'club_admin'
-  readonly STATUS:         4;  // 'active' | 'inactive'
-  readonly CLUB_ID:        5;  // normalizedName of the club (club_admin only; empty for super_admin)
-  readonly ADDED_DATE:     6;  // ISO 8601 date: "YYYY-MM-DD"
-  readonly ADDED_BY:       7;  // Admin email who created the record
-  readonly LAST_LOGIN_AT:  8;  // ISO 8601 timestamp of most recent login; empty until first login
+  readonly CLUB_ID:        4;  // normalizedName of the club (club_admin only; empty for super_admin)
+  readonly STATUS:         7;  // 'active' | 'inactive'
+  readonly ADDED_DATE:     8;  // ISO 8601 date: "YYYY-MM-DD"
+  readonly ADDED_BY:       9;  // Admin email who created the record
+  readonly LAST_LOGIN_AT: 10;  // ISO 8601 timestamp of most recent login; empty until first login
 }
 
 export interface EventSheetColumns {
@@ -148,11 +151,14 @@ export interface UploadLinksSheetColumns {
 }
 
 export interface ClubSheetColumns {
-  readonly DISPLAY_NAME: 0;     // Human-readable display name (may include Chinese characters)
-  readonly NORMALIZED_NAME: 1;  // Drive-safe identifier (ASCII, underscores only)
-  readonly STATUS: 2;           // "active" | "inactive"
-  readonly ADDED_DATE: 3;       // ISO 8601 date "YYYY-MM-DD"
-  readonly ADDED_BY: 4;         // Admin email
+  readonly CLUB_ID:             0;  // Auto-increment integer ID (sheet-managed, not written by code)
+  readonly DISPLAY_NAME:        1;  // Human-readable display name (may include Chinese characters)
+  readonly NORMALIZED_NAME:     2;  // Drive-safe identifier (ASCII, underscores only)
+  readonly DRIVE_FOLDER_ID:     3;  // Google Drive folder ID for this club
+  readonly PHOTOS_ALBUM_PREFIX: 4;  // Google Photos album name prefix
+  readonly STATUS:              5;  // "active" | "inactive"
+  readonly ADDED_DATE:          6;  // ISO 8601 date "YYYY-MM-DD"
+  readonly ADDED_BY:            7;  // Admin email
 }
 
 export interface PhotosAlbumsSheetColumns {

@@ -2,8 +2,8 @@ import { ResultStatus } from '../types/enums';
 import { ClubRecord } from '../types/models';
 import { CreateClubInput, UpdateClubInput } from '../types/requests';
 import { ServiceResult, PaginatedResult, ValidationError } from '../types/responses';
-import { getConfig } from '../config/constants';
-import { getAllRows, appendRow, findRowIndex, updateRow, ensureHeaders } from './sheetService';
+import { getConfig, COLUMNS } from '../config/constants';
+import { getAllRows, appendRow, findRowIndex, updateRow, ensureHeaders, getRow } from './sheetService';
 import { toClubRecord, fromClubRecord } from '../utils/sheetMapper';
 import { toIsoDate } from '../utils/dateFormatter';
 
@@ -22,7 +22,12 @@ import { toIsoDate } from '../utils/dateFormatter';
  *   - Clubs are managed entirely via the admin UI; no static seed list
  */
 
-const CLUB_HEADERS = ['displayName', 'normalizedName', 'status', 'addedDate', 'addedBy'];
+// Must match the actual Clubs sheet header row exactly (case-sensitive).
+const CLUB_HEADERS = [
+  'club_id', 'display_name', 'normalized_name',
+  'drive_folder_id', 'photos_album_prefix',
+  'status', 'added_date', 'added_by',
+];
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -30,13 +35,21 @@ function sheetName(): string {
   return getConfig().SHEET_NAMES.CLUBS;
 }
 
+/* global Logger */
+
 /**
  * Returns all valid ClubRecords from the Clubs sheet.
- * If the sheet is empty, seeds it from the legacy static APPROVED_CLUBS list.
+ * Never throws — returns [] on schema or read errors so callers
+ * (dashboard, upload page) degrade gracefully instead of crashing.
  */
 function loadAllClubs(): ClubRecord[] {
   const name = sheetName();
-  ensureHeaders(name, CLUB_HEADERS);
+  try {
+    ensureHeaders(name, CLUB_HEADERS);
+  } catch (err) {
+    Logger.log(`[ClubService] Header check failed — returning empty clubs list. ${String(err)}`);
+    return [];
+  }
   const rows = getAllRows(name);
   return rows
     .map(toClubRecord)
@@ -145,7 +158,7 @@ export function updateClub(
   };
 
   const name = sheetName();
-  const rowIndex = findRowIndex(name, 1 /* NORMALIZED_NAME col */, existing.normalizedName);
+  const rowIndex = findRowIndex(name, COLUMNS.CLUBS.NORMALIZED_NAME, existing.normalizedName);
   if (rowIndex < 0) {
     return {
       status: ResultStatus.ERROR,
@@ -153,7 +166,11 @@ export function updateClub(
     };
   }
 
-  updateRow(name, rowIndex, fromClubRecord(updated));
+  const rawRow = getRow(name, rowIndex);
+  const clubId           = String(rawRow[COLUMNS.CLUBS.CLUB_ID]             ?? '');
+  const driveFolderId    = String(rawRow[COLUMNS.CLUBS.DRIVE_FOLDER_ID]     ?? '');
+  const photosAlbumPrefix = String(rawRow[COLUMNS.CLUBS.PHOTOS_ALBUM_PREFIX] ?? '');
+  updateRow(name, rowIndex, fromClubRecord(updated, clubId, driveFolderId, photosAlbumPrefix));
 
   return {
     status: ResultStatus.SUCCESS,
@@ -184,7 +201,7 @@ export function deactivateClub(normalizedName: string): ServiceResult<ClubRecord
 
   const updated: ClubRecord = { ...existing, status: 'inactive' };
   const name = sheetName();
-  const rowIndex = findRowIndex(name, 1, normalizedName);
+  const rowIndex = findRowIndex(name, COLUMNS.CLUBS.NORMALIZED_NAME, normalizedName);
   if (rowIndex < 0) {
     return {
       status: ResultStatus.ERROR,
@@ -192,7 +209,11 @@ export function deactivateClub(normalizedName: string): ServiceResult<ClubRecord
     };
   }
 
-  updateRow(name, rowIndex, fromClubRecord(updated));
+  const rawRow = getRow(name, rowIndex);
+  const clubId            = String(rawRow[COLUMNS.CLUBS.CLUB_ID]             ?? '');
+  const driveFolderId     = String(rawRow[COLUMNS.CLUBS.DRIVE_FOLDER_ID]     ?? '');
+  const photosAlbumPrefix = String(rawRow[COLUMNS.CLUBS.PHOTOS_ALBUM_PREFIX] ?? '');
+  updateRow(name, rowIndex, fromClubRecord(updated, clubId, driveFolderId, photosAlbumPrefix));
 
   return {
     status: ResultStatus.SUCCESS,
@@ -222,7 +243,7 @@ export function reactivateClub(normalizedName: string): ServiceResult<ClubRecord
 
   const updated: ClubRecord = { ...existing, status: 'active' };
   const name = sheetName();
-  const rowIndex = findRowIndex(name, 1, normalizedName);
+  const rowIndex = findRowIndex(name, COLUMNS.CLUBS.NORMALIZED_NAME, normalizedName);
   if (rowIndex < 0) {
     return {
       status: ResultStatus.ERROR,
@@ -230,7 +251,11 @@ export function reactivateClub(normalizedName: string): ServiceResult<ClubRecord
     };
   }
 
-  updateRow(name, rowIndex, fromClubRecord(updated));
+  const rawRow = getRow(name, rowIndex);
+  const clubId            = String(rawRow[COLUMNS.CLUBS.CLUB_ID]             ?? '');
+  const driveFolderId     = String(rawRow[COLUMNS.CLUBS.DRIVE_FOLDER_ID]     ?? '');
+  const photosAlbumPrefix = String(rawRow[COLUMNS.CLUBS.PHOTOS_ALBUM_PREFIX] ?? '');
+  updateRow(name, rowIndex, fromClubRecord(updated, clubId, driveFolderId, photosAlbumPrefix));
 
   return {
     status: ResultStatus.SUCCESS,

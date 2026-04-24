@@ -69,8 +69,8 @@ export function resolveUser(email: string): ServiceResult<UserRecord> {
     return {
       status: ResultStatus.ERROR,
       message:
-        'Access denied. Your Google account is not registered in this system. ' +
-        'Contact an administrator to request access.',
+        `您是跑团联络员吗？请联系 admin@mmrunners.org 把您的邮箱权限设置好。我们现在没找到 ${email}。\n` +
+        `Are you a club coordinator? Email admin@mmrunners.org to get ${email} added.`,
     };
   }
 
@@ -78,8 +78,8 @@ export function resolveUser(email: string): ServiceResult<UserRecord> {
     return {
       status: ResultStatus.ERROR,
       message:
-        'Your account has been deactivated. ' +
-        'Contact an administrator to restore access.',
+        `您的账号 ${email} 已被停用。如需恢复，请联系 admin@mmrunners.org。\n` +
+        `Account ${email} has been deactivated. Email admin@mmrunners.org to restore access.`,
     };
   }
 

@@ -115,6 +115,18 @@ export function updateRow(
 }
 
 /**
+ * Returns the raw cell values for a single data row (1-based rowIndex).
+ * Returns [] if rowIndex is out of range.
+ */
+export function getRow(sheetName: string, rowIndex: number): unknown[] {
+  if (rowIndex < 2) return [];
+  const sheet = getSheet(sheetName);
+  const lastCol = sheet.getLastColumn();
+  if (lastCol === 0) return [];
+  return sheet.getRange(rowIndex, 1, 1, lastCol).getValues()[0] as unknown[];
+}
+
+/**
  * Writes multiple rows in a single range-write API call.
  *
  * All updates are merged into one setValues() covering the span from the

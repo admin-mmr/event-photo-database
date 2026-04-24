@@ -41,12 +41,13 @@ function formatSheetDate(value: unknown): string {
  * Converts a raw Sheets row to a UserRecord.
  * Returns null if the row is structurally invalid or has an unrecognized role.
  *
- * Column order: EMAIL(0) FIRST_NAME(1) LAST_NAME(2) ROLE(3) STATUS(4)
- *               CLUB_ID(5) ADDED_DATE(6) ADDED_BY(7) LAST_LOGIN_AT(8)
+ * Column order: EMAIL(0) FIRST_NAME(1) LAST_NAME(2) ROLE(3) CLUB_ID(4)
+ *               NOTIFY_NEW_EVENTS(5) NOTIFY_DAILY_DIGEST(6) STATUS(7)
+ *               ADDED_DATE(8) ADDED_BY(9) LAST_LOGIN_AT(10)
  */
 export function toUserRecord(row: unknown[]): UserRecord | null {
   const COL = COLUMNS.USERS;
-  // Minimum required: columns 0-7 (LAST_LOGIN_AT col 8 is optional — may be absent on older rows)
+  // Minimum required: columns 0-10 (LAST_LOGIN_AT col 11 is optional — may be absent on older rows)
   if (row.length <= COL.ADDED_BY) return null;
 
   const email = String(row[COL.EMAIL] ?? '').trim().toLowerCase();
@@ -72,16 +73,25 @@ export function toUserRecord(row: unknown[]): UserRecord | null {
 
 /**
  * Converts a UserRecord back to a Sheets row array.
- * Column order must match COLUMNS.USERS exactly.
+ * Column order must match COLUMNS.USERS exactly:
+ *   email(0) first_name(1) last_name(2) role(3) club_id(4)
+ *   notify_new_events(5) notify_daily_digest(6) status(7)
+ *   added_date(8) added_by(9) last_login_at(10)
+ *
+ * notify_* columns are not part of UserRecord — pass empty string so
+ * new rows leave them blank. For updates, the caller is responsible
+ * for preserving existing notify values if needed.
  */
-export function fromUserRecord(record: UserRecord): unknown[] {
+export function fromUserRecord(record: UserRecord, notifyNewEvents = '', notifyDailyDigest = ''): unknown[] {
   return [
     record.email,
     record.firstName,
     record.lastName,
     record.role,
-    record.status,
     record.clubId,
+    notifyNewEvents,
+    notifyDailyDigest,
+    record.status,
     record.addedDate,
     record.addedBy,
     record.lastLoginAt,
@@ -214,6 +224,10 @@ export function fromUploadLogRecord(record: UploadLogRecord): unknown[] {
 /**
  * Converts a raw Sheets row to a ClubRecord.
  * Returns null if required fields are missing or status is invalid.
+ *
+ * Column order: club_id(0) display_name(1) normalized_name(2)
+ *   drive_folder_id(3) photos_album_prefix(4) status(5)
+ *   added_date(6) added_by(7)
  */
 export function toClubRecord(row: unknown[]): ClubRecord | null {
   const COL = COLUMNS.CLUBS;
@@ -238,11 +252,22 @@ export function toClubRecord(row: unknown[]): ClubRecord | null {
 /**
  * Converts a ClubRecord back to a Sheets row array.
  * Column order must match COLUMNS.CLUBS exactly.
+ * club_id(0), drive_folder_id(3), and photos_album_prefix(4) are
+ * sheet-managed — pass empty strings so existing values are preserved
+ * via the caller reading them first when doing an update.
  */
-export function fromClubRecord(record: ClubRecord): unknown[] {
+export function fromClubRecord(
+  record: ClubRecord,
+  clubId = '',
+  driveFolderId = '',
+  photosAlbumPrefix = ''
+): unknown[] {
   return [
+    clubId,
     record.displayName,
     record.normalizedName,
+    driveFolderId,
+    photosAlbumPrefix,
     record.status,
     record.addedDate,
     record.addedBy,

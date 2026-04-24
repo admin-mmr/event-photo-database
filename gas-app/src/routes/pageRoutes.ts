@@ -99,11 +99,12 @@ export function errorPage(message: string): GoogleAppsScript.HTML.HtmlOutput {
  */
 export function dashboardPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
   return renderTemplate('dashboard', { sessionToken,
-    userEmail:   user.email,
-    userRole:    user.role,
-    clubId:      user.clubId,
-    isAdmin:     isAdmin(user.role),
+    userEmail:    user.email,
+    userRole:     user.role,
+    clubId:       user.clubId,
+    isAdmin:      isAdmin(user.role),
     isSuperAdmin: isSuperAdmin(user.role),
+    runningClub:  isSuperAdmin(user.role) ? '' : (user.clubId ?? ''),
   });
 }
 

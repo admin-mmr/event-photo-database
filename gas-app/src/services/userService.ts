@@ -2,8 +2,8 @@ import { ResultStatus, UserRole, UserStatus } from '../types/enums';
 import { UserRecord } from '../types/models';
 import { CreateUserInput, UpdateUserInput } from '../types/requests';
 import { ServiceResult, PaginatedResult, ValidationError } from '../types/responses';
-import { getConfig } from '../config/constants';
-import { getAllRows, appendRow, findRowIndex, updateRow } from './sheetService';
+import { getConfig, COLUMNS } from '../config/constants';
+import { getAllRows, appendRow, findRowIndex, updateRow, getRow } from './sheetService';
 import { toUserRecord, fromUserRecord } from '../utils/sheetMapper';
 import { toIsoDate } from '../utils/dateFormatter';
 
@@ -190,7 +190,7 @@ export function updateUser(
   };
 
   const config = getConfig();
-  const rowIndex = findRowIndex(config.SHEET_NAMES.USERS, 0, existing.email);
+  const rowIndex = findRowIndex(config.SHEET_NAMES.USERS, COLUMNS.USERS.EMAIL, existing.email);
   if (rowIndex < 0) {
     return {
       status: ResultStatus.ERROR,
@@ -198,7 +198,11 @@ export function updateUser(
     };
   }
 
-  updateRow(config.SHEET_NAMES.USERS, rowIndex, fromUserRecord(updated));
+  // Preserve notify_* column values that are not part of UserRecord
+  const rawRow = getRow(config.SHEET_NAMES.USERS, rowIndex);
+  const notifyNew   = String(rawRow[5] ?? '');
+  const notifyDaily = String(rawRow[6] ?? '');
+  updateRow(config.SHEET_NAMES.USERS, rowIndex, fromUserRecord(updated, notifyNew, notifyDaily));
 
   return { status: ResultStatus.SUCCESS, message: 'User updated successfully', data: updated };
 }
@@ -213,11 +217,15 @@ export function recordLogin(email: string): void {
   if (!existing) return;
 
   const config = getConfig();
-  const rowIndex = findRowIndex(config.SHEET_NAMES.USERS, 0, email.trim().toLowerCase());
+  const rowIndex = findRowIndex(config.SHEET_NAMES.USERS, COLUMNS.USERS.EMAIL, email.trim().toLowerCase());
   if (rowIndex < 0) return;
 
+  // Preserve notify_* column values that are not part of UserRecord
+  const rawRow = getRow(config.SHEET_NAMES.USERS, rowIndex);
+  const notifyNew   = String(rawRow[5] ?? '');
+  const notifyDaily = String(rawRow[6] ?? '');
   const updated: UserRecord = { ...existing, lastLoginAt: new Date().toISOString() };
-  updateRow(config.SHEET_NAMES.USERS, rowIndex, fromUserRecord(updated));
+  updateRow(config.SHEET_NAMES.USERS, rowIndex, fromUserRecord(updated, notifyNew, notifyDaily));
 }
 
 /**

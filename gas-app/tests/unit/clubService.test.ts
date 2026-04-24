@@ -27,12 +27,15 @@ import { ResultStatus } from '../../src/types/enums';
 
 // ─── Test data ────────────────────────────────────────────────────────────────
 
-/** Sample Clubs sheet rows: displayName | normalizedName | status | addedDate | addedBy */
+/**
+ * Sample Clubs sheet rows matching the actual sheet schema:
+ * club_id | display_name | normalized_name | drive_folder_id | photos_album_prefix | status | added_date | added_by
+ */
 const DEFAULT_CLUBS_ROWS: unknown[][] = [
-  ['新蜂',        'New_Bee',       'active',   '2025-01-01', 'system'],
-  ['岚山',        'Misty_Mountain', 'active',  '2025-01-01', 'system'],
-  ['南开',        'Nankai',         'active',  '2025-01-01', 'system'],
-  ['驰跑团',       'CHI',            'inactive','2025-01-01', 'system'],
+  ['1', '新蜂',   'New_Bee',        '', '', 'active',   '2025-01-01', 'system'],
+  ['2', '岚山',   'Misty_Mountain', '', '', 'active',   '2025-01-01', 'system'],
+  ['3', '南开',   'Nankai',         '', '', 'active',   '2025-01-01', 'system'],
+  ['4', '驰跑团', 'CHI',            '', '', 'inactive', '2025-01-01', 'system'],
 ];
 
 // ─── Setup helpers ────────────────────────────────────────────────────────────
@@ -48,7 +51,12 @@ const mockSpreadsheetApp = (global as Record<string, unknown>)['SpreadsheetApp']
  *   - getRange(1, 1, 1, n) → header row (for ensureHeaders)
  *   - getRange(2, 1, n, m) → data rows (for getAllRows)
  */
-const CLUB_HEADERS = ['displayName', 'normalizedName', 'status', 'addedDate', 'addedBy'];
+// Must match the actual Clubs sheet header row (8 columns).
+const CLUB_HEADERS = [
+  'club_id', 'display_name', 'normalized_name',
+  'drive_folder_id', 'photos_album_prefix',
+  'status', 'added_date', 'added_by',
+];
 
 function createClubSheet(dataRows: unknown[][] = DEFAULT_CLUBS_ROWS) {
   const mockSetValues = jest.fn();
@@ -126,9 +134,9 @@ describe('clubService', () => {
       expect(result.total).toBe(4);
     });
 
-    it('seeds from APPROVED_CLUBS when Clubs sheet is completely empty', () => {
-      // Simulate a truly empty sheet: getLastRow() = 0 → ensureHeaders writes headers
-      // then getAllRows returns [] → seed path fires.
+    it('returns empty list when Clubs sheet is completely empty (no crash)', () => {
+      // Simulate a truly empty sheet: getLastRow() = 0 → ensureHeaders writes headers,
+      // then getAllRows returns [] → listAll returns empty result.
       const emptySheet = {
         getLastRow: jest.fn().mockReturnValue(0),
         getLastColumn: jest.fn().mockReturnValue(0),
@@ -143,9 +151,11 @@ describe('clubService', () => {
         getSheetByName: jest.fn().mockImplementation((name: string) => mockSheets[name] ?? null),
       });
 
-      // Should not throw; will call appendRow multiple times (once per APPROVED_CLUBS entry)
+      // Should not throw; appendRow called once (for header row write)
       expect(() => listAll(1, 50)).not.toThrow();
-      expect(emptySheet.appendRow).toHaveBeenCalled();
+      expect(emptySheet.appendRow).toHaveBeenCalledTimes(1);
+      const result = listAll(1, 50);
+      expect(result.total).toBe(0);
     });
   });
 
@@ -169,7 +179,7 @@ describe('clubService', () => {
 
     it('returns empty array when all clubs are inactive', () => {
       useMockSheets([
-        ['驰跑团', 'CHI', 'inactive', '2025-01-01', 'system'],
+        ['4', '驰跑团', 'CHI', '', '', 'inactive', '2025-01-01', 'system'],
       ]);
       const clubs = listActive();
       expect(clubs).toHaveLength(0);
@@ -444,8 +454,8 @@ describe('clubService', () => {
       deactivateClub('New_Bee');
       expect(mockUpdateRow).toHaveBeenCalledTimes(1);
       const updatedRow: unknown[] = mockUpdateRow.mock.calls[0][2] as unknown[];
-      // Status column (index 2 in the row array from fromClubRecord)
-      expect(updatedRow[2]).toBe('inactive');
+      // Status column is index 5: club_id(0) display(1) normalized(2) drive(3) photos(4) status(5)
+      expect(updatedRow[5]).toBe('inactive');
     });
   });
 
@@ -486,7 +496,8 @@ describe('clubService', () => {
       reactivateClub('CHI');
       expect(mockUpdateRow).toHaveBeenCalledTimes(1);
       const updatedRow: unknown[] = mockUpdateRow.mock.calls[0][2] as unknown[];
-      expect(updatedRow[2]).toBe('active');
+      // Status column is index 5: club_id(0) display(1) normalized(2) drive(3) photos(4) status(5)
+      expect(updatedRow[5]).toBe('active');
     });
   });
 
@@ -505,10 +516,10 @@ describe('clubService', () => {
 
       // Simulate the sheet now showing New_Bee as inactive
       const updatedRows = [
-        ['新蜂',   'New_Bee',        'inactive', '2025-01-01', 'system'],
-        ['岚山',   'Misty_Mountain', 'active',   '2025-01-01', 'system'],
-        ['南开',   'Nankai',          'active',  '2025-01-01', 'system'],
-        ['驰跑团', 'CHI',             'inactive', '2025-01-01', 'system'],
+        ['1', '新蜂',   'New_Bee',        '', '', 'inactive', '2025-01-01', 'system'],
+        ['2', '岚山',   'Misty_Mountain', '', '', 'active',   '2025-01-01', 'system'],
+        ['3', '南开',   'Nankai',         '', '', 'active',   '2025-01-01', 'system'],
+        ['4', '驰跑团', 'CHI',            '', '', 'inactive', '2025-01-01', 'system'],
       ];
       useMockSheets(updatedRows);
 

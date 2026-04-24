@@ -52,6 +52,7 @@
       padding: 8px 12px;
       border-radius: 4px;
       text-align: left;
+      white-space: pre-line;
     }
     .status-msg {
       font-size: 13px;
@@ -110,8 +111,10 @@
       <? } ?>
 
       <p style="color:#555;font-size:14px;margin-bottom:20px;">
-        This system is restricted to registered members.<br>
-        Sign in with any Google account — your access will be checked against the member list.
+        This system is for club admins and coordinators only.<br>
+        本系统仅限跑团联络员和管理员使用。<br><br>
+        Sign in with any Google account — your access will be verified by email address.<br>
+        请用Google账号登录，系统将根据您的邮箱验证权限。
       </p>
 
       <!-- Sign-In Button — triggers OAuth redirect via window.top -->
@@ -137,9 +140,10 @@
       <? } ?>
 
       <p class="login-info">
-        Not a member?
-        <a href="mailto:cathy.lin@mmrunners.org">Contact the administrator</a>
-        to request access.
+        您是跑团联络员吗？请联系
+        <a href="mailto:admin@mmrunners.org">admin@mmrunners.org</a>
+        设置您的邮箱权限。<br>
+        Need access? Email <a href="mailto:admin@mmrunners.org">admin@mmrunners.org</a>.
       </p>
 
       <!-- Build stamp — lets us verify which deployment version is actually live -->
