@@ -231,7 +231,7 @@ Other Cloud Run notes:
 
 10. ✅ **Split `photosService.ts` and `emailService.ts`** — `photosService.ts` (1,437→1,146 lines) extracted into `photosApiClient.ts` (HTTP/auth layer) and `photoAlbumsRepo.ts` (sheet I/O layer); `emailService.ts` (964→811 lines) extracted into `emailTemplates.ts` (branding + HTML rendering) and `emailTriggers.ts` (GAS trigger lifecycle). All existing import paths preserved via re-exports. Commit `037c918`.
 11. ✅ **Single source of truth for accepted MIME types** — `PHOTO_MIME_TYPES` in `photosService.ts` replaced with `new Set(Object.values(PhotoMimeType))` (canonical source: `PhotoMimeType` enum in `types/enums.ts`). Sync comment added to `cloud-run/main.py`. Also fixes a latent bug: WEBP was in the enum but excluded from the local list.
-12. ❌ Input validation for `google.script.run` handlers (route through same `inputValidator.ts` as `doPost`).
+12. ✅ **Input validation for `google.script.run` handlers** — `sanitizePayload` + existing `validate*` functions from `inputValidator.ts` wired into all 10 mutating handlers in `userHandlers.ts` and `eventHandlers.ts`. Removes every `as UserRole`, `as UserStatus`, `as string` cast. Commit `b2b330c`.
 13. ✅ `UrlFetchApp` mock added to `gasGlobals.ts` — `deleteProperty` and `resetMockScriptProperties()` helper added; `makeMockFileIter` still duplicated per test file (not yet consolidated).
 14. ✅ **Bound the email retry queue size** — `MAX_RETRY_QUEUE_SIZE = 50` and `MAX_RETRY_QUEUE_AGE_HOURS = 24` added to `emailService.ts`; `enqueueRetry` now purges entries older than 24 h and evicts the oldest when the queue is full. `emailService.test.ts` +4 (38 total).
 15. ✅ **`CacheService` → `PropertiesService` for `uploadPrepService` run state** — `saveRunState` / `loadRunState` / `deleteRunState` now use script-scoped `PropertiesService` so any admin can resume a run started by a different admin.
@@ -337,8 +337,6 @@ Writes a span of rows in one `setValues()` call. Accepts optional `preloadedRows
 
 ## 7. Remaining work
 
-| # | Item | §ref | Priority |
-|---|------|------|----------|
-| 1 | Input validation for `google.script.run` handlers — route `serverXxx` payloads through `inputValidator.ts` | §1.5 | Medium |
+**All items from the original assessment are complete.** 🎉
 
-**All other items from the original assessment are complete.**
+The codebase now has: 1,184 tests across 39 suites, `tsc --noEmit` clean, and every Critical, High, Medium, and Low item from the original assessment addressed.
