@@ -1,0 +1,178 @@
+/**
+ * superAdmins.ts — Upload Prep feature configuration.
+ *
+ * SUPER_ADMINS: email allowlist that controls menu visibility and provides a
+ *   secondary server-side check for all Upload Prep operations.
+ *
+ * CLOUD_RUN_URL: set this after deploying the image-convert Cloud Run service
+ *   (see UPLOAD_PREP_FEATURE_SPEC.md §5.3 for deploy instructions).
+ *
+ * All other constants here are derived from decisions in the spec §2.
+ */
+
+/* global PropertiesService */
+
+// ─── Super-admin allowlist ────────────────────────────────────────────────────
+
+/**
+ * Default super-admin allowlist used when the `SUPER_ADMINS` Script Property is
+ * not set. Prefer configuring via Script Properties so admins can be added
+ * without a redeploy (comma- or newline-separated emails).
+ */
+const DEFAULT_SUPER_ADMINS: readonly string[] = [
+  'cathy.lin@mmrunners.org',
+] as const;
+
+/**
+ * Returns the current super-admin allowlist.
+ *
+ * Reads `SUPER_ADMINS` from Script Properties (comma- or newline-separated
+ * emails). Falls back to the hardcoded DEFAULT_SUPER_ADMINS if unset or empty,
+ * so upgrading is safe with no config change required.
+ *
+ * Emails are lowercased and trimmed; blanks are dropped.
+ */
+export function getSuperAdmins(): readonly string[] {
+  let raw: string | null = null;
+  try {
+    raw = PropertiesService.getScriptProperties().getProperty('SUPER_ADMINS');
+  } catch {
+    raw = null;
+  }
+  const parsed = (raw ?? '')
+    .split(/[,\n]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.length > 0);
+  return parsed.length > 0 ? parsed : DEFAULT_SUPER_ADMINS;
+}
+
+/**
+ * Back-compat export so existing `SUPER_ADMINS.includes(email)` call sites keep
+ * working. New code should prefer `getSuperAdmins()` to pick up Script Property
+ * changes without restarting.
+ *
+ * This is a Proxy so every access re-reads from Script Properties.
+ */
+export const SUPER_ADMINS: readonly string[] = new Proxy([] as string[], {
+  get(_target, prop, receiver) {
+    const current = getSuperAdmins();
+    return Reflect.get(current, prop, receiver);
+  },
+  has(_target, prop) {
+    return Reflect.has(getSuperAdmins(), prop);
+  },
+}) as readonly string[];
+
+// ─── Cloud Run endpoint ───────────────────────────────────────────────────────
+
+/**
+ * Default Cloud Run URL placeholder. Deployments MUST override this by setting
+ * the `CLOUD_RUN_URL` Script Property.
+ */
+const CLOUD_RUN_URL_PLACEHOLDER = 'https://image-convert-REPLACE_ME.a.run.app';
+
+/**
+ * Returns the Cloud Run image-convert service URL.
+ *
+ * Reads `CLOUD_RUN_URL` from Script Properties; falls back to the placeholder
+ * if unset so code still compiles/loads, but `convertImage()` will refuse to
+ * call the placeholder URL (see cloudRunClient.ts).
+ */
+export function getCloudRunUrl(): string {
+  try {
+    const v = PropertiesService.getScriptProperties().getProperty('CLOUD_RUN_URL');
+    if (v && v.trim().length > 0) return v.trim();
+  } catch {
+    // fall through to placeholder
+  }
+  return CLOUD_RUN_URL_PLACEHOLDER;
+}
+
+/**
+ * True when `CLOUD_RUN_URL` has been configured to a real, non-placeholder URL.
+ * Callers should refuse to issue requests when this is false.
+ */
+export function isCloudRunConfigured(): boolean {
+  const url = getCloudRunUrl();
+  return url !== CLOUD_RUN_URL_PLACEHOLDER && !/REPLACE_ME/i.test(url);
+}
+
+/**
+ * @deprecated Prefer `getCloudRunUrl()` so Script Property changes take effect
+ * without a redeploy. Kept as an export for backward compatibility.
+ */
+export const CLOUD_RUN_URL = CLOUD_RUN_URL_PLACEHOLDER;
+
+// ─── Drive folder names ───────────────────────────────────────────────────────
+
+/** Name of the upload-prep root folder created at the SSOT root. */
+export const UPLOAD_PREP_ROOT_NAME = '_UploadPrep';
+
+/** Filename of the per-event manifest CSV inside each prep subfolder. */
+export const MANIFEST_FILENAME = '_manifest.csv';
+
+/** Filename of the global index CSV inside the _UploadPrep root folder. */
+export const INDEX_FILENAME = '_index.csv';
+
+// ─── Processing defaults ──────────────────────────────────────────────────────
+
+/** Default JPEG quality for conversions (decision D4). */
+export const JPG_QUALITY_DEFAULT = 92;
+
+/**
+ * Maximum files processed per Apps Script execution.
+ * Keeps each `uploadPrep_runBatch` call well under the 6-minute GAS limit.
+ * The sidebar loops this function until the batch is complete.
+ */
+export const BATCH_SIZE = 50;
+
+// ─── Format policy (decision D12 / D13) ──────────────────────────────────────
+
+/**
+ * FORMAT_POLICY classifies every source file into one of three buckets:
+ *   copy        — JPEGs: copy as-is via Drive files.copy (no re-encode)
+ *   convert     — Raster images: send to Cloud Run for conversion
+ *   convertByExt— RAW files (Drive often reports these as application/octet-stream)
+ *   skip        — Videos, audio, docs, archives, Google-native files
+ */
+export const FORMAT_POLICY = {
+  /** MIME types to copy directly (no conversion). */
+  copy: new Set<string>(['image/jpeg']),
+
+  /** MIME types to convert via Cloud Run. */
+  convert: new Set<string>([
+    'image/png',
+    'image/heic',
+    'image/heif',
+    'image/tiff',
+    'image/webp',
+    'image/bmp',
+    'image/avif',
+    'image/gif',
+  ]),
+
+  /**
+   * File extensions (lowercase, no dot prefix) that trigger Cloud Run conversion
+   * even when Drive reports the MIME as 'application/octet-stream'.
+   * Covers all RAW camera formats per decision D12.
+   */
+  convertByExt: new Set<string>([
+    'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'orf', 'rw2', 'pef', 'srw',
+  ]),
+
+  /**
+   * MIME type prefixes that always skip (video and audio files, decision D13).
+   * Checked via String.startsWith before the per-extension list.
+   */
+  skipByPrefix: ['video/', 'audio/'] as const,
+
+  /**
+   * File extensions (lowercase, no dot prefix) that always skip, regardless of
+   * MIME type.  Catches video containers Drive may mislabel as octet-stream.
+   */
+  skipByExt: new Set<string>([
+    'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp', 'm4v',
+    'mp3', 'wav', 'flac',
+    'pdf', 'doc', 'docx', 'zip', 'rar', '7z',
+  ]),
+} as const;

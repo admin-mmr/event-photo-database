@@ -5,7 +5,7 @@ import { listAll as listAllClubs } from './clubService';
 import { validateFolderName } from '../utils/folderNameValidator';
 import { nowIsoTimestamp } from '../utils/dateFormatter';
 
-/* global DriveApp */
+/* global DriveApp, PropertiesService, Logger */
 
 /**
  * DriveService — Google Drive folder operations for the file system.
@@ -571,11 +571,55 @@ const PHOTO_MIME_SET = new Set(['image/jpeg', 'image/png', 'image/heic']);
  * May be slow for events with many clubs/batches; call via google.script.run
  * on-demand (i.e. when the user expands an event node) rather than bulk-loading
  * all events at page load.
+ *
+ * Results are cached in ScriptProperties for DRIVE_TREE_CACHE_TTL_MS to avoid
+ * re-walking the entire folder hierarchy on every page load. Call
+ * invalidateEventDriveTreeCache(eventId) after uploads complete so the next
+ * open reflects the new files.
  */
+
+const DRIVE_TREE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function driveTreeCacheKey(eventId: string): string {
+  return `drive_tree_cache_${eventId}`;
+}
+
+/**
+ * Evicts the cached Drive tree for a given event.
+ * Call this from the upload-completion path so the admin sees fresh counts.
+ */
+export function invalidateEventDriveTreeCache(eventId: string): void {
+  try {
+    PropertiesService.getScriptProperties().deleteProperty(driveTreeCacheKey(eventId));
+  } catch {
+    // Best-effort; a stale cache entry will expire naturally.
+  }
+}
+
 export function getEventDriveTree(
   eventId: string,
   driveFolderId: string
 ): ServiceResult<EventDriveTree> {
+  // ── Cache read ──────────────────────────────────────────────────────────────
+  const cacheKey = driveTreeCacheKey(eventId);
+  try {
+    const cached = PropertiesService.getScriptProperties().getProperty(cacheKey);
+    if (cached) {
+      const entry = JSON.parse(cached) as { ts: number; data: EventDriveTree };
+      if (Date.now() - entry.ts < DRIVE_TREE_CACHE_TTL_MS) {
+        Logger.log(`[driveService.getEventDriveTree] Cache hit for event ${eventId}`);
+        return {
+          status: ResultStatus.SUCCESS,
+          message: `Tree loaded (cached): ${entry.data.clubs.length} club(s), ${entry.data.totalFiles} photo(s)`,
+          data: entry.data,
+        };
+      }
+    }
+  } catch {
+    // Malformed cache entry — fall through to a fresh Drive walk.
+  }
+
+  // ── Fresh Drive walk ────────────────────────────────────────────────────────
   let eventFolder: GoogleAppsScript.Drive.Folder;
   try {
     eventFolder = DriveApp.getFolderById(driveFolderId);
@@ -627,10 +671,22 @@ export function getEventDriveTree(
   // Sort clubs alphabetically
   clubs.sort((a, b) => a.name.localeCompare(b.name));
 
+  const treeData: EventDriveTree = { eventId, driveFolderId, clubs, totalFiles: grandTotal };
+
+  // ── Cache write ─────────────────────────────────────────────────────────────
+  try {
+    PropertiesService.getScriptProperties().setProperty(
+      cacheKey,
+      JSON.stringify({ ts: Date.now(), data: treeData })
+    );
+  } catch {
+    // Non-fatal: cache write failure (e.g. PropertiesService quota) is fine.
+  }
+
   return {
     status: ResultStatus.SUCCESS,
     message: `Tree loaded: ${clubs.length} club(s), ${grandTotal} photo(s)`,
-    data: { eventId, driveFolderId, clubs, totalFiles: grandTotal },
+    data: treeData,
   };
 }
 

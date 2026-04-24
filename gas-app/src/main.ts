@@ -43,13 +43,14 @@ import { requireRole } from './middleware/roleGuard';
 import { handleGet, handlePost } from './routes/router';
 import { createUser, deactivateUser, reactivateUser, updateUser } from './services/userService';
 import { createEvent, updateEvent, listAll as listAllEvents, findById as findEventById } from './services/eventService';
-import { createClub, updateClub, deactivateClub, reactivateClub, listAll as listAllClubs, listActive as listActiveClubs, findByNormalizedName as findClubByNormalizedName } from './services/clubService';
+import { createClub, updateClub, deactivateClub, reactivateClub, listAll as listAllClubs, listActive as listActiveClubs } from './services/clubService';
 import {
   scanAllViolations,
   getOrCreateClubFolder,
   getClubFolderTree,
   createBatchFolder,
   getEventDriveTree,
+  invalidateEventDriveTreeCache,
 } from './services/driveService';
 import { appendUploadLog } from './services/uploadLogService';
 import { appendAuditLog, getAuditLogs } from './services/auditLogService';
@@ -80,8 +81,16 @@ import {
   serverCompleteVolunteerUpload as _serverCompleteVolunteerUpload,
   CompleteUploadPayload,
 } from './routes/volunteerRoutes';
+import {
+  uploadPrep_listEvents as _uploadPrep_listEvents,
+  uploadPrep_getStatus as _uploadPrep_getStatus,
+  uploadPrep_start as _uploadPrep_start,
+  uploadPrep_runBatch as _uploadPrep_runBatch,
+  showUploadPrepSidebar as _showUploadPrepSidebar,
+} from './routes/uploadPrepRoutes';
+import { getSuperAdmins } from './config/superAdmins';
 
-/* global Logger, DriveApp, Utilities, MailApp */
+/* global Logger, DriveApp, Utilities, MailApp, SpreadsheetApp */
 
 // ─── Web App entry points ─────────────────────────────────────────────────────
 
@@ -129,7 +138,20 @@ export function debugConfig(): void {
 
 // ─── google.script.run server functions ──────────────────────────────────────
 
-type ServerResponse = { status: string; message: string; data?: unknown; errors?: unknown };
+/**
+ * Composite result returned by all google.script.run server functions.
+ * `warnings` carries non-fatal side-effect failures (e.g. email not sent,
+ * album creation failed) so the UI can show a non-blocking banner without
+ * rolling back the primary operation.
+ */
+type ServerResponse = {
+  status: string;
+  message: string;
+  data?: unknown;
+  errors?: unknown;
+  /** Non-fatal side-effect failures the UI may surface as warnings. */
+  warnings?: string[];
+};
 
 /**
  * Every google.script.run payload carries an optional sessionToken so the
@@ -184,11 +206,15 @@ export function serverVerifyGoogleToken(idToken: string): ServerResponse {
     const sessionToken = createSession(email, authResult.data.role);
     Logger.log(`[serverVerifyGoogleToken] Session created for ${email} (${authResult.data.role})`);
 
+    const warnings: string[] = [];
+
     // Step 4: stamp lastLoginAt (non-fatal — failure must not block the login)
     try {
       recordLogin(email);
     } catch (loginErr) {
+      const msg = `Login timestamp not recorded: ${String(loginErr)}`;
       Logger.log(`[serverVerifyGoogleToken] recordLogin failed (non-fatal): ${String(loginErr)}`);
+      warnings.push(msg);
     }
 
     return {
@@ -200,6 +226,7 @@ export function serverVerifyGoogleToken(idToken: string): ServerResponse {
         role:   authResult.data.role,
         clubId: authResult.data.clubId,
       },
+      ...(warnings.length > 0 && { warnings }),
     };
   } catch (err) {
     Logger.log(`[serverVerifyGoogleToken] Error: ${String(err)}`);
@@ -232,11 +259,21 @@ export function serverCreateUser(
       });
       // Fire the welcome email + admin CC. Non-fatal: email failures are
       // logged to the Audit_Log and must not roll back the user creation.
+      const warnings: string[] = [];
       try {
         notifyUserCreated(result.data, auth.adminEmail);
       } catch (emailErr) {
+        const msg = `Welcome email could not be sent: ${String(emailErr)}`;
         Logger.log(`serverCreateUser: notifyUserCreated failed (non-fatal): ${String(emailErr)}`);
+        warnings.push(msg);
       }
+      return {
+        status: result.status,
+        message: result.message,
+        data: result.data,
+        errors: result.errors,
+        ...(warnings.length > 0 && { warnings }),
+      };
     }
     return { status: result.status, message: result.message, data: result.data, errors: result.errors };
   } catch (err) {
@@ -363,6 +400,7 @@ export function serverCreateEvent(
       { eventName: payload.eventName as string, eventDate: payload.eventDate as string },
       auth.adminEmail
     );
+    const warnings: string[] = [];
     if (result.status === ResultStatus.SUCCESS && result.data) {
       const eventRecord = result.data as { eventId: string; eventName: string; eventDate: string };
       appendAuditLog({
@@ -380,7 +418,9 @@ export function serverCreateEvent(
           auth.adminEmail,
         );
       } catch (emailErr) {
+        const msg = `Event notification email could not be sent: ${String(emailErr)}`;
         Logger.log(`[serverCreateEvent] notifyEventCreated failed (non-fatal): ${String(emailErr)}`);
+        warnings.push(msg);
       }
 
       // Phase 6: auto-create the master Google Photos album for this event
@@ -398,21 +438,25 @@ export function serverCreateEvent(
           });
           Logger.log(`[serverCreateEvent] Photos album created: ${albumResult.data.albumId}`);
         } else {
+          const msg = `Google Photos album could not be created: ${albumResult.message}`;
           Logger.log(`[serverCreateEvent] Photos album creation failed: ${albumResult.message}`);
           appendAuditLog({
             actorEmail: auth.adminEmail, action: AuditAction.ALBUM_ERROR,
             resourceType: 'event', resourceId: eventRecord.eventId,
             details: { operation: 'ensure_event_album', error: albumResult.message },
           });
+          warnings.push(msg);
         }
       } catch (albumErr) {
         // Album creation failure must not roll back the event creation
+        const msg = `Google Photos album could not be created: ${String(albumErr)}`;
         Logger.log(`[serverCreateEvent] Photos album error (non-fatal): ${String(albumErr)}`);
         appendAuditLog({
           actorEmail: auth.adminEmail, action: AuditAction.ALBUM_ERROR,
           resourceType: 'event', resourceId: eventRecord.eventId,
           details: { operation: 'ensure_event_album', error: String(albumErr) },
         });
+        warnings.push(msg);
       }
     }
     return {
@@ -420,6 +464,7 @@ export function serverCreateEvent(
       message: result.message,
       data: result.data,
       errors: result.errors,
+      ...(warnings.length > 0 && { warnings }),
     };
   } catch (err) {
     Logger.log(`serverCreateEvent error: ${String(err)}`);
@@ -992,6 +1037,9 @@ export function serverCompleteUpload(payload: WithSession<{
   totalSizeMb: number;
   skippedDuplicates: number;
   skippedNonPhoto: number;
+  /** Client-measured wall-clock upload duration in ms. Optional for
+   *  backward-compat with older client bundles. */
+  durationMs?: number;
 }>): ServerResponse {
   try {
     const authResult = authenticateRequest(payload?.sessionToken);
@@ -1010,6 +1058,7 @@ export function serverCompleteUpload(payload: WithSession<{
       skippedDuplicates: Number(payload.skippedDuplicates) || 0,
       skippedNonPhoto:   Number(payload.skippedNonPhoto) || 0,
       source:            UploadSource.WEB_APP,
+      durationMs:        Number(payload.durationMs) || 0,
     });
 
     // Phase 4: enqueue a Drive → Photos sync job instead of syncing inline.
@@ -1030,6 +1079,10 @@ export function serverCompleteUpload(payload: WithSession<{
         // The admin can trigger a manual sync from the Photos Overview page.
         Logger.log(`[serverCompleteUpload] enqueueBatchSync failed (non-fatal): ${String(enqueueErr)}`);
       }
+
+      // New files landed — evict the Drive tree cache so the admin Drive view
+      // reflects updated folder counts on the next page open.
+      invalidateEventDriveTreeCache(payload.eventId);
     }
 
     return {
@@ -2293,4 +2346,87 @@ export function runLegacyMigration(dryRun = true): ReturnType<typeof migrateFrom
   const result = migrateFromLegacy({ dryRun });
   Logger.log('[runLegacyMigration] Result: ' + JSON.stringify(result));
   return result;
+}
+
+// ─── Upload Prep sidebar menu + server functions ──────────────────────────────
+
+/**
+ * Adds the "Super Admin → Prep Upload Files…" menu when the spreadsheet opens.
+ * Only visible to emails in SUPER_ADMINS.
+ *
+ * Set up in the GAS Triggers panel:
+ *   Function: onOpen
+ *   Event source: From spreadsheet → On open
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function onOpen(): void {
+  try {
+    const email = Session.getEffectiveUser().getEmail();
+    if (getSuperAdmins().includes(email.toLowerCase())) {
+      SpreadsheetApp.getUi()
+        .createMenu('Super Admin')
+        .addItem('Prep Upload Files…', 'showUploadPrepSidebar')
+        .addToUi();
+      Logger.log(`[onOpen] Super Admin menu added for ${email}`);
+    }
+  } catch (err) {
+    // Non-fatal: menu is a convenience; don't block spreadsheet open on error
+    Logger.log(`[onOpen] Could not build menu: ${String(err)}`);
+  }
+}
+
+/**
+ * Opens the Upload Prep sidebar.
+ * Called from the Super Admin menu item created by onOpen().
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function showUploadPrepSidebar(): void {
+  _showUploadPrepSidebar();
+}
+
+// ─── Upload Prep google.script.run server functions ───────────────────────────
+
+/**
+ * Lists all event folders in the SSOT root.
+ * Returns [{ id, name }] sorted newest first.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function uploadPrep_listEvents(): ServerResponse {
+  return _uploadPrep_listEvents();
+}
+
+/**
+ * Returns quick stats for an event (source count, already prepped, new/changed).
+ * Called when the user selects an event in the sidebar dropdown.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function uploadPrep_getStatus(eventFolderId: string): ServerResponse {
+  return _uploadPrep_getStatus(eventFolderId);
+}
+
+/**
+ * Starts a new upload-prep run and processes the first batch of files.
+ * If done = false in the response, loop with uploadPrep_runBatch().
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function uploadPrep_start(
+  eventFolderId: string,
+  options: { dryRun?: boolean; force?: boolean }
+): ServerResponse {
+  return _uploadPrep_start(eventFolderId, options);
+}
+
+/**
+ * Processes the next batch of files for an in-progress run.
+ * Pass continuationToken from the previous batch response.
+ * When done = true, the run is complete.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function uploadPrep_runBatch(
+  runId: string,
+  eventFolderId: string,
+  continuationToken: string | undefined,
+  options: { dryRun?: boolean; force?: boolean }
+): ServerResponse {
+  return _uploadPrep_runBatch(runId, eventFolderId, continuationToken, options);
 }

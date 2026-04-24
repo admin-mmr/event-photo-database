@@ -236,14 +236,19 @@ export function listAllFileRecords(): PhotosFileRecord[] {
 /**
  * Updates the lastSyncAt and syncedFileCount columns for an existing album row.
  * Matches by albumId (column 0).
+ *
+ * @param preloadedRows  Optional pre-loaded Photo_Albums rows (avoids an extra
+ *                       sheet read when the caller already holds them). Pass
+ *                       null/undefined to trigger a fresh read.
  */
 function updateAlbumSyncStats(
   albumId: string,
   lastSyncAt: string,
-  syncedFileCount: number
+  syncedFileCount: number,
+  preloadedRows?: unknown[][] | null
 ): void {
   const config = getConfig();
-  const rows = getAllRows(config.SHEET_NAMES.PHOTO_ALBUMS);
+  const rows = preloadedRows ?? getAllRows(config.SHEET_NAMES.PHOTO_ALBUMS);
   const rowIndex = rows.findIndex((row) => String(row[0] ?? '').trim() === albumId);
   if (rowIndex < 0) return;
 
@@ -319,13 +324,20 @@ function createGoogleAlbum(
  *
  * Idempotent — safe to call multiple times; returns the existing record on
  * subsequent calls without making any API requests.
+ *
+ * @param preloadedAlbums  Optional pre-loaded Photo_Albums records. When provided
+ *                         the function skips the sheet read and searches this list
+ *                         instead (avoids redundant reads inside hot-path callers
+ *                         like syncBatchToAlbums that already hold the full list).
  */
 export function ensureEventAlbum(
   eventId: string,
   eventName: string,
-  eventDate: string
+  eventDate: string,
+  preloadedAlbums?: PhotosAlbumRecord[] | null
 ): ServiceResult<PhotosAlbumRecord> {
-  const existing = findAlbumByEvent(eventId);
+  const albums = preloadedAlbums ?? loadAlbums();
+  const existing = albums.find((a) => a.albumType === 'event' && a.eventId === eventId) ?? null;
   if (existing) {
     return { status: ResultStatus.SUCCESS, message: 'Event album already exists', data: existing };
   }
@@ -368,15 +380,22 @@ export function ensureEventAlbum(
  * e.g. "2026-04-15 Boston Marathon – Misty Mountain"
  *
  * Idempotent — see ensureEventAlbum.
+ *
+ * @param preloadedAlbums  See ensureEventAlbum for semantics.
  */
 export function ensureClubAlbum(
   eventId: string,
   eventName: string,
   eventDate: string,
   clubName: string,
-  clubDisplayName: string
+  clubDisplayName: string,
+  preloadedAlbums?: PhotosAlbumRecord[] | null
 ): ServiceResult<PhotosAlbumRecord> {
-  const existing = findAlbumByEventAndClub(eventId, clubName);
+  const albums = preloadedAlbums ?? loadAlbums();
+  const existing =
+    albums.find(
+      (a) => a.albumType === 'club' && a.eventId === eventId && a.clubName === clubName
+    ) ?? null;
   if (existing) {
     return { status: ResultStatus.SUCCESS, message: 'Club album already exists', data: existing };
   }
@@ -676,9 +695,19 @@ export function syncBatchToAlbums(
   batchFolderId: string
 ): ServiceResult<BatchAlbumSyncResult> {
   const errors: string[] = [];
+  const config = getConfig();
 
-  // Ensure event album
-  const eventAlbumResult = ensureEventAlbum(eventId, eventName, eventDate);
+  // ── Pre-load Photo_Albums ONCE (§3.1 performance fix) ────────────────────────
+  // Threads the loaded rows through ensureEventAlbum, ensureClubAlbum, and
+  // updateAlbumSyncStats so the sheet is read at most once per call instead of
+  // four times (2 × loadAlbums + 2 × getAllRows in updateAlbumSyncStats).
+  const albumRows = getAllRows(config.SHEET_NAMES.PHOTO_ALBUMS);
+  const albums = albumRows
+    .map(toPhotosAlbumRecord)
+    .filter((r): r is PhotosAlbumRecord => r !== null);
+
+  // Ensure event album (lookup uses pre-loaded list; creates via API if missing)
+  const eventAlbumResult = ensureEventAlbum(eventId, eventName, eventDate, albums);
   if (eventAlbumResult.status !== ResultStatus.SUCCESS || !eventAlbumResult.data) {
     return {
       status: ResultStatus.ERROR,
@@ -686,9 +715,18 @@ export function syncBatchToAlbums(
     };
   }
   const eventAlbumRecord = eventAlbumResult.data;
+  // If the album was just created it won't be in albumRows yet — add it so
+  // updateAlbumSyncStats can find the row by albumId.
+  if (!albumRows.some((r) => String(r[0] ?? '').trim() === eventAlbumRecord.albumId)) {
+    albumRows.push(fromPhotosAlbumRecord(eventAlbumRecord));
+    albums.push(eventAlbumRecord);
+  }
 
-  // Ensure club album
-  const clubAlbumResult = ensureClubAlbum(eventId, eventName, eventDate, clubName, clubDisplayName);
+  // Ensure club album (lookup uses same pre-loaded list, now including any
+  // event album that was just created above)
+  const clubAlbumResult = ensureClubAlbum(
+    eventId, eventName, eventDate, clubName, clubDisplayName, albums
+  );
   if (clubAlbumResult.status !== ResultStatus.SUCCESS || !clubAlbumResult.data) {
     return {
       status: ResultStatus.ERROR,
@@ -696,8 +734,11 @@ export function syncBatchToAlbums(
     };
   }
   const clubAlbumRecord = clubAlbumResult.data;
+  if (!albumRows.some((r) => String(r[0] ?? '').trim() === clubAlbumRecord.albumId)) {
+    albumRows.push(fromPhotosAlbumRecord(clubAlbumRecord));
+  }
 
-  // Build dedup key set from Photo_Files once for both album syncs.
+  // ── Build dedup key set from Photo_Files ONCE for both album syncs ───────────
   // Key format: "driveFileId|albumId"
   const allFileRecords = loadFileRecords();
   const syncedKeys = new Set(allFileRecords.map((r) => `${r.driveFileId}|${r.albumId}`));
@@ -720,17 +761,19 @@ export function syncBatchToAlbums(
     errors.push(...clubSyncResult.data.errors.map((e) => `[club:${clubName}] ${e}`));
   }
 
-  // Persist updated sync stats
+  // ── Persist updated sync stats using pre-loaded rows (no extra sheet reads) ──
   const now = nowIsoTimestamp();
   updateAlbumSyncStats(
     eventAlbumRecord.albumId,
     now,
-    eventAlbumRecord.syncedFileCount + eventSynced
+    eventAlbumRecord.syncedFileCount + eventSynced,
+    albumRows
   );
   updateAlbumSyncStats(
     clubAlbumRecord.albumId,
     now,
-    clubAlbumRecord.syncedFileCount + clubSynced
+    clubAlbumRecord.syncedFileCount + clubSynced,
+    albumRows
   );
 
   Logger.log(

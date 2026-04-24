@@ -149,10 +149,11 @@ const mockActiveUser = {
 };
 
 const mockSession = {
-  getActiveUser: jest.fn().mockReturnValue(mockActiveUser),
+  getActiveUser:      jest.fn().mockReturnValue(mockActiveUser),
+  getEffectiveUser:   jest.fn().mockReturnValue(mockActiveUser),
 };
 
-/** Helper: set the "currently logged in" user for a test */
+/** Helper: set the "currently logged in" user for a test (affects both getActiveUser and getEffectiveUser). */
 export function setMockUser(email: string): void {
   mockActiveUser.getEmail.mockReturnValue(email);
 }
@@ -164,16 +165,37 @@ const mockProperties: Record<string, string> = {
   SPREADSHEET_ID: TEST_SPREADSHEET_ID,
 };
 
+/** Initial (seed) values for mockProperties — used by resetMockScriptProperties(). */
+const INITIAL_MOCK_PROPERTIES: Record<string, string> = {
+  ROOT_FOLDER_ID: TEST_ROOT_FOLDER_ID,
+  SPREADSHEET_ID: TEST_SPREADSHEET_ID,
+};
+
 const mockScriptProperties = {
   getProperty: jest.fn().mockImplementation((key: string) => mockProperties[key] ?? null),
   setProperty: jest.fn().mockImplementation((key: string, value: string) => {
     mockProperties[key] = value;
+  }),
+  deleteProperty: jest.fn().mockImplementation((key: string) => {
+    delete mockProperties[key];
   }),
 };
 
 const mockPropertiesService = {
   getScriptProperties: jest.fn().mockReturnValue(mockScriptProperties),
 };
+
+/**
+ * Resets mockProperties to its initial seed values, clearing any keys added
+ * during a test (e.g. Drive tree cache entries written by getEventDriveTree).
+ * Call in beforeEach for tests that write to ScriptProperties.
+ */
+export function resetMockScriptProperties(): void {
+  for (const key of Object.keys(mockProperties)) {
+    delete mockProperties[key];
+  }
+  Object.assign(mockProperties, INITIAL_MOCK_PROPERTIES);
+}
 
 // ─── Mock DriveApp ────────────────────────────────────────────────────────────
 
@@ -429,6 +451,7 @@ export {
   mockSpreadsheetApp,
   mockScriptProperties,
   mockPropertiesService,
+  // resetMockScriptProperties is exported as a named export (see declaration above)
   mockDriveApp,
   mockUtilities,
   mockContentService,

@@ -18,6 +18,7 @@ import {
 import {
   mockFolder,
   mockDriveApp,
+  resetMockScriptProperties,
 } from '../mocks/gasGlobals';
 import { ResultStatus } from '../../src/types/enums';
 
@@ -694,6 +695,12 @@ describe('driveService', () => {
   // ── getEventDriveTree ─────────────────────────────────────────────────────
 
   describe('getEventDriveTree()', () => {
+    // Clear the ScriptProperties-backed Drive tree cache before each test so a
+    // cache hit from a previous test doesn't mask a Drive API error.
+    beforeEach(() => {
+      resetMockScriptProperties();
+    });
+
     /**
      * Builds a minimal mock Drive file with just getMimeType().
      */
