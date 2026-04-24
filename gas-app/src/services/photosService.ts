@@ -1,14 +1,29 @@
-import { ResultStatus, PhotoMimeType } from '../types/enums';
+/**
+ * photosService.ts — Google Photos sync orchestration.
+ *
+ * This module is the public API surface for all Photos operations. The
+ * implementation is split across three focused sub-modules (§1.1 god-file
+ * split):
+ *
+ *   photosApiClient.ts  — HTTP/auth helpers (photosPost, photosUploadBytes,
+ *                          createGoogleAlbum, PHOTO_MIME_TYPES)
+ *   photoAlbumsRepo.ts  — Sheet I/O for Photo_Albums and Photo_Files
+ *   photosService.ts    — Sync orchestration (this file; imports from above)
+ *
+ * All existing import paths (`from './photosService'`) continue to work via
+ * the re-exports at the bottom of this file.
+ */
+
+import { ResultStatus } from '../types/enums';
 import { PhotosAlbumRecord, PhotosFileRecord } from '../types/models';
 import { ServiceResult } from '../types/responses';
 import { getConfig } from '../config/constants';
-import { getAllRows, appendRow, updateRow } from './sheetService';
+import { getAllRows } from './sheetService';
 import {
+  toEventRecord,
   toPhotosAlbumRecord,
   fromPhotosAlbumRecord,
-  toEventRecord,
   toPhotosFileRecord,
-  fromPhotosFileRecord,
 } from '../utils/sheetMapper';
 import { nowIsoTimestamp } from '../utils/dateFormatter';
 import {
@@ -17,7 +32,34 @@ import {
   updateJob,
 } from './syncJobService';
 
-/* global ScriptApp, UrlFetchApp, DriveApp, Logger */
+// ── Sub-module imports ────────────────────────────────────────────────────────
+import {
+  PHOTO_MIME_TYPES,
+  photosPost,
+  photosUploadBytes,
+  createGoogleAlbum,
+} from './photosApiClient';
+import {
+  loadAlbums,
+  findAlbumByEvent as _findAlbumByEvent,
+  findAlbumByEventAndClub as _findAlbumByEventAndClub,
+  saveAlbum,
+  loadFileRecords,
+  saveFileRecord,
+  updateAlbumSyncStats,
+} from './photoAlbumsRepo';
+
+// ── Re-exports (keep existing import paths working) ───────────────────────────
+export {
+  findAlbumByEvent,
+  findAlbumByEventAndClub,
+  findAlbumsByEvent,
+  listAllAlbums,
+  findSyncedFile,
+  listAllFileRecords,
+} from './photoAlbumsRepo';
+
+/* global DriveApp, Logger, SpreadsheetApp */
 
 /**
  * PhotosService — Google Photos Library API integration.
@@ -51,272 +93,6 @@ import {
  *   - Upload tokens expire after ~24 hours; they are used immediately here.
  */
 
-// ─── Google Photos API constants ──────────────────────────────────────────────
-
-const PHOTOS_API_BASE = 'https://photoslibrary.googleapis.com/v1';
-
-/**
- * MIME types eligible for Photos upload.
- * Single source of truth: derived from PhotoMimeType enum in types/enums.ts.
- * The equivalent list in cloud-run/main.py (PILLOW_MIMES + HEIC_MIMES) must be
- * kept in sync manually when this enum changes.
- */
-const PHOTO_MIME_TYPES: ReadonlySet<string> = new Set(Object.values(PhotoMimeType));
-
-// ─── Low-level HTTP helpers ───────────────────────────────────────────────────
-
-function getAuthToken(): string {
-  return ScriptApp.getOAuthToken();
-}
-
-/**
- * Makes a POST request to the Photos Library API with a JSON body.
- * Returns parsed JSON data on 2xx, or an error description on failure.
- */
-function photosPost(
-  endpoint: string,
-  body: object
-): { ok: boolean; data?: unknown; error?: string } {
-  try {
-    const response = UrlFetchApp.fetch(`${PHOTOS_API_BASE}${endpoint}`, {
-      method: 'post',
-      headers: {
-        Authorization: `Bearer ${getAuthToken()}`,
-        'Content-Type': 'application/json',
-      },
-      payload: JSON.stringify(body),
-      muteHttpExceptions: true,
-    });
-
-    const code = response.getResponseCode();
-    const text = response.getContentText();
-
-    if (code < 200 || code >= 300) {
-      return { ok: false, error: `HTTP ${code}: ${text.slice(0, 300)}` };
-    }
-    return { ok: true, data: JSON.parse(text) };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
-}
-
-/**
- * Uploads raw image bytes to the Photos "resumable upload" endpoint.
- * Returns an uploadToken string that can be used in a subsequent
- * mediaItems:batchCreate call.
- *
- * Protocol: raw (non-resumable) — sufficient for files ≤ 50 MB, which is
- * the GAS payload limit anyway.
- */
-function photosUploadBytes(
-  blob: GoogleAppsScript.Base.Blob,
-  mimeType: string
-): { ok: boolean; uploadToken?: string; error?: string } {
-  try {
-    const response = UrlFetchApp.fetch(`${PHOTOS_API_BASE}/uploads`, {
-      method: 'post',
-      headers: {
-        Authorization: `Bearer ${getAuthToken()}`,
-        'Content-Type': 'application/octet-stream',
-        'X-Goog-Upload-Content-Type': mimeType,
-        'X-Goog-Upload-Protocol': 'raw',
-      },
-      payload: blob.getBytes(),
-      muteHttpExceptions: true,
-    });
-
-    const code = response.getResponseCode();
-    if (code < 200 || code >= 300) {
-      return {
-        ok: false,
-        error: `HTTP ${code}: ${response.getContentText().slice(0, 300)}`,
-      };
-    }
-    return { ok: true, uploadToken: response.getContentText().trim() };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
-}
-
-// ─── Photo_Albums sheet helpers ──────────────────────────────────────────────
-
-function loadAlbums(): PhotosAlbumRecord[] {
-  const config = getConfig();
-  const rows = getAllRows(config.SHEET_NAMES.PHOTO_ALBUMS);
-  return rows
-    .map(toPhotosAlbumRecord)
-    .filter((r): r is PhotosAlbumRecord => r !== null);
-}
-
-/**
- * Finds the event-level album record for a given event, or null.
- */
-export function findAlbumByEvent(eventId: string): PhotosAlbumRecord | null {
-  return (
-    loadAlbums().find((a) => a.albumType === 'event' && a.eventId === eventId) ?? null
-  );
-}
-
-/**
- * Finds the club-level album record for a given event+club pair, or null.
- */
-export function findAlbumByEventAndClub(
-  eventId: string,
-  clubName: string
-): PhotosAlbumRecord | null {
-  return (
-    loadAlbums().find(
-      (a) => a.albumType === 'club' && a.eventId === eventId && a.clubName === clubName
-    ) ?? null
-  );
-}
-
-/**
- * Returns all album records (event + club) for a given event.
- * Used by the Events page to render album links.
- */
-export function findAlbumsByEvent(eventId: string): PhotosAlbumRecord[] {
-  return loadAlbums().filter((a) => a.eventId === eventId);
-}
-
-/**
- * Returns all album records in the Photo_Albums sheet.
- * Used by the admin Photos Overview page to render the full album index.
- */
-export function listAllAlbums(): PhotosAlbumRecord[] {
-  return loadAlbums();
-}
-
-function saveAlbum(record: PhotosAlbumRecord): void {
-  const config = getConfig();
-  appendRow(config.SHEET_NAMES.PHOTO_ALBUMS, fromPhotosAlbumRecord(record));
-}
-
-// ─── Photo_Files helpers ─────────────────────────────────────────────────────
-
-/**
- * Loads all rows from the Photo_Files sheet and maps them to typed records.
- * Rows that fail validation are silently dropped.
- */
-function loadFileRecords(): PhotosFileRecord[] {
-  const config = getConfig();
-  const rows = getAllRows(config.SHEET_NAMES.PHOTO_FILES);
-  return rows
-    .map(toPhotosFileRecord)
-    .filter((r): r is PhotosFileRecord => r !== null);
-}
-
-/**
- * Returns the file record for the given (driveFileId, albumId) pair, or null.
- * Used before each upload to avoid syncing the same Drive file to the same
- * album twice.
- */
-export function findSyncedFile(
-  driveFileId: string,
-  albumId: string
-): PhotosFileRecord | null {
-  return (
-    loadFileRecords().find(
-      (r) => r.driveFileId === driveFileId && r.albumId === albumId
-    ) ?? null
-  );
-}
-
-/**
- * Appends a new row to Photo_Files after a successful sync.
- */
-function saveFileRecord(record: PhotosFileRecord): void {
-  const config = getConfig();
-  appendRow(config.SHEET_NAMES.PHOTO_FILES, fromPhotosFileRecord(record));
-}
-
-/**
- * Returns all file records in the Photo_Files sheet.
- * Used by the reconciliation audit to compare Drive vs Photos counts.
- */
-export function listAllFileRecords(): PhotosFileRecord[] {
-  return loadFileRecords();
-}
-
-/**
- * Updates the lastSyncAt and syncedFileCount columns for an existing album row.
- * Matches by albumId (column 0).
- *
- * @param preloadedRows  Optional pre-loaded Photo_Albums rows (avoids an extra
- *                       sheet read when the caller already holds them). Pass
- *                       null/undefined to trigger a fresh read.
- */
-function updateAlbumSyncStats(
-  albumId: string,
-  lastSyncAt: string,
-  syncedFileCount: number,
-  preloadedRows?: unknown[][] | null
-): void {
-  const config = getConfig();
-  const rows = preloadedRows ?? getAllRows(config.SHEET_NAMES.PHOTO_ALBUMS);
-  const rowIndex = rows.findIndex((row) => String(row[0] ?? '').trim() === albumId);
-  if (rowIndex < 0) return;
-
-  const record = toPhotosAlbumRecord(rows[rowIndex]);
-  if (!record) return;
-
-  const updated: PhotosAlbumRecord = { ...record, lastSyncAt, syncedFileCount };
-  // updateRow is 1-based and accounts for the header row (+2 offset: 1 for header, 1 for 0→1 index)
-  updateRow(config.SHEET_NAMES.PHOTO_ALBUMS, rowIndex + 2, fromPhotosAlbumRecord(updated));
-}
-
-// ─── Album creation ───────────────────────────────────────────────────────────
-
-interface GoogleAlbumCreationResult {
-  albumId: string;
-  productUrl: string;
-  shareableUrl: string;
-}
-
-/**
- * Creates a new Google Photos album.
- * Returns the album ID and product URL.
- *
- * Sharing note (post March 2025):
- *   The Library API's album-sharing endpoints (albums:share, sharedAlbums.*)
- *   and the `photoslibrary.sharing` OAuth scope were deprecated by Google on
- *   March 31, 2025. Calls to /albums/{id}:share now return 403
- *   PERMISSION_DENIED, so we no longer attempt to auto-share albums here.
- *
- *   For viewers outside the owner's account, admins should share the album
- *   manually from photos.google.com (three-dot menu → "Share"). The
- *   shareableUrl field in the Photo_Albums sheet therefore now falls back to
- *   the productUrl (visible only to the deploying/owner account until
- *   manually shared).
- *
- *   Reference: https://developers.google.com/photos/support/updates
- */
-function createGoogleAlbum(
-  title: string
-): ServiceResult<GoogleAlbumCreationResult> {
-  const createResult = photosPost('/albums', { album: { title } });
-  if (!createResult.ok || !createResult.data) {
-    return {
-      status: ResultStatus.ERROR,
-      message: `Failed to create Photos album "${title}": ${createResult.error}`,
-    };
-  }
-
-  const albumData = createResult.data as { id: string; productUrl: string };
-  const albumId = albumData.id;
-  const productUrl = albumData.productUrl ?? '';
-
-  // Library API sharing is deprecated — productUrl is the only URL we can
-  // surface automatically. Admins must share manually in Google Photos if they
-  // need a public viewer link.
-  const shareableUrl = productUrl;
-
-  return {
-    status: ResultStatus.SUCCESS,
-    message: `Album "${title}" created`,
-    data: { albumId, productUrl, shareableUrl },
-  };
-}
 
 // ─── Public API — album lifecycle ─────────────────────────────────────────────
 

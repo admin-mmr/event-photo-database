@@ -3,7 +3,6 @@ import { UserRecord } from '../types/models';
 import { ServiceResult } from '../types/responses';
 import { listRecipientsForType, listAllAdminEmails } from './emailPreferenceService';
 import { appendAuditLog } from './auditLogService';
-import { getCanonicalScriptUrl } from '../utils/scriptUrl';
 import { generateSummary, SystemSummary } from './summaryService';
 import { getAllUploadLogs } from './uploadLogService';
 import { listAll as listAllUsers } from './userService';
@@ -27,106 +26,16 @@ import { listAll as listAllUsers } from './userService';
  * must never roll back the underlying operation.
  */
 
-// ─── Branding ────────────────────────────────────────────────────────────────
+// ─── Template helpers (extracted to emailTemplates.ts) ─────────────────────────
+import {
+  PRODUCT_NAME,
+  PRODUCT_NAME_EN,
+  wrapHtml,
+  toPlainText,
+  mainPageUrl,
+  esc,
+} from './emailTemplates';
 
-/**
- * Product name shown in subjects and the email header banner.
- * Mirrors the on-screen title used by pageRoutes.renderTemplate().
- */
-const PRODUCT_NAME = '湘舍动公益文件系统';
-const PRODUCT_NAME_EN = 'Event Photo Database';
-
-/**
- * Returns the canonical deployment URL with an optional action path appended.
- * Used in every email CTA button so recipients land on the correct page
- * regardless of which Workspace / Gmail URL shape ScriptApp returned.
- */
-function mainPageUrl(action = 'dashboard'): string {
-  return `${getCanonicalScriptUrl()}?action=${encodeURIComponent(action)}`;
-}
-
-// ─── HTML rendering ──────────────────────────────────────────────────────────
-
-/**
- * Minimal HTML-escape for inlining user-supplied values inside email bodies.
- * Email clients render HTML liberally — never concatenate raw values without
- * passing them through this helper first.
- */
-function esc(value: unknown): string {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-/**
- * Wraps inner HTML in a branded layout with header / footer / CTA button slot.
- *
- * Inline CSS only — Gmail strips <style> blocks and most external stylesheets.
- * Keep colour / spacing choices consistent with the in-app MDL indigo theme.
- */
-function wrapHtml(title: string, innerHtml: string, ctaLabel?: string, ctaUrl?: string): string {
-  const cta = (ctaLabel && ctaUrl)
-    ? `<p style="margin:24px 0 8px;">
-         <a href="${esc(ctaUrl)}"
-            style="background:#3f51b5;color:#fff;text-decoration:none;
-                   padding:12px 28px;border-radius:4px;display:inline-block;
-                   font-size:15px;font-weight:500;">
-           ${esc(ctaLabel)}
-         </a>
-       </p>`
-    : '';
-
-  return `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>${esc(title)}</title></head>
-<body style="margin:0;padding:0;background:#f5f5f5;font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#333;">
-  <div style="max-width:600px;margin:0 auto;padding:24px 16px;">
-    <div style="background:#3f51b5;color:#fff;padding:16px 24px;border-radius:4px 4px 0 0;">
-      <div style="font-size:13px;opacity:0.85;">${esc(PRODUCT_NAME_EN)}</div>
-      <div style="font-size:18px;font-weight:500;">${esc(PRODUCT_NAME)}</div>
-    </div>
-    <div style="background:#fff;padding:24px;border-radius:0 0 4px 4px;
-                box-shadow:0 2px 8px rgba(0,0,0,0.08);line-height:1.5;">
-      <h2 style="margin:0 0 16px;color:#333;font-size:18px;">${esc(title)}</h2>
-      ${innerHtml}
-      ${cta}
-    </div>
-    <div style="color:#888;font-size:12px;text-align:center;padding:16px 8px;">
-      This is an automated message from ${esc(PRODUCT_NAME_EN)}.<br>
-      You can change what you receive at
-      <a href="${esc(mainPageUrl('admin_email_prefs'))}" style="color:#3f51b5;">
-        Email Preferences
-      </a>.
-    </div>
-  </div>
-</body></html>`;
-}
-
-/**
- * Strips tags to produce a plain-text fallback body. Email clients that don't
- * render HTML will fall back to this. Not a full HTML-to-text converter —
- * enough to make the message readable when HTML rendering is disabled.
- */
-function toPlainText(html: string): string {
-  return html
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/?(p|div|tr|h\d)[^>]*>/gi, '\n')
-    .replace(/<li[^>]*>/gi, '  • ')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\n\s*\n\s*\n/g, '\n\n')
-    .trim();
-}
-
-// ─── Core send helper ────────────────────────────────────────────────────────
 
 interface SendOptions {
   readonly to: string[];         // Primary recipients
@@ -666,49 +575,14 @@ export function sendWeeklyReport(): ServiceResult<{ to: string[]; cc: string[] }
   });
 }
 
-// ─── Trigger installers (run from the GAS editor) ────────────────────────────
-
-/**
- * Installs the daily and weekly time-driven triggers if they don't exist.
- *
- * Run this once from the GAS editor (Run → installEmailReportTriggers) after
- * the first deploy. Idempotent — uses the handler function name as the
- * uniqueness key, so calling it again is a no-op.
- *
- * Schedule (all in the script's timezone — see File → Project properties):
- *   • dailyReportTrigger   — every day between 07:00 and 08:00
- *   • weeklyReportTrigger  — every Monday between 07:00 and 08:00
- */
-export function installEmailReportTriggers(): void {
-  /* global ScriptApp */
-  const existing = ScriptApp.getProjectTriggers();
-  const names = new Set(existing.map((t) => t.getHandlerFunction()));
-
-  if (!names.has('dailyReportTrigger')) {
-    ScriptApp.newTrigger('dailyReportTrigger').timeBased().everyDays(1).atHour(7).create();
-  }
-  if (!names.has('weeklyReportTrigger')) {
-    ScriptApp.newTrigger('weeklyReportTrigger')
-      .timeBased()
-      .onWeekDay(ScriptApp.WeekDay.MONDAY)
-      .atHour(7)
-      .create();
-  }
-}
-
-/**
- * Removes the daily / weekly triggers, if present.
- * Run from the GAS editor to pause scheduled digests without a redeploy.
- */
-export function uninstallEmailReportTriggers(): void {
-  const all = ScriptApp.getProjectTriggers();
-  for (const t of all) {
-    const fn = t.getHandlerFunction();
-    if (fn === 'dailyReportTrigger' || fn === 'weeklyReportTrigger') {
-      ScriptApp.deleteTrigger(t);
-    }
-  }
-}
+// ─── Trigger functions (extracted to emailTriggers.ts) ──────────────────────────
+// Re-exported for backward compatibility with existing callers.
+export {
+  installEmailReportTriggers,
+  uninstallEmailReportTriggers,
+  installEmailRetryTrigger,
+  uninstallEmailRetryTrigger,
+} from './emailTriggers';
 
 // ─── Email retry queue (exponential backoff) ─────────────────────────────────
 
@@ -935,30 +809,3 @@ export function drainEmailRetryQueue(): void {
     `[emailService.drainEmailRetryQueue] Done — ${remaining.length} item(s) still pending`,
   );
 }
-
-/**
- * Installs the hourly email retry trigger if it does not already exist.
- * Run once from the GAS editor alongside installEmailReportTriggers().
- * Idempotent — safe to call multiple times.
- */
-export function installEmailRetryTrigger(): void {
-  const existing = ScriptApp.getProjectTriggers();
-  const names    = new Set(existing.map((t) => t.getHandlerFunction()));
-  if (!names.has('retryFailedEmailsTrigger')) {
-    ScriptApp.newTrigger('retryFailedEmailsTrigger').timeBased().everyHours(1).create();
-    Logger.log('[emailService.installEmailRetryTrigger] Installed retryFailedEmailsTrigger (hourly)');
-  }
-}
-
-/**
- * Removes the email retry trigger if present.
- */
-export function uninstallEmailRetryTrigger(): void {
-  const all = ScriptApp.getProjectTriggers();
-  for (const t of all) {
-    if (t.getHandlerFunction() === 'retryFailedEmailsTrigger') {
-      ScriptApp.deleteTrigger(t);
-    }
-  }
-}
-
