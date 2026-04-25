@@ -361,6 +361,47 @@
     word-break: break-all;
   }
 
+  .user-menu-popover-divider {
+    height: 1px;
+    background: #eee;
+    margin: 10px -16px 6px;
+  }
+
+  /* Logout button styled to look like a clean menu item, not a chunky
+   * MDL button. Full-width, left-aligned icon + label, hover background. */
+  .user-menu-popover-logout {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: calc(100% + 32px);
+    margin: 0 -16px;
+    padding: 10px 16px;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    font: inherit;
+    font-size: 14px;
+    color: #333;
+    text-align: left;
+    border-radius: 0;
+  }
+
+  .user-menu-popover-logout:hover,
+  .user-menu-popover-logout:focus {
+    background: #f5f5f5;
+    outline: none;
+  }
+
+  .user-menu-popover-logout:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  .user-menu-popover-logout .material-icons {
+    font-size: 20px;
+    color: #5f6368;
+  }
+
   /* ── Collapsed nav state (class toggled by ResizeObserver) ───────────────── */
   /*
    * The ResizeObserver in app.html adds .nav-collapsed to .mdl-layout__header-row
@@ -378,10 +419,15 @@
     justify-content: center;
   }
 
-  /* Allow the dropdown to escape MDL's default overflow:hidden on the header.
-   * We set this unconditionally — the nav-panel dropdown only escapes the
-   * header when .nav-collapsed + .nav-open are both set, so this is safe. */
-  .mdl-layout__header {
+  /* Allow the dropdown to escape MDL's default overflow:hidden on the header
+   * AND the header row. MDL applies overflow:hidden to .mdl-layout__header-row
+   * to clip its 64px-tall flex children — that same clip eats the absolutely
+   * positioned dropdown (which lives at top:100%, i.e. just below the row).
+   * We set both unconditionally; the dropdown only renders when
+   * .nav-collapsed + .nav-open are both set, so allowing overflow elsewhere
+   * has no visible side effect. */
+  .mdl-layout__header,
+  .mdl-layout__header-row {
     overflow: visible;
   }
 
@@ -396,7 +442,16 @@
     background: #3f51b5;
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.25);
     padding: 4px 0;
-    z-index: 1000;
+    /* Above page content (cards, tiles, welcome banner ~auto) and above
+     * MDL's own .mdl-layout__obfuscator (z-index: 4) so taps on items
+     * register correctly. */
+    z-index: 1200;
+    /* Cap the dropdown to viewport-minus-header so it never runs off the
+     * bottom of the screen on short viewports (e.g. landscape phones).
+     * Vertical scroll keeps long admin nav lists fully reachable. */
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .mdl-layout__header-row.nav-collapsed.nav-open .nav-panel {
@@ -407,6 +462,10 @@
     display: flex;
     flex-direction: column;
     width: 100%;
+    /* MDL's default .mdl-navigation has padding/margin that would otherwise
+     * shrink the dropdown's items below the rows' visual width. */
+    margin: 0;
+    padding: 0;
   }
 
   .mdl-layout__header-row.nav-collapsed .nav-panel .mdl-navigation__link {
@@ -417,10 +476,23 @@
     width: 100%;
     box-sizing: border-box;
     text-align: left;
+    /* Force opaque white text on the blue dropdown background. Without this,
+     * MDL's default .mdl-navigation__link color (rgba(0,0,0,.6)) bleeds
+     * through and the items render as faint grey text barely visible
+     * against the blue, which looks like the dropdown is "blank". */
+    color: #fff !important;
+    opacity: 1;
+  }
+
+  .mdl-layout__header-row.nav-collapsed .nav-panel .mdl-navigation__link:hover,
+  .mdl-layout__header-row.nav-collapsed .nav-panel .mdl-navigation__link:focus {
+    background: rgba(255, 255, 255, 0.08);
+    outline: none;
   }
 
   .mdl-layout__header-row.nav-collapsed .nav-panel .mdl-navigation__link--current {
-    background: rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.18);
+    font-weight: 500;
   }
 
   /* When collapsed, hide the email text beside the avatar — only the

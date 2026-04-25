@@ -168,6 +168,44 @@
     window.top.location.href = url;
   }
 
+  // ── Logout ────────────────────────────────────────────────────────────────
+  //
+  // Best-effort logout: invalidates the server session token, clears local
+  // session state, and redirects to the login page. We don't block on the
+  // server response — even if the network call fails, clearing the local
+  // token and navigating to ?action=login is enough to put the user in the
+  // logged-out UI. The login route is gated BEFORE auth in the router, so it
+  // will render even if a stale GAS native session is still detected.
+  //
+  // The fire-and-forget pattern is intentional: a failed logout call must
+  // never trap the user on a page where their session is half-cleared.
+  function logout() {
+    var token = getSessionToken();
+    // Clear local state synchronously so a subsequent back-navigation can't
+    // resurrect the old token from sessionStorage.
+    try { sessionStorage.removeItem('gasSessionToken'); } catch (_) {}
+    window.SESSION_TOKEN = '';
+
+    // Fire the server-side invalidation — but don't await it.
+    if (token && typeof google !== 'undefined' && google.script && google.script.run) {
+      try {
+        google.script.run
+          .withSuccessHandler(function () {})
+          .withFailureHandler(function () {})
+          .serverLogout({ sessionToken: token });
+      } catch (_) {
+        // Swallow — we're navigating away anyway.
+      }
+    }
+
+    // Navigate to login. Use APP_URL because relative routes don't resolve
+    // back to script.google.com from the googleusercontent.com iframe.
+    var base = (window.APP_URL || window.location.href).split('?')[0];
+    window.top.location.href = base + '?action=login';
+  }
+  // Expose for any inline onclick handlers and for ad-hoc console testing.
+  window.logout = logout;
+
   // Intercept all href="?action=..." links so they go through navigate()
   // instead of trying to load a googleusercontent.com URL directly.
   document.addEventListener('DOMContentLoaded', function () {
@@ -296,6 +334,19 @@
         userTrigger.setAttribute('aria-expanded', 'false');
         userTrigger.focus();
       });
+
+      // Logout button inside the popover. Stop propagation so the popover
+      // doesn't immediately re-close before the click registers, and disable
+      // the button to prevent double-clicks during the redirect.
+      var logoutBtn = userPopover.querySelector('.user-menu-popover-logout');
+      if (logoutBtn) {
+        logoutBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          logoutBtn.disabled = true;
+          logoutBtn.setAttribute('aria-busy', 'true');
+          logout();
+        });
+      }
     }
   });
 

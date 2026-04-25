@@ -2,7 +2,7 @@
  * userHandlers.ts — google.script.run handlers for auth and user management.
  *
  * Covers: serverVerifyGoogleToken, serverCreateUser, serverUpdateUser,
- *         serverDeactivateUser, serverReactivateUser.
+ *         serverDeactivateUser, serverReactivateUser, serverLogout.
  */
 
 import { ResultStatus } from '../types/enums';
@@ -16,7 +16,7 @@ import {
   requireString,
 } from '../middleware/inputValidator';
 import { verifyGoogleIdToken } from '../services/tokenService';
-import { createSession } from '../services/sessionService';
+import { createSession, deleteSession } from '../services/sessionService';
 import { createUser, deactivateUser, reactivateUser, updateUser, recordLogin } from '../services/userService';
 import { appendAuditLog } from '../services/auditLogService';
 import {
@@ -195,6 +195,35 @@ export function serverDeactivateUser(payload: WithSession<{ email: string }>): S
   } catch (err) {
     Logger.log(`serverDeactivateUser error: ${String(err)}`);
     return { status: 'error', message: 'Internal error deactivating user' };
+  }
+}
+
+/**
+ * google.script.run handler — invalidates the caller's session token so any
+ * subsequent server call from this browser is rejected. The client should
+ * also clear local sessionStorage and navigate to the login page.
+ *
+ * Logout is best-effort and idempotent: an empty/invalid token is treated as
+ * already-logged-out and still returns success. This way the UI never gets
+ * stuck on a "logout failed" error — the user can always reach the login
+ * page even when the server can't find their session.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function serverLogout(payload: WithSession): ServerResponse {
+  try {
+    const token = (payload?.sessionToken ?? '').trim();
+    if (token) {
+      deleteSession(token);
+      Logger.log(`[serverLogout] Session invalidated`);
+    } else {
+      Logger.log(`[serverLogout] No session token in payload — treating as already logged out`);
+    }
+    return { status: 'success', message: 'Logged out' };
+  } catch (err) {
+    Logger.log(`[serverLogout] Error: ${String(err)}`);
+    // Even on error, surface success so the client can still proceed to the
+    // login page. Stale tokens expire within 30 min of inactivity anyway.
+    return { status: 'success', message: 'Logged out (with non-fatal error)' };
   }
 }
 
