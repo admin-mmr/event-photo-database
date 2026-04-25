@@ -151,13 +151,11 @@ export interface UploadLinksSheetColumns {
 }
 
 export interface ClubSheetColumns {
-  readonly DISPLAY_NAME:        0;  // Human-readable display name (may include Chinese characters)
-  readonly NORMALIZED_NAME:     1;  // Drive-safe identifier (ASCII, underscores only) — primary key
-  readonly DRIVE_FOLDER_ID:     2;  // Google Drive folder ID for this club
-  readonly PHOTOS_ALBUM_PREFIX: 3;  // Google Photos album name prefix
-  readonly STATUS:              4;  // "active" | "inactive"
-  readonly ADDED_DATE:          5;  // ISO 8601 date "YYYY-MM-DD"
-  readonly ADDED_BY:            6;  // Admin email
+  readonly DISPLAY_NAME:    0;  // Human-readable display name (may include Chinese characters)
+  readonly NORMALIZED_NAME: 1;  // Drive-safe identifier (ASCII, underscores only) — primary key
+  readonly STATUS:          2;  // "active" | "inactive"
+  readonly ADDED_DATE:      3;  // ISO 8601 date "YYYY-MM-DD"
+  readonly ADDED_BY:        4;  // Admin email
 }
 
 export interface PhotosAlbumsSheetColumns {

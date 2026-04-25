@@ -542,17 +542,15 @@ describe('driveService', () => {
     }
 
     // The Clubs sheet needs to be wired up so listAllClubs() can find approved names.
-    // 7-column schema matching CLUB_HEADERS in clubService.ts:
-    // display_name(0) normalized_name(1) drive_folder_id(2)
-    //   photos_album_prefix(3) status(4) added_date(5) added_by(6)
+    // 5-column schema matching CLUB_HEADERS in clubService.ts:
+    // display_name(0) normalized_name(1) status(2) added_date(3) added_by(4)
     const CLUBS_HEADERS = [
       'display_name', 'normalized_name',
-      'drive_folder_id', 'photos_album_prefix',
       'status', 'added_date', 'added_by',
     ];
     const CLUBS_DATA: unknown[][] = [
-      ['新蜂', 'New_Bee',        '', '', 'active', '2025-01-01', 'system'],
-      ['岚山', 'Misty_Mountain', '', '', 'active', '2025-01-01', 'system'],
+      ['新蜂', 'New_Bee',        'active', '2025-01-01', 'system'],
+      ['岚山', 'Misty_Mountain', 'active', '2025-01-01', 'system'],
     ];
 
     const { mockSheets: ms } = require('../mocks/gasGlobals');

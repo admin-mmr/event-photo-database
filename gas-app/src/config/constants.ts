@@ -89,15 +89,17 @@ export const COLUMNS: SheetColumnMap = {
   },
   CLUBS: {
     // Sheet columns (0-based):
-    //   display_name(0) normalized_name(1) drive_folder_id(2)
-    //   photos_album_prefix(3) status(4) added_date(5) added_by(6)
-    DISPLAY_NAME:        0,
-    NORMALIZED_NAME:     1,
-    DRIVE_FOLDER_ID:     2,
-    PHOTOS_ALBUM_PREFIX: 3,
-    STATUS:              4,
-    ADDED_DATE:          5,
-    ADDED_BY:            6,
+    //   display_name(0) normalized_name(1) status(2) added_date(3) added_by(4)
+    //
+    // Note: clubs do NOT have a fixed Drive folder ID — the hierarchy is
+    //   Event / Club /, so each club folder is created on-demand per-event
+    //   by getOrCreateClubFolder(). Any per-club album prefix is likewise
+    //   derived from displayName rather than stored here.
+    DISPLAY_NAME:    0,
+    NORMALIZED_NAME: 1,
+    STATUS:          2,
+    ADDED_DATE:      3,
+    ADDED_BY:        4,
   },
   AUDIT_LOG: {
     AUDIT_ID:      0,
