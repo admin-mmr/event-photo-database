@@ -24,6 +24,7 @@ import {
   notifyUserRoleChanged,
   notifyUserStatusChanged,
   notifySecurityEvent,
+  notifyAdminUserCreationFailed,
 } from '../services/emailService';
 import { findByEmail as findUserByEmail } from '../services/userService';
 import { AuditAction } from '../types/enums';
@@ -96,6 +97,22 @@ export function serverCreateUser(
     const raw = sanitizePayload(payload as unknown as Record<string, unknown>);
     const validation = validateCreateUserPayload(raw);
     if (validation.status !== ResultStatus.SUCCESS || !validation.data) {
+      const fieldSummary = (validation.errors ?? [])
+        .map((e) => `${e.field}: ${e.message}`)
+        .join('; ');
+      Logger.log(
+        `[serverCreateUser] Validation failed — actor=${auth.adminEmail} ` +
+        `attempted_email=${raw['email'] ?? '(empty)'} errors=[${fieldSummary}]`,
+      );
+      try {
+        notifyAdminUserCreationFailed(
+          String(raw['email'] ?? ''),
+          auth.adminEmail,
+          [...(validation.errors ?? [])],
+        );
+      } catch (emailErr) {
+        Logger.log(`[serverCreateUser] notifyAdminUserCreationFailed failed (non-fatal): ${String(emailErr)}`);
+      }
       return { status: 'error', message: validation.message, errors: validation.errors };
     }
     const input = validation.data;

@@ -1,6 +1,6 @@
 import { ResultStatus, EmailType, AuditAction, UserStatus } from '../types/enums';
 import { UserRecord } from '../types/models';
-import { ServiceResult } from '../types/responses';
+import { ServiceResult, ValidationError } from '../types/responses';
 import { listRecipientsForType, listAllAdminEmails } from './emailPreferenceService';
 import { appendAuditLog } from './auditLogService';
 import { generateSummary, SystemSummary } from './summaryService';
@@ -350,6 +350,69 @@ export function notifySecurityEvent(
     html,
     type:      EmailType.SECURITY_EVENT,
     resourceId: attemptedEmail.toLowerCase(),
+  });
+}
+
+// ─── Admin error notifications ────────────────────────────────────────────────
+
+/**
+ * Sent TO opted-in admins (+ the acting admin) when a user-creation attempt
+ * fails validation. Gives admins full field-level detail so they can diagnose
+ * the problem without digging through Logs Explorer.
+ */
+export function notifyAdminUserCreationFailed(
+  attemptedEmail: string,
+  actorAdminEmail: string,
+  errors: ValidationError[],
+): ServiceResult<{ to: string[]; cc: string[] }> {
+  const optedIn = listRecipientsForType(EmailType.SECURITY_EVENT);
+  // Always include the admin who triggered the failure so they get instant feedback.
+  const recipients = Array.from(new Set([...optedIn, actorAdminEmail]));
+
+  const errorsHtml = errors
+    .map(
+      (e) =>
+        `<tr>
+           <td style="padding:6px 12px;border-bottom:1px solid #eee;font-family:monospace;color:#b71c1c;">${esc(e.field)}</td>
+           <td style="padding:6px 12px;border-bottom:1px solid #eee;">${esc(e.message)}${e.value !== undefined ? ` <span style="color:#888;font-size:12px;">(got: ${esc(String(e.value))})</span>` : ''}</td>
+         </tr>`,
+    )
+    .join('');
+
+  const html = wrapHtml(
+    `User creation failed — ${attemptedEmail || '(no email provided)'}`,
+    `<p><b>${esc(actorAdminEmail)}</b> attempted to create a user but the request failed validation.</p>
+     <table style="border-collapse:collapse;margin:12px 0;font-size:14px;">
+       <tr><td style="padding:4px 12px 4px 0;color:#666;">Attempted email</td>
+           <td style="padding:4px 0;font-family:monospace;">${esc(attemptedEmail || '(empty)')}</td></tr>
+       <tr><td style="padding:4px 12px 4px 0;color:#666;">Actor</td>
+           <td style="padding:4px 0;font-family:monospace;">${esc(actorAdminEmail)}</td></tr>
+       <tr><td style="padding:4px 12px 4px 0;color:#666;">Time</td>
+           <td style="padding:4px 0;font-family:monospace;">${esc(new Date().toISOString())}</td></tr>
+     </table>
+     <h3 style="font-size:15px;margin:20px 0 8px;color:#b71c1c;">Validation errors</h3>
+     <table style="border-collapse:collapse;width:100%;font-size:13px;">
+       <thead>
+         <tr style="background:#fff3cd;">
+           <th style="padding:6px 12px;text-align:left;">Field</th>
+           <th style="padding:6px 12px;text-align:left;">Error</th>
+         </tr>
+       </thead>
+       <tbody>${errorsHtml || '<tr><td colspan="2" style="padding:6px 12px;color:#888;">No field errors recorded.</td></tr>'}</tbody>
+     </table>
+     <p style="margin-top:16px;font-size:13px;color:#555;">
+       Fix the highlighted fields and try again, or contact a super admin if the problem persists.
+     </p>`,
+    'Manage users',
+    mainPageUrl('admin_users'),
+  );
+
+  return send({
+    to:         recipients,
+    subject:    `[${PRODUCT_NAME_EN}] User creation failed — ${attemptedEmail || '(no email)'}`,
+    html,
+    type:       EmailType.SECURITY_EVENT,
+    resourceId: attemptedEmail,
   });
 }
 

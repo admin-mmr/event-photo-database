@@ -284,7 +284,14 @@
       callServer('serverCreateUser', payload, btn, spinner)
         .then(function (result) {
           if (result.status === 'error') {
-            showToast(result.message, 'error');
+            var errorMsg = result.message || 'Error';
+            if (result.errors && result.errors.length > 0) {
+              var fieldMsgs = result.errors.map(function(e) {
+                return (e.field !== '_form' ? e.field + ': ' : '') + e.message;
+              });
+              errorMsg = 'Validation failed — ' + fieldMsgs.join(' · ');
+            }
+            showToast(errorMsg, 'error');
             if (result.errors) showFieldErrors(result.errors, 'form-create-user');
             return;
           }
