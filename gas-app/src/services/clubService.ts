@@ -14,7 +14,7 @@ import { toIsoDate } from '../utils/dateFormatter';
  * Admins manage clubs from the admin UI; changes take effect immediately without
  * a code deploy (unlike the old static APPROVED_CLUBS constant).
  *
- * Sheet headers: display_name | normalized_name | status | added_date | added_by
+ * Sheet headers: DISPLAY_NAME | NORMALIZED_NAME | STATUS | ADDED_DATE | ADDED_BY
  *
  * Design decisions:
  *   - normalizedName is immutable once created (Drive club folders depend on it)
@@ -26,8 +26,8 @@ import { toIsoDate } from '../utils/dateFormatter';
 
 // Must match the actual Clubs sheet header row exactly (case-sensitive).
 const CLUB_HEADERS = [
-  'display_name', 'normalized_name',
-  'status', 'added_date', 'added_by',
+  'DISPLAY_NAME', 'NORMALIZED_NAME',
+  'STATUS', 'ADDED_DATE', 'ADDED_BY',
 ];
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────

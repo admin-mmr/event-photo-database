@@ -225,8 +225,8 @@ export function fromUploadLogRecord(record: UploadLogRecord): unknown[] {
  * Converts a raw Sheets row to a ClubRecord.
  * Returns null if required fields are missing or status is invalid.
  *
- * Column order: display_name(0) normalized_name(1) status(2)
- *   added_date(3) added_by(4)
+ * Column order: DISPLAY_NAME(0) NORMALIZED_NAME(1) STATUS(2)
+ *   ADDED_DATE(3) ADDED_BY(4)
  *
  * normalizedName is the de-facto primary key — it's unique, immutable,
  * and used as the Drive folder name under each event folder.
