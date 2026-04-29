@@ -88,16 +88,24 @@
           <h4 style="margin:0;font-size:20px;">
             <i class="material-icons" style="vertical-align:middle;margin-right:8px;color:#3f51b5;">group</i>
             User Management
-            <span style="font-size:14px;font-weight:400;color:#777;margin-left:8px;">
+            <span id="users-total" style="font-size:14px;font-weight:400;color:#777;margin-left:8px;">
               (<?= total ?> total)
             </span>
           </h4>
-          <button id="btn-show-add-form"
-                  class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
-                  onclick="toggleAddForm()">
-            <i class="material-icons">person_add</i>
-            Add User
-          </button>
+          <div style="display:flex;gap:8px;">
+            <button class="mdl-button mdl-js-button mdl-button--raised"
+                    onclick="navigate('admin_users')"
+                    title="Reload the user list from the server">
+              <i class="material-icons">refresh</i>
+              Refresh
+            </button>
+            <button id="btn-show-add-form"
+                    class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                    onclick="toggleAddForm()">
+              <i class="material-icons">person_add</i>
+              Add User
+            </button>
+          </div>
         </div>
 
         <!-- Add user form (hidden by default) -->
@@ -315,10 +323,10 @@
           }
           showToast('User ' + result.data.email + ' created successfully', 'success');
           toggleAddForm();
-          // navigate() drives window.top to the canonical script.google.com URL
-          // with the session token — window.location.reload() would reload the
-          // one-time googleusercontent.com iframe URL and produce a blank page.
-          setTimeout(function () { navigate('admin_users'); }, 800);
+          // Add the new row immediately in-place so it shows up without a
+          // full page reload (which can sometimes miss the freshly written row
+          // due to Sheets propagation latency).
+          addUserRowToTable(result.data);
         })
         .catch(function (err) {
           showToast('Unexpected error: ' + String(err), 'error');
@@ -344,6 +352,52 @@
               showToast('Error: ' + String(err), 'error');
             });
         });
+    }
+
+    // ── Add new user row to table in-place ───────────────────────────────────
+    // Called after a successful serverCreateUser response so the new row
+    // appears immediately without requiring a full page reload.
+    function addUserRowToTable(user) {
+      var tbody = document.getElementById('users-table-body');
+      if (!tbody) return;
+
+      var safeEmail = String(user.email || '').replace(/'/g, "\\'");
+      var tr = document.createElement('tr');
+      tr.id = 'row-' + user.email;
+
+      tr.innerHTML =
+        '<td class="mdl-data-table__cell--non-numeric">' + (user.email || '') + '</td>' +
+        '<td class="mdl-data-table__cell--non-numeric">' + (user.clubId || '') + '</td>' +
+        '<td class="mdl-data-table__cell--non-numeric">' +
+          '<span class="role-chip ' + (user.role || '') + '">' + (user.role || '') + '</span>' +
+        '</td>' +
+        '<td class="mdl-data-table__cell--non-numeric">' +
+          '<span class="status-' + (user.status || '') + '">' + (user.status || '') + '</span>' +
+        '</td>' +
+        '<td class="mdl-data-table__cell--non-numeric" style="font-size:12px;color:#777;">' +
+          (user.addedDate || '') +
+        '</td>' +
+        '<td class="mdl-data-table__cell--non-numeric">' +
+          '<div class="row-actions-' + (user.email || '') + '">' +
+            '<button class="mdl-button mdl-js-button mdl-button--icon btn-danger"' +
+              ' title="Deactivate ' + safeEmail + '"' +
+              ' onclick="handleDeactivate(\'' + safeEmail + '\')">' +
+              '<i class="material-icons">person_off</i>' +
+            '</button>' +
+          '</div>' +
+        '</td>';
+
+      tbody.appendChild(tr);
+
+      // Update the "(N total)" counter in the page heading
+      var totalEl = document.getElementById('users-total');
+      if (totalEl) {
+        var m = totalEl.textContent.match(/\d+/);
+        if (m) totalEl.textContent = '(' + (parseInt(m[0], 10) + 1) + ' total)';
+      }
+
+      // Re-run MDL upgrade so the new button gets ripple/focus styles
+      if (window.componentHandler) componentHandler.upgradeDom();
     }
 
     // ── Reactivate user ──────────────────────────────────────────────────────
