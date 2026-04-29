@@ -315,8 +315,10 @@
           }
           showToast('User ' + result.data.email + ' created successfully', 'success');
           toggleAddForm();
-          // Reload table row (simple: reload page after short delay)
-          setTimeout(function () { window.location.reload(); }, 800);
+          // navigate() drives window.top to the canonical script.google.com URL
+          // with the session token — window.location.reload() would reload the
+          // one-time googleusercontent.com iframe URL and produce a blank page.
+          setTimeout(function () { navigate('admin_users'); }, 800);
         })
         .catch(function (err) {
           showToast('Unexpected error: ' + String(err), 'error');
@@ -336,7 +338,7 @@
                 return;
               }
               showToast(email + ' deactivated', 'success');
-              setTimeout(function () { window.location.reload(); }, 800);
+              setTimeout(function () { navigate('admin_users'); }, 800);
             })
             .catch(function (err) {
               showToast('Error: ' + String(err), 'error');
@@ -353,7 +355,7 @@
             return;
           }
           showToast(email + ' reactivated', 'success');
-          setTimeout(function () { window.location.reload(); }, 800);
+          setTimeout(function () { navigate('admin_users'); }, 800);
         })
         .catch(function (err) {
           showToast('Error: ' + String(err), 'error');

@@ -3,6 +3,7 @@ import { UserRecord } from '../types/models';
 import { authenticateRequest, authenticateBySession, getCurrentUser, resolveUser } from '../middleware/authMiddleware';
 import { exchangeOAuthCode } from '../services/tokenService';
 import { createSession } from '../services/sessionService';
+import { recordLogin } from '../services/userService';
 import { requireRole } from '../middleware/roleGuard';
 import { getCanonicalScriptUrl } from '../utils/scriptUrl';
 import { notifySecurityEvent } from '../services/emailService';
@@ -504,6 +505,13 @@ function handleOAuthCallback(code: string): GoogleAppsScript.HTML.HtmlOutput {
   }
 
   const sessionToken = createSession(email, userResult.data.role);
+  // Record the login timestamp. Non-fatal — a failure here must not prevent
+  // the user from reaching the dashboard.
+  try {
+    recordLogin(email);
+  } catch (loginErr) {
+    Logger.log(`[Router.handleOAuthCallback] recordLogin failed (non-fatal): ${String(loginErr)}`);
+  }
   const dashUrl = `${redirectUri}?action=dashboard&session=${encodeURIComponent(sessionToken)}`;
   Logger.log(`[Router.handleOAuthCallback] session created — rendering continue page`);
 
