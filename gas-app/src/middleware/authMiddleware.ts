@@ -55,9 +55,21 @@ export function resolveUser(email: string): ServiceResult<UserRecord> {
   try {
     rows = getAllRows(config.SHEET_NAMES.USERS);
   } catch (err) {
+    // Log the raw error internally but never expose the GAS exception to the user.
+    // The most common cause is SpreadsheetApp permission not yet granted —
+    // the script deployer needs to re-authorize the deployment.
+    const errStr = String(err);
+    const isPermissionError =
+      errStr.includes('You do not have permission') ||
+      errStr.includes('SpreadsheetApp') ||
+      errStr.includes('authorization') ||
+      errStr.includes('googleapis.com/auth');
+    console.error('[authMiddleware] resolveUser failed:', errStr);
     return {
       status: ResultStatus.ERROR,
-      message: `Failed to read Users sheet: ${String(err)}`,
+      message: isPermissionError
+        ? 'System configuration error — the app needs to be re-authorized by its owner. Please contact admin@mmrunners.org.'
+        : 'Unable to load user data. Please try again, or contact admin@mmrunners.org if the problem persists.',
     };
   }
 
