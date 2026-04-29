@@ -7,12 +7,17 @@
  *      with every function in the global scope — exactly what GAS expects.
  *
  * Usage:
- *   node esbuild.mjs            → one-shot build
- *   node esbuild.mjs --watch    → rebuild on change
+ *   node esbuild.mjs                → one-shot full build
+ *   node esbuild.mjs --watch        → rebuild on change
+ *   node esbuild.mjs --stamp-only   → refresh BUILD_TIME / BUILD_COMMIT on
+ *                                    already-bundled artifacts (fast path —
+ *                                    runs right before `clasp push` so the
+ *                                    displayed build time reflects deploy
+ *                                    moment, not the start of the bundle).
  */
 
 import esbuild from 'esbuild';
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
@@ -21,9 +26,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, 'dist');
 const SRC  = join(__dirname, 'src');
 
-// ── Inject build timestamp + git SHA into src/buildInfo.ts before bundling ──
-function writeBuildInfo() {
-  const now = new Date().toISOString(); // e.g. "2026-04-20T14:32:00.000Z"
+// ── Capture the current build metadata (timestamp + git sha) ─────────────────
+function captureBuildMetadata() {
+  const buildTime = new Date().toISOString(); // e.g. "2026-04-29T22:32:00.000Z"
 
   // Best-effort git metadata — never fail the build if git is missing or the
   // workspace isn't a repo.
@@ -39,14 +44,17 @@ function writeBuildInfo() {
     // git not available or not a repo — leave sha = 'unknown'
   }
 
-  const buildCommit = `${sha}${dirty}`;
+  return { buildTime, buildCommit: `${sha}${dirty}` };
+}
+
+// ── Inject build metadata into src/buildInfo.ts before bundling ──────────────
+function writeBuildInfo({ buildTime, buildCommit }) {
   const content =
 `// AUTO-GENERATED — do not edit. Rewritten on every \`npm run build\`.
-export const BUILD_TIME   = '${now}';
+export const BUILD_TIME   = '${buildTime}';
 export const BUILD_COMMIT = '${buildCommit}';
 `;
   writeFileSync(join(SRC, 'buildInfo.ts'), content, 'utf-8');
-  return { buildTime: now, buildCommit };
 }
 
 // ── Copy non-TS assets (HTML templates, appsscript.json) to dist ────────────
@@ -60,15 +68,49 @@ function copyAssets() {
 //
 // app.html is a plain HTML file served via HtmlService.createHtmlOutputFromFile
 // (not a GAS template), so it can't use <?= buildTime ?> scriptlets. Instead
-// the build script substitutes __BUILD_TIME__ and __BUILD_COMMIT__ literals
-// directly into the copied dist file so the client-side JS can render a
-// build badge in the header without any server-side template changes.
+// the build script substitutes the values directly into the copied dist file.
 //
-function stampAppHtml(buildTime, buildCommit) {
+// The replacement is regex-based on the variable assignment so this function
+// works both for the first stamp (replacing the __BUILD_TIME__ placeholders
+// after copyAssets) and for re-stamping (replacing a previous timestamp during
+// the --stamp-only fast path before clasp push).
+//
+function stampAppHtml({ buildTime, buildCommit }) {
   const path = join(DIST, 'ui', 'js', 'app.html');
+  if (!existsSync(path)) return;
   let content = readFileSync(path, 'utf-8');
-  content = content.replaceAll('__BUILD_TIME__', buildTime);
-  content = content.replaceAll('__BUILD_COMMIT__', buildCommit);
+  content = content.replace(
+    /var buildTime\s+=\s+'[^']*';/,
+    `var buildTime   = '${buildTime}';`,
+  );
+  content = content.replace(
+    /var buildCommit\s+=\s+'[^']*';/,
+    `var buildCommit = '${buildCommit}';`,
+  );
+  writeFileSync(path, content, 'utf-8');
+}
+
+// ── Stamp build time + commit into dist/Code.js ─────────────────────────────
+//
+// BUILD_TIME / BUILD_COMMIT are imported from src/buildInfo.ts and end up
+// emitted by esbuild as plain `var BUILD_TIME = "..."` / `var BUILD_COMMIT = "..."`
+// declarations in dist/Code.js. The --stamp-only fast path patches those lines
+// in place so we can refresh the displayed build time without paying for a
+// full re-bundle. (No-op if dist/Code.js doesn't exist yet, e.g. on a fresh
+// clone where someone runs `npm run stamp` before `npm run build`.)
+//
+function stampCodeJs({ buildTime, buildCommit }) {
+  const path = join(DIST, 'Code.js');
+  if (!existsSync(path)) return;
+  let content = readFileSync(path, 'utf-8');
+  content = content.replace(
+    /var BUILD_TIME\s+=\s+"[^"]*";/,
+    `var BUILD_TIME = "${buildTime}";`,
+  );
+  content = content.replace(
+    /var BUILD_COMMIT\s+=\s+"[^"]*";/,
+    `var BUILD_COMMIT = "${buildCommit}";`,
+  );
   writeFileSync(path, content, 'utf-8');
 }
 
@@ -106,12 +148,24 @@ const buildOptions = {
 };
 
 // ── Run ─────────────────────────────────────────────────────────────────────
-const isWatch = process.argv.includes('--watch');
+const isWatch     = process.argv.includes('--watch');
+const isStampOnly = process.argv.includes('--stamp-only');
 
-if (isWatch) {
-  const { buildTime, buildCommit } = writeBuildInfo();
+if (isStampOnly) {
+  // Fast path: refresh BUILD_TIME / BUILD_COMMIT on the existing dist artifacts
+  // and resync src/buildInfo.ts. Used by `npm run push` immediately before
+  // `clasp push` so the timestamp the user sees on the deployed app is the
+  // moment of deploy, not the moment the (slower) bundle step started.
+  const meta = captureBuildMetadata();
+  writeBuildInfo(meta);
+  stampAppHtml(meta);
+  stampCodeJs(meta);
+  console.log(`Stamp refreshed → ${meta.buildTime} (${meta.buildCommit})`);
+} else if (isWatch) {
+  const meta = captureBuildMetadata();
+  writeBuildInfo(meta);
   copyAssets();
-  stampAppHtml(buildTime, buildCommit);
+  stampAppHtml(meta);
   const ctx = await esbuild.context({
     ...buildOptions,
     plugins: [{
@@ -124,9 +178,10 @@ if (isWatch) {
   await ctx.watch();
   console.log('Watching for changes…');
 } else {
-  const { buildTime, buildCommit } = writeBuildInfo();
+  const meta = captureBuildMetadata();
+  writeBuildInfo(meta);
   copyAssets();
-  stampAppHtml(buildTime, buildCommit);
+  stampAppHtml(meta);
   await esbuild.build(buildOptions);
   unwrapIIFE(outfile);
   console.log('Build complete → dist/');

@@ -410,19 +410,39 @@
   (function () {
     var buildTime   = '__BUILD_TIME__';
     var buildCommit = '__BUILD_COMMIT__';
-    if (!buildTime || buildTime === '__BUILD_TIME__') return; // not yet stamped
+    // Sentinel built via concatenation so esbuild.mjs's replaceAll('__BUILD_TIME__', …)
+    // doesn't substitute THIS occurrence too — otherwise the guard always fires after
+    // a successful stamp and the badge is never inserted.
+    var unstampedSentinel = '__BUILD' + '_TIME__';
+    if (!buildTime || buildTime === unstampedSentinel) return; // not yet stamped
 
     var titleEl = document.querySelector('.mdl-layout-title');
     if (!titleEl || !titleEl.parentNode) return;
 
-    // Format: "02189db · Apr 29, 2026" in the viewer's local timezone.
+    // Format: "02189db · Apr 29, 2026, 3:09 PM PDT" in the viewer's local TZ.
+    // Matches the format used on login.html so the two surfaces look the same.
     var sha = buildCommit.replace(/-dirty$/, '');
     var d   = new Date(buildTime);
-    var dateStr = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    if (isNaN(d.getTime())) return; // bad/missing timestamp — bail rather than print "Invalid Date"
+    var dateStr;
+    try {
+      dateStr = new Intl.DateTimeFormat(undefined, {
+        year:         'numeric',
+        month:        'short',
+        day:          'numeric',
+        hour:         'numeric',
+        minute:       '2-digit',
+        hour12:       true,
+        timeZoneName: 'short', // e.g. "PDT", "GMT+8"
+      }).format(d);
+    } catch (e) {
+      // Older browsers without full Intl support — fall back to a reasonable default.
+      dateStr = d.toLocaleString();
+    }
 
     var badge = document.createElement('span');
     badge.className = 'build-stamp-header';
-    badge.title     = buildTime; // full UTC ISO on hover
+    badge.title     = 'UTC ' + buildTime; // full UTC ISO on hover for cross-referencing CI/git
     badge.textContent = sha + ' · ' + dateStr;
     // Insert after the title <a>, before the spacer — becomes a flex sibling
     // so it sits inline on the same row without fighting the 64px height.
