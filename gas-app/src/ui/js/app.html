@@ -404,16 +404,16 @@
   // ── Build stamp in header title ──────────────────────────────────────────
   //
   // __BUILD_TIME__ and __BUILD_COMMIT__ are literal placeholders replaced by
-  // esbuild.mjs at build time (stampAppHtml). The badge is appended inside
-  // .mdl-layout-title so it appears on every page without touching any of
-  // the 12+ individual page templates.
+  // esbuild.mjs at build time (stampAppHtml). The badge is inserted as a
+  // sibling immediately after .mdl-layout-title (not inside it) so MDL's
+  // fixed 64px header height doesn't clip a second line.
   (function () {
     var buildTime   = '__BUILD_TIME__';
     var buildCommit = '__BUILD_COMMIT__';
     if (!buildTime || buildTime === '__BUILD_TIME__') return; // not yet stamped
 
     var titleEl = document.querySelector('.mdl-layout-title');
-    if (!titleEl) return;
+    if (!titleEl || !titleEl.parentNode) return;
 
     // Format: "02189db · Apr 29, 2026" in the viewer's local timezone.
     var sha = buildCommit.replace(/-dirty$/, '');
@@ -424,6 +424,8 @@
     badge.className = 'build-stamp-header';
     badge.title     = buildTime; // full UTC ISO on hover
     badge.textContent = sha + ' · ' + dateStr;
-    titleEl.appendChild(badge);
+    // Insert after the title <a>, before the spacer — becomes a flex sibling
+    // so it sits inline on the same row without fighting the 64px height.
+    titleEl.parentNode.insertBefore(badge, titleEl.nextSibling);
   }());
 </script>

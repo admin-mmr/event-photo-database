@@ -514,16 +514,19 @@
     font-size: 16px;
   }
 
-  /* ── Build stamp badge (injected by app.html into .mdl-layout-title) ─────── */
+  /* ── Build stamp badge (flex sibling after .mdl-layout-title) ────────────── */
+  /* Inserted by app.html as the next sibling of the title <a> so it sits on  */
+  /* the same 64px header row without being clipped by MDL's height constraint.*/
   .build-stamp-header {
-    display: block;
-    font-size: 9px;
+    display: inline-flex;
+    align-self: center;
+    font-size: 10px;
     font-weight: 400;
     letter-spacing: 0.3px;
-    color: rgba(255, 255, 255, 0.6);
-    line-height: 1.2;
-    margin-top: 1px;
+    color: rgba(255, 255, 255, 0.55);
     white-space: nowrap;
+    margin-left: 10px;
+    flex-shrink: 0;
   }
 
   /* ── Responsive ──────────────────────────────────────────────────────────── */
