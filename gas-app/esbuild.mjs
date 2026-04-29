@@ -39,12 +39,14 @@ function writeBuildInfo() {
     // git not available or not a repo — leave sha = 'unknown'
   }
 
+  const buildCommit = `${sha}${dirty}`;
   const content =
 `// AUTO-GENERATED — do not edit. Rewritten on every \`npm run build\`.
 export const BUILD_TIME   = '${now}';
-export const BUILD_COMMIT = '${sha}${dirty}';
+export const BUILD_COMMIT = '${buildCommit}';
 `;
   writeFileSync(join(SRC, 'buildInfo.ts'), content, 'utf-8');
+  return { buildTime: now, buildCommit };
 }
 
 // ── Copy non-TS assets (HTML templates, appsscript.json) to dist ────────────
@@ -52,6 +54,22 @@ function copyAssets() {
   execSync(`rm -rf "${DIST}" && mkdir -p "${DIST}"`);
   execSync(`cp "${join(SRC, 'appsscript.json')}" "${join(DIST, 'appsscript.json')}"`);
   execSync(`cp -r "${join(SRC, 'ui')}" "${join(DIST, 'ui')}"`);
+}
+
+// ── Stamp build time + commit into dist/ui/js/app.html ──────────────────────
+//
+// app.html is a plain HTML file served via HtmlService.createHtmlOutputFromFile
+// (not a GAS template), so it can't use <?= buildTime ?> scriptlets. Instead
+// the build script substitutes __BUILD_TIME__ and __BUILD_COMMIT__ literals
+// directly into the copied dist file so the client-side JS can render a
+// build badge in the header without any server-side template changes.
+//
+function stampAppHtml(buildTime, buildCommit) {
+  const path = join(DIST, 'ui', 'js', 'app.html');
+  let content = readFileSync(path, 'utf-8');
+  content = content.replaceAll('__BUILD_TIME__', buildTime);
+  content = content.replaceAll('__BUILD_COMMIT__', buildCommit);
+  writeFileSync(path, content, 'utf-8');
 }
 
 // ── Post-process: unwrap IIFE so functions land in global scope ─────────────
@@ -91,8 +109,9 @@ const buildOptions = {
 const isWatch = process.argv.includes('--watch');
 
 if (isWatch) {
-  writeBuildInfo();
+  const { buildTime, buildCommit } = writeBuildInfo();
   copyAssets();
+  stampAppHtml(buildTime, buildCommit);
   const ctx = await esbuild.context({
     ...buildOptions,
     plugins: [{
@@ -105,8 +124,9 @@ if (isWatch) {
   await ctx.watch();
   console.log('Watching for changes…');
 } else {
-  writeBuildInfo();
+  const { buildTime, buildCommit } = writeBuildInfo();
   copyAssets();
+  stampAppHtml(buildTime, buildCommit);
   await esbuild.build(buildOptions);
   unwrapIIFE(outfile);
   console.log('Build complete → dist/');
