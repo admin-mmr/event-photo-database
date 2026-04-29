@@ -112,15 +112,31 @@
                 <span class="field-error" id="error-email" aria-live="polite"></span>
               </div>
 
+              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
+                <input type="text" id="new-first-name" name="firstName"
+                       class="mdl-textfield__input" required autocomplete="off"
+                       maxlength="50">
+                <label class="mdl-textfield__label" for="new-first-name">First name</label>
+                <span class="field-error" id="error-firstName" aria-live="polite"></span>
+              </div>
+
+              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
+                <input type="text" id="new-last-name" name="lastName"
+                       class="mdl-textfield__input" required autocomplete="off"
+                       maxlength="50">
+                <label class="mdl-textfield__label" for="new-last-name">Last name</label>
+                <span class="field-error" id="error-lastName" aria-live="polite"></span>
+              </div>
+
               <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label is-dirty">
-                <select id="new-club" name="runningClub" class="mdl-textfield__input" required>
+                <select id="new-club" name="clubId" class="mdl-textfield__input" required>
                   <option value="" disabled selected>Select club</option>
                   <? for (var i = 0; i < approvedClubs.length; i++) { ?>
                   <option value="<?= approvedClubs[i].value ?>"><?= approvedClubs[i].display ?></option>
                   <? } ?>
                 </select>
                 <label class="mdl-textfield__label" for="new-club">Running Club</label>
-                <span class="field-error" id="error-runningClub" aria-live="polite"></span>
+                <span class="field-error" id="error-clubId" aria-live="polite"></span>
               </div>
 
               <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label is-dirty">
@@ -274,7 +290,9 @@
 
       var payload = {
         email: document.getElementById('new-email').value,
-        runningClub: document.getElementById('new-club').value,
+        firstName: document.getElementById('new-first-name').value,
+        lastName: document.getElementById('new-last-name').value,
+        clubId: document.getElementById('new-club').value,
         role: document.getElementById('new-role').value,
       };
 
