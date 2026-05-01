@@ -5,12 +5,15 @@ import { ValidateFolderNameInput } from '../types/requests';
 /**
  * Folder name validator — enforces Drive naming conventions for Layers 1–3.
  *
- * Layer 1: YYYY-MM-DD_Title_Case_Name
+ * Layer 1: YYYY-MM-DD_Word_Word
  *   - Date prefix must be a real calendar date
- *   - Each word after the date must start with an uppercase letter
- *   - Words separated by underscores only (no spaces, no special chars)
+ *   - One or more words after the date, separated by underscores
+ *   - Words may contain Unicode letters (any script — English, Chinese, etc.)
+ *     and Unicode digits. No spaces, no Drive-illegal characters.
+ *   - Examples that validate: 2025-11-03_NYC_Marathon, 2025-11-03_湘舍动_公益跑
  *
  * Layer 2: ClubName
+ *   - ASCII-only identifier (folder hierarchy stability)
  *   - Must start with a letter (uppercase or lowercase)
  *   - Words separated by underscores
  *   - Must match an approved club normalizedName (enforced separately by caller)
@@ -20,8 +23,20 @@ import { ValidateFolderNameInput } from '../types/requests';
  *   - Username must start with a letter, all lowercase
  */
 
-/** Layer 1: YYYY-MM-DD_TitleCase_Words */
-const LAYER1_REGEX = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(_[A-Z][A-Za-z0-9]+)+$/;
+/**
+ * Layer 1: YYYY-MM-DD_Word_Word
+ *
+ * The word-component pattern `[\p{L}\p{N}]+` allows any Unicode letter or digit,
+ * so CJK event names are accepted. The `u` flag enables \p{...} property escapes
+ * (supported by GAS V8 runtime).
+ *
+ * The strict "word must start with uppercase ASCII letter" rule from the previous
+ * regex was dropped because Chinese (and many other scripts) have no concept of
+ * letter case — title-casing only ever applied to ASCII names. ASCII names are
+ * still title-cased by buildLayer1FolderName() before validation, so the typical
+ * pipeline produces names like 2025-11-03_NYC_Marathon as before.
+ */
+const LAYER1_REGEX = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(_[\p{L}\p{N}]+)+$/u;
 
 /** Layer 2: Words_Separated_By_Underscores, starting with letter */
 const LAYER2_REGEX = /^[A-Za-z][A-Za-z0-9]*(_[A-Za-z][A-Za-z0-9]*)*$/;
@@ -66,9 +81,10 @@ export function validateFolderName(input: ValidateFolderNameInput): FolderValida
     case 1:
       if (!LAYER1_REGEX.test(folderName)) {
         violations.push(
-          'Layer 1 folder must match YYYY-MM-DD_Title_Case_Name ' +
-          '(e.g. 2025-11-03_NYC_Marathon). ' +
-          'Words must start with uppercase and be separated by underscores.'
+          'Layer 1 folder must match YYYY-MM-DD_Word_Word ' +
+          '(e.g. 2025-11-03_NYC_Marathon or 2025-11-03_湘舍动_公益跑). ' +
+          'Words may contain letters (any language) and digits, separated by underscores. ' +
+          'No spaces or special characters allowed in the words.'
         );
       } else if (!isRealDate(folderName)) {
         violations.push('The date portion is not a valid calendar date.');
@@ -111,14 +127,36 @@ export function validateFolderName(input: ValidateFolderNameInput): FolderValida
 /**
  * Builds a valid Layer 1 folder name from components, or returns null if inputs are invalid.
  *
+ * Behavior:
+ *   • Trims the event name.
+ *   • Splits on whitespace (any Unicode whitespace, including full-width
+ *     ideographic space) so users can separate words naturally.
+ *   • Title-cases the first character of each word — this is a no-op for CJK
+ *     characters (toUpperCase() leaves them unchanged) but capitalises ASCII
+ *     words like "marathon" → "Marathon", preserving the existing folder
+ *     convention.
+ *   • Joins the words with underscores.
+ *   • Returns null if the resulting candidate fails Layer 1 validation
+ *     (e.g. the user typed Drive-illegal characters like / or @).
+ *
  * @param isoDate   "YYYY-MM-DD"
- * @param eventName User-provided event name (will be Title_Cased and sanitized)
+ * @param eventName User-provided event name (validated by validateEventName before
+ *                  reaching this point; this function is the final folder-name
+ *                  builder, not an input sanitizer).
+ *
+ * @example
+ *   buildLayer1FolderName('2025-11-03', 'NYC Marathon')   → '2025-11-03_NYC_Marathon'
+ *   buildLayer1FolderName('2025-11-03', '湘舍动 公益跑')   → '2025-11-03_湘舍动_公益跑'
+ *   buildLayer1FolderName('2025-11-03', 'NYC@Marathon')   → null (invalid char)
  */
 export function buildLayer1FolderName(isoDate: string, eventName: string): string | null {
-  // Sanitize: trim, replace spaces/dashes/special chars with underscores, Title_Case each word
+  // Split on any Unicode whitespace. We intentionally do NOT split on - or _
+  // any more — those characters are rejected upstream by validateEventName, so
+  // if they reach this builder they are an error and the validation below will
+  // catch them.
   const words = eventName
     .trim()
-    .split(/[\s_\-]+/)
+    .split(/\s+/u)
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1));
 

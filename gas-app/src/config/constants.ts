@@ -6,8 +6,17 @@ import { AppConfig, SheetColumnMap } from '../types/config';
 /** Maximum characters for an event name before folder name generation */
 export const MAX_EVENT_NAME_LENGTH = 100;
 
-/** Characters allowed in event names (pre-underscore conversion) */
-export const EVENT_NAME_PATTERN = /^[A-Za-z0-9\s]+$/;
+/**
+ * Characters allowed in event names (pre-underscore conversion).
+ *
+ * Allows Unicode letters (any script — English, Chinese, Japanese, etc.),
+ * Unicode digits, and ASCII spaces. The `u` flag is required for \p{...}.
+ *
+ * Authoritative validation lives in utils/userNameValidator.validateEventName();
+ * this constant is kept for reference / external consumers but is not used by
+ * the validator itself.
+ */
+export const EVENT_NAME_PATTERN = /^[\p{L}\p{N} ]+$/u;
 
 /** Default page size for event listing */
 export const DEFAULT_EVENT_PAGE_SIZE = 20;
@@ -347,6 +356,13 @@ export const SYNC_DRAIN_BATCH_SIZE = 5;
  *   In the GAS editor: Extensions → Apps Script → Project Settings → Script Properties
  *   Add: ROOT_FOLDER_ID = <your Drive folder ID>
  *        SPREADSHEET_ID = <your Sheets ID>
+ *
+ *   Optional: PUBLIC_ALBUM_INDEX_SHEET_ID = <Sheets file ID of the public,
+ *     view-only album index>. When set, the app mirrors the album list to that
+ *     spreadsheet on every album create / batch sync so anyone with the file's
+ *     view link can browse the album hierarchy without signing in. See
+ *     services/publicSpreadsheetService.ts for setup details. Leave unset to
+ *     disable the public mirror.
  *
  * Call getConfig() at the start of any request handler — never at module load time,
  * since PropertiesService is unavailable during clasp type-checking.

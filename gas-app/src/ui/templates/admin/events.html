@@ -105,10 +105,23 @@
             <div class="form-row" style="align-items:flex-start;">
               <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label"
                    style="min-width:260px;flex:2;">
+                <!--
+                  HTML pattern blocks the most obviously illegal Drive characters
+                  as a first guard. The server-side validateEventName() applies
+                  the full rule (letters of any language + digits + spaces only)
+                  and returns a specific error message if other characters slip
+                  through.
+                -->
                 <input type="text" id="event-name" class="mdl-textfield__input"
-                       pattern="[A-Za-z0-9\s]+" maxlength="100" required>
+                       pattern="[^/\\:*?&quot;&lt;&gt;|]+" maxlength="100" required
+                       title="Letters (any language including Chinese), digits, and spaces only. No / \ : * ? &quot; &lt; &gt; | or other punctuation.">
                 <label class="mdl-textfield__label" for="event-name">Event Name</label>
                 <span class="field-error" id="error-eventName"></span>
+                <div style="font-size:12px;color:#777;margin-top:4px;line-height:1.4;">
+                  Letters (English, Chinese, etc.), digits, and spaces only.
+                  Spaces become underscores in the folder name.
+                  Max 100 characters.
+                </div>
               </div>
               <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label is-dirty"
                    style="min-width:160px;flex:1;">

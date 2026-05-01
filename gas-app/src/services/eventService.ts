@@ -8,6 +8,7 @@ import { toEventRecord, fromEventRecord } from '../utils/sheetMapper';
 import { generateUuid } from '../utils/uuid';
 import { nowIsoTimestamp } from '../utils/dateFormatter';
 import { validateFolderName } from '../utils/folderNameValidator';
+import { validateEventName } from '../utils/userNameValidator';
 import { createEventFolder } from './driveService';
 
 /**
@@ -211,13 +212,12 @@ export function updateEvent(
     }
   }
   if (input.eventName !== undefined) {
-    const trimmed = input.eventName.trim();
-    if (!trimmed || trimmed.length > 100) {
-      errors.push({
-        field: 'eventName',
-        message: 'Event name is required (max 100 characters)',
-        value: input.eventName,
-      });
+    // Apply the same Unicode-aware character rules as event creation.
+    const nameResult = validateEventName(input.eventName);
+    if (!nameResult.isValid) {
+      for (const message of nameResult.errors) {
+        errors.push({ field: 'eventName', message, value: nameResult.trimmed });
+      }
     }
   }
   if (errors.length > 0) {
@@ -257,26 +257,20 @@ export function updateEvent(
 /**
  * Validates the fields for event creation.
  * Returns field-level errors (empty = valid).
+ *
+ * Event-name character rules are owned by validateEventName() in
+ * userNameValidator.ts — that's the single source of truth so the UI, the
+ * server-side handler, and the folder-name builder all enforce the same set.
  */
 export function validateCreateInput(input: CreateEventInput): ValidationError[] {
   const errors: ValidationError[] = [];
 
-  // Event name
-  const name = input.eventName?.trim() ?? '';
-  if (!name) {
-    errors.push({ field: 'eventName', message: 'Event name is required' });
-  } else if (name.length > 100) {
-    errors.push({
-      field: 'eventName',
-      message: 'Event name must be 100 characters or fewer',
-      value: name,
-    });
-  } else if (/[^A-Za-z0-9\s]/.test(name)) {
-    errors.push({
-      field: 'eventName',
-      message: 'Event name may only contain letters, numbers, and spaces',
-      value: name,
-    });
+  // Event name — delegated to the shared validator (Unicode-friendly).
+  const nameResult = validateEventName(input.eventName);
+  if (!nameResult.isValid) {
+    for (const message of nameResult.errors) {
+      errors.push({ field: 'eventName', message, value: nameResult.trimmed });
+    }
   }
 
   // Event date

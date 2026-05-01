@@ -30,9 +30,35 @@ describe('folderNameValidator', () => {
       expect(r.violations[0]).toContain('YYYY-MM-DD');
     });
 
-    it('rejects lowercase event words', () => {
+    // Layer 1 now allows any-case word components because Chinese (and other
+    // non-cased scripts) have no concept of case. ASCII names typed via
+    // buildLayer1FolderName() still get title-cased upstream, so the typical
+    // user-facing folder names remain capitalised — but a directly-validated
+    // lowercase folder is no longer rejected on case alone.
+    it('accepts lowercase event words', () => {
       const r = validateFolderName({ folderName: '2025-11-03_nyc_marathon', layer: 1 });
-      expect(r.isValid).toBe(false);
+      expect(r.isValid).toBe(true);
+    });
+
+    it('accepts a Chinese event-name folder', () => {
+      const r = validateFolderName({ folderName: '2025-11-03_湘舍动_公益跑', layer: 1 });
+      expect(r.isValid).toBe(true);
+      expect(r.violations).toHaveLength(0);
+    });
+
+    it('accepts a single Chinese-word event folder', () => {
+      const r = validateFolderName({ folderName: '2025-11-03_马拉松', layer: 1 });
+      expect(r.isValid).toBe(true);
+    });
+
+    it('accepts a mixed Chinese-English event folder', () => {
+      const r = validateFolderName({ folderName: '2025-11-03_NYC_马拉松', layer: 1 });
+      expect(r.isValid).toBe(true);
+    });
+
+    it('accepts accented Latin event folders (e.g. Año)', () => {
+      const r = validateFolderName({ folderName: '2025-11-03_Carrera_Año_Nuevo', layer: 1 });
+      expect(r.isValid).toBe(true);
     });
 
     it('rejects names with spaces', () => {
@@ -40,8 +66,19 @@ describe('folderNameValidator', () => {
       expect(r.isValid).toBe(false);
     });
 
-    it('rejects names with special characters', () => {
+    it('rejects names with @ in a word', () => {
       const r = validateFolderName({ folderName: '2025-11-03_NYC@Marathon', layer: 1 });
+      expect(r.isValid).toBe(false);
+    });
+
+    it('rejects names with Drive-illegal slash', () => {
+      const r = validateFolderName({ folderName: '2025-11-03_NYC/Marathon', layer: 1 });
+      expect(r.isValid).toBe(false);
+    });
+
+    it('rejects names with hyphens inside a word', () => {
+      // Hyphens are not part of the [\p{L}\p{N}]+ word class.
+      const r = validateFolderName({ folderName: '2025-11-03_Half-Marathon', layer: 1 });
       expect(r.isValid).toBe(false);
     });
 
@@ -194,6 +231,33 @@ describe('folderNameValidator', () => {
 
     it('returns null for invalid date', () => {
       expect(buildLayer1FolderName('not-a-date', 'Marathon')).toBeNull();
+    });
+
+    it('builds a Chinese event folder name with spaces converted to underscores', () => {
+      // toUpperCase() is a no-op on CJK characters, so the original characters
+      // are preserved verbatim while spaces are converted to underscores.
+      const name = buildLayer1FolderName('2025-11-03', '湘舍动 公益跑');
+      expect(name).toBe('2025-11-03_湘舍动_公益跑');
+    });
+
+    it('builds a single-word Chinese event folder name', () => {
+      const name = buildLayer1FolderName('2025-11-03', '马拉松');
+      expect(name).toBe('2025-11-03_马拉松');
+    });
+
+    it('builds a mixed Chinese-English event folder name', () => {
+      const name = buildLayer1FolderName('2025-11-03', 'NYC 马拉松 2026');
+      expect(name).toBe('2025-11-03_NYC_马拉松_2026');
+    });
+
+    it('returns null when the event name contains Drive-illegal characters', () => {
+      // Even though the user is going through buildLayer1FolderName, we still
+      // refuse to silently produce a malformed folder name. The validator
+      // upstream (validateEventName in eventService) also rejects these, but
+      // this is the last-line defense.
+      expect(buildLayer1FolderName('2025-11-03', 'NYC/Marathon')).toBeNull();
+      expect(buildLayer1FolderName('2025-11-03', 'NYC@Marathon')).toBeNull();
+      expect(buildLayer1FolderName('2025-11-03', 'NYC*Marathon')).toBeNull();
     });
   });
 

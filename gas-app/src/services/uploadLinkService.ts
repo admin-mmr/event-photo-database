@@ -6,6 +6,7 @@ import { getConfig, DEFAULT_TAG } from '../config/constants';
 import { getAllRows, appendRow, findRowIndex, updateRow } from './sheetService';
 import { toUploadLinkRecord, fromUploadLinkRecord } from '../utils/sheetMapper';
 import { generateUuid } from '../utils/uuid';
+import { validateTagName } from '../utils/userNameValidator';
 
 /* global Utilities */
 
@@ -150,11 +151,28 @@ export function generateLink(
   adminEmail: string
 ): ServiceResult<UploadLinkRecord> {
   const { eventId, clubName } = input;
-  const tag = (input.tag ?? '').trim() || DEFAULT_TAG;
 
   if (!eventId || !clubName) {
     return { status: ResultStatus.ERROR, message: 'eventId and clubName are required.' };
   }
+
+  // Tag validation: empty/undefined tag is allowed (substituted with DEFAULT_TAG
+  // so the Drive folder hierarchy stays uniform). When the user supplies a
+  // non-empty tag, enforce the same character rules as the admin UI: Unicode
+  // letters, digits, underscore, hyphen — no spaces, no Drive-illegal chars.
+  // This guards against non-browser callers (curl, scripts) that bypass the
+  // HTML pattern attribute.
+  const rawTag = (input.tag ?? '').trim();
+  if (rawTag) {
+    const tv = validateTagName(rawTag);
+    if (!tv.isValid) {
+      return {
+        status: ResultStatus.ERROR,
+        message: tv.errors.join(' '),
+      };
+    }
+  }
+  const tag = rawTag || DEFAULT_TAG;
 
   // Return existing active link rather than creating a duplicate
   const existing = findActiveLink(eventId, clubName, tag);

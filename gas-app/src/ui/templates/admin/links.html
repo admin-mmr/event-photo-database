@@ -301,16 +301,23 @@
                     <i class="material-icons" style="font-size:16px;vertical-align:middle;margin-right:4px;color:#e65100;">local_offer</i>
                     Tag (optional):
                   </label>
-                  <input type="text" id="input-tag" placeholder="e.g. finish_line, mile_10"
+                  <!--
+                    Pattern blocks whitespace + Drive-illegal chars as a first guard.
+                    The server-side validateTagName() applies the full rule
+                    (letters of any language + digits + _ - only) and returns
+                    a specific error message if other characters slip through.
+                  -->
+                  <input type="text" id="input-tag" placeholder="e.g. finish_line, 终点线, mile-10"
                          maxlength="40"
-                         pattern="[A-Za-z0-9_\-]*"
-                         title="Letters, digits, underscores, and hyphens only"
+                         pattern="[^\s/\\:*?&quot;&lt;&gt;|]*"
+                         title="Letters (any language including Chinese), digits, underscores (_), and hyphens (-) only. No spaces or other punctuation."
                          style="flex:1;">
                 </div>
                 <div class="tag-hint">
                   Leave empty to create a shared link where all photos go into one folder.
-                  Add a tag (e.g. "finish_line") to send photos to a separate subfolder —
+                  Add a tag (e.g. "finish_line" or "终点线") to send photos to a separate subfolder —
                   useful when multiple photographers cover different spots.
+                  Letters (any language), digits, underscore, and hyphen only — no spaces.
                 </div>
               </div>
 
@@ -675,12 +682,14 @@
         return;
       }
 
-      // Read and sanitise the optional tag value
+      // Read the optional tag value. We deliberately do NOT silently strip
+      // characters any more — the server's validateTagName() rejects bad input
+      // and returns a specific error message identifying the offending
+      // character(s), which is more transparent than quietly mangling user
+      // input. The HTML pattern attribute on the input element provides a
+      // first-line client-side guard.
       var tagInput = document.getElementById('input-tag');
       var tag = tagInput ? tagInput.value.trim() : '';
-      // Strip only characters that are illegal in Drive folder names (path separators, control chars)
-      // Unicode letters and digits (e.g. Chinese, Japanese) are allowed.
-      tag = tag.replace(/[/\\:*?"<>|\x00-\x1f]/g, '').trim();
 
       var btn     = document.getElementById('btn-generate');
       var spinner = document.getElementById('generate-spinner');

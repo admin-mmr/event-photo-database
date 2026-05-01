@@ -279,14 +279,39 @@ describe('eventService', () => {
       );
       expect(result.status).toBe(ResultStatus.ERROR);
       expect(result.errors![0].field).toBe('eventName');
+      // Specific char called out so club_admin / super_admin can fix it
+      expect(result.errors![0].message).toContain('"!"');
     });
 
-    it('rejects event name with hyphen', () => {
+    it('rejects event name with hyphen and names the offender', () => {
       const result = createEvent(
         { eventName: 'Half-Marathon', eventDate: '2026-03-15' },
         TEST_ADMIN_EMAIL
       );
       expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.errors![0].message).toContain('"-"');
+    });
+
+    it.each([
+      ['/',  'NYC/Marathon'],
+      ['\\', 'NYC\\Marathon'],
+      [':',  'NYC: Marathon'],
+      ['*',  'NYC*Marathon'],
+      ['?',  'NYC?Marathon'],
+      ['"',  'NYC"Marathon"'],
+      ['<',  'NYC<Marathon'],
+      ['>',  'NYC>Marathon'],
+      ['|',  'NYC|Marathon'],
+      ['@',  'NYC@Marathon'],
+      ['_',  'NYC_Marathon'],
+    ])('rejects event name containing %s and names the offender', (illegalChar, name) => {
+      const result = createEvent(
+        { eventName: name, eventDate: '2026-03-15' },
+        TEST_ADMIN_EMAIL
+      );
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.errors![0].field).toBe('eventName');
+      expect(result.errors![0].message).toContain(`"${illegalChar}"`);
     });
 
     it('rejects event name over 100 characters', () => {
@@ -315,6 +340,55 @@ describe('eventService', () => {
       );
       expect(result.status).toBe(ResultStatus.SUCCESS);
       expect(result.data!.folderName).toBe('2026-06-01_Run4Fun');
+    });
+
+    // ── Unicode (CJK) happy paths ────────────────────────────────────────────
+
+    it('accepts a single-word Chinese event name', () => {
+      const result = createEvent(
+        { eventName: '马拉松', eventDate: '2026-06-01' },
+        TEST_ADMIN_EMAIL
+      );
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.eventName).toBe('马拉松');
+      expect(result.data!.folderName).toBe('2026-06-01_马拉松');
+    });
+
+    it('accepts a multi-word Chinese event name and converts spaces to underscores', () => {
+      const result = createEvent(
+        { eventName: '湘舍动 公益跑', eventDate: '2026-06-01' },
+        TEST_ADMIN_EMAIL
+      );
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.eventName).toBe('湘舍动 公益跑');
+      expect(result.data!.folderName).toBe('2026-06-01_湘舍动_公益跑');
+    });
+
+    it('accepts a mixed Chinese-English event name', () => {
+      const result = createEvent(
+        { eventName: 'NYC 马拉松 2026', eventDate: '2026-06-01' },
+        TEST_ADMIN_EMAIL
+      );
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.folderName).toBe('2026-06-01_NYC_马拉松_2026');
+    });
+
+    it('accepts a Japanese event name', () => {
+      const result = createEvent(
+        { eventName: '東京マラソン', eventDate: '2026-06-01' },
+        TEST_ADMIN_EMAIL
+      );
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.folderName).toBe('2026-06-01_東京マラソン');
+    });
+
+    it('accepts accented Latin characters (Spanish)', () => {
+      const result = createEvent(
+        { eventName: 'Carrera Año Nuevo', eventDate: '2026-01-01' },
+        TEST_ADMIN_EMAIL
+      );
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.folderName).toBe('2026-01-01_Carrera_Año_Nuevo');
     });
 
     it('rejects duplicate folder name', () => {
@@ -558,6 +632,18 @@ describe('eventService', () => {
     it('accepts event name of exactly 100 characters (letters only)', () => {
       const errors = validateCreateInput({ eventName: 'A'.repeat(100), eventDate: '2026-01-01' });
       expect(errors).toHaveLength(0);
+    });
+
+    it('accepts a Chinese event name', () => {
+      expect(
+        validateCreateInput({ eventName: '湘舍动公益跑', eventDate: '2026-06-01' })
+      ).toHaveLength(0);
+    });
+
+    it('accepts a mixed Chinese-English event name', () => {
+      expect(
+        validateCreateInput({ eventName: 'NYC 马拉松 2026', eventDate: '2026-06-01' })
+      ).toHaveLength(0);
     });
 
     it('rejects invalid date format (wrong separator)', () => {
