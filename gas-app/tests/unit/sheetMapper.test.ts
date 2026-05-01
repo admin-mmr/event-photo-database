@@ -777,13 +777,14 @@ describe('sheetMapper — Audit Log', () => {
 
 describe('sheetMapper — Photos Files', () => {
   // Column order: driveFileId(0), mediaItemId(1), albumId(2), albumType(3),
-  //               eventId(4), clubName(5), fileName(6), syncedAt(7)
+  //               eventId(4), clubName(5), tag(6), fileName(7), syncedAt(8)
   const validEventRow: unknown[] = [
     'drive-file-id-001',
     'media-item-id-001',
     'album-id-event-001',
     'event',
     'evt-uuid-001',
+    '',
     '',
     'IMG_0042.jpg',
     '2026-04-19T10:00:00.000Z',
@@ -796,6 +797,7 @@ describe('sheetMapper — Photos Files', () => {
     'club',
     'evt-uuid-001',
     'New_Bee',
+    'finish_line',
     'IMG_0043.heic',
     '2026-04-19T10:01:00.000Z',
   ];
@@ -865,15 +867,15 @@ describe('sheetMapper — Photos Files', () => {
       expect(clRecord!.albumType).toBe('club');
     });
 
-    it('returns null for row with fewer than 8 columns', () => {
-      expect(toPhotosFileRecord(['drive-id', 'media-id', 'album-id', 'event', 'evt-id', ''])).toBeNull();
+    it('returns null for row with fewer than 9 columns', () => {
+      expect(toPhotosFileRecord(['drive-id', 'media-id', 'album-id', 'event', 'evt-id', '', ''])).toBeNull();
       expect(toPhotosFileRecord([])).toBeNull();
     });
 
     it('trims whitespace from all string fields', () => {
       const row: unknown[] = [
         '  drive-file-id-001  ', '  media-item-id-001  ', '  album-id-event-001  ',
-        '  event  ', '  evt-uuid-001  ', '  ', '  IMG_0042.jpg  ', '  2026-04-19T10:00:00.000Z  ',
+        '  event  ', '  evt-uuid-001  ', '  ', '  ', '  IMG_0042.jpg  ', '  2026-04-19T10:00:00.000Z  ',
       ];
       const record = toPhotosFileRecord(row);
       expect(record!.driveFileId).toBe('drive-file-id-001');
@@ -882,12 +884,13 @@ describe('sheetMapper — Photos Files', () => {
       expect(record!.albumType).toBe('event');
       expect(record!.eventId).toBe('evt-uuid-001');
       expect(record!.clubName).toBe('');  // whitespace-only normalises to ''
+      expect(record!.tag).toBe('');
       expect(record!.fileName).toBe('IMG_0042.jpg');
     });
 
     it('handles Sheets returning numeric values via String() coercion', () => {
       const row: unknown[] = [
-        123, 456, 789, 'event', 'evt-id', '', 'photo.jpg', '2026-04-19T10:00:00.000Z',
+        123, 456, 789, 'event', 'evt-id', '', '', 'photo.jpg', '2026-04-19T10:00:00.000Z',
       ];
       const record = toPhotosFileRecord(row);
       expect(record!.driveFileId).toBe('123');
@@ -898,7 +901,7 @@ describe('sheetMapper — Photos Files', () => {
     it('handles Sheets returning Date objects in syncedAt via String() coercion', () => {
       const row: unknown[] = [
         'drive-id', 'media-id', 'album-id', 'event',
-        'evt-id', '', 'photo.jpg', new Date('2026-04-19T10:00:00.000Z'),
+        'evt-id', '', '', 'photo.jpg', new Date('2026-04-19T10:00:00.000Z'),
       ];
       const record = toPhotosFileRecord(row);
       expect(record).not.toBeNull();
@@ -917,10 +920,10 @@ describe('sheetMapper — Photos Files', () => {
   });
 
   describe('fromPhotosFileRecord()', () => {
-    it('produces an array of 8 elements', () => {
+    it('produces an array of 9 elements', () => {
       const record = toPhotosFileRecord(validEventRow)!;
       const row = fromPhotosFileRecord(record);
-      expect(row).toHaveLength(8);
+      expect(row).toHaveLength(9);
     });
 
     it('preserves all field values in correct column order', () => {
@@ -932,8 +935,9 @@ describe('sheetMapper — Photos Files', () => {
       expect(row[3]).toBe('event');                       // albumType    (col D)
       expect(row[4]).toBe('evt-uuid-001');                // eventId      (col E)
       expect(row[5]).toBe('');                            // clubName     (col F)
-      expect(row[6]).toBe('IMG_0042.jpg');                // fileName     (col G)
-      expect(row[7]).toBe('2026-04-19T10:00:00.000Z');   // syncedAt     (col H)
+      expect(row[6]).toBe('');                            // tag          (col G)
+      expect(row[7]).toBe('IMG_0042.jpg');                // fileName     (col H)
+      expect(row[8]).toBe('2026-04-19T10:00:00.000Z');   // syncedAt     (col I)
     });
 
     it('preserves club-type record fields correctly', () => {
@@ -941,6 +945,7 @@ describe('sheetMapper — Photos Files', () => {
       const row = fromPhotosFileRecord(record);
       expect(row[3]).toBe('club');
       expect(row[5]).toBe('New_Bee');
+      expect(row[6]).toBe('finish_line');
     });
   });
 
@@ -967,7 +972,7 @@ describe('sheetMapper — Photos Files', () => {
 
     it('roundtrip preserves non-ASCII fileName', () => {
       const row = [...validEventRow];
-      row[6] = '跑步照片_001.jpg';
+      row[7] = '跑步照片_001.jpg';
       const original = toPhotosFileRecord(row)!;
       const restored = toPhotosFileRecord(fromPhotosFileRecord(original));
       expect(restored!.fileName).toBe('跑步照片_001.jpg');

@@ -58,20 +58,22 @@ jest.mock('../../src/config/constants', () => ({
       ALBUM_TYPE:    3,
       EVENT_ID:      4,
       CLUB_NAME:     5,
-      FILE_NAME:     6,
-      SYNCED_AT:     7,
+      TAG:           6,
+      FILE_NAME:     7,
+      SYNCED_AT:     8,
     },
     PHOTO_ALBUMS: {
       ALBUM_ID:          0,
       ALBUM_TYPE:        1,
       EVENT_ID:          2,
       CLUB_NAME:         3,
-      ALBUM_TITLE:       4,
-      ALBUM_URL:         5,
-      SHAREABLE_URL:     6,
-      CREATED_AT:        7,
-      LAST_SYNC_AT:      8,
-      SYNCED_FILE_COUNT: 9,
+      TAG:               4,
+      ALBUM_TITLE:       5,
+      ALBUM_URL:         6,
+      SHAREABLE_URL:     7,
+      CREATED_AT:        8,
+      LAST_SYNC_AT:      9,
+      SYNCED_FILE_COUNT: 10,
     },
     EVENTS: {
       EVENT_ID: 0, EVENT_NAME: 1, EVENT_DATE: 2,
@@ -156,16 +158,18 @@ const mockAppendRow  = appendRow  as jest.Mock;
 
 // ─── Fixture data ─────────────────────────────────────────────────────────────
 
-/** Minimal valid Photo_Files sheet row (8 columns) */
+/** Minimal valid Photo_Files sheet row (9 columns including TAG) */
 function makeFileRow(
   driveFileId: string,
   albumId: string,
   albumType: 'event' | 'club' = 'event',
   clubName = '',
   eventId = 'evt-uuid-001',
-  fileName = 'photo.jpg'
+  fileName = 'photo.jpg',
+  tag      = ''
 ): unknown[] {
-  return [driveFileId, 'media-item-' + driveFileId, albumId, albumType, eventId, clubName, fileName, '2026-04-19T10:00:00.000Z'];
+  const tagValue = albumType === 'club' ? (tag || 'finish_line') : '';
+  return [driveFileId, 'media-item-' + driveFileId, albumId, albumType, eventId, clubName, tagValue, fileName, '2026-04-19T10:00:00.000Z'];
 }
 
 // ─── findSyncedFile() ─────────────────────────────────────────────────────────
@@ -340,7 +344,8 @@ describe('syncBatchFolderToAlbum()', () => {
     expect(appendedRow[3]).toBe('event');            // albumType
     expect(appendedRow[4]).toBe(EVENT_ID);           // eventId
     expect(appendedRow[5]).toBe('');                 // clubName (empty for event)
-    expect(appendedRow[6]).toBe('photo.jpg');        // fileName
+    expect(appendedRow[6]).toBe('');                 // tag (empty for event)
+    expect(appendedRow[7]).toBe('photo.jpg');        // fileName
 
     // Key should be added to the in-memory set
     expect(existingKeys.has('drive-file-new|album-event-001')).toBe(true);

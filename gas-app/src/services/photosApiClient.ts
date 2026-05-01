@@ -102,6 +102,142 @@ export function photosUploadBytes(
   }
 }
 
+// ─── Batch media-item operations ──────────────────────────────────────────────
+
+/**
+ * Maximum items per Photos API batch operation.
+ * Both /mediaItems:batchCreate and /albums/{id}:batchAddMediaItems cap at 50.
+ */
+export const PHOTOS_BATCH_LIMIT = 50;
+
+/**
+ * One item to create via /mediaItems:batchCreate.
+ * The uploadToken is what /uploads returned earlier; description shows in the
+ * media item details panel in Photos.
+ */
+export interface BatchCreateItem {
+  uploadToken: string;
+  fileName:    string;
+}
+
+/**
+ * Result of one batchCreate item: either a new mediaItem on success, or an
+ * error string. Order matches the input items array exactly so callers can
+ * pair them back up with their source files.
+ */
+export interface BatchCreateResultItem {
+  fileName:    string;
+  mediaItemId: string;   // empty if errored
+  error:       string;   // empty if succeeded
+}
+
+/**
+ * Creates media items in batches of up to PHOTOS_BATCH_LIMIT per HTTP call.
+ *
+ * Returns one result entry per input item, in the same order. A 200 response
+ * may still contain per-item errors (e.g. an expired upload token); those are
+ * surfaced via the per-item `error` field rather than aborting the batch.
+ *
+ * @param albumId  The album to attach the media items to.
+ * @param items    One entry per file (uploadToken + fileName).
+ */
+export function photosBatchCreateMediaItems(
+  albumId: string,
+  items: BatchCreateItem[]
+): BatchCreateResultItem[] {
+  const out: BatchCreateResultItem[] = new Array(items.length);
+
+  for (let chunkStart = 0; chunkStart < items.length; chunkStart += PHOTOS_BATCH_LIMIT) {
+    const chunk = items.slice(chunkStart, chunkStart + PHOTOS_BATCH_LIMIT);
+    const newMediaItems = chunk.map((it) => ({
+      description:     it.fileName,
+      simpleMediaItem: { uploadToken: it.uploadToken, fileName: it.fileName },
+    }));
+
+    const resp = photosPost('/mediaItems:batchCreate', { albumId, newMediaItems });
+    if (!resp.ok || !resp.data) {
+      // Whole-chunk failure — annotate every item in this chunk.
+      for (let i = 0; i < chunk.length; i++) {
+        out[chunkStart + i] = {
+          fileName:    chunk[i].fileName,
+          mediaItemId: '',
+          error:       resp.error ?? 'mediaItems:batchCreate failed',
+        };
+      }
+      continue;
+    }
+
+    const data = resp.data as {
+      newMediaItemResults?: Array<{
+        status?:    { message?: string; code?: number };
+        mediaItem?: { id: string };
+      }>;
+    };
+    const results = data.newMediaItemResults ?? [];
+
+    for (let i = 0; i < chunk.length; i++) {
+      const r = results[i];
+      if (r?.mediaItem?.id) {
+        out[chunkStart + i] = {
+          fileName:    chunk[i].fileName,
+          mediaItemId: r.mediaItem.id,
+          error:       '',
+        };
+      } else {
+        out[chunkStart + i] = {
+          fileName:    chunk[i].fileName,
+          mediaItemId: '',
+          error:       r?.status?.message ?? 'Unexpected per-item response',
+        };
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Adds existing media items to an album in batches of up to PHOTOS_BATCH_LIMIT.
+ *
+ * This is the cheap second-album path: rather than re-uploading bytes, we
+ * reuse the mediaItemIds we got back from photosBatchCreateMediaItems. The
+ * underlying endpoint /albums/{id}:batchAddMediaItems is much faster than
+ * /uploads + /mediaItems:batchCreate.
+ *
+ * Returns the indices (into mediaItemIds) of items that failed, plus an error
+ * string keyed to the chunk that failed. The success path returns an empty
+ * failures array.
+ */
+export interface BatchAddFailure {
+  index:    number;
+  message:  string;
+}
+
+export function photosBatchAddMediaItemsToAlbum(
+  albumId: string,
+  mediaItemIds: string[]
+): { failures: BatchAddFailure[] } {
+  const failures: BatchAddFailure[] = [];
+
+  for (let chunkStart = 0; chunkStart < mediaItemIds.length; chunkStart += PHOTOS_BATCH_LIMIT) {
+    const chunk = mediaItemIds.slice(chunkStart, chunkStart + PHOTOS_BATCH_LIMIT);
+    const resp = photosPost(`/albums/${encodeURIComponent(albumId)}:batchAddMediaItems`, {
+      mediaItemIds: chunk,
+    });
+    if (!resp.ok) {
+      // Whole-chunk failure — flag every item in the chunk.
+      for (let i = 0; i < chunk.length; i++) {
+        failures.push({
+          index:   chunkStart + i,
+          message: resp.error ?? 'batchAddMediaItems failed',
+        });
+      }
+    }
+  }
+
+  return { failures };
+}
+
 // ─── Album creation ───────────────────────────────────────────────────────────
 
 export interface GoogleAlbumCreationResult {

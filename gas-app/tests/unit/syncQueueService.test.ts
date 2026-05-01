@@ -46,18 +46,19 @@ jest.mock('../../src/config/constants', () => ({
       QUEUE_ID:          0,
       EVENT_ID:          1,
       CLUB_NAME:         2,
-      BATCH_FOLDER_ID:   3,
-      BATCH_FOLDER_NAME: 4,
-      ENQUEUED_AT:       5,
-      STATUS:            6,
-      ATTEMPTS:          7,
-      LAST_ATTEMPT_AT:   8,
-      ERROR_MSG:         9,
-      COMPLETED_AT:      10,
+      TAG:               3,
+      BATCH_FOLDER_ID:   4,
+      BATCH_FOLDER_NAME: 5,
+      ENQUEUED_AT:       6,
+      STATUS:            7,
+      ATTEMPTS:          8,
+      LAST_ATTEMPT_AT:   9,
+      ERROR_MSG:         10,
+      COMPLETED_AT:      11,
     },
   },
   SYNC_QUEUE_HEADERS: [
-    'Queue_ID','Event_ID','Club_Name','Batch_Folder_ID','Batch_Folder_Name',
+    'Queue_ID','Event_ID','Club_Name','Tag','Batch_Folder_ID','Batch_Folder_Name',
     'Enqueued_At','Status','Attempts','Last_Attempt_At','Error_Msg','Completed_At',
   ],
   MAX_SYNC_ATTEMPTS:           3,
@@ -193,7 +194,7 @@ describe('getAllQueueItems()', () => {
 
   it('skips rows with an invalid status value', () => {
     const row = makeQueueRow('q-bad-status');
-    row[6] = 'not_a_real_status';
+    row[7] = 'not_a_real_status';  // STATUS column (col index 7 after TAG insert)
     mockGetAllRows.mockReturnValue([row, makeQueueRow('q-good')]);
     const items = getAllQueueItems();
     expect(items).toHaveLength(1);
@@ -342,12 +343,12 @@ describe('markDone()', () => {
     markDone('q-001');
 
     const writtenRow = mockUpdateRow.mock.calls[0][2] as unknown[];
-    // col 6 = status
-    expect(writtenRow[6]).toBe(SyncQueueStatus.DONE);
-    // col 9 = errorMsg
-    expect(writtenRow[9]).toBe('');
-    // col 10 = completedAt — should be set
-    expect(String(writtenRow[10])).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    // col 7 = status (after TAG insert at col 3)
+    expect(writtenRow[7]).toBe(SyncQueueStatus.DONE);
+    // col 10 = errorMsg
+    expect(writtenRow[10]).toBe('');
+    // col 11 = completedAt — should be set
+    expect(String(writtenRow[11])).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 });
 
@@ -371,8 +372,8 @@ describe('markAttemptFailed()', () => {
 
     markAttemptFailed('q-001', 'Transient error');
     const writtenRow = mockUpdateRow.mock.calls[0][2] as unknown[];
-    expect(writtenRow[6]).toBe(SyncQueueStatus.PENDING);
-    expect(writtenRow[9]).toBe('Transient error');
+    expect(writtenRow[7]).toBe(SyncQueueStatus.PENDING);
+    expect(writtenRow[10]).toBe('Transient error');
   });
 
   it('marks FAILED when attempts >= MAX_SYNC_ATTEMPTS (3)', () => {
@@ -384,7 +385,7 @@ describe('markAttemptFailed()', () => {
 
     markAttemptFailed('q-001', 'Permanent failure');
     const writtenRow = mockUpdateRow.mock.calls[0][2] as unknown[];
-    expect(writtenRow[6]).toBe(SyncQueueStatus.FAILED);
+    expect(writtenRow[7]).toBe(SyncQueueStatus.FAILED);
   });
 
   it('truncates errorMsg to 500 characters', () => {
@@ -398,7 +399,7 @@ describe('markAttemptFailed()', () => {
     markAttemptFailed('q-001', longMsg);
 
     const writtenRow = mockUpdateRow.mock.calls[0][2] as unknown[];
-    expect(String(writtenRow[9]).length).toBe(500);
+    expect(String(writtenRow[10]).length).toBe(500);
   });
 
   it('writes one row update to the sheet', () => {

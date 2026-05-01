@@ -58,13 +58,13 @@ jest.mock('../../src/config/constants', () => ({
   })),
   COLUMNS: {
     PHOTO_ALBUMS: {
-      ALBUM_ID: 0, ALBUM_TYPE: 1, EVENT_ID: 2, CLUB_NAME: 3,
-      ALBUM_TITLE: 4, ALBUM_URL: 5, SHAREABLE_URL: 6,
-      CREATED_AT: 7, LAST_SYNC_AT: 8, SYNCED_FILE_COUNT: 9,
+      ALBUM_ID: 0, ALBUM_TYPE: 1, EVENT_ID: 2, CLUB_NAME: 3, TAG: 4,
+      ALBUM_TITLE: 5, ALBUM_URL: 6, SHAREABLE_URL: 7,
+      CREATED_AT: 8, LAST_SYNC_AT: 9, SYNCED_FILE_COUNT: 10,
     },
     PHOTO_FILES: {
       DRIVE_FILE_ID: 0, MEDIA_ITEM_ID: 1, ALBUM_ID: 2, ALBUM_TYPE: 3,
-      EVENT_ID: 4, CLUB_NAME: 5, FILE_NAME: 6, SYNCED_AT: 7,
+      EVENT_ID: 4, CLUB_NAME: 5, TAG: 6, FILE_NAME: 7, SYNCED_AT: 8,
     },
     EVENTS: {
       EVENT_ID: 0, EVENT_NAME: 1, EVENT_DATE: 2,
@@ -176,6 +176,36 @@ function makeFileUploadResponses(mediaItemId: string) {
     ),
   };
   return [uploadResp, createResp];
+}
+
+/**
+ * Builds the 3-response sequence used by the batched two-album flow:
+ *   1. POST /uploads          → uploadToken
+ *   2. POST /mediaItems:batchCreate → mediaItemId(s) — attached to event album
+ *   3. POST /albums/{id}:batchAddMediaItems → ok      — attaches same mediaItem to club/tag album
+ *
+ * Pass mediaItemIds for each pending file in the order they will be uploaded.
+ * Returns the response mocks ready to be threaded into mockFetch.mockReturnValueOnce
+ * in this exact order: [upload×N, batchCreate, batchAddMediaItems].
+ */
+function makeTwoAlbumBatchResponses(mediaItemIds: string[]) {
+  const uploads = mediaItemIds.map((id) => ({
+    getResponseCode: jest.fn(() => 200),
+    getContentText:  jest.fn(() => `upload-token-${id}`),
+  }));
+  const batchCreate = {
+    getResponseCode: jest.fn(() => 200),
+    getContentText:  jest.fn(() =>
+      JSON.stringify({
+        newMediaItemResults: mediaItemIds.map((id) => ({ mediaItem: { id } })),
+      })
+    ),
+  };
+  const batchAdd = {
+    getResponseCode: jest.fn(() => 200),
+    getContentText:  jest.fn(() => '{}'),
+  };
+  return { uploads, batchCreate, batchAdd };
 }
 
 function makeMockFile(id: string, name: string, mimeType = 'image/jpeg') {
@@ -487,7 +517,10 @@ describe('syncBatchToAlbums()', () => {
       if (sheetName === 'Photo_Albums') {
         return [
           makeAlbumRow(EVENT_ALBUM, 'event', EVENT_ID, '', 5),
-          makeAlbumRow(CLUB_ALBUM,  'club',  EVENT_ID, CLUB_NAME, 3),
+          // Club album fixture must carry the same tag as the syncBatchToAlbums
+          // call (tests pass 'finish_line') — otherwise the (club, tag) lookup
+          // misses and a fresh album would be requested.
+          makeAlbumRow(CLUB_ALBUM,  'club',  EVENT_ID, CLUB_NAME, 3, '', 'finish_line'),
         ];
       }
       if (sheetName === 'Photo_Files') {
@@ -550,7 +583,7 @@ describe('syncBatchToAlbums()', () => {
     );
 
     expect(result.status).toBe(ResultStatus.ERROR);
-    expect(result.message).toContain('Cannot ensure club album');
+    expect(result.message).toContain('Cannot ensure club/tag album');
   });
 
   it('uploads a new file to both event and club albums', () => {
@@ -561,12 +594,12 @@ describe('syncBatchToAlbums()', () => {
       getBlob: jest.fn(() => ({ getBytes: jest.fn(() => new Uint8Array([1])) })),
     });
 
-    // Upload + batchCreate for event album; upload + batchCreate for club album
-    const [evUpload, evCreate] = makeFileUploadResponses('media-event');
-    const [clUpload, clCreate] = makeFileUploadResponses('media-club');
+    // New batched flow: 1 upload + 1 batchCreate + 1 batchAddMediaItems = 3 fetches.
+    const seq = makeTwoAlbumBatchResponses(['media-shared']);
     mockFetch
-      .mockReturnValueOnce(evUpload).mockReturnValueOnce(evCreate)
-      .mockReturnValueOnce(clUpload).mockReturnValueOnce(clCreate);
+      .mockReturnValueOnce(seq.uploads[0])
+      .mockReturnValueOnce(seq.batchCreate)
+      .mockReturnValueOnce(seq.batchAdd);
 
     const result = syncBatchToAlbums(
       EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line', BATCH_ID
@@ -574,7 +607,8 @@ describe('syncBatchToAlbums()', () => {
 
     expect(result.data!.eventSynced).toBe(1);
     expect(result.data!.clubTagSynced).toBe(1);
-    // Two Photo_Files rows appended (one per album)
+    // Two Photo_Files rows appended (one per album), but only one mediaItem
+    // and one /uploads request — bytes only travel the wire once.
     expect(mockAppendRow).toHaveBeenCalledTimes(2);
   });
 
@@ -599,14 +633,7 @@ describe('syncBatchToAlbums()', () => {
     expect(mockAppendRow).not.toHaveBeenCalled();
   });
 
-  it('shares the dedup key set across event and club syncs in a single call', () => {
-    // File is not in Photo_Files yet. After event album sync uploads it,
-    // the shared Set should prevent it being uploaded again to the club album.
-    // (In practice the event and club albumIds differ so both will upload —
-    // this test verifies the Set IS shared by checking in-memory dedup within
-    // an album, i.e. if we add the key after the event upload, the club sync
-    // uses the same Set object.)
-
+  it('reads Photo_Files exactly once for the batched two-album sync', () => {
     setupExistingAlbums();
     const jpgFile = makeMockFile('drive-shared', 'photo.jpg', 'image/jpeg');
     mockGetFolderById.mockReturnValue(makeMockFolder(BATCH_ID, 'batch', [jpgFile]));
@@ -614,27 +641,27 @@ describe('syncBatchToAlbums()', () => {
       getBlob: jest.fn(() => ({ getBytes: jest.fn(() => new Uint8Array([1])) })),
     });
 
-    // Both uploads succeed
-    const [evUpload, evCreate] = makeFileUploadResponses('media-ev');
-    const [clUpload, clCreate] = makeFileUploadResponses('media-cl');
+    const seq = makeTwoAlbumBatchResponses(['media-shared']);
     mockFetch
-      .mockReturnValueOnce(evUpload).mockReturnValueOnce(evCreate)
-      .mockReturnValueOnce(clUpload).mockReturnValueOnce(clCreate);
+      .mockReturnValueOnce(seq.uploads[0])
+      .mockReturnValueOnce(seq.batchCreate)
+      .mockReturnValueOnce(seq.batchAdd);
 
     const result = syncBatchToAlbums(
       EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line', BATCH_ID
     );
 
-    // File is uploaded once per album (different albumIds → different keys)
+    // The file is uploaded once and attached to both albums via a single
+    // batchAddMediaItems pass — no duplicate Photos library entry.
     expect(result.data!.eventSynced).toBe(1);
     expect(result.data!.clubTagSynced).toBe(1);
-    // Crucially: Photo_Files is read exactly ONCE (shared dedup set)
+    // Photo_Files is read exactly ONCE (shared dedup set).
     const photoFilesReadCount = (mockGetAllRows.mock.calls as string[][])
       .filter((call) => call[0] === 'Photo_Files').length;
     expect(photoFilesReadCount).toBe(1);
   });
 
-  it('collects errors from sub-syncs without short-circuiting the other album', () => {
+  it('surfaces an error when /uploads fails for a file', () => {
     setupExistingAlbums();
     const jpgFile = makeMockFile('drive-fail', 'fail.jpg', 'image/jpeg');
     mockGetFolderById.mockReturnValue(makeMockFolder(BATCH_ID, 'batch', [jpgFile]));
@@ -642,14 +669,11 @@ describe('syncBatchToAlbums()', () => {
       getBlob: jest.fn(() => ({ getBytes: jest.fn(() => new Uint8Array([1])) })),
     });
 
-    // Event album upload: fails at upload-token step
+    // /uploads fails — neither album sees the file.
     mockFetch.mockReturnValueOnce({
       getResponseCode: jest.fn(() => 503),
       getContentText:  jest.fn(() => 'Service Unavailable'),
     });
-    // Club album upload: succeeds
-    const [clUpload, clCreate] = makeFileUploadResponses('media-cl-ok');
-    mockFetch.mockReturnValueOnce(clUpload).mockReturnValueOnce(clCreate);
 
     const result = syncBatchToAlbums(
       EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line', BATCH_ID
@@ -657,9 +681,9 @@ describe('syncBatchToAlbums()', () => {
 
     expect(result.status).toBe(ResultStatus.SUCCESS); // overall success
     expect(result.data!.eventSynced).toBe(0);
-    expect(result.data!.clubTagSynced).toBe(1);
+    expect(result.data!.clubTagSynced).toBe(0);
     expect(result.data!.errors.length).toBeGreaterThan(0);
-    expect(result.data!.errors[0]).toContain('[event]');
+    expect(result.data!.errors[0]).toContain('byte upload failed');
   });
 
   it('calls updateRow to persist sync stats for both albums after a sync', () => {

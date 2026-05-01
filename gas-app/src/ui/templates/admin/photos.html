@@ -890,6 +890,7 @@
       startedAt:0,
       buttonEl: null,   // button that originated the sync (to restore on finish)
       buttonRestore: null, // {html, disabled} snapshot
+      lastJob:  null,   // most recent polled SyncJob — used by renderElapsed for live ETA
     };
 
     /**
@@ -1127,6 +1128,11 @@
      * termination.
      */
     function renderProgress(job) {
+      // Cache the last polled job so the per-second elapsed tick can also
+      // refresh the photos/sec + ETA readout without waiting for the next 3s
+      // poll.
+      currentJob.lastJob = job;
+
       document.getElementById('progress-step').textContent = job.currentStep || '…';
 
       // Progress bar:
@@ -1158,6 +1164,31 @@
       if (job.photosDeduplicated > 0) counters.push(counter('Already synced', job.photosDeduplicated));
       if (job.photosSkipped > 0)    counters.push(counter('Skipped (non-photo)', job.photosSkipped));
       if (job.errors && job.errors.length > 0) counters.push(counter('Errors', job.errors.length, 'warn'));
+
+      // Throughput + ETA — derived from elapsed wall time and the running counters.
+      // For backfill-all we have eventsTotal, so we can show a real ETA.
+      // For per-event sync we don't know the total photo count up front, so we
+      // only show photos/sec (no ETA).
+      var elapsedSec = currentJob.startedAt
+        ? Math.max(1, Math.floor((Date.now() - currentJob.startedAt) / 1000))
+        : 0;
+      if (elapsedSec > 0 && !isTerminal(job.status)) {
+        var work = (job.photosSynced || 0) + (job.photosDeduplicated || 0);
+        if (work > 0) {
+          var rate = work / elapsedSec; // items/sec (photos uploaded + dedup'd)
+          counters.push(counter('Photos / sec', rate.toFixed(rate >= 1 ? 1 : 2)));
+        }
+        if (job.jobType === 'backfill-all'
+            && job.eventsTotal > 0
+            && job.eventsProcessed > 0) {
+          var secPerEvent = elapsedSec / job.eventsProcessed;
+          var remaining   = job.eventsTotal - job.eventsProcessed;
+          if (remaining > 0) {
+            counters.push(counter('ETA', formatSeconds(Math.round(remaining * secPerEvent))));
+          }
+        }
+      }
+
       document.getElementById('progress-counters').innerHTML = counters.join('');
 
       // Error list — collapsed by default, reveals when errors accumulate.
@@ -1201,6 +1232,11 @@
       if (!currentJob.startedAt) return;
       var sec = Math.floor((Date.now() - currentJob.startedAt) / 1000);
       document.getElementById('progress-elapsed').textContent = formatSeconds(sec);
+      // Recompute photos/sec + ETA from the latest job snapshot so the rate
+      // updates between 3-second polls instead of looking frozen.
+      if (currentJob.lastJob && !isTerminal(currentJob.lastJob.status)) {
+        renderProgress(currentJob.lastJob);
+      }
     }
     function setElapsedFinal(job) {
       // Freeze the elapsed clock at the total runtime the server recorded.

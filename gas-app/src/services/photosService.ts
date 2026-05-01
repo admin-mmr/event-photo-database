@@ -38,6 +38,8 @@ import {
   photosPost,
   photosUploadBytes,
   createGoogleAlbum,
+  photosBatchCreateMediaItems,
+  photosBatchAddMediaItemsToAlbum,
 } from './photosApiClient';
 import {
   loadAlbums,
@@ -493,6 +495,248 @@ export function syncBatchFolderToAlbum(
   };
 }
 
+// ─── Fast path: upload-once + add-to-second-album batched ────────────────────
+
+export interface TwoAlbumFolderSyncResult {
+  synced:       number;  // photos added to BOTH albums (one upload each)
+  skipped:      number;  // wrong MIME type
+  deduplicated: number;  // already in both albums
+  errors:       string[];
+}
+
+/**
+ * Optimised sync of a single batch folder into two albums (event + club/tag).
+ *
+ * Compared to calling syncBatchFolderToAlbum twice (once per album), this:
+ *
+ *   1. Uploads each file's bytes ONCE — the second album re-uses the resulting
+ *      mediaItemId via /albums/{id}:batchAddMediaItems instead of re-uploading
+ *      ~5 MB of bytes per photo.
+ *   2. Calls /mediaItems:batchCreate with up to 50 items per request rather
+ *      than one per file, cutting album-creation calls by ~50×.
+ *   3. Calls /albums/{id}:batchAddMediaItems with up to 50 items per request,
+ *      so the secondary album's writes are roughly free.
+ *
+ * Net effect for a 50-photo batch: ~52 Photos API calls instead of ~200, and
+ * ~half the bytes uploaded, since /uploads runs once instead of twice per
+ * file. Photos API also stops creating duplicate library entries — there's
+ * one mediaItem per Drive file, surfaced in both albums.
+ *
+ * Per-file errors during /uploads or batchCreate are collected and surfaced
+ * via the result; the rest of the batch still proceeds.
+ */
+export function syncBatchFolderToTwoAlbums(
+  eventAlbumId:    string,
+  clubTagAlbumId:  string,
+  eventId:         string,
+  clubName:        string,
+  tag:             string,
+  batchFolderId:   string,
+  existingSyncedKeys: Set<string>,
+  jobId?:          string,
+  progressStep?:   string
+): ServiceResult<TwoAlbumFolderSyncResult> {
+  let folder: GoogleAppsScript.Drive.Folder;
+  try {
+    folder = DriveApp.getFolderById(batchFolderId);
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Cannot access batch folder "${batchFolderId}": ${String(err)}`,
+    };
+  }
+
+  const errors: string[] = [];
+  let skipped      = 0;
+  let deduplicated = 0;
+
+  // Emit the folder-level step once, up front — avoids spamming the job record
+  // with an update per file while still giving the UI a human-readable label.
+  if (jobId && progressStep) updateJob(jobId, { currentStep: progressStep });
+
+  // ── Phase 1: enumerate eligible Drive files ────────────────────────────────
+  // Skip wrong MIME types and files that are already in BOTH albums. If only
+  // one album has the file we still re-upload — that's rare in normal flow
+  // and re-uploading is correct (avoids drift between sheet and Photos state).
+  type Pending = {
+    file:        GoogleAppsScript.Drive.File;
+    driveFileId: string;
+    fileName:    string;
+    mimeType:    string;
+  };
+  const pending: Pending[] = [];
+
+  const iter = folder.getFiles();
+  while (iter.hasNext()) {
+    const file     = iter.next();
+    const mimeType = file.getMimeType();
+    if (!PHOTO_MIME_TYPES.has(mimeType)) {
+      skipped++;
+      if (jobId) incrementJobCounters(jobId, { photosSkipped: 1 });
+      continue;
+    }
+    const driveFileId = file.getId();
+    const evKey = `${driveFileId}|${eventAlbumId}`;
+    const ctKey = `${driveFileId}|${clubTagAlbumId}`;
+    if (existingSyncedKeys.has(evKey) && existingSyncedKeys.has(ctKey)) {
+      deduplicated++;
+      if (jobId) incrementJobCounters(jobId, { photosDeduplicated: 1 });
+      continue;
+    }
+    pending.push({ file, driveFileId, fileName: file.getName(), mimeType });
+  }
+
+  if (pending.length === 0) {
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `0 file(s) synced (${skipped} skipped, ${deduplicated} dedup)`,
+      data: { synced: 0, skipped, deduplicated, errors },
+    };
+  }
+
+  // ── Phase 2: upload bytes for each pending file ────────────────────────────
+  // /uploads is a single-file endpoint (one HTTP call per file), but each
+  // file's bytes only travel the wire once now — the club/tag album reuses
+  // the resulting mediaItemId.
+  type Uploaded = Pending & { uploadToken: string };
+  const uploaded: Uploaded[] = [];
+
+  for (const p of pending) {
+    if (jobId && isCancelRequested(jobId)) {
+      return {
+        status: ResultStatus.SUCCESS,
+        message:
+          `Cancelled after uploading bytes for ${uploaded.length}/${pending.length} file(s)`,
+        data: { synced: 0, skipped, deduplicated, errors },
+      };
+    }
+    let blob: GoogleAppsScript.Base.Blob;
+    try {
+      blob = DriveApp.getFileById(p.driveFileId).getBlob();
+    } catch (err) {
+      const msg = `${p.fileName}: cannot read Drive blob: ${String(err)}`;
+      errors.push(msg);
+      if (jobId) updateJob(jobId, { errors: [msg] });
+      continue;
+    }
+    const up = photosUploadBytes(blob, p.mimeType);
+    if (!up.ok || !up.uploadToken) {
+      const msg = `${p.fileName}: byte upload failed: ${up.error}`;
+      errors.push(msg);
+      if (jobId) updateJob(jobId, { errors: [msg] });
+      continue;
+    }
+    uploaded.push({ ...p, uploadToken: up.uploadToken });
+  }
+
+  if (uploaded.length === 0) {
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `0 file(s) synced — all ${pending.length} upload(s) failed`,
+      data: { synced: 0, skipped, deduplicated, errors },
+    };
+  }
+
+  // ── Phase 3: batchCreate up to 50 mediaItems per call into the event album ─
+  const created = photosBatchCreateMediaItems(
+    eventAlbumId,
+    uploaded.map((u) => ({ uploadToken: u.uploadToken, fileName: u.fileName })),
+  );
+
+  type Synced = Uploaded & { mediaItemId: string };
+  const synced: Synced[] = [];
+  for (let i = 0; i < uploaded.length; i++) {
+    const r = created[i];
+    if (r?.mediaItemId) {
+      synced.push({ ...uploaded[i], mediaItemId: r.mediaItemId });
+    } else {
+      const msg = `${uploaded[i].fileName}: batchCreate failed: ${r?.error ?? 'unknown'}`;
+      errors.push(msg);
+      if (jobId) updateJob(jobId, { errors: [msg] });
+    }
+  }
+
+  if (synced.length === 0) {
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `0 file(s) synced — every batchCreate failed`,
+      data: { synced: 0, skipped, deduplicated, errors },
+    };
+  }
+
+  // ── Phase 4: batchAddMediaItems for the same items into the club/tag album
+  // No bytes uploaded; this is the cheap pass.
+  const addResult = photosBatchAddMediaItemsToAlbum(
+    clubTagAlbumId,
+    synced.map((s) => s.mediaItemId),
+  );
+  const addFailureIndices = new Set(addResult.failures.map((f) => f.index));
+  if (addResult.failures.length > 0) {
+    // Surface a representative error so the admin sees something actionable.
+    const first = addResult.failures[0];
+    const msg = `batchAddMediaItems to club/tag album: ${first.message} (${addResult.failures.length} item(s) affected)`;
+    errors.push(msg);
+    if (jobId) updateJob(jobId, { errors: [msg] });
+  }
+
+  // ── Phase 5: persist Photo_Files rows for both albums ──────────────────────
+  // Each file gets two rows: one for the event album, one for the club/tag album
+  // (skipping the second row when batchAddMediaItems failed for that index).
+  const now = nowIsoTimestamp();
+  for (let i = 0; i < synced.length; i++) {
+    const s = synced[i];
+    const evKey = `${s.driveFileId}|${eventAlbumId}`;
+    const ctKey = `${s.driveFileId}|${clubTagAlbumId}`;
+
+    if (!existingSyncedKeys.has(evKey)) {
+      saveFileRecord({
+        driveFileId: s.driveFileId,
+        mediaItemId: s.mediaItemId,
+        albumId:     eventAlbumId,
+        albumType:   'event',
+        eventId,
+        clubName:    '',
+        tag:         '',
+        fileName:    s.fileName,
+        syncedAt:    now,
+      });
+      existingSyncedKeys.add(evKey);
+    }
+
+    if (!addFailureIndices.has(i) && !existingSyncedKeys.has(ctKey)) {
+      saveFileRecord({
+        driveFileId: s.driveFileId,
+        mediaItemId: s.mediaItemId,
+        albumId:     clubTagAlbumId,
+        albumType:   'club',
+        eventId,
+        clubName,
+        tag,
+        fileName:    s.fileName,
+        syncedAt:    now,
+      });
+      existingSyncedKeys.add(ctKey);
+    }
+
+    if (jobId) {
+      // Each successful sync moves both album counters together.
+      incrementJobCounters(
+        jobId,
+        { photosSynced: 1 },
+        progressStep ? `${progressStep} — ${i + 1}/${synced.length} uploaded` : undefined,
+      );
+    }
+  }
+
+  return {
+    status: ResultStatus.SUCCESS,
+    message:
+      `Synced ${synced.length} file(s) ` +
+      `(${skipped} skipped, ${deduplicated} deduplicated, ${errors.length} error(s))`,
+    data: { synced: synced.length, skipped, deduplicated, errors },
+  };
+}
+
 export interface BatchAlbumSyncResult {
   eventAlbumId:    string;
   clubTagAlbumId:  string;
@@ -584,22 +828,14 @@ export function syncBatchToAlbums(
   const allFileRecords = loadFileRecords();
   const syncedKeys = new Set(allFileRecords.map((r) => `${r.driveFileId}|${r.albumId}`));
 
-  // Sync batch to event album (event-album file records carry empty club/tag)
-  const eventSyncResult = syncBatchFolderToAlbum(
-    eventAlbumRecord.albumId, 'event', eventId, '', '', batchFolderId, syncedKeys
+  // ── Single batched pass: upload bytes once, attach to both albums ───────────
+  const twoResult = syncBatchFolderToTwoAlbums(
+    eventAlbumRecord.albumId, clubTagAlbumRecord.albumId,
+    eventId, clubName, tag, batchFolderId, syncedKeys
   );
-  const eventSynced = eventSyncResult.data?.synced ?? 0;
-  if (eventSyncResult.data?.errors.length) {
-    errors.push(...eventSyncResult.data.errors.map((e) => `[event] ${e}`));
-  }
-
-  // Sync batch to (club, tag) album (syncedKeys is shared so dedup works across albums)
-  const clubTagSyncResult = syncBatchFolderToAlbum(
-    clubTagAlbumRecord.albumId, 'club', eventId, clubName, tag, batchFolderId, syncedKeys
-  );
-  const clubTagSynced = clubTagSyncResult.data?.synced ?? 0;
-  if (clubTagSyncResult.data?.errors.length) {
-    errors.push(...clubTagSyncResult.data.errors.map((e) => `[club:${clubName}/${tag}] ${e}`));
+  const synced = twoResult.data?.synced ?? 0;
+  if (twoResult.data?.errors.length) {
+    errors.push(...twoResult.data.errors.map((e) => `[${clubName}/${tag}] ${e}`));
   }
 
   // ── Persist updated sync stats using pre-loaded rows (no extra sheet reads) ──
@@ -607,31 +843,29 @@ export function syncBatchToAlbums(
   updateAlbumSyncStats(
     eventAlbumRecord.albumId,
     now,
-    eventAlbumRecord.syncedFileCount + eventSynced,
+    eventAlbumRecord.syncedFileCount + synced,
     albumRows
   );
   updateAlbumSyncStats(
     clubTagAlbumRecord.albumId,
     now,
-    clubTagAlbumRecord.syncedFileCount + clubTagSynced,
+    clubTagAlbumRecord.syncedFileCount + synced,
     albumRows
   );
 
   Logger.log(
     `[PhotosService] syncBatchToAlbums: event="${eventName}", club="${clubName}", ` +
-    `tag="${tag}", eventSynced=${eventSynced}, clubTagSynced=${clubTagSynced}, errors=${errors.length}`
+    `tag="${tag}", synced=${synced}, errors=${errors.length}`
   );
 
   return {
     status: ResultStatus.SUCCESS,
-    message:
-      `Batch synced: ${eventSynced} photo(s) → event album, ` +
-      `${clubTagSynced} photo(s) → club/tag album`,
+    message: `Batch synced: ${synced} photo(s) → event album + club/tag album`,
     data: {
       eventAlbumId:   eventAlbumRecord.albumId,
       clubTagAlbumId: clubTagAlbumRecord.albumId,
-      eventSynced,
-      clubTagSynced,
+      eventSynced:    synced,
+      clubTagSynced:  synced,
       errors,
     },
   };
@@ -798,29 +1032,19 @@ export function syncEventToAlbums(
         const batchName     = batchFolder.getName();
         const breadcrumb    = `${tag} / ${batchName}`;
 
-        // Sync to event album (dedup key set is shared and updated in-place)
-        const evResult = syncBatchFolderToAlbum(
-          eventAlbumRecord.albumId, 'event', event.eventId, '', '', batchFolderId, syncedKeys,
-          jobId, `"${clubDisplayName}" / ${breadcrumb} → event album`
+        // Single batched pass — upload each file's bytes once, then attach
+        // the resulting mediaItem to both albums via batchAddMediaItems.
+        const twoResult = syncBatchFolderToTwoAlbums(
+          eventAlbumRecord.albumId, clubTagAlbumRecord.albumId,
+          event.eventId, clubName, tag, batchFolderId, syncedKeys,
+          jobId, `"${clubDisplayName}" / ${breadcrumb}`
         );
-        const evSynced = evResult.data?.synced ?? 0;
-        totalSynced += evSynced;
-        if (evResult.data?.errors.length) {
+        const batchSynced = twoResult.data?.synced ?? 0;
+        totalSynced += batchSynced;
+        clubTagSynced += batchSynced;
+        if (twoResult.data?.errors.length) {
           errors.push(
-            ...evResult.data.errors.map((e) => `[${clubName}/${breadcrumb}/event] ${e}`)
-          );
-        }
-
-        // Sync to (club, tag) album
-        const ctResult = syncBatchFolderToAlbum(
-          clubTagAlbumRecord.albumId, 'club', event.eventId, clubName, tag, batchFolderId, syncedKeys,
-          jobId, `"${clubDisplayName}" / ${breadcrumb} → club/tag album`
-        );
-        const ctSynced = ctResult.data?.synced ?? 0;
-        clubTagSynced += ctSynced;
-        if (ctResult.data?.errors.length) {
-          errors.push(
-            ...ctResult.data.errors.map((e) => `[${clubName}/${breadcrumb}/club] ${e}`)
+            ...twoResult.data.errors.map((e) => `[${clubName}/${breadcrumb}] ${e}`)
           );
         }
       }
