@@ -62,6 +62,35 @@ export {
 /* global DriveApp, Logger, SpreadsheetApp */
 
 /**
+ * Matches Layer-3 batch folder names: YYYYMMDD-HHMMSS_username.
+ * Used to distinguish batch folders from Layer-2.5 tag subfolders when walking
+ * the club folder's children. Mirrors the BATCH_FOLDER_RE used in driveService.
+ *
+ * Drive structure walked by syncEventToAlbums:
+ *   Event / Club / [Tag /] Batch (YYYYMMDD-HHMMSS_user) / files
+ *
+ * The optional tag folder was added when DEFAULT_TAG ('ALL') was introduced —
+ * legacy uploads created before that have no tag and live directly under the
+ * club folder. Both layouts must be supported.
+ */
+const BATCH_FOLDER_RE = /^\d{8}-\d{6}_/;
+
+/**
+ * Counts photo files (matching PHOTO_MIME_TYPES) directly inside a single batch
+ * folder. Used by reconciliation; intentionally non-recursive — batch folders
+ * only contain files, never subfolders.
+ */
+function countPhotoFiles(batchFolder: GoogleAppsScript.Drive.Folder): number {
+  let count = 0;
+  const iter = batchFolder.getFiles();
+  while (iter.hasNext()) {
+    const file = iter.next();
+    if (PHOTO_MIME_TYPES.has(file.getMimeType())) count++;
+  }
+  return count;
+}
+
+/**
  * PhotosService — Google Photos Library API integration.
  *
  * Manages the lifecycle of Google Photos albums that mirror the Drive folder
@@ -702,39 +731,70 @@ export function syncEventToAlbums(
     }
     let clubSynced = 0;
 
-    // Walk Layer-3 batch folders
-    const batchIter = clubFolder.getFolders();
-    while (batchIter.hasNext()) {
+    // Walk Layer-3 children. Each child is either:
+    //   - a batch folder (legacy / pre-DEFAULT_TAG uploads)  — name matches BATCH_FOLDER_RE
+    //   - a tag folder (post-DEFAULT_TAG uploads)            — anything else
+    //
+    // For tag folders we descend one more level to find the actual batch folders.
+    // Without this descent the tag folder is treated as a (childless) batch and
+    // every photo is silently skipped — that was the cause of "all 0 items"
+    // syncing into freshly-created albums after the DEFAULT_TAG rollout.
+    const layer3Iter = clubFolder.getFolders();
+    while (layer3Iter.hasNext()) {
       if (jobId && isCancelRequested(jobId)) break;
+      const layer3Folder = layer3Iter.next();
+      const layer3Name   = layer3Folder.getName();
 
-      const batchFolder = batchIter.next();
-      const batchFolderId = batchFolder.getId();
-      const batchName = batchFolder.getName();
+      // Build the list of (batchFolder, breadcrumb) pairs to sync.
+      const batchTargets: Array<{
+        folder:     GoogleAppsScript.Drive.Folder;
+        breadcrumb: string;
+      }> = [];
 
-      // Sync to event album (dedup key set is shared and updated in-place)
-      const evResult = syncBatchFolderToAlbum(
-        eventAlbumRecord.albumId, 'event', event.eventId, '', batchFolderId, syncedKeys,
-        jobId, `"${clubDisplayName}" / ${batchName} → event album`
-      );
-      const evSynced = evResult.data?.synced ?? 0;
-      totalSynced += evSynced;
-      if (evResult.data?.errors.length) {
-        errors.push(
-          ...evResult.data.errors.map((e) => `[${clubName}/${batchName}/event] ${e}`)
-        );
+      if (BATCH_FOLDER_RE.test(layer3Name)) {
+        // Direct batch — legacy untagged upload.
+        batchTargets.push({ folder: layer3Folder, breadcrumb: layer3Name });
+      } else {
+        // Tag folder — descend to find the actual batches.
+        const innerIter = layer3Folder.getFolders();
+        while (innerIter.hasNext()) {
+          const innerFolder = innerIter.next();
+          batchTargets.push({
+            folder:     innerFolder,
+            breadcrumb: `${layer3Name} / ${innerFolder.getName()}`,
+          });
+        }
       }
 
-      // Sync to club album
-      const clResult = syncBatchFolderToAlbum(
-        clubAlbumRecord.albumId, 'club', event.eventId, clubName, batchFolderId, syncedKeys,
-        jobId, `"${clubDisplayName}" / ${batchName} → club album`
-      );
-      const clSynced = clResult.data?.synced ?? 0;
-      clubSynced += clSynced;
-      if (clResult.data?.errors.length) {
-        errors.push(
-          ...clResult.data.errors.map((e) => `[${clubName}/${batchName}/club] ${e}`)
+      for (const { folder: batchFolder, breadcrumb } of batchTargets) {
+        if (jobId && isCancelRequested(jobId)) break;
+        const batchFolderId = batchFolder.getId();
+
+        // Sync to event album (dedup key set is shared and updated in-place)
+        const evResult = syncBatchFolderToAlbum(
+          eventAlbumRecord.albumId, 'event', event.eventId, '', batchFolderId, syncedKeys,
+          jobId, `"${clubDisplayName}" / ${breadcrumb} → event album`
         );
+        const evSynced = evResult.data?.synced ?? 0;
+        totalSynced += evSynced;
+        if (evResult.data?.errors.length) {
+          errors.push(
+            ...evResult.data.errors.map((e) => `[${clubName}/${breadcrumb}/event] ${e}`)
+          );
+        }
+
+        // Sync to club album
+        const clResult = syncBatchFolderToAlbum(
+          clubAlbumRecord.albumId, 'club', event.eventId, clubName, batchFolderId, syncedKeys,
+          jobId, `"${clubDisplayName}" / ${breadcrumb} → club album`
+        );
+        const clSynced = clResult.data?.synced ?? 0;
+        clubSynced += clSynced;
+        if (clResult.data?.errors.length) {
+          errors.push(
+            ...clResult.data.errors.map((e) => `[${clubName}/${breadcrumb}/club] ${e}`)
+          );
+        }
       }
     }
 
@@ -955,17 +1015,24 @@ export function reconcileEventPhotos(
       const clubFolder = clubIter.next();
       const clubName = clubFolder.getName();
 
-      // Count photo files across all batch (Layer-3) folders
+      // Count photo files across all batch (Layer-3) folders.
+      // Drive structure may be either:
+      //   Club / Batch / files                (legacy untagged uploads)
+      //   Club / Tag / Batch / files          (post-DEFAULT_TAG uploads)
+      // We detect the case by name pattern (BATCH_FOLDER_RE matches batch dirs).
       let clubDriveCount = 0;
       try {
-        const batchIter = clubFolder.getFolders();
-        while (batchIter.hasNext()) {
-          const batchFolder = batchIter.next();
-          const fileIter = batchFolder.getFiles();
-          while (fileIter.hasNext()) {
-            const file = fileIter.next();
-            if (PHOTO_MIME_TYPES.has(file.getMimeType())) {
-              clubDriveCount++;
+        const layer3Iter = clubFolder.getFolders();
+        while (layer3Iter.hasNext()) {
+          const layer3Folder = layer3Iter.next();
+          if (BATCH_FOLDER_RE.test(layer3Folder.getName())) {
+            // Direct batch — count its files.
+            clubDriveCount += countPhotoFiles(layer3Folder);
+          } else {
+            // Tag folder — descend one level.
+            const innerIter = layer3Folder.getFolders();
+            while (innerIter.hasNext()) {
+              clubDriveCount += countPhotoFiles(innerIter.next());
             }
           }
         }
