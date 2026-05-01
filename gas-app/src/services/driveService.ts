@@ -797,6 +797,95 @@ export function getEventDriveTree(
   };
 }
 
+// ─── Batch folder deletion ────────────────────────────────────────────────────
+
+/**
+ * Moves a Layer 3 batch folder to Drive trash (soft delete).
+ *
+ * Safety checks performed before trashing:
+ *   1. The folder exists and is accessible.
+ *   2. Its name matches the Layer-3 batch pattern (YYYYMMDD-HHMMSS_username).
+ *   3. Walking up the parent chain confirms the folder sits inside a club folder
+ *      whose name equals `claimedClubName` (direct batch or via a tag subfolder).
+ *
+ * Returns SUCCESS with the folder name, or ERROR with a descriptive message.
+ * Does NOT invalidate the drive-tree cache — callers are responsible for that.
+ *
+ * @param batchFolderId   Drive ID of the Layer-3 batch folder to trash
+ * @param claimedClubName Normalized club name the caller asserts owns the folder
+ */
+export function trashBatchFolder(
+  batchFolderId: string,
+  claimedClubName: string
+): ServiceResult<{ folderName: string }> {
+  try {
+    // 1 — Fetch the folder.
+    const folderResult = getFolderById(batchFolderId);
+    if (folderResult.status !== ResultStatus.SUCCESS || !folderResult.data) {
+      return { status: ResultStatus.ERROR, message: folderResult.message };
+    }
+    const batchFolder = folderResult.data;
+    const batchName   = batchFolder.getName();
+
+    // 2 — Confirm it looks like a Layer-3 batch folder.
+    if (!BATCH_FOLDER_RE.test(batchName)) {
+      return {
+        status: ResultStatus.ERROR,
+        message: `"${batchName}" is not a batch folder (expected YYYYMMDD-HHMMSS_username format).`,
+      };
+    }
+
+    // 3 — Walk the parent chain to verify club ownership.
+    //     Structure is either:  EventFolder / ClubFolder / BatchFolder
+    //                       or: EventFolder / ClubFolder / TagFolder / BatchFolder
+    const parentIter = batchFolder.getParents();
+    if (!parentIter.hasNext()) {
+      return { status: ResultStatus.ERROR, message: 'Batch folder has no parent — cannot verify club ownership.' };
+    }
+    const immediateParent     = parentIter.next();
+    const immediateParentName = immediateParent.getName();
+
+    let resolvedClubName: string;
+    if (immediateParentName === claimedClubName) {
+      // Direct batch inside the club folder (no tag subfolder).
+      resolvedClubName = immediateParentName;
+    } else {
+      // Possibly inside a tag subfolder — check the grandparent.
+      const grandParentIter = immediateParent.getParents();
+      if (!grandParentIter.hasNext()) {
+        return { status: ResultStatus.ERROR, message: 'Could not verify club ownership: tag folder has no parent.' };
+      }
+      resolvedClubName = grandParentIter.next().getName();
+    }
+
+    if (resolvedClubName !== claimedClubName) {
+      return {
+        status: ResultStatus.ERROR,
+        message: `Ownership check failed: folder belongs to club "${resolvedClubName}", not "${claimedClubName}".`,
+      };
+    }
+
+    // 4 — Trash the folder.
+    batchFolder.setTrashed(true);
+
+    Logger.log(
+      `[driveService.trashBatchFolder] "${batchName}" (${batchFolderId}) ` +
+      `trashed — club="${claimedClubName}"`
+    );
+
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `Batch folder "${batchName}" moved to Drive trash.`,
+      data: { folderName: batchName },
+    };
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Failed to trash batch folder: ${String(err)}`,
+    };
+  }
+}
+
 // ─── Contract test helpers ────────────────────────────────────────────────────
 
 /**

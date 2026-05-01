@@ -7,7 +7,7 @@
  *         serverGetDriveTree.
  */
 
-import { ResultStatus, UploadSource } from '../types/enums';
+import { ResultStatus, UploadSource, UserRole, AuditAction } from '../types/enums';
 import { ServerResponse, WithSession } from '../types/responses';
 import { authenticateRequest } from '../middleware/authMiddleware';
 import { listAll as listAllEvents } from '../services/eventService';
@@ -17,7 +17,9 @@ import {
   createBatchFolder,
   getEventDriveTree,
   invalidateEventDriveTreeCache,
+  trashBatchFolder,
 } from '../services/driveService';
+import { appendAuditLog } from '../services/auditLogService';
 import { appendUploadLog } from '../services/uploadLogService';
 import { enqueueBatchSync } from '../services/syncQueueService';
 import { ADMIN_CLUB_ID } from '../config/constants';
@@ -271,5 +273,75 @@ export function serverGetDriveTree(payload: WithSession): ServerResponse {
   } catch (err) {
     Logger.log(`serverGetDriveTree error: ${String(err)}`);
     return { status: 'error', message: `Internal error fetching drive tree: ${String(err)}` };
+  }
+}
+
+/**
+ * Moves a Layer-3 batch folder to Drive trash (soft delete).
+ *
+ * Required payload fields: batchFolderId, clubName, eventId
+ *
+ * Permissions:
+ *   - CLUB_ADMIN  may only delete batch folders belonging to their own club.
+ *   - SUPER_ADMIN may delete any club's batch folders.
+ *
+ * The service layer performs an additional Drive-level ownership check so that
+ * a crafted request cannot trash folders outside the declared club.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function serverDeleteBatchFolder(payload: WithSession): ServerResponse {
+  try {
+    const authResult = authenticateRequest(payload?.sessionToken);
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      return { status: 'error', message: 'Authentication required' };
+    }
+    const user = authResult.data;
+
+    const batchFolderId = String(payload.batchFolderId ?? '').trim();
+    const clubName      = String(payload.clubName      ?? '').trim();
+    const eventId       = String(payload.eventId       ?? '').trim();
+
+    if (!batchFolderId || !clubName || !eventId) {
+      return { status: 'error', message: 'batchFolderId, clubName, and eventId are required' };
+    }
+
+    // Club admins are scoped to their own club only.
+    if (user.role === UserRole.CLUB_ADMIN && user.clubId !== clubName) {
+      return {
+        status: 'error',
+        message: `You administer "${user.clubId}" and cannot delete folders for "${clubName}".`,
+      };
+    }
+
+    const result = trashBatchFolder(batchFolderId, clubName);
+    if (result.status !== ResultStatus.SUCCESS || !result.data) {
+      return { status: 'error', message: result.message };
+    }
+
+    // Invalidate the cached drive tree so the next expand reflects the removal.
+    invalidateEventDriveTreeCache(eventId);
+
+    // Audit trail.
+    appendAuditLog({
+      actorEmail:   user.email,
+      action:       AuditAction.FOLDER_DELETED,
+      resourceType: 'folder',
+      resourceId:   batchFolderId,
+      details:      {
+        folderName: result.data.folderName,
+        clubName,
+        eventId,
+      },
+    });
+
+    Logger.log(
+      `[serverDeleteBatchFolder] "${result.data.folderName}" (${batchFolderId}) ` +
+      `trashed by ${user.email} — event=${eventId} club=${clubName}`
+    );
+
+    return { status: 'success', message: result.message, data: result.data };
+  } catch (err) {
+    Logger.log(`serverDeleteBatchFolder error: ${String(err)}`);
+    return { status: 'error', message: `Internal error deleting batch folder: ${String(err)}` };
   }
 }

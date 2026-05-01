@@ -205,6 +205,49 @@
 
     /* Hidden via search */
     .event-node.hidden { display: none; }
+
+    /* ── Batch delete button ─────────────────────────────────────────────── */
+    .batch-delete-btn {
+      display: none; /* shown on row hover */
+      align-items: center; justify-content: center;
+      width: 28px; height: 28px; padding: 0; margin-left: 4px;
+      border: none; border-radius: 4px; cursor: pointer;
+      background: transparent; color: #9e9e9e;
+      transition: background .15s, color .15s; flex-shrink: 0;
+    }
+    .batch-row:hover .batch-delete-btn { display: inline-flex; }
+    .batch-delete-btn:hover { background: #ffebee; color: #c62828; }
+
+    /* ── Confirmation modal ──────────────────────────────────────────────── */
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,.45);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9999;
+    }
+    .modal-card {
+      background: #fff; border-radius: 8px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.2);
+      padding: 28px 32px; max-width: 420px; width: 90%;
+    }
+    .modal-card h3 {
+      margin: 0 0 12px; font-size: 17px; font-weight: 600; color: #212121;
+    }
+    .modal-card p {
+      margin: 0 0 24px; font-size: 14px; color: #555; line-height: 1.5;
+    }
+    .modal-actions {
+      display: flex; justify-content: flex-end; gap: 10px;
+    }
+    .modal-btn {
+      padding: 8px 20px; border: none; border-radius: 4px;
+      font-size: 14px; font-weight: 500; cursor: pointer;
+      transition: background .15s;
+    }
+    .modal-btn-cancel  { background: #f5f5f5; color: #333; }
+    .modal-btn-cancel:hover  { background: #e0e0e0; }
+    .modal-btn-danger  { background: #c62828; color: #fff; }
+    .modal-btn-danger:hover  { background: #b71c1c; }
+    .modal-btn-danger:disabled { background: #ef9a9a; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -325,6 +368,22 @@
       </div>
     </main>
 
+    <!-- ── Delete batch folder confirmation modal ──────────────────────── -->
+    <div id="deleteFolderModal" class="modal-backdrop" style="display:none;"
+         role="dialog" aria-modal="true" aria-labelledby="deleteFolderModalTitle">
+      <div class="modal-card">
+        <h3 id="deleteFolderModalTitle">
+          <i class="material-icons" style="vertical-align:middle;color:#c62828;font-size:20px;margin-right:6px;">delete</i>
+          Move folder to trash?
+        </h3>
+        <p id="deleteFolderModalBody"></p>
+        <div class="modal-actions">
+          <button id="deleteFolderCancel"  class="modal-btn modal-btn-cancel">Cancel</button>
+          <button id="deleteFolderConfirm" class="modal-btn modal-btn-danger">Move to trash</button>
+        </div>
+      </div>
+    </div>
+
     <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
   </div>
 
@@ -340,7 +399,10 @@
     'use strict';
 
     // ── Data injected from server ────────────────────────────────────────────
-    var EVENTS = <?!= events ?>;   // EventRecord[] sorted newest-first
+    var EVENTS       = <?!= events ?>;       // EventRecord[] sorted newest-first
+    var IS_ADMIN     = <?= isAdmin ?>;       // true for club_admin + super_admin
+    var IS_SUPER_ADMIN = <?= isSuperAdmin ?>; // true for super_admin only
+    var USER_CLUB_ID = '<?= clubId ?>';      // normalizedName of the acting user's club ('' for super admin)
 
     // ── State ───────────────────────────────────────────────────────────────
     // Map of eventId → { loaded: bool, data: EventDriveTree | null, error: string | null }
@@ -410,7 +472,7 @@
 
       // Already loaded from cache
       if (treeCache[event.eventId]) {
-        renderEventBody(body, treeCache[event.eventId]);
+        renderEventBody(body, treeCache[event.eventId], event.eventId);
         return;
       }
 
@@ -434,17 +496,17 @@
           } else {
             treeCache[event.eventId] = { loaded: true, data: null, error: resp.message };
           }
-          renderEventBody(body, treeCache[event.eventId]);
+          renderEventBody(body, treeCache[event.eventId], event.eventId);
         })
         .withFailureHandler(function (err) {
           treeCache[event.eventId] = { loaded: true, data: null, error: String(err) };
-          renderEventBody(body, treeCache[event.eventId]);
+          renderEventBody(body, treeCache[event.eventId], event.eventId);
         })
         .serverGetDriveTree({ eventId: event.eventId, driveFolderId: event.driveFolderId, sessionToken: window.SESSION_TOKEN });
     }
 
     // ── Render event body once data is available ──────────────────────────────
-    function renderEventBody (body, state) {
+    function renderEventBody (body, state, eventId) {
       if (state.error) {
         body.innerHTML =
           '<div class="tree-error"><i class="material-icons" style="font-size:16px;">error_outline</i>' +
@@ -463,14 +525,14 @@
       var ul = document.createElement('ul');
       ul.className = 'club-list';
       tree.clubs.forEach(function (club) {
-        ul.appendChild(buildClubNode(club));
+        ul.appendChild(buildClubNode(club, eventId));
       });
       body.innerHTML = '';
       body.appendChild(ul);
     }
 
     // ── Build club node (Layer 2) ────────────────────────────────────────────
-    function buildClubNode (club) {
+    function buildClubNode (club, eventId) {
       var li = document.createElement('li');
       li.className = 'club-node';
 
@@ -502,7 +564,7 @@
           var batchUl = document.createElement('ul');
           batchUl.className = 'batch-list';
           club.batches.forEach(function (batch) {
-            batchUl.appendChild(buildBatchRow(batch, false));
+            batchUl.appendChild(buildBatchRow(batch, false, eventId, club.name));
           });
           body.appendChild(batchUl);
         }
@@ -511,7 +573,7 @@
           var tagUl = document.createElement('ul');
           tagUl.className = 'tag-list';
           club.tagFolders.forEach(function (tagFolder) {
-            tagUl.appendChild(buildTagNode(tagFolder));
+            tagUl.appendChild(buildTagNode(tagFolder, eventId, club.name));
           });
           body.appendChild(tagUl);
         }
@@ -528,7 +590,7 @@
     }
 
     // ── Build tag node (Layer 2.5) ───────────────────────────────────────────
-    function buildTagNode (tagFolder) {
+    function buildTagNode (tagFolder, eventId, clubName) {
       var li = document.createElement('li');
       li.className = 'tag-node';
 
@@ -555,7 +617,7 @@
         var batchUl = document.createElement('ul');
         batchUl.className = 'batch-list';
         tagFolder.batches.forEach(function (batch) {
-          batchUl.appendChild(buildBatchRow(batch, true));
+          batchUl.appendChild(buildBatchRow(batch, true, eventId, clubName));
         });
         body.appendChild(batchUl);
       }
@@ -571,7 +633,7 @@
     }
 
     // ── Build batch row (Layer 3) ────────────────────────────────────────────
-    function buildBatchRow (batch, indented) {
+    function buildBatchRow (batch, indented, eventId, clubName) {
       var li = document.createElement('li');
       li.className = 'batch-row' + (indented ? ' batch-row--tagged' : '');
 
@@ -592,6 +654,24 @@
           sizeHtml +
           '<span class="' + countCls + '">' + photoLabel(batch.fileCount) + '</span>' +
         '</span>';
+
+      // Delete button — shown to admins who have rights over this club.
+      // Club admins only see it for their own club; super admins see it for all.
+      var canDelete = IS_ADMIN && (IS_SUPER_ADMIN || USER_CLUB_ID === clubName);
+      if (canDelete) {
+        var delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'batch-delete-btn';
+        delBtn.title = 'Move folder to trash';
+        delBtn.setAttribute('aria-label', 'Move "' + escHtml(batch.name) + '" to trash');
+        delBtn.innerHTML = '<i class="material-icons" style="font-size:16px;">delete</i>';
+        delBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          openDeleteModal(batch, clubName, eventId, li);
+        });
+        li.appendChild(delBtn);
+      }
+
       return li;
     }
 
@@ -631,6 +711,90 @@
         .replace(/&/g, '&amp;').replace(/</g, '&lt;')
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
+
+    // ── Delete-folder modal ───────────────────────────────────────────────────
+    var pendingDelete = null; // { batchFolderId, clubName, eventId, batchName, fileCount, li }
+    var elDeleteModal   = document.getElementById('deleteFolderModal');
+    var elDeleteBody    = document.getElementById('deleteFolderModalBody');
+    var elDeleteCancel  = document.getElementById('deleteFolderCancel');
+    var elDeleteConfirm = document.getElementById('deleteFolderConfirm');
+
+    function openDeleteModal (batch, clubName, eventId, li) {
+      pendingDelete = {
+        batchFolderId: batch.id,
+        clubName:      clubName,
+        eventId:       eventId,
+        batchName:     batch.name,
+        fileCount:     batch.fileCount,
+        li:            li,
+      };
+      var countTxt = batch.fileCount === 0
+        ? 'empty folder'
+        : photoLabel(batch.fileCount);
+      elDeleteBody.textContent =
+        'Move "' + batch.name + '" (' + countTxt + ') to Drive trash? ' +
+        'You can recover it from Drive within 30 days.';
+      elDeleteConfirm.disabled = false;
+      elDeleteModal.style.display = 'flex';
+      elDeleteCancel.focus();
+    }
+
+    function closeDeleteModal () {
+      pendingDelete = null;
+      elDeleteModal.style.display = 'none';
+    }
+
+    elDeleteCancel.addEventListener('click', closeDeleteModal);
+
+    // Close on backdrop click
+    elDeleteModal.addEventListener('click', function (e) {
+      if (e.target === elDeleteModal) closeDeleteModal();
+    });
+
+    // Close on Escape key
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && elDeleteModal.style.display !== 'none') closeDeleteModal();
+    });
+
+    elDeleteConfirm.addEventListener('click', function () {
+      if (!pendingDelete) return;
+      var d = pendingDelete;
+      pendingDelete = null;
+
+      elDeleteConfirm.disabled = true;
+      elDeleteConfirm.textContent = 'Moving…';
+
+      google.script.run
+        .withSuccessHandler(function (resp) {
+          elDeleteConfirm.disabled = false;
+          elDeleteConfirm.textContent = 'Move to trash';
+          elDeleteModal.style.display = 'none';
+
+          if (resp && resp.status === 'success') {
+            // Remove the row from the DOM
+            if (d.li && d.li.parentNode) {
+              d.li.parentNode.removeChild(d.li);
+            }
+            // Bust the cache so the next expand re-fetches fresh counts
+            delete treeCache[d.eventId];
+            showToast('"' + d.batchName + '" moved to Drive trash.', 'success');
+          } else {
+            showToast((resp && resp.message) || 'Delete failed.', 'error');
+          }
+        })
+        .withFailureHandler(function (err) {
+          elDeleteConfirm.disabled = false;
+          elDeleteConfirm.textContent = 'Move to trash';
+          elDeleteModal.style.display = 'none';
+          showToast('Delete failed: ' + String(err), 'error');
+        })
+        .serverDeleteBatchFolder({
+          batchFolderId: d.batchFolderId,
+          clubName:      d.clubName,
+          eventId:       d.eventId,
+          sessionToken:  window.SESSION_TOKEN,
+        });
+    });
 
     // CSS keyframe for loading spinner
     var style = document.createElement('style');

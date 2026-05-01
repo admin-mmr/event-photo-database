@@ -157,8 +157,9 @@ export enum AuditAction {
   LINK_REVOKED   = 'LINK_REVOKED',    // An upload link was revoked/rotated
 
   // File management (Phase 7 — soft delete / restore)
-  FILE_DELETED  = 'FILE_DELETED',   // File moved to trash (soft delete)
-  FILE_RESTORED = 'FILE_RESTORED',  // File recovered from trash
+  FILE_DELETED   = 'FILE_DELETED',    // File moved to trash (soft delete)
+  FILE_RESTORED  = 'FILE_RESTORED',   // File recovered from trash
+  FOLDER_DELETED = 'FOLDER_DELETED',  // Batch folder moved to Drive trash
 
   // Upload lifecycle
   UPLOAD_COMPLETED     = 'UPLOAD_COMPLETED',      // A volunteer finished uploading a batch

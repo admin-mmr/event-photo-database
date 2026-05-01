@@ -260,10 +260,12 @@ export function driveTreePage(user: UserRecord, sessionToken = ""): GoogleAppsSc
   const events = listAllEvents(1, 200, 'desc');
 
   return renderTemplate('drive_tree', { sessionToken,
-    userEmail: user.email,
-    userRole:  user.role,
-    isAdmin:   isAdmin(user.role),
-    events:    JSON.stringify(events.items),
+    userEmail:   user.email,
+    userRole:    user.role,
+    clubId:      user.clubId ?? '',
+    isAdmin:     isAdmin(user.role),
+    isSuperAdmin: isSuperAdmin(user.role),
+    events:      JSON.stringify(events.items),
   });
 }
 
