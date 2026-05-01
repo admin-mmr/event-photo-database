@@ -1,8 +1,9 @@
 /**
  * superAdmins.ts — Upload Prep feature configuration.
  *
- * SUPER_ADMINS: email allowlist that controls menu visibility and provides a
- *   secondary server-side check for all Upload Prep operations.
+ * getSuperAdmins(): reads active super_admin users directly from the Users sheet.
+ *   No Script Property or hardcoded list needed — managing users in the sheet
+ *   is the single source of truth.
  *
  * CLOUD_RUN_URL: set this after deploying the image-convert Cloud Run service
  *   (see UPLOAD_PREP_FEATURE_SPEC.md §5.3 for deploy instructions).
@@ -10,48 +11,53 @@
  * All other constants here are derived from decisions in the spec §2.
  */
 
-/* global PropertiesService */
+import { getConfig } from './constants';
+import { getAllRows } from '../services/sheetService';
+import { toUserRecord } from '../utils/sheetMapper';
+import { UserRole, UserStatus } from '../types/enums';
 
 // ─── Super-admin allowlist ────────────────────────────────────────────────────
 
 /**
- * Default super-admin allowlist used when the `SUPER_ADMINS` Script Property is
- * not set. Prefer configuring via Script Properties so admins can be added
- * without a redeploy (comma- or newline-separated emails).
+ * Fallback used only when the Users sheet cannot be read (e.g. during unit
+ * tests or early bootstrap before the spreadsheet is bound).
  */
-const DEFAULT_SUPER_ADMINS: readonly string[] = [
-  'cathy.lin@mmrunners.org',
+const FALLBACK_SUPER_ADMINS: readonly string[] = [
+  'admin@mmrunners.org',
 ] as const;
 
 /**
- * Returns the current super-admin allowlist.
+ * Returns the current super-admin email list by reading active super_admin
+ * rows from the Users sheet. This means adding or removing a super_admin in
+ * the sheet takes effect immediately — no Script Property or redeploy needed.
  *
- * Reads `SUPER_ADMINS` from Script Properties (comma- or newline-separated
- * emails). Falls back to the hardcoded DEFAULT_SUPER_ADMINS if unset or empty,
- * so upgrading is safe with no config change required.
- *
- * Emails are lowercased and trimmed; blanks are dropped.
+ * Falls back to FALLBACK_SUPER_ADMINS only if the sheet cannot be read.
+ * Emails are always lowercased and trimmed.
  */
 export function getSuperAdmins(): readonly string[] {
-  let raw: string | null = null;
   try {
-    raw = PropertiesService.getScriptProperties().getProperty('SUPER_ADMINS');
+    const config = getConfig();
+    const rows = getAllRows(config.SHEET_NAMES.USERS);
+    const emails = rows
+      .map(toUserRecord)
+      .filter(
+        (u): u is NonNullable<typeof u> =>
+          u !== null &&
+          u.role === UserRole.SUPER_ADMIN &&
+          u.status === UserStatus.ACTIVE,
+      )
+      .map((u) => u.email); // toUserRecord already lowercases email
+    return emails.length > 0 ? emails : FALLBACK_SUPER_ADMINS;
   } catch {
-    raw = null;
+    return FALLBACK_SUPER_ADMINS;
   }
-  const parsed = (raw ?? '')
-    .split(/[,\n]+/)
-    .map((s) => s.trim().toLowerCase())
-    .filter((s) => s.length > 0);
-  return parsed.length > 0 ? parsed : DEFAULT_SUPER_ADMINS;
 }
 
 /**
  * Back-compat export so existing `SUPER_ADMINS.includes(email)` call sites keep
- * working. New code should prefer `getSuperAdmins()` to pick up Script Property
- * changes without restarting.
+ * working. New code should prefer `getSuperAdmins()`.
  *
- * This is a Proxy so every access re-reads from Script Properties.
+ * This is a Proxy so every access re-reads from the Users sheet.
  */
 export const SUPER_ADMINS: readonly string[] = new Proxy([] as string[], {
   get(_target, prop, receiver) {
