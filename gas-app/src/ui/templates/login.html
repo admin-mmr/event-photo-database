@@ -91,6 +91,59 @@
       border-radius: 3px;
       color: #666;
     }
+    /* In-app browser warning (WeChat / DingTalk / QQ / Weibo / Feishu) */
+    .inapp-warning {
+      display: none; /* unhidden by JS only when an in-app browser is detected */
+      background: #fff8e1;
+      border: 1px solid #ffe082;
+      border-left: 4px solid #ffa000;
+      border-radius: 4px;
+      padding: 12px 14px;
+      margin-bottom: 20px;
+      text-align: left;
+      font-size: 13px;
+      color: #5d4037;
+      line-height: 1.55;
+    }
+    .inapp-warning .inapp-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 600;
+      color: #e65100;
+      margin-bottom: 6px;
+    }
+    .inapp-warning ol {
+      margin: 6px 0 6px 20px;
+      padding: 0;
+    }
+    .inapp-warning ol li { margin: 2px 0; }
+    .inapp-warning .inapp-divider {
+      border: 0;
+      border-top: 1px dashed #ffcc80;
+      margin: 10px 0;
+    }
+    .inapp-warning .copy-link-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+    }
+    .inapp-warning .copy-link-btn {
+      background: #ffa000;
+      color: #fff;
+      border: none;
+      border-radius: 3px;
+      padding: 6px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .inapp-warning .copy-link-btn:hover { background: #ff8f00; }
+    .inapp-warning .copy-status {
+      font-size: 12px;
+      color: #2e7d32;
+    }
   </style>
 </head>
 <body>
@@ -109,6 +162,41 @@
         <?= errorMessage ?>
       </div>
       <? } ?>
+
+      <!--
+        In-app browser warning. Hidden by default; the script at the bottom
+        of this file unhides it when WeChat / DingTalk / QQ / Weibo / Feishu
+        is detected via user agent. Google blocks OAuth in these embedded
+        webviews ("Error 403: disallowed_useragent" / "Use secure browsers"
+        policy), so admins must reopen the link in Safari or Chrome.
+      -->
+      <div id="inapp-warning" class="inapp-warning" role="alert">
+        <div class="inapp-title">
+          <i class="material-icons" style="font-size:18px;">warning_amber</i>
+          <span>无法在当前浏览器登录 / Sign-in not available here</span>
+        </div>
+        <p style="margin:0 0 6px;">
+          您正在微信 / 钉钉 / QQ 等内置浏览器中打开此页面，Google 出于安全原因会拒绝登录。<br>
+          You opened this page inside an in-app browser. Google blocks sign-in here for security reasons.
+        </p>
+        <p style="margin:8px 0 4px;font-weight:600;">解决方法 / How to fix:</p>
+        <ol>
+          <li>点击右上角「···」菜单 — Tap the <strong>"···"</strong> menu in the top-right corner</li>
+          <li>选择「在 Safari 中打开」或「在浏览器中打开」 — Choose <strong>"Open in Safari"</strong> (iPhone) or <strong>"Open in Browser"</strong> (Android)</li>
+          <li>在浏览器中重新登录 — Sign in from the browser</li>
+        </ol>
+        <hr class="inapp-divider">
+        <p style="margin:0;">
+          如果菜单中没有该选项，请复制此链接并粘贴到 Safari 或 Chrome 中。<br>
+          If that option is missing, copy this link and paste it into Safari or Chrome.
+        </p>
+        <div class="copy-link-row">
+          <button type="button" class="copy-link-btn" onclick="copyPageLink()">
+            复制链接 / Copy link
+          </button>
+          <span id="copy-status" class="copy-status"></span>
+        </div>
+      </div>
 
       <p style="color:#555;font-size:14px;margin-bottom:20px;">
         This system is for club admins and coordinators only.<br>
@@ -189,6 +277,73 @@
         el.title = 'UTC ' + utc;
       }
     })();
+
+    /**
+     * Detect in-app browsers (WeChat / DingTalk / QQ / Weibo / Feishu / Lark)
+     * and surface the warning banner if found. Google's "Use secure browsers"
+     * policy returns "Error 403: disallowed_useragent" when OAuth runs inside
+     * these embedded webviews, so we direct admins to reopen in Safari/Chrome.
+     *
+     * Detection is intentionally permissive — false positives here just mean
+     * an admin sees a helpful note, while false negatives leave them stuck on
+     * an opaque Google error page.
+     */
+    (function detectInAppBrowser() {
+      var ua = (navigator.userAgent || '').toLowerCase();
+      var isInApp =
+        ua.indexOf('micromessenger') !== -1 ||  // WeChat
+        ua.indexOf('wxwork') !== -1 ||           // WeCom / 企业微信
+        ua.indexOf('dingtalk') !== -1 ||         // 钉钉
+        ua.indexOf('qq/') !== -1 ||              // QQ
+        ua.indexOf('qqbrowser') !== -1 ||        // QQ Browser
+        ua.indexOf('weibo') !== -1 ||            // Weibo
+        ua.indexOf('lark') !== -1 ||             // Feishu / Lark
+        ua.indexOf('feishu') !== -1 ||
+        ua.indexOf('alipay') !== -1;             // Alipay
+      if (isInApp) {
+        var el = document.getElementById('inapp-warning');
+        if (el) el.style.display = 'block';
+      }
+    })();
+
+    /**
+     * Copy the current page URL to the clipboard so admins can paste it
+     * into Safari/Chrome. Falls back to a manual-select prompt on browsers
+     * without the async clipboard API (most in-app browsers).
+     */
+    function copyPageLink() {
+      var url = window.location.href;
+      var status = document.getElementById('copy-status');
+      function showOk() {
+        if (status) {
+          status.textContent = '已复制 / Copied';
+          setTimeout(function () { status.textContent = ''; }, 3000);
+        }
+      }
+      function showFail() {
+        if (status) status.textContent = '复制失败，请手动长按选择 / Long-press to select manually';
+      }
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(url).then(showOk, showFail);
+          return;
+        }
+      } catch (e) { /* fall through */ }
+      // Legacy fallback: hidden textarea + execCommand('copy')
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = url;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        ok ? showOk() : showFail();
+      } catch (e) {
+        showFail();
+      }
+    }
 
     /**
      * Initiates the OAuth 2.0 Authorization Code flow.
