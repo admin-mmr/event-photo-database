@@ -136,6 +136,37 @@
     }
     .club-header.open + .club-body { display: block; }
 
+    /* ── Layer 2.5: Tag folder nodes ─────────────────────────────────────── */
+    .tag-list { list-style: none; margin: 0; padding: 0; }
+
+    .tag-node { border-bottom: 1px solid #f3e5f5; }
+    .tag-node:last-child { border-bottom: none; }
+
+    .tag-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 20px 8px 32px; cursor: pointer;
+      transition: background .12s; user-select: none;
+    }
+    .tag-header:hover { background: #fce4ec; }
+    .tag-header.open  { background: #f8bbd0; }
+
+    .tag-toggle {
+      color: #ba68c8; font-size: 16px; transition: transform .2s; flex-shrink: 0;
+    }
+    .tag-header.open .tag-toggle { transform: rotate(90deg); }
+
+    .tag-icon  { color: #e91e63; font-size: 17px; flex-shrink: 0; }
+    .tag-name  { flex: 1; font-size: 13px; font-weight: 500; color: #ad1457; font-style: italic; }
+    .tag-count {
+      font-size: 12px; font-weight: 600;
+      color: #ad1457; background: #fce4ec;
+      padding: 2px 8px; border-radius: 10px; white-space: nowrap;
+    }
+    .tag-count.empty { color: #bdbdbd; background: #f5f5f5; }
+
+    .tag-body { display: none; background: #fff9fb; }
+    .tag-header.open + .tag-body { display: block; }
+
     /* ── Layer 3: Batch nodes ─────────────────────────────────────────────── */
     .batch-list { list-style: none; margin: 0; padding: 0; }
 
@@ -144,16 +175,21 @@
       padding: 7px 28px 7px 40px;
       border-bottom: 1px solid #f5f5f5; font-size: 13px;
     }
+    .batch-row.batch-row--tagged { padding-left: 56px; }
     .batch-row:last-child { border-bottom: none; }
     .batch-row:hover { background: #fafafa; }
 
     .batch-icon { color: #9e9e9e; font-size: 17px; flex-shrink: 0; }
     .batch-name { flex: 1; color: #555; font-family: monospace; font-size: 12px; }
+    .batch-meta { display: flex; align-items: center; gap: 10px; }
     .batch-count {
       font-size: 12px; font-weight: 600; color: #616161;
       white-space: nowrap;
     }
     .batch-count.zero { color: #bdbdbd; }
+    .batch-size {
+      font-size: 11px; color: #9e9e9e; white-space: nowrap;
+    }
 
     /* No clubs placeholder */
     .empty-event {
@@ -404,7 +440,7 @@
           treeCache[event.eventId] = { loaded: true, data: null, error: String(err) };
           renderEventBody(body, treeCache[event.eventId]);
         })
-        .serverGetDriveTree({ eventId: event.eventId, driveFolderId: event.driveFolderId });
+        .serverGetDriveTree({ eventId: event.eventId, driveFolderId: event.driveFolderId, sessionToken: window.SESSION_TOKEN });
     }
 
     // ── Render event body once data is available ──────────────────────────────
@@ -452,16 +488,74 @@
       var body = document.createElement('div');
       body.className = 'club-body';
 
-      if (club.batches.length === 0) {
+      var hasContent = (club.batches && club.batches.length > 0) ||
+                       (club.tagFolders && club.tagFolders.length > 0);
+
+      if (!hasContent) {
         body.innerHTML =
           '<div class="empty-event" style="padding-left:40px;">' +
           '<i class="material-icons" style="font-size:16px;color:#bdbdbd;">inbox</i>' +
           'No batch folders yet</div>';
       } else {
+        // Direct (untagged) batches first
+        if (club.batches && club.batches.length > 0) {
+          var batchUl = document.createElement('ul');
+          batchUl.className = 'batch-list';
+          club.batches.forEach(function (batch) {
+            batchUl.appendChild(buildBatchRow(batch, false));
+          });
+          body.appendChild(batchUl);
+        }
+        // Tag subfolders (Layer 2.5) after direct batches
+        if (club.tagFolders && club.tagFolders.length > 0) {
+          var tagUl = document.createElement('ul');
+          tagUl.className = 'tag-list';
+          club.tagFolders.forEach(function (tagFolder) {
+            tagUl.appendChild(buildTagNode(tagFolder));
+          });
+          body.appendChild(tagUl);
+        }
+      }
+
+      header.addEventListener('click', function () {
+        var open = header.classList.toggle('open');
+        header.setAttribute('aria-expanded', String(open));
+      });
+
+      li.appendChild(header);
+      li.appendChild(body);
+      return li;
+    }
+
+    // ── Build tag node (Layer 2.5) ───────────────────────────────────────────
+    function buildTagNode (tagFolder) {
+      var li = document.createElement('li');
+      li.className = 'tag-node';
+
+      var countCls = 'tag-count' + (tagFolder.totalFiles === 0 ? ' empty' : '');
+      var header = document.createElement('div');
+      header.className = 'tag-header';
+      header.setAttribute('role', 'button');
+      header.setAttribute('aria-expanded', 'false');
+      header.innerHTML =
+        '<i class="material-icons tag-toggle">chevron_right</i>' +
+        '<i class="material-icons tag-icon">local_offer</i>' +
+        '<span class="tag-name">' + escHtml(tagFolder.name) + '</span>' +
+        '<span class="' + countCls + '">' + photoLabel(tagFolder.totalFiles) + '</span>';
+
+      var body = document.createElement('div');
+      body.className = 'tag-body';
+
+      if (!tagFolder.batches || tagFolder.batches.length === 0) {
+        body.innerHTML =
+          '<div class="empty-event" style="padding-left:56px;">' +
+          '<i class="material-icons" style="font-size:16px;color:#bdbdbd;">inbox</i>' +
+          'No batch folders yet</div>';
+      } else {
         var batchUl = document.createElement('ul');
         batchUl.className = 'batch-list';
-        club.batches.forEach(function (batch) {
-          batchUl.appendChild(buildBatchRow(batch));
+        tagFolder.batches.forEach(function (batch) {
+          batchUl.appendChild(buildBatchRow(batch, true));
         });
         body.appendChild(batchUl);
       }
@@ -477,21 +571,27 @@
     }
 
     // ── Build batch row (Layer 3) ────────────────────────────────────────────
-    function buildBatchRow (batch) {
+    function buildBatchRow (batch, indented) {
       var li = document.createElement('li');
-      li.className = 'batch-row';
+      li.className = 'batch-row' + (indented ? ' batch-row--tagged' : '');
 
       var parts = batch.name.split('_');
       var uploader = parts.length > 1 ? parts[parts.length - 1] : '';
       var timestamp = parts[0] || batch.name;
 
       var countCls = 'batch-count' + (batch.fileCount === 0 ? ' zero' : '');
+      var sizeHtml = (batch.totalSizeBytes > 0)
+        ? '<span class="batch-size">' + formatBytes(batch.totalSizeBytes) + '</span>'
+        : '';
       li.innerHTML =
         '<i class="material-icons batch-icon">folder</i>' +
         '<span class="batch-name">' + escHtml(timestamp) +
         (uploader ? ' <span style="color:#9e9e9e;font-style:italic;">/ ' + escHtml(uploader) + '</span>' : '') +
         '</span>' +
-        '<span class="' + countCls + '">' + photoLabel(batch.fileCount) + '</span>';
+        '<span class="batch-meta">' +
+          sizeHtml +
+          '<span class="' + countCls + '">' + photoLabel(batch.fileCount) + '</span>' +
+        '</span>';
       return li;
     }
 
@@ -512,6 +612,12 @@
     function photoLabel (n) {
       if (n === 0) return '0 photos';
       return n + (n === 1 ? ' photo' : ' photos');
+    }
+
+    function formatBytes (bytes) {
+      if (!bytes || bytes === 0) return '';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     }
 
     function updatePhotoCount (n) {

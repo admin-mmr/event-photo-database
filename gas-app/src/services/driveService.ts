@@ -569,27 +569,43 @@ export function getClubFolderTree(
 
 // ─── Drive tree (read-only hierarchy view) ────────────────────────────────────
 
-/** A single batch folder node: Layer 3 inside a club. */
+/** A single batch folder node: Layer 3 inside a club or tag folder. */
 export interface BatchTreeNode {
-  readonly id:         string;   // Drive folder ID
-  readonly name:       string;   // e.g. "20260415-093000_alice"
-  readonly fileCount:  number;   // JPEG + PNG + HEIC files in this folder
+  readonly id:             string;   // Drive folder ID
+  readonly name:           string;   // e.g. "20260415-093000_alice"
+  readonly fileCount:      number;   // JPEG + PNG + HEIC files in this folder
+  readonly totalSizeBytes: number;   // sum of file sizes (photos only)
+}
+
+/**
+ * A tag subfolder node: Layer 2.5 between a club folder and its batch folders.
+ * Only present when an upload link carries a non-empty tag (e.g. "finish_line").
+ */
+export interface TagTreeNode {
+  readonly id:             string;          // Drive folder ID
+  readonly name:           string;          // e.g. "finish_line" or "测试"
+  readonly batches:        BatchTreeNode[]; // Layer-3 batch folders inside this tag
+  readonly totalFiles:     number;          // sum of fileCount across all batches
+  readonly totalSizeBytes: number;          // sum of totalSizeBytes across all batches
 }
 
 /** A club folder node: Layer 2 inside an event. */
 export interface ClubTreeNode {
-  readonly id:         string;             // Drive folder ID
-  readonly name:       string;             // e.g. "New_Bee"
-  readonly batches:    BatchTreeNode[];    // Layer-3 batch folders
-  readonly totalFiles: number;             // sum of fileCount across all batches
+  readonly id:             string;          // Drive folder ID
+  readonly name:           string;          // e.g. "New_Bee"
+  readonly batches:        BatchTreeNode[]; // Layer-3 batch folders (no tag / direct uploads)
+  readonly tagFolders:     TagTreeNode[];   // Layer-2.5 tag subfolders (tagged uploads)
+  readonly totalFiles:     number;          // grand total across direct batches + all tag folders
+  readonly totalSizeBytes: number;          // grand total size across direct batches + all tag folders
 }
 
 /** The full event tree returned to the browser for one event. */
 export interface EventDriveTree {
-  readonly eventId:       string;
-  readonly driveFolderId: string;
-  readonly clubs:         ClubTreeNode[];  // Layer-2 club folders
-  readonly totalFiles:    number;          // grand total across all clubs
+  readonly eventId:        string;
+  readonly driveFolderId:  string;
+  readonly clubs:          ClubTreeNode[];  // Layer-2 club folders
+  readonly totalFiles:     number;          // grand total across all clubs
+  readonly totalSizeBytes: number;          // grand total size across all clubs
 }
 
 /** MIME types counted as photos in the tree. */
@@ -618,6 +634,33 @@ const PHOTO_MIME_SET = new Set(['image/jpeg', 'image/png', 'image/heic']);
  */
 
 const DRIVE_TREE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Regex that matches Layer-3 batch folder names: YYYYMMDD-HHMMSS_username.
+ * Used to distinguish batch folders from Layer-2.5 tag subfolders when walking
+ * the club folder's immediate children.
+ */
+const BATCH_FOLDER_RE = /^\d{8}-\d{6}_/;
+
+/**
+ * Counts photo files (JPEG, PNG, HEIC) in a batch folder and sums their sizes.
+ * Returns { fileCount, totalSizeBytes }.
+ */
+function countBatchPhotos(
+  batchFolder: GoogleAppsScript.Drive.Folder
+): { fileCount: number; totalSizeBytes: number } {
+  let fileCount = 0;
+  let totalSizeBytes = 0;
+  const fileIter = batchFolder.getFiles();
+  while (fileIter.hasNext()) {
+    const file = fileIter.next();
+    if (PHOTO_MIME_SET.has(file.getMimeType())) {
+      fileCount++;
+      totalSizeBytes += file.getSize();
+    }
+  }
+  return { fileCount, totalSizeBytes };
+}
 
 function driveTreeCacheKey(eventId: string): string {
   return `drive_tree_cache_${eventId}`;
@@ -671,34 +714,59 @@ export function getEventDriveTree(
 
   const clubs: ClubTreeNode[] = [];
   let grandTotal = 0;
+  let grandTotalSize = 0;
 
   try {
     const clubIter = eventFolder.getFolders();
     while (clubIter.hasNext()) {
       const clubFolder = clubIter.next();
       const clubName   = clubFolder.getName();
-      const batches: BatchTreeNode[] = [];
-      let clubTotal = 0;
+      const batches: BatchTreeNode[]  = [];  // direct (untagged) batch folders
+      const tagFolders: TagTreeNode[] = [];  // Layer-2.5 tag subfolders
+      let clubTotal     = 0;
+      let clubTotalSize = 0;
 
-      const batchIter = clubFolder.getFolders();
-      while (batchIter.hasNext()) {
-        const batchFolder = batchIter.next();
-        let fileCount = 0;
-        const fileIter = batchFolder.getFiles();
-        while (fileIter.hasNext()) {
-          if (PHOTO_MIME_SET.has(fileIter.next().getMimeType())) {
-            fileCount++;
+      const subIter = clubFolder.getFolders();
+      while (subIter.hasNext()) {
+        const subFolder = subIter.next();
+        const subName   = subFolder.getName();
+
+        if (BATCH_FOLDER_RE.test(subName)) {
+          // ── Direct batch (no tag) ──────────────────────────────────────────
+          const { fileCount, totalSizeBytes } = countBatchPhotos(subFolder);
+          batches.push({ id: subFolder.getId(), name: subName, fileCount, totalSizeBytes });
+          clubTotal     += fileCount;
+          clubTotalSize += totalSizeBytes;
+        } else {
+          // ── Tag subfolder (Layer 2.5) — recurse for its batches ───────────
+          const tagBatches: BatchTreeNode[] = [];
+          let tagTotal     = 0;
+          let tagTotalSize = 0;
+
+          const batchIter = subFolder.getFolders();
+          while (batchIter.hasNext()) {
+            const batchFolder = batchIter.next();
+            const { fileCount, totalSizeBytes } = countBatchPhotos(batchFolder);
+            tagBatches.push({ id: batchFolder.getId(), name: batchFolder.getName(), fileCount, totalSizeBytes });
+            tagTotal     += fileCount;
+            tagTotalSize += totalSizeBytes;
           }
+
+          // Sort tag batches newest-first
+          tagBatches.sort((a, b) => b.name.localeCompare(a.name));
+          tagFolders.push({ id: subFolder.getId(), name: subName, batches: tagBatches, totalFiles: tagTotal, totalSizeBytes: tagTotalSize });
+          clubTotal     += tagTotal;
+          clubTotalSize += tagTotalSize;
         }
-        batches.push({ id: batchFolder.getId(), name: batchFolder.getName(), fileCount });
-        clubTotal += fileCount;
       }
 
-      // Sort batches newest-first (Layer-3 names start with YYYYMMDD-HHMMSS)
+      // Sort direct batches newest-first, tag folders alphabetically
       batches.sort((a, b) => b.name.localeCompare(a.name));
+      tagFolders.sort((a, b) => a.name.localeCompare(b.name));
 
-      clubs.push({ id: clubFolder.getId(), name: clubName, batches, totalFiles: clubTotal });
-      grandTotal += clubTotal;
+      clubs.push({ id: clubFolder.getId(), name: clubName, batches, tagFolders, totalFiles: clubTotal, totalSizeBytes: clubTotalSize });
+      grandTotal     += clubTotal;
+      grandTotalSize += clubTotalSize;
     }
   } catch (err) {
     return {
@@ -710,7 +778,7 @@ export function getEventDriveTree(
   // Sort clubs alphabetically
   clubs.sort((a, b) => a.name.localeCompare(b.name));
 
-  const treeData: EventDriveTree = { eventId, driveFolderId, clubs, totalFiles: grandTotal };
+  const treeData: EventDriveTree = { eventId, driveFolderId, clubs, totalFiles: grandTotal, totalSizeBytes: grandTotalSize };
 
   // ── Cache write ─────────────────────────────────────────────────────────────
   try {

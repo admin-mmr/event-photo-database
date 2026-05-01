@@ -674,8 +674,9 @@
       // Read and sanitise the optional tag value
       var tagInput = document.getElementById('input-tag');
       var tag = tagInput ? tagInput.value.trim() : '';
-      // Strip any characters that aren't letters, digits, underscores, or hyphens
-      tag = tag.replace(/[^A-Za-z0-9_\-]/g, '');
+      // Strip only characters that are illegal in Drive folder names (path separators, control chars)
+      // Unicode letters and digits (e.g. Chinese, Japanese) are allowed.
+      tag = tag.replace(/[/\\:*?"<>|\x00-\x1f]/g, '').trim();
 
       var btn     = document.getElementById('btn-generate');
       var spinner = document.getElementById('generate-spinner');
