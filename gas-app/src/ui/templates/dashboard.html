@@ -55,10 +55,6 @@
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">account_tree</i>
               File System
             </a>
-            <a class="mdl-navigation__link" href="?action=upload">
-              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">cloud_upload</i>
-              Upload
-            </a>
           </nav>
         </div>
         <div class="user-menu">
@@ -104,6 +100,24 @@
           </p>
         </div>
 
+        <!-- How uploads work — bilingual info card -->
+        <div class="card" style="background:#e8eaf6;border-left:4px solid #3f51b5;padding:16px 20px;margin-bottom:4px;">
+          <div style="display:flex;gap:12px;align-items:flex-start;">
+            <i class="material-icons" style="color:#3f51b5;flex-shrink:0;margin-top:2px;">info_outline</i>
+            <div style="font-size:14px;line-height:1.7;color:#333;">
+              <strong>How to upload photos / 如何上传照片</strong><br>
+              Photos are submitted using an <strong>Upload Link</strong> — a unique URL tied to a specific
+              event and running club. Admins generate links from the <em>Links</em> page and share them
+              with photographers. Anyone who receives a link can upload photos directly, without needing
+              an account in this system.<br>
+              <span style="color:#555;">
+                照片通过<strong>上传链接（Upload Link）</strong>提交。管理员在 <em>Links</em> 页面为每场活动和跑团生成专属链接，
+                再将链接发给摄影志愿者。持有链接的人可直接上传照片，无需系统账号。
+              </span>
+            </div>
+          </div>
+        </div>
+
         <!-- Quick-action tiles -->
         <div class="tile-grid">
 
@@ -133,6 +147,14 @@
             </div>
           </a>
 
+          <a class="tile" href="?action=admin_links">
+            <i class="material-icons tile-icon">link</i>
+            <div>
+              <div class="tile-label">Upload Links</div>
+              <div class="tile-sub">Generate &amp; manage upload links for photographers / 生成并管理上传链接</div>
+            </div>
+          </a>
+
           <a class="tile" href="?action=admin_photos">
             <i class="material-icons tile-icon">photo_library</i>
             <div>
@@ -151,14 +173,6 @@
           <? } ?>
 
           <!-- Tiles for all users -->
-          <a class="tile" href="?action=upload">
-            <i class="material-icons tile-icon">cloud_upload</i>
-            <div>
-              <div class="tile-label">Upload Photos</div>
-              <div class="tile-sub">Add photos to an event</div>
-            </div>
-          </a>
-
           <a class="tile" href="?action=drive_tree">
             <i class="material-icons tile-icon">account_tree</i>
             <div>
