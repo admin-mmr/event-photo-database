@@ -261,7 +261,7 @@ describe('syncBatchFolderToAlbum()', () => {
     mockGetFolderById.mockImplementation(() => { throw new Error('Folder not found'); });
 
     const result = syncBatchFolderToAlbum(
-      ALBUM_ID, 'event', EVENT_ID, '', BATCH_ID, new Set()
+      ALBUM_ID, 'event', EVENT_ID, '', '', BATCH_ID, new Set()
     );
     expect(result.status).toBe('error');
     expect(result.message).toContain('Cannot access batch folder');
@@ -273,7 +273,7 @@ describe('syncBatchFolderToAlbum()', () => {
     mockGetFolderById.mockReturnValue(folder);
 
     const result = syncBatchFolderToAlbum(
-      ALBUM_ID, 'event', EVENT_ID, '', BATCH_ID, new Set()
+      ALBUM_ID, 'event', EVENT_ID, '', '', BATCH_ID, new Set()
     );
     expect(result.status).toBe('success');
     expect(result.data!.skipped).toBe(1);
@@ -290,7 +290,7 @@ describe('syncBatchFolderToAlbum()', () => {
     const existingKeys = new Set(['drive-file-001|album-event-001']);
 
     const result = syncBatchFolderToAlbum(
-      ALBUM_ID, 'event', EVENT_ID, '', BATCH_ID, existingKeys
+      ALBUM_ID, 'event', EVENT_ID, '', '', BATCH_ID, existingKeys
     );
     expect(result.status).toBe('success');
     expect(result.data!.deduplicated).toBe(1);
@@ -325,7 +325,7 @@ describe('syncBatchFolderToAlbum()', () => {
     const existingKeys = new Set<string>();
 
     const result = syncBatchFolderToAlbum(
-      ALBUM_ID, 'event', EVENT_ID, '', BATCH_ID, existingKeys
+      ALBUM_ID, 'event', EVENT_ID, '', '', BATCH_ID, existingKeys
     );
     expect(result.status).toBe('success');
     expect(result.data!.synced).toBe(1);
@@ -367,7 +367,7 @@ describe('syncBatchFolderToAlbum()', () => {
       .mockReturnValueOnce(mockCreateResp);
 
     syncBatchFolderToAlbum(
-      'album-club-001', 'club', EVENT_ID, 'New_Bee', BATCH_ID, new Set()
+      'album-club-001', 'club', EVENT_ID, 'New_Bee', 'finish_line', BATCH_ID, new Set()
     );
 
     const appendedRow = mockAppendRow.mock.calls[0][1] as unknown[];
@@ -397,7 +397,7 @@ describe('syncBatchFolderToAlbum()', () => {
       .mockReturnValueOnce(failUpload);
 
     const result = syncBatchFolderToAlbum(
-      ALBUM_ID, 'event', EVENT_ID, '', BATCH_ID, new Set()
+      ALBUM_ID, 'event', EVENT_ID, '', '', BATCH_ID, new Set()
     );
     expect(result.status).toBe('success');  // overall status still success
     expect(result.data!.synced).toBe(1);
@@ -412,7 +412,7 @@ describe('syncBatchFolderToAlbum()', () => {
     mockGetFolderById.mockReturnValue(folder);
 
     const result = syncBatchFolderToAlbum(
-      ALBUM_ID, 'event', EVENT_ID, '', BATCH_ID, new Set()
+      ALBUM_ID, 'event', EVENT_ID, '', '', BATCH_ID, new Set()
     );
     expect(result.status).toBe('success');
     expect(result.data!.synced).toBe(0);
@@ -440,7 +440,7 @@ describe('syncBatchFolderToAlbum()', () => {
     const existingKeys = new Set([`drive-dup|${ALBUM_ID}`]);
 
     const result = syncBatchFolderToAlbum(
-      ALBUM_ID, 'event', EVENT_ID, '', BATCH_ID, existingKeys
+      ALBUM_ID, 'event', EVENT_ID, '', '', BATCH_ID, existingKeys
     );
     expect(result.data!.synced).toBe(1);
     expect(result.data!.deduplicated).toBe(1);
@@ -461,12 +461,14 @@ describe('reconcileEventPhotos()', () => {
   function makeAlbumRecord(
     albumId: string,
     albumType: 'event' | 'club',
-    clubName = ''
+    clubName = '',
+    tag = ''
   ): PhotosAlbumRecord {
     return {
       albumId, albumType,
       eventId:         EVENT.eventId,
       clubName,
+      tag:             albumType === 'club' ? (tag || 'finish_line') : '',
       albumTitle:      'Test Album',
       albumUrl:        'http://photos.url',
       shareableUrl:    'http://share.url',
@@ -476,12 +478,14 @@ describe('reconcileEventPhotos()', () => {
     };
   }
 
-  function makeFileRecord(driveFileId: string, albumId: string, albumType: 'event' | 'club' = 'event', clubName = ''): PhotosFileRecord {
+  function makeFileRecord(driveFileId: string, albumId: string, albumType: 'event' | 'club' = 'event', clubName = '', tag = ''): PhotosFileRecord {
     return {
       driveFileId, mediaItemId: 'media-' + driveFileId,
       albumId, albumType,
       eventId:  EVENT.eventId,
-      clubName, fileName: 'photo.jpg',
+      clubName,
+      tag:      albumType === 'club' ? (tag || 'finish_line') : '',
+      fileName: 'photo.jpg',
       syncedAt: '2026-04-19T10:00:00.000Z',
     };
   }
@@ -502,7 +506,7 @@ describe('reconcileEventPhotos()', () => {
     expect(result.hasEventAlbum).toBe(false);
     expect(result.driveTotal).toBe(0);
     expect(result.eventSyncedCount).toBe(0);
-    expect(result.clubs).toHaveLength(0);
+    expect(result.clubTags).toHaveLength(0);
     expect(result.errors).toHaveLength(0);
   });
 
@@ -538,80 +542,84 @@ describe('reconcileEventPhotos()', () => {
     expect(result.eventSyncedCount).toBe(2);
   });
 
-  it('counts Drive photo files correctly per club folder', () => {
-    const batchFolder = makeMockFolder('batch-id', 'batch', [
+  it('counts Drive photo files correctly per (club, tag) folder', () => {
+    const batchFolder = makeMockFolder('batch-id', '20260419-100000_alice', [
       makeMockFile('f1', 'photo1.jpg',  'image/jpeg'),
       makeMockFile('f2', 'photo2.png',  'image/png'),
       makeMockFile('f3', 'doc.pdf',     'application/pdf'), // should be ignored
     ]);
-    const clubFolder  = makeMockFolder('club-id', 'New_Bee', [], [batchFolder]);
+    const tagFolder   = makeMockFolder('tag-id', 'finish_line', [], [batchFolder]);
+    const clubFolder  = makeMockFolder('club-id', 'New_Bee', [], [tagFolder]);
     const eventFolder = makeMockFolder('event-folder-id', 'event', [], [clubFolder]);
     mockGetFolderById.mockReturnValue(eventFolder);
 
     const albumsByEvent = new Map<string, PhotosAlbumRecord[]>([
       [EVENT.eventId, [
         makeAlbumRecord('album-event', 'event'),
-        makeAlbumRecord('album-club',  'club', 'New_Bee'),
+        makeAlbumRecord('album-club',  'club', 'New_Bee', 'finish_line'),
       ]],
     ]);
 
     const result = reconcileEventPhotos(EVENT, albumsByEvent, []);
     expect(result.driveTotal).toBe(2);           // JPEG + PNG only
-    expect(result.clubs).toHaveLength(1);
-    expect(result.clubs[0].clubName).toBe('New_Bee');
-    expect(result.clubs[0].driveCount).toBe(2);
-    expect(result.clubs[0].syncedCount).toBe(0);
-    expect(result.clubs[0].missingCount).toBe(2);
+    expect(result.clubTags).toHaveLength(1);
+    expect(result.clubTags[0].clubName).toBe('New_Bee');
+    expect(result.clubTags[0].tag).toBe('finish_line');
+    expect(result.clubTags[0].driveCount).toBe(2);
+    expect(result.clubTags[0].syncedCount).toBe(0);
+    expect(result.clubTags[0].missingCount).toBe(2);
   });
 
   it('reports missingCount = 0 when all Drive files are synced', () => {
-    const batchFolder = makeMockFolder('batch-id', 'batch', [
+    const batchFolder = makeMockFolder('batch-id', '20260419-100000_alice', [
       makeMockFile('f1', 'photo1.jpg', 'image/jpeg'),
       makeMockFile('f2', 'photo2.jpg', 'image/jpeg'),
     ]);
-    const clubFolder  = makeMockFolder('club-id', 'New_Bee', [], [batchFolder]);
+    const tagFolder   = makeMockFolder('tag-id', 'finish_line', [], [batchFolder]);
+    const clubFolder  = makeMockFolder('club-id', 'New_Bee', [], [tagFolder]);
     const eventFolder = makeMockFolder('event-folder-id', 'event', [], [clubFolder]);
     mockGetFolderById.mockReturnValue(eventFolder);
 
     const albumsByEvent = new Map<string, PhotosAlbumRecord[]>([
       [EVENT.eventId, [
         makeAlbumRecord('album-event', 'event'),
-        makeAlbumRecord('album-club',  'club', 'New_Bee'),
+        makeAlbumRecord('album-club',  'club', 'New_Bee', 'finish_line'),
       ]],
     ]);
     const fileRecords: PhotosFileRecord[] = [
-      makeFileRecord('f1', 'album-club', 'club', 'New_Bee'),
-      makeFileRecord('f2', 'album-club', 'club', 'New_Bee'),
+      makeFileRecord('f1', 'album-club', 'club', 'New_Bee', 'finish_line'),
+      makeFileRecord('f2', 'album-club', 'club', 'New_Bee', 'finish_line'),
     ];
 
     const result = reconcileEventPhotos(EVENT, albumsByEvent, fileRecords);
-    expect(result.clubs[0].missingCount).toBe(0);
-    expect(result.clubs[0].driveCount).toBe(2);
-    expect(result.clubs[0].syncedCount).toBe(2);
+    expect(result.clubTags[0].missingCount).toBe(0);
+    expect(result.clubTags[0].driveCount).toBe(2);
+    expect(result.clubTags[0].syncedCount).toBe(2);
   });
 
   it('reports missingCount for partial sync', () => {
-    const batchFolder = makeMockFolder('batch-id', 'batch', [
+    const batchFolder = makeMockFolder('batch-id', '20260419-100000_alice', [
       makeMockFile('f1', 'p1.jpg', 'image/jpeg'),
       makeMockFile('f2', 'p2.jpg', 'image/jpeg'),
       makeMockFile('f3', 'p3.jpg', 'image/jpeg'),
     ]);
-    const clubFolder  = makeMockFolder('club-id', 'New_Bee', [], [batchFolder]);
+    const tagFolder   = makeMockFolder('tag-id', 'finish_line', [], [batchFolder]);
+    const clubFolder  = makeMockFolder('club-id', 'New_Bee', [], [tagFolder]);
     const eventFolder = makeMockFolder('event-folder-id', 'event', [], [clubFolder]);
     mockGetFolderById.mockReturnValue(eventFolder);
 
     const albumsByEvent = new Map<string, PhotosAlbumRecord[]>([
-      [EVENT.eventId, [makeAlbumRecord('album-club', 'club', 'New_Bee')]],
+      [EVENT.eventId, [makeAlbumRecord('album-club', 'club', 'New_Bee', 'finish_line')]],
     ]);
     // Only 1 of 3 files synced
     const fileRecords: PhotosFileRecord[] = [
-      makeFileRecord('f1', 'album-club', 'club', 'New_Bee'),
+      makeFileRecord('f1', 'album-club', 'club', 'New_Bee', 'finish_line'),
     ];
 
     const result = reconcileEventPhotos(EVENT, albumsByEvent, fileRecords);
-    expect(result.clubs[0].driveCount).toBe(3);
-    expect(result.clubs[0].syncedCount).toBe(1);
-    expect(result.clubs[0].missingCount).toBe(2);
+    expect(result.clubTags[0].driveCount).toBe(3);
+    expect(result.clubTags[0].syncedCount).toBe(1);
+    expect(result.clubTags[0].missingCount).toBe(2);
   });
 
   it('reports Drive error when event folder is inaccessible', () => {
@@ -626,41 +634,44 @@ describe('reconcileEventPhotos()', () => {
   });
 
   it('handles multiple clubs and accumulates driveTotal correctly', () => {
-    const batch1 = makeMockFolder('batch-new-bee', 'b1', [
+    const batch1 = makeMockFolder('batch-new-bee', '20260419-100000_alice', [
       makeMockFile('f1', 'p1.jpg', 'image/jpeg'),
       makeMockFile('f2', 'p2.jpg', 'image/jpeg'),
     ]);
-    const batch2 = makeMockFolder('batch-chi', 'b2', [
+    const batch2 = makeMockFolder('batch-chi', '20260419-110000_bob', [
       makeMockFile('f3', 'p3.heic', 'image/heic'),
     ]);
-    const clubNewBee = makeMockFolder('club-new-bee', 'New_Bee', [], [batch1]);
-    const clubCHI    = makeMockFolder('club-chi',     'CHI',     [], [batch2]);
+    const tag1 = makeMockFolder('tag-new-bee', 'finish_line', [], [batch1]);
+    const tag2 = makeMockFolder('tag-chi',     'finish_line', [], [batch2]);
+    const clubNewBee  = makeMockFolder('club-new-bee', 'New_Bee', [], [tag1]);
+    const clubCHI     = makeMockFolder('club-chi',     'CHI',     [], [tag2]);
     const eventFolder = makeMockFolder('event-folder-id', 'event', [], [clubNewBee, clubCHI]);
     mockGetFolderById.mockReturnValue(eventFolder);
 
     const albumsByEvent = new Map<string, PhotosAlbumRecord[]>([
       [EVENT.eventId, [
         makeAlbumRecord('album-event',   'event'),
-        makeAlbumRecord('album-new-bee', 'club', 'New_Bee'),
-        makeAlbumRecord('album-chi',     'club', 'CHI'),
+        makeAlbumRecord('album-new-bee', 'club', 'New_Bee', 'finish_line'),
+        makeAlbumRecord('album-chi',     'club', 'CHI',     'finish_line'),
       ]],
     ]);
 
     const result = reconcileEventPhotos(EVENT, albumsByEvent, []);
     expect(result.driveTotal).toBe(3);
-    expect(result.clubs).toHaveLength(2);
+    expect(result.clubTags).toHaveLength(2);
 
-    const newBeeResult = result.clubs.find((c) => c.clubName === 'New_Bee')!;
-    const chiResult    = result.clubs.find((c) => c.clubName === 'CHI')!;
+    const newBeeResult = result.clubTags.find((c) => c.clubName === 'New_Bee')!;
+    const chiResult    = result.clubTags.find((c) => c.clubName === 'CHI')!;
     expect(newBeeResult.driveCount).toBe(2);
     expect(chiResult.driveCount).toBe(1);
   });
 
-  it('sets clubAlbumId to empty string when no club album exists', () => {
-    const batchFolder = makeMockFolder('batch-id', 'batch', [
+  it('sets clubTagAlbumId to empty string when no (club, tag) album exists', () => {
+    const batchFolder = makeMockFolder('batch-id', '20260419-100000_alice', [
       makeMockFile('f1', 'photo.jpg', 'image/jpeg'),
     ]);
-    const clubFolder  = makeMockFolder('club-id', 'New_Bee', [], [batchFolder]);
+    const tagFolder   = makeMockFolder('tag-id', 'finish_line', [], [batchFolder]);
+    const clubFolder  = makeMockFolder('club-id', 'New_Bee', [], [tagFolder]);
     const eventFolder = makeMockFolder('event-folder-id', 'event', [], [clubFolder]);
     mockGetFolderById.mockReturnValue(eventFolder);
 
@@ -668,8 +679,8 @@ describe('reconcileEventPhotos()', () => {
     const albumsByEvent = new Map<string, PhotosAlbumRecord[]>();
 
     const result = reconcileEventPhotos(EVENT, albumsByEvent, []);
-    expect(result.clubs[0].clubAlbumId).toBe('');
-    expect(result.clubs[0].syncedCount).toBe(0);
+    expect(result.clubTags[0].clubTagAlbumId).toBe('');
+    expect(result.clubTags[0].syncedCount).toBe(0);
   });
 
   it('ignores file records from other events when counting synced files', () => {
@@ -684,7 +695,7 @@ describe('reconcileEventPhotos()', () => {
       {
         driveFileId: 'file-other', mediaItemId: 'media-other',
         albumId: 'album-other-event', albumType: 'event',
-        eventId: 'evt-uuid-OTHER', clubName: '',
+        eventId: 'evt-uuid-OTHER', clubName: '', tag: '',
         fileName: 'other.jpg', syncedAt: '2026-04-19T10:00:00.000Z',
       },
     ];

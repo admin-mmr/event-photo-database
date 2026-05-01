@@ -25,7 +25,7 @@ import {
   findAlbumByEvent,
   findAlbumsByEvent,
   ensureEventAlbum,
-  ensureClubAlbum,
+  ensureClubTagAlbum,
   syncBatchToAlbums,
 } from '../../src/services/photosService';
 import { ResultStatus } from '../../src/types/enums';
@@ -109,8 +109,8 @@ const mockUpdateRow  = updateRow  as jest.Mock;
 // ─── Fixture builders ─────────────────────────────────────────────────────────
 
 /**
- * Builds a Photo_Albums sheet row in column order [0..9].
- * Defaults: albumType='event', clubName='', syncedFileCount=0.
+ * Builds a Photo_Albums sheet row in column order [0..10].
+ * Defaults: albumType='event', clubName='', syncedFileCount=0, tag=''.
  */
 function makeAlbumRow(
   albumId:         string,
@@ -119,18 +119,20 @@ function makeAlbumRow(
   clubName         = '',
   syncedFileCount  = 0,
   lastSyncAt       = '',
+  tag              = '',
 ): unknown[] {
-  // columns: albumId, albumType, eventId, clubName, albumTitle, albumUrl, shareableUrl,
+  // columns: albumId, albumType, eventId, clubName, tag, albumTitle, albumUrl, shareableUrl,
   //          createdAt, lastSyncAt, syncedFileCount
+  const tagValue = albumType === 'event' ? '' : tag;
   return [
-    albumId, albumType, eventId, clubName,
+    albumId, albumType, eventId, clubName, tagValue,
     `Album ${albumId}`, `https://photos/${albumId}`, `https://share/${albumId}`,
     '2026-04-19T09:00:00.000Z', lastSyncAt, syncedFileCount,
   ];
 }
 
 /**
- * Builds a Photo_Files sheet row in column order [0..7].
+ * Builds a Photo_Files sheet row in column order [0..8].
  */
 function makeFileRow(
   driveFileId: string,
@@ -139,9 +141,10 @@ function makeFileRow(
   clubName     = '',
   eventId      = 'evt-uuid-001',
 ): unknown[] {
+  const tagValue = albumType === 'event' ? '' : 'finish_line';
   return [
     driveFileId, 'media-' + driveFileId, albumId,
-    albumType, eventId, clubName, 'photo.jpg', '2026-04-19T10:00:00.000Z',
+    albumType, eventId, clubName, tagValue, 'photo.jpg', '2026-04-19T10:00:00.000Z',
   ];
 }
 
@@ -385,7 +388,7 @@ describe('ensureClubAlbum()', () => {
     mockGetAllRows.mockReturnValue([]);
     mockFetch.mockReturnValueOnce(makeAlbumCreateResponse('club-album-id'));
 
-    const result = ensureClubAlbum(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY);
+    const result = ensureClubTagAlbum(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line');
 
     expect(result.status).toBe(ResultStatus.SUCCESS);
     expect(result.data!.albumId).toBe('club-album-id');
@@ -400,17 +403,17 @@ describe('ensureClubAlbum()', () => {
     mockGetAllRows.mockReturnValue([]);
     mockFetch.mockReturnValueOnce(makeAlbumCreateResponse('club-title-test'));
 
-    const result = ensureClubAlbum(EVENT_ID, 'City Run', '2026-06-15', 'Speed_Demon', 'Speed Demon');
+    const result = ensureClubTagAlbum(EVENT_ID, 'City Run', '2026-06-15', 'Speed_Demon', 'Speed Demon', 'finish_line');
 
-    expect(result.data!.albumTitle).toBe('2026-06-15 City Run \u2013 Speed Demon');
+    expect(result.data!.albumTitle).toBe('2026-06-15 City Run \u2013 Speed Demon \u2013 finish_line');
   });
 
   it('returns existing record without calling Photos API when album already exists', () => {
     mockGetAllRows.mockReturnValue([
-      makeAlbumRow('existing-club-album', 'club', EVENT_ID, CLUB_NAME),
+      makeAlbumRow('existing-club-album', 'club', EVENT_ID, CLUB_NAME, 0, '', 'finish_line'),
     ]);
 
-    const result = ensureClubAlbum(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY);
+    const result = ensureClubTagAlbum(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line');
 
     expect(result.status).toBe(ResultStatus.SUCCESS);
     expect(result.data!.albumId).toBe('existing-club-album');
@@ -420,11 +423,11 @@ describe('ensureClubAlbum()', () => {
   it('does not confuse albums belonging to a different club', () => {
     // Only a different club's album exists
     mockGetAllRows.mockReturnValue([
-      makeAlbumRow('other-club-album', 'club', EVENT_ID, 'Other_Club'),
+      makeAlbumRow('other-club-album', 'club', EVENT_ID, 'Other_Club', 0, '', 'finish_line'),
     ]);
     mockFetch.mockReturnValueOnce(makeAlbumCreateResponse('new-club-album'));
 
-    const result = ensureClubAlbum(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY);
+    const result = ensureClubTagAlbum(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line');
 
     expect(result.status).toBe(ResultStatus.SUCCESS);
     expect(result.data!.albumId).toBe('new-club-album');
@@ -438,7 +441,7 @@ describe('ensureClubAlbum()', () => {
       getContentText:  jest.fn(() => '{"error":{"code":403,"message":"Permission denied"}}'),
     });
 
-    const result = ensureClubAlbum(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY);
+    const result = ensureClubTagAlbum(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line');
 
     expect(result.status).toBe(ResultStatus.ERROR);
     expect(mockAppendRow).not.toHaveBeenCalled();
@@ -447,11 +450,11 @@ describe('ensureClubAlbum()', () => {
   it('does not confuse albums for the same club in a different event', () => {
     // Same club name, different event
     mockGetAllRows.mockReturnValue([
-      makeAlbumRow('other-event-club', 'club', 'evt-uuid-OTHER', CLUB_NAME),
+      makeAlbumRow('other-event-club', 'club', 'evt-uuid-OTHER', CLUB_NAME, 0, '', 'finish_line'),
     ]);
     mockFetch.mockReturnValueOnce(makeAlbumCreateResponse('correct-club-album'));
 
-    const result = ensureClubAlbum(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY);
+    const result = ensureClubTagAlbum(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line');
 
     expect(result.data!.albumId).toBe('correct-club-album');
     expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -500,14 +503,14 @@ describe('syncBatchToAlbums()', () => {
     mockGetFolderById.mockReturnValue(makeMockFolder(BATCH_ID, 'batch', []));
 
     const result = syncBatchToAlbums(
-      EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, BATCH_ID
+      EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line', BATCH_ID
     );
 
     expect(result.status).toBe(ResultStatus.SUCCESS);
     expect(result.data!.eventAlbumId).toBe(EVENT_ALBUM);
-    expect(result.data!.clubAlbumId).toBe(CLUB_ALBUM);
+    expect(result.data!.clubTagAlbumId).toBe(CLUB_ALBUM);
     expect(result.data!.eventSynced).toBe(0);
-    expect(result.data!.clubSynced).toBe(0);
+    expect(result.data!.clubTagSynced).toBe(0);
     expect(result.data!.errors).toHaveLength(0);
   });
 
@@ -521,7 +524,7 @@ describe('syncBatchToAlbums()', () => {
     });
 
     const result = syncBatchToAlbums(
-      EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, BATCH_ID
+      EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line', BATCH_ID
     );
 
     expect(result.status).toBe(ResultStatus.ERROR);
@@ -543,7 +546,7 @@ describe('syncBatchToAlbums()', () => {
     });
 
     const result = syncBatchToAlbums(
-      EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, BATCH_ID
+      EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line', BATCH_ID
     );
 
     expect(result.status).toBe(ResultStatus.ERROR);
@@ -566,11 +569,11 @@ describe('syncBatchToAlbums()', () => {
       .mockReturnValueOnce(clUpload).mockReturnValueOnce(clCreate);
 
     const result = syncBatchToAlbums(
-      EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, BATCH_ID
+      EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line', BATCH_ID
     );
 
     expect(result.data!.eventSynced).toBe(1);
-    expect(result.data!.clubSynced).toBe(1);
+    expect(result.data!.clubTagSynced).toBe(1);
     // Two Photo_Files rows appended (one per album)
     expect(mockAppendRow).toHaveBeenCalledTimes(2);
   });
@@ -586,11 +589,11 @@ describe('syncBatchToAlbums()', () => {
     mockGetFolderById.mockReturnValue(makeMockFolder(BATCH_ID, 'batch', [dupFile]));
 
     const result = syncBatchToAlbums(
-      EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, BATCH_ID
+      EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line', BATCH_ID
     );
 
     expect(result.data!.eventSynced).toBe(0);
-    expect(result.data!.clubSynced).toBe(0);
+    expect(result.data!.clubTagSynced).toBe(0);
     // No Photos API calls, no sheet writes
     expect(mockFetch).not.toHaveBeenCalled();
     expect(mockAppendRow).not.toHaveBeenCalled();
@@ -619,12 +622,12 @@ describe('syncBatchToAlbums()', () => {
       .mockReturnValueOnce(clUpload).mockReturnValueOnce(clCreate);
 
     const result = syncBatchToAlbums(
-      EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, BATCH_ID
+      EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line', BATCH_ID
     );
 
     // File is uploaded once per album (different albumIds → different keys)
     expect(result.data!.eventSynced).toBe(1);
-    expect(result.data!.clubSynced).toBe(1);
+    expect(result.data!.clubTagSynced).toBe(1);
     // Crucially: Photo_Files is read exactly ONCE (shared dedup set)
     const photoFilesReadCount = (mockGetAllRows.mock.calls as string[][])
       .filter((call) => call[0] === 'Photo_Files').length;
@@ -649,12 +652,12 @@ describe('syncBatchToAlbums()', () => {
     mockFetch.mockReturnValueOnce(clUpload).mockReturnValueOnce(clCreate);
 
     const result = syncBatchToAlbums(
-      EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, BATCH_ID
+      EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line', BATCH_ID
     );
 
     expect(result.status).toBe(ResultStatus.SUCCESS); // overall success
     expect(result.data!.eventSynced).toBe(0);
-    expect(result.data!.clubSynced).toBe(1);
+    expect(result.data!.clubTagSynced).toBe(1);
     expect(result.data!.errors.length).toBeGreaterThan(0);
     expect(result.data!.errors[0]).toContain('[event]');
   });
@@ -663,7 +666,7 @@ describe('syncBatchToAlbums()', () => {
     setupExistingAlbums();
     mockGetFolderById.mockReturnValue(makeMockFolder(BATCH_ID, 'batch', []));
 
-    syncBatchToAlbums(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, BATCH_ID);
+    syncBatchToAlbums(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line', BATCH_ID);
 
     // updateAlbumSyncStats is called twice — once for event album, once for club album.
     // Each call does: getAllRows(PHOTO_ALBUMS) + updateRow(PHOTO_ALBUMS, rowIndex, newRow)
@@ -690,7 +693,7 @@ describe('syncBatchToAlbums()', () => {
     setupExistingAlbums();
     mockGetFolderById.mockReturnValue(makeMockFolder(BATCH_ID, 'batch', []));
 
-    syncBatchToAlbums(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, BATCH_ID);
+    syncBatchToAlbums(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line', BATCH_ID);
 
     const photoFilesReadCount = (mockGetAllRows.mock.calls as string[][])
       .filter((call) => call[0] === 'Photo_Files').length;
@@ -701,7 +704,7 @@ describe('syncBatchToAlbums()', () => {
     setupExistingAlbums();
     mockGetFolderById.mockReturnValue(makeMockFolder(BATCH_ID, 'batch', []));
 
-    syncBatchToAlbums(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, BATCH_ID);
+    syncBatchToAlbums(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line', BATCH_ID);
 
     const albumReads = (mockGetAllRows.mock.calls as string[][])
       .filter((call) => call[0] === 'Photo_Albums').length;
@@ -732,7 +735,7 @@ describe('syncBatchToAlbums()', () => {
         .mockReturnValueOnce(clUp).mockReturnValueOnce(clCr);
     }
 
-    syncBatchToAlbums(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, BATCH_ID);
+    syncBatchToAlbums(EVENT_ID, EVENT_NAME, EVENT_DATE, CLUB_NAME, CLUB_DISPLAY, 'finish_line', BATCH_ID);
 
     const photoFilesReadCount = (mockGetAllRows.mock.calls as string[][])
       .filter((call) => call[0] === 'Photo_Files').length;

@@ -228,15 +228,30 @@ export function restoreFile(
       const batchFolderId = parentIter.hasNext() ? parentIter.next().getId() : '';
 
       if (batchFolderId) {
+        // Derive tag from the batch folder's parent. Drive layout:
+        // Event / Club / Tag / Batch — so batch.parent is the tag folder.
+        // (Empty string when the batch sits directly under the club, which
+        // shouldn't happen under the new schema but is tolerated here.)
+        let tag = '';
+        try {
+          const batchParents = DriveApp.getFolderById(batchFolderId).getParents();
+          if (batchParents.hasNext()) {
+            const parentName = batchParents.next().getName();
+            if (parentName !== record.clubName) tag = parentName;
+          }
+        } catch (tagErr) {
+          Logger.log(`[DeleteService.restoreFile] could not derive tag for batch ${batchFolderId}: ${String(tagErr)}`);
+        }
         enqueueBatchSync({
           eventId:         record.eventId,
           clubName:        record.clubName,
+          tag,
           batchFolderId,
           batchFolderName: record.batchFolderName,
         });
         Logger.log(
           `[DeleteService.restoreFile] Enqueued re-sync for ${record.driveFileId} ` +
-          `— batch=${record.batchFolderName}`
+          `— club=${record.clubName} tag=${tag} batch=${record.batchFolderName}`
         );
       } else {
         Logger.log(

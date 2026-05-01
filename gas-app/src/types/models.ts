@@ -112,14 +112,20 @@ export interface AuditLogRecord {
  * A row in the "Photo_Albums" sheet.
  * Stores the mapping between events/clubs and their Google Photos album IDs.
  *
- * albumType = 'event' → master album for the whole event (all clubs)
- * albumType = 'club'  → per-club album for a specific event+club combination
+ * albumType = 'event' → master album for the whole event (all photos across all clubs/tags).
+ *                       clubName and tag are empty.
+ * albumType = 'club'  → per (event, club, tag) album. clubName and tag are both
+ *                       non-empty — every upload carries an explicit tag, so
+ *                       there is no plain per-club album.
+ *
+ * The composite key for non-event albums is (eventId, clubName, tag).
  */
 export interface PhotosAlbumRecord {
   readonly albumId:         string;            // Google Photos album ID
   readonly albumType:       'event' | 'club';  // Scope of the album
   readonly eventId:         string;            // FK → EventRecord.eventId
   readonly clubName:        string;            // Normalized club name; empty for event-type albums
+  readonly tag:             string;            // Tag/photographer label; empty for event-type albums
   readonly albumTitle:      string;            // Human-readable title shown in Google Photos
   readonly albumUrl:        string;            // Direct product URL for viewing in Google Photos
   readonly shareableUrl:    string;            // Public shareable link (post-share call)
@@ -159,8 +165,9 @@ export interface PhotosFileRecord {
   readonly albumType:   'event' | 'club'; // Scope of the album (col D)
   readonly eventId:     string;           // FK → Events.eventId (col E)
   readonly clubName:    string;           // Normalized club name; empty for event albums (col F)
-  readonly fileName:    string;           // Original filename, e.g. "IMG_0042.jpg" (col G)
-  readonly syncedAt:    string;           // ISO 8601 timestamp of sync (col H)
+  readonly tag:         string;           // Tag/photographer label; empty for event albums (col G)
+  readonly fileName:    string;           // Original filename, e.g. "IMG_0042.jpg" (col H)
+  readonly syncedAt:    string;           // ISO 8601 timestamp of sync (col I)
 }
 
 /**
@@ -210,6 +217,7 @@ export interface SyncQueueRecord {
   readonly queueId:        string;            // UUID v4 (primary key)
   readonly eventId:        string;            // FK → Events.eventId
   readonly clubName:       string;            // Normalized club name
+  readonly tag:            string;            // Tag/photographer label captured from upload link
   readonly batchFolderId:  string;            // Google Drive folder ID for this batch
   readonly batchFolderName: string;           // Human-readable batch folder name
   readonly enqueuedAt:     string;            // ISO 8601 timestamp

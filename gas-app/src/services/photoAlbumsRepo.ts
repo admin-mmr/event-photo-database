@@ -42,15 +42,22 @@ export function findAlbumByEvent(eventId: string): PhotosAlbumRecord | null {
 }
 
 /**
- * Finds the club-level album record for a given event+club pair, or null.
+ * Finds the album record for a given (event, club, tag) triple, or null.
+ *
+ * Every non-event album is scoped to a (club, tag) pair — there is no
+ * tag-less per-club album in the new schema.
  */
-export function findAlbumByEventAndClub(
+export function findAlbumByEventClubTag(
   eventId: string,
-  clubName: string
+  clubName: string,
+  tag: string
 ): PhotosAlbumRecord | null {
   return (
     loadAlbums().find(
-      (a) => a.albumType === 'club' && a.eventId === eventId && a.clubName === clubName
+      (a) => a.albumType === 'club'
+          && a.eventId === eventId
+          && a.clubName === clubName
+          && a.tag === tag
     ) ?? null
   );
 }

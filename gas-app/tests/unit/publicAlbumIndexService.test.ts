@@ -74,14 +74,17 @@ function makeAlbum(
   albumId: string,
   albumType: 'event' | 'club',
   eventId: string,
-  clubName = ''
+  clubName = '',
+  tag = ''
 ): PhotosAlbumRecord {
+  const effectiveTag = albumType === 'club' ? (tag || 'finish_line') : '';
   return {
     albumId,
     albumType,
     eventId,
     clubName,
-    albumTitle:       albumType === 'event' ? 'Event All Clubs' : `Club ${clubName}`,
+    tag:              effectiveTag,
+    albumTitle:       albumType === 'event' ? 'Event All Clubs' : `Club ${clubName} – ${effectiveTag}`,
     albumUrl:         `https://photos.google.com/lr/album/${albumId}`,
     shareableUrl:     `https://photos.app.goo.gl/${albumId}`,
     createdAt:        '2026-04-19T09:00:00.000Z',

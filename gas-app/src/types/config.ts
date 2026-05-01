@@ -161,16 +161,17 @@ export interface ClubSheetColumns {
 }
 
 export interface PhotosAlbumsSheetColumns {
-  readonly ALBUM_ID:          0;  // Google Photos album ID
-  readonly ALBUM_TYPE:        1;  // "event" | "club"
-  readonly EVENT_ID:          2;  // FK → Events.eventId
-  readonly CLUB_NAME:         3;  // Normalized club name; empty for event-type albums
-  readonly ALBUM_TITLE:       4;  // Human-readable album title
-  readonly ALBUM_URL:         5;  // Google Photos product URL
-  readonly SHAREABLE_URL:     6;  // Public shareable link
-  readonly CREATED_AT:        7;  // ISO 8601 timestamp
-  readonly LAST_SYNC_AT:      8;  // ISO 8601 timestamp of most recent sync
-  readonly SYNCED_FILE_COUNT: 9;  // Cumulative number of photos pushed to album
+  readonly ALBUM_ID:          0;   // Google Photos album ID
+  readonly ALBUM_TYPE:        1;   // "event" | "club"
+  readonly EVENT_ID:          2;   // FK → Events.eventId
+  readonly CLUB_NAME:         3;   // Normalized club name; empty for event-type albums
+  readonly TAG:               4;   // Tag/photographer label; empty for event-type albums, non-empty for club albums
+  readonly ALBUM_TITLE:       5;   // Human-readable album title
+  readonly ALBUM_URL:         6;   // Google Photos product URL
+  readonly SHAREABLE_URL:     7;   // Public shareable link
+  readonly CREATED_AT:        8;   // ISO 8601 timestamp
+  readonly LAST_SYNC_AT:      9;   // ISO 8601 timestamp of most recent sync
+  readonly SYNCED_FILE_COUNT: 10;  // Cumulative number of photos pushed to album
 }
 
 export interface PhotosFilesSheetColumns {
@@ -180,8 +181,9 @@ export interface PhotosFilesSheetColumns {
   readonly ALBUM_TYPE:    3;  // "event" | "club"
   readonly EVENT_ID:      4;  // FK → Events.eventId
   readonly CLUB_NAME:     5;  // Normalized club name; empty for event-type albums
-  readonly FILE_NAME:     6;  // Original filename, e.g. "IMG_0042.jpg"
-  readonly SYNCED_AT:     7;  // ISO 8601 timestamp of when the sync occurred
+  readonly TAG:           6;  // Tag/photographer label; empty for event-type albums, non-empty for club albums
+  readonly FILE_NAME:     7;  // Original filename, e.g. "IMG_0042.jpg"
+  readonly SYNCED_AT:     8;  // ISO 8601 timestamp of when the sync occurred
 }
 
 /**
@@ -192,14 +194,15 @@ export interface SyncQueueSheetColumns {
   readonly QUEUE_ID:          0;  // UUID v4 (primary key)
   readonly EVENT_ID:          1;  // FK → Events.eventId
   readonly CLUB_NAME:         2;  // Normalized club name
-  readonly BATCH_FOLDER_ID:   3;  // Google Drive batch folder ID
-  readonly BATCH_FOLDER_NAME: 4;  // Human-readable batch folder name
-  readonly ENQUEUED_AT:       5;  // ISO 8601 timestamp when row was written
-  readonly STATUS:            6;  // 'pending' | 'in_progress' | 'done' | 'failed'
-  readonly ATTEMPTS:          7;  // Number of drain attempts made so far
-  readonly LAST_ATTEMPT_AT:   8;  // ISO 8601 timestamp of most recent attempt; empty initially
-  readonly ERROR_MSG:         9;  // Last error message; empty if no error
-  readonly COMPLETED_AT:      10; // ISO 8601 timestamp when status became 'done'; empty otherwise
+  readonly TAG:               3;  // Tag/photographer label captured from the upload link
+  readonly BATCH_FOLDER_ID:   4;  // Google Drive batch folder ID
+  readonly BATCH_FOLDER_NAME: 5;  // Human-readable batch folder name
+  readonly ENQUEUED_AT:       6;  // ISO 8601 timestamp when row was written
+  readonly STATUS:            7;  // 'pending' | 'in_progress' | 'done' | 'failed'
+  readonly ATTEMPTS:          8;  // Number of drain attempts made so far
+  readonly LAST_ATTEMPT_AT:   9;  // ISO 8601 timestamp of most recent attempt; empty initially
+  readonly ERROR_MSG:         10; // Last error message; empty if no error
+  readonly COMPLETED_AT:      11; // ISO 8601 timestamp when status became 'done'; empty otherwise
 }
 
 /**

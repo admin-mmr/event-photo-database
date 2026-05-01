@@ -62,9 +62,10 @@ function newUuid(): string {
  * Drive file to the same album.
  */
 export function enqueueBatchSync(params: {
-  eventId:        string;
-  clubName:       string;
-  batchFolderId:  string;
+  eventId:         string;
+  clubName:        string;
+  tag:             string;
+  batchFolderId:   string;
   batchFolderName: string;
 }): SyncQueueRecord {
   const name = sheetName();
@@ -74,6 +75,7 @@ export function enqueueBatchSync(params: {
     queueId:        newUuid(),
     eventId:        params.eventId,
     clubName:       params.clubName,
+    tag:            params.tag,
     batchFolderId:  params.batchFolderId,
     batchFolderName: params.batchFolderName,
     enqueuedAt:     new Date().toISOString(),
@@ -85,7 +87,7 @@ export function enqueueBatchSync(params: {
   };
 
   appendRow(name, fromSyncQueueRecord(record));
-  Logger.log(`[SyncQueueService.enqueueBatchSync] Queued ${record.queueId} — event=${params.eventId} club=${params.clubName} batch=${params.batchFolderName}`);
+  Logger.log(`[SyncQueueService.enqueueBatchSync] Queued ${record.queueId} — event=${params.eventId} club=${params.clubName} tag=${params.tag} batch=${params.batchFolderName}`);
   return record;
 }
 

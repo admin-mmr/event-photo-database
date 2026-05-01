@@ -42,7 +42,7 @@ import {
 import {
   loadAlbums,
   findAlbumByEvent as _findAlbumByEvent,
-  findAlbumByEventAndClub as _findAlbumByEventAndClub,
+  findAlbumByEventClubTag as _findAlbumByEventClubTag,
   saveAlbum,
   loadFileRecords,
   saveFileRecord,
@@ -52,7 +52,7 @@ import {
 // ── Re-exports (keep existing import paths working) ───────────────────────────
 export {
   findAlbumByEvent,
-  findAlbumByEventAndClub,
+  findAlbumByEventClubTag,
   findAlbumsByEvent,
   listAllAlbums,
   findSyncedFile,
@@ -63,15 +63,15 @@ export {
 
 /**
  * Matches Layer-3 batch folder names: YYYYMMDD-HHMMSS_username.
- * Used to distinguish batch folders from Layer-2.5 tag subfolders when walking
- * the club folder's children. Mirrors the BATCH_FOLDER_RE used in driveService.
+ * Used to detect the (now disallowed) shape where a batch sits directly under
+ * a club instead of inside a tag folder. Mirrors driveService.BATCH_FOLDER_RE.
  *
- * Drive structure walked by syncEventToAlbums:
- *   Event / Club / [Tag /] Batch (YYYYMMDD-HHMMSS_user) / files
+ * Drive structure walked by syncEventToAlbums (strict):
+ *   Event / Club / Tag / Batch (YYYYMMDD-HHMMSS_user) / files
  *
- * The optional tag folder was added when DEFAULT_TAG ('ALL') was introduced —
- * legacy uploads created before that have no tag and live directly under the
- * club folder. Both layouts must be supported.
+ * Every upload link carries an explicit tag, so every batch must live inside
+ * a tag folder. A batch found directly under a club is treated as a config
+ * error and reported back as a sync error.
  */
 const BATCH_FOLDER_RE = /^\d{8}-\d{6}_/;
 
@@ -94,21 +94,21 @@ function countPhotoFiles(batchFolder: GoogleAppsScript.Drive.Folder): number {
  * PhotosService — Google Photos Library API integration.
  *
  * Manages the lifecycle of Google Photos albums that mirror the Drive folder
- * hierarchy.  For each event a "master" album is created containing all clubs'
- * photos; for each event+club combination a narrower "club" album is created.
+ * hierarchy. For each event a "master" album is created containing all photos;
+ * for each (event, club, tag) bucket a narrower album is created.
  *
  * Album metadata is persisted in the "Photo_Albums" Google Sheet so that
  * album IDs survive across GAS executions and albums are never created twice.
  *
  * Drive → Photos sync flow:
- *   1. ensureEventAlbum()   — idempotently creates the event-level album
- *   2. ensureClubAlbum()    — idempotently creates the per-club album
- *   3. syncBatchToAlbums()  — called from serverCompleteUpload / API upload
- *      ├── syncBatchFolderToAlbum(eventAlbumId, batchFolderId)
- *      └── syncBatchFolderToAlbum(clubAlbumId,  batchFolderId)
+ *   1. ensureEventAlbum()    — idempotently creates the master event album
+ *   2. ensureClubTagAlbum()  — idempotently creates the (event, club, tag) album
+ *   3. syncBatchToAlbums()   — called by drainSyncQueueTrigger after upload
+ *      ├── syncBatchFolderToAlbum(eventAlbumId,    'event', …)
+ *      └── syncBatchFolderToAlbum(clubTagAlbumId,  'club',  …)
  *
  * For admin-triggered full syncs / backfills:
- *   syncEventToAlbums(event)  — walks Layer-2 clubs → Layer-3 batches → files
+ *   syncEventToAlbums(event)  — walks Event/Club/Tag/Batch/files
  *   backfillAllAlbums()       — iterates every event in the Events sheet
  *
  * Google Photos Library API reference:
@@ -164,6 +164,7 @@ export function ensureEventAlbum(
     albumType:       'event',
     eventId,
     clubName:        '',
+    tag:             '',
     albumTitle:      title,
     albumUrl:        createResult.data.productUrl,
     shareableUrl:    createResult.data.shareableUrl,
@@ -183,34 +184,49 @@ export function ensureEventAlbum(
 }
 
 /**
- * Ensures a per-club album exists for the given event+club combination.
+ * Ensures an album exists for the given (event, club, tag) triple.
  * Creates it in Google Photos and persists the record if it doesn't exist yet.
  *
- * Album title format: "YYYY-MM-DD EventName – ClubDisplayName"
- * e.g. "2026-04-15 Boston Marathon – Misty Mountain"
+ * Album title format: "YYYY-MM-DD EventName – ClubDisplayName – Tag"
+ * e.g. "2026-04-15 Boston Marathon – Misty Mountain – finish_line"
+ *
+ * Every non-event album is keyed by (eventId, clubName, tag) — there is no
+ * tag-less per-club album in the new schema, since every upload link carries
+ * an explicit tag.
  *
  * Idempotent — see ensureEventAlbum.
  *
+ * @param tag              The non-empty tag from the upload link
  * @param preloadedAlbums  See ensureEventAlbum for semantics.
  */
-export function ensureClubAlbum(
+export function ensureClubTagAlbum(
   eventId: string,
   eventName: string,
   eventDate: string,
   clubName: string,
   clubDisplayName: string,
+  tag: string,
   preloadedAlbums?: PhotosAlbumRecord[] | null
 ): ServiceResult<PhotosAlbumRecord> {
+  if (!tag || !tag.trim()) {
+    return {
+      status: ResultStatus.ERROR,
+      message: 'ensureClubTagAlbum requires a non-empty tag \u2014 every upload link must specify one.',
+    };
+  }
   const albums = preloadedAlbums ?? loadAlbums();
   const existing =
     albums.find(
-      (a) => a.albumType === 'club' && a.eventId === eventId && a.clubName === clubName
+      (a) => a.albumType === 'club'
+          && a.eventId === eventId
+          && a.clubName === clubName
+          && a.tag === tag
     ) ?? null;
   if (existing) {
-    return { status: ResultStatus.SUCCESS, message: 'Club album already exists', data: existing };
+    return { status: ResultStatus.SUCCESS, message: 'Club/tag album already exists', data: existing };
   }
 
-  const title = `${eventDate} ${eventName} \u2013 ${clubDisplayName}`;
+  const title = `${eventDate} ${eventName} \u2013 ${clubDisplayName} \u2013 ${tag}`;
   const createResult = createGoogleAlbum(title);
   if (createResult.status !== ResultStatus.SUCCESS || !createResult.data) {
     return { status: ResultStatus.ERROR, message: createResult.message };
@@ -222,6 +238,7 @@ export function ensureClubAlbum(
     albumType:       'club',
     eventId,
     clubName,
+    tag,
     albumTitle:      title,
     albumUrl:        createResult.data.productUrl,
     shareableUrl:    createResult.data.shareableUrl,
@@ -231,11 +248,11 @@ export function ensureClubAlbum(
   };
 
   saveAlbum(record);
-  Logger.log(`[PhotosService] Created club album: "${title}" (${record.albumId})`);
+  Logger.log(`[PhotosService] Created club/tag album: "${title}" (${record.albumId})`);
 
   return {
     status: ResultStatus.SUCCESS,
-    message: `Club album created: "${title}"`,
+    message: `Club/tag album created: "${title}"`,
     data: record,
   };
 }
@@ -367,6 +384,7 @@ export function syncBatchFolderToAlbum(
   albumType: 'event' | 'club',
   eventId: string,
   clubName: string,
+  tag: string,
   batchFolderId: string,
   existingSyncedKeys: Set<string>,
   jobId?: string,
@@ -440,6 +458,7 @@ export function syncBatchFolderToAlbum(
         albumType,
         eventId,
         clubName,
+        tag,
         fileName: file.getName(),
         syncedAt: now,
       };
@@ -475,25 +494,30 @@ export function syncBatchFolderToAlbum(
 }
 
 export interface BatchAlbumSyncResult {
-  eventAlbumId:  string;
-  clubAlbumId:   string;
-  eventSynced:   number;
-  clubSynced:    number;
-  errors:        string[];
+  eventAlbumId:    string;
+  clubTagAlbumId:  string;
+  eventSynced:     number;
+  clubTagSynced:   number;
+  errors:          string[];
 }
 
 /**
- * Syncs all photos in one upload batch folder to both the event album and the
- * club-specific album.  Creates either album if it doesn't exist yet.
+ * Syncs all photos in one upload batch folder to two albums:
+ *   - The master event album (all photos for the event, across clubs/tags)
+ *   - The (event, club, tag) album (one per non-empty tag)
  *
- * This is the primary hook called from serverCompleteUpload (web upload) and
- * handleApiUploadFile (REST API upload) after files are written to Drive.
+ * Creates either album if it doesn't exist yet.
+ *
+ * This is the primary hook called by drainSyncQueueTrigger after the upload
+ * has been written to Drive. The drain reads the queue row's tag and passes
+ * it through here.
  *
  * @param eventId          UUID of the event
  * @param eventName        Human-readable event name
  * @param eventDate        YYYY-MM-DD
  * @param clubName         Normalized club folder name (e.g. "New_Bee")
  * @param clubDisplayName  Club display name for album title (e.g. "New Bee")
+ * @param tag              Non-empty tag from the upload link
  * @param batchFolderId    Drive ID of the Layer-3 batch folder
  */
 export function syncBatchToAlbums(
@@ -502,13 +526,20 @@ export function syncBatchToAlbums(
   eventDate: string,
   clubName: string,
   clubDisplayName: string,
+  tag: string,
   batchFolderId: string
 ): ServiceResult<BatchAlbumSyncResult> {
+  if (!tag || !tag.trim()) {
+    return {
+      status: ResultStatus.ERROR,
+      message: 'syncBatchToAlbums requires a non-empty tag — every upload link must specify one.',
+    };
+  }
   const errors: string[] = [];
   const config = getConfig();
 
   // ── Pre-load Photo_Albums ONCE (§3.1 performance fix) ────────────────────────
-  // Threads the loaded rows through ensureEventAlbum, ensureClubAlbum, and
+  // Threads the loaded rows through ensureEventAlbum, ensureClubTagAlbum, and
   // updateAlbumSyncStats so the sheet is read at most once per call instead of
   // four times (2 × loadAlbums + 2 × getAllRows in updateAlbumSyncStats).
   const albumRows = getAllRows(config.SHEET_NAMES.PHOTO_ALBUMS);
@@ -532,20 +563,20 @@ export function syncBatchToAlbums(
     albums.push(eventAlbumRecord);
   }
 
-  // Ensure club album (lookup uses same pre-loaded list, now including any
-  // event album that was just created above)
-  const clubAlbumResult = ensureClubAlbum(
-    eventId, eventName, eventDate, clubName, clubDisplayName, albums
+  // Ensure (club, tag) album (lookup uses same pre-loaded list, now including
+  // any event album that was just created above)
+  const clubTagAlbumResult = ensureClubTagAlbum(
+    eventId, eventName, eventDate, clubName, clubDisplayName, tag, albums
   );
-  if (clubAlbumResult.status !== ResultStatus.SUCCESS || !clubAlbumResult.data) {
+  if (clubTagAlbumResult.status !== ResultStatus.SUCCESS || !clubTagAlbumResult.data) {
     return {
       status: ResultStatus.ERROR,
-      message: `Cannot ensure club album: ${clubAlbumResult.message}`,
+      message: `Cannot ensure club/tag album: ${clubTagAlbumResult.message}`,
     };
   }
-  const clubAlbumRecord = clubAlbumResult.data;
-  if (!albumRows.some((r) => String(r[0] ?? '').trim() === clubAlbumRecord.albumId)) {
-    albumRows.push(fromPhotosAlbumRecord(clubAlbumRecord));
+  const clubTagAlbumRecord = clubTagAlbumResult.data;
+  if (!albumRows.some((r) => String(r[0] ?? '').trim() === clubTagAlbumRecord.albumId)) {
+    albumRows.push(fromPhotosAlbumRecord(clubTagAlbumRecord));
   }
 
   // ── Build dedup key set from Photo_Files ONCE for both album syncs ───────────
@@ -553,22 +584,22 @@ export function syncBatchToAlbums(
   const allFileRecords = loadFileRecords();
   const syncedKeys = new Set(allFileRecords.map((r) => `${r.driveFileId}|${r.albumId}`));
 
-  // Sync batch to event album
+  // Sync batch to event album (event-album file records carry empty club/tag)
   const eventSyncResult = syncBatchFolderToAlbum(
-    eventAlbumRecord.albumId, 'event', eventId, '', batchFolderId, syncedKeys
+    eventAlbumRecord.albumId, 'event', eventId, '', '', batchFolderId, syncedKeys
   );
   const eventSynced = eventSyncResult.data?.synced ?? 0;
   if (eventSyncResult.data?.errors.length) {
     errors.push(...eventSyncResult.data.errors.map((e) => `[event] ${e}`));
   }
 
-  // Sync batch to club album (syncedKeys is shared so dedup also works across albums)
-  const clubSyncResult = syncBatchFolderToAlbum(
-    clubAlbumRecord.albumId, 'club', eventId, clubName, batchFolderId, syncedKeys
+  // Sync batch to (club, tag) album (syncedKeys is shared so dedup works across albums)
+  const clubTagSyncResult = syncBatchFolderToAlbum(
+    clubTagAlbumRecord.albumId, 'club', eventId, clubName, tag, batchFolderId, syncedKeys
   );
-  const clubSynced = clubSyncResult.data?.synced ?? 0;
-  if (clubSyncResult.data?.errors.length) {
-    errors.push(...clubSyncResult.data.errors.map((e) => `[club:${clubName}] ${e}`));
+  const clubTagSynced = clubTagSyncResult.data?.synced ?? 0;
+  if (clubTagSyncResult.data?.errors.length) {
+    errors.push(...clubTagSyncResult.data.errors.map((e) => `[club:${clubName}/${tag}] ${e}`));
   }
 
   // ── Persist updated sync stats using pre-loaded rows (no extra sheet reads) ──
@@ -580,27 +611,27 @@ export function syncBatchToAlbums(
     albumRows
   );
   updateAlbumSyncStats(
-    clubAlbumRecord.albumId,
+    clubTagAlbumRecord.albumId,
     now,
-    clubAlbumRecord.syncedFileCount + clubSynced,
+    clubTagAlbumRecord.syncedFileCount + clubTagSynced,
     albumRows
   );
 
   Logger.log(
     `[PhotosService] syncBatchToAlbums: event="${eventName}", club="${clubName}", ` +
-    `eventSynced=${eventSynced}, clubSynced=${clubSynced}, errors=${errors.length}`
+    `tag="${tag}", eventSynced=${eventSynced}, clubTagSynced=${clubTagSynced}, errors=${errors.length}`
   );
 
   return {
     status: ResultStatus.SUCCESS,
     message:
       `Batch synced: ${eventSynced} photo(s) → event album, ` +
-      `${clubSynced} photo(s) → club album`,
+      `${clubTagSynced} photo(s) → club/tag album`,
     data: {
-      eventAlbumId: eventAlbumRecord.albumId,
-      clubAlbumId:  clubAlbumRecord.albumId,
+      eventAlbumId:   eventAlbumRecord.albumId,
+      clubTagAlbumId: clubTagAlbumRecord.albumId,
       eventSynced,
-      clubSynced,
+      clubTagSynced,
       errors,
     },
   };
@@ -620,29 +651,37 @@ export interface EventInfo {
   readonly driveFolderId: string;
 }
 
-export interface ClubSyncSummary {
-  clubName:    string;
-  clubAlbumId: string;
-  synced:      number;
+/** Per (club, tag) summary inside a syncEventToAlbums result. */
+export interface ClubTagSyncSummary {
+  clubName:       string;
+  tag:            string;
+  clubTagAlbumId: string;
+  synced:         number;
 }
 
 export interface SyncEventResult {
-  eventId:      string;
-  eventAlbumId: string;
-  clubsSynced:  ClubSyncSummary[];
-  totalSynced:  number;
-  errors:       string[];
+  eventId:        string;
+  eventAlbumId:   string;
+  clubTagsSynced: ClubTagSyncSummary[];
+  totalSynced:    number;
+  errors:         string[];
 }
 
 /**
  * Full sync of all Drive photos for one event to Google Photos albums.
  *
- * Walks the Drive hierarchy:
- *   Layer 1 (event folder) → Layer 2 (club folders) → Layer 3 (batch folders) → files
+ * Walks the Drive hierarchy strictly as:
+ *   Event / Club / Tag / Batch (YYYYMMDD-HHMMSS_user) / files
  *
- * For each club folder:
+ * Every upload link carries an explicit tag, so every batch is wrapped in a
+ * tag folder. Layer-3 children of a club folder that are *not* tag folders
+ * (i.e. a name that matches BATCH_FOLDER_RE — a stray legacy batch sitting
+ * directly under a club) are skipped with a warning, since there is no
+ * (event, club, tag) album to bucket them into.
+ *
+ * For each (club, tag) pair encountered:
  *   1. Ensures the event-level album exists
- *   2. Ensures the club-level album exists
+ *   2. Ensures the (event, club, tag) album exists
  *   3. Syncs every batch folder's photos to both albums
  *
  * Used for:
@@ -655,7 +694,7 @@ export interface SyncEventResult {
  * @param jobId   Optional SyncJob id — when provided, album-creation and
  *                per-photo counters are pushed to the job record so the admin
  *                UI can render a live progress bar. Cancellation is honoured
- *                between clubs and between files.
+ *                between clubs/tags and between files.
  */
 export function syncEventToAlbums(
   event: EventInfo,
@@ -663,7 +702,7 @@ export function syncEventToAlbums(
   jobId?: string
 ): ServiceResult<SyncEventResult> {
   const errors: string[] = [];
-  const clubsSynced: ClubSyncSummary[] = [];
+  const clubTagsSynced: ClubTagSyncSummary[] = [];
   let totalSynced = 0;
 
   // Ensure event-level album
@@ -711,68 +750,57 @@ export function syncEventToAlbums(
     const clubDisplayName =
       clubDisplayNames?.[clubName] ?? clubName.replace(/_/g, ' ');
 
-    // Ensure club album
-    if (jobId) {
-      updateJob(jobId, { currentStep: `Creating club album for "${clubDisplayName}"…` });
-    }
-    const clubAlbumResult = ensureClubAlbum(
-      event.eventId, event.eventName, event.eventDate,
-      clubName, clubDisplayName
-    );
-    if (clubAlbumResult.status !== ResultStatus.SUCCESS || !clubAlbumResult.data) {
-      const msg = `Club "${clubName}": ${clubAlbumResult.message}`;
-      errors.push(msg);
-      if (jobId) updateJob(jobId, { errors: [msg] });
-      continue;
-    }
-    const clubAlbumRecord = clubAlbumResult.data;
-    if (jobId && !clubAlbumRecord.lastSyncAt && clubAlbumRecord.syncedFileCount === 0) {
-      incrementJobCounters(jobId, { albumsCreated: 1 });
-    }
-    let clubSynced = 0;
-
-    // Walk Layer-3 children. Each child is either:
-    //   - a batch folder (legacy / pre-DEFAULT_TAG uploads)  — name matches BATCH_FOLDER_RE
-    //   - a tag folder (post-DEFAULT_TAG uploads)            — anything else
-    //
-    // For tag folders we descend one more level to find the actual batch folders.
-    // Without this descent the tag folder is treated as a (childless) batch and
-    // every photo is silently skipped — that was the cause of "all 0 items"
-    // syncing into freshly-created albums after the DEFAULT_TAG rollout.
-    const layer3Iter = clubFolder.getFolders();
-    while (layer3Iter.hasNext()) {
+    // Walk Layer-3 children. Every child must be a tag folder. A stray batch
+    // folder under a club (matching BATCH_FOLDER_RE) means an upload bypassed
+    // the tag pipeline — we log it and skip rather than guess a tag.
+    const tagIter = clubFolder.getFolders();
+    while (tagIter.hasNext()) {
       if (jobId && isCancelRequested(jobId)) break;
-      const layer3Folder = layer3Iter.next();
-      const layer3Name   = layer3Folder.getName();
+      const tagFolder = tagIter.next();
+      const tagName   = tagFolder.getName();
 
-      // Build the list of (batchFolder, breadcrumb) pairs to sync.
-      const batchTargets: Array<{
-        folder:     GoogleAppsScript.Drive.Folder;
-        breadcrumb: string;
-      }> = [];
-
-      if (BATCH_FOLDER_RE.test(layer3Name)) {
-        // Direct batch — legacy untagged upload.
-        batchTargets.push({ folder: layer3Folder, breadcrumb: layer3Name });
-      } else {
-        // Tag folder — descend to find the actual batches.
-        const innerIter = layer3Folder.getFolders();
-        while (innerIter.hasNext()) {
-          const innerFolder = innerIter.next();
-          batchTargets.push({
-            folder:     innerFolder,
-            breadcrumb: `${layer3Name} / ${innerFolder.getName()}`,
-          });
-        }
+      if (BATCH_FOLDER_RE.test(tagName)) {
+        const msg = `Skipping batch folder "${tagName}" directly under club "${clubName}" — no tag bucket; every upload should go through a tag folder.`;
+        Logger.log(`[PhotosService] ${msg}`);
+        errors.push(msg);
+        if (jobId) updateJob(jobId, { errors: [msg] });
+        continue;
       }
 
-      for (const { folder: batchFolder, breadcrumb } of batchTargets) {
+      const tag = tagName;
+
+      // Ensure (club, tag) album
+      if (jobId) {
+        updateJob(jobId, { currentStep: `Creating album for "${clubDisplayName}" / "${tag}"…` });
+      }
+      const clubTagAlbumResult = ensureClubTagAlbum(
+        event.eventId, event.eventName, event.eventDate,
+        clubName, clubDisplayName, tag
+      );
+      if (clubTagAlbumResult.status !== ResultStatus.SUCCESS || !clubTagAlbumResult.data) {
+        const msg = `Club "${clubName}" / tag "${tag}": ${clubTagAlbumResult.message}`;
+        errors.push(msg);
+        if (jobId) updateJob(jobId, { errors: [msg] });
+        continue;
+      }
+      const clubTagAlbumRecord = clubTagAlbumResult.data;
+      if (jobId && !clubTagAlbumRecord.lastSyncAt && clubTagAlbumRecord.syncedFileCount === 0) {
+        incrementJobCounters(jobId, { albumsCreated: 1 });
+      }
+      let clubTagSynced = 0;
+
+      // Walk batch folders under this tag
+      const batchIter = tagFolder.getFolders();
+      while (batchIter.hasNext()) {
         if (jobId && isCancelRequested(jobId)) break;
+        const batchFolder   = batchIter.next();
         const batchFolderId = batchFolder.getId();
+        const batchName     = batchFolder.getName();
+        const breadcrumb    = `${tag} / ${batchName}`;
 
         // Sync to event album (dedup key set is shared and updated in-place)
         const evResult = syncBatchFolderToAlbum(
-          eventAlbumRecord.albumId, 'event', event.eventId, '', batchFolderId, syncedKeys,
+          eventAlbumRecord.albumId, 'event', event.eventId, '', '', batchFolderId, syncedKeys,
           jobId, `"${clubDisplayName}" / ${breadcrumb} → event album`
         );
         const evSynced = evResult.data?.synced ?? 0;
@@ -783,22 +811,27 @@ export function syncEventToAlbums(
           );
         }
 
-        // Sync to club album
-        const clResult = syncBatchFolderToAlbum(
-          clubAlbumRecord.albumId, 'club', event.eventId, clubName, batchFolderId, syncedKeys,
-          jobId, `"${clubDisplayName}" / ${breadcrumb} → club album`
+        // Sync to (club, tag) album
+        const ctResult = syncBatchFolderToAlbum(
+          clubTagAlbumRecord.albumId, 'club', event.eventId, clubName, tag, batchFolderId, syncedKeys,
+          jobId, `"${clubDisplayName}" / ${breadcrumb} → club/tag album`
         );
-        const clSynced = clResult.data?.synced ?? 0;
-        clubSynced += clSynced;
-        if (clResult.data?.errors.length) {
+        const ctSynced = ctResult.data?.synced ?? 0;
+        clubTagSynced += ctSynced;
+        if (ctResult.data?.errors.length) {
           errors.push(
-            ...clResult.data.errors.map((e) => `[${clubName}/${breadcrumb}/club] ${e}`)
+            ...ctResult.data.errors.map((e) => `[${clubName}/${breadcrumb}/club] ${e}`)
           );
         }
       }
-    }
 
-    clubsSynced.push({ clubName, clubAlbumId: clubAlbumRecord.albumId, synced: clubSynced });
+      clubTagsSynced.push({
+        clubName,
+        tag,
+        clubTagAlbumId: clubTagAlbumRecord.albumId,
+        synced:         clubTagSynced,
+      });
+    }
   }
 
   // Persist sync stats for the event album
@@ -807,18 +840,18 @@ export function syncEventToAlbums(
 
   Logger.log(
     `[PhotosService] syncEventToAlbums: event="${event.eventName}", ` +
-    `clubs=${clubsSynced.length}, totalSynced=${totalSynced}, errors=${errors.length}`
+    `clubTags=${clubTagsSynced.length}, totalSynced=${totalSynced}, errors=${errors.length}`
   );
 
   return {
     status: ResultStatus.SUCCESS,
     message:
-      `Synced ${totalSynced} photo(s) across ${clubsSynced.length} club(s) ` +
+      `Synced ${totalSynced} photo(s) across ${clubTagsSynced.length} (club, tag) bucket(s) ` +
       `for "${event.eventName}"`,
     data: {
-      eventId:      event.eventId,
-      eventAlbumId: eventAlbumRecord.albumId,
-      clubsSynced,
+      eventId:        event.eventId,
+      eventAlbumId:   eventAlbumRecord.albumId,
+      clubTagsSynced,
       totalSynced,
       errors,
     },
@@ -947,13 +980,14 @@ export function backfillAllAlbums(
 
 // ─── Reconciliation ───────────────────────────────────────────────────────────
 
-/** Per-club breakdown within one event reconciliation result. */
-export interface ClubReconciliationResult {
-  clubName:     string;
-  driveCount:   number;  // Photo files found in Drive (Layer 2 + 3 hierarchy)
-  syncedCount:  number;  // Rows in Photo_Files for the club album
-  missingCount: number;  // driveCount - syncedCount (negative means orphans in Photos)
-  clubAlbumId:  string;  // Empty string if no club album exists yet
+/** Per-(club, tag) breakdown within one event reconciliation result. */
+export interface ClubTagReconciliationResult {
+  clubName:        string;
+  tag:             string;
+  driveCount:      number;  // Photo files found in Drive under this (club, tag)
+  syncedCount:     number;  // Rows in Photo_Files for the (club, tag) album
+  missingCount:    number;  // driveCount - syncedCount (negative means orphans in Photos)
+  clubTagAlbumId:  string;  // Empty string if no album exists yet
 }
 
 /** Full reconciliation result for one event. */
@@ -963,19 +997,20 @@ export interface EventReconciliationResult {
   eventDate:        string;
   hasEventAlbum:    boolean;
   eventAlbumId:     string;
-  driveTotal:       number;  // All photo files across all clubs in Drive
+  driveTotal:       number;  // All photo files across all (club, tag) buckets
   eventSyncedCount: number;  // Rows in Photo_Files for the event album
-  clubs:            ClubReconciliationResult[];
+  clubTags:         ClubTagReconciliationResult[];
   errors:           string[];
 }
 
 /**
  * Reconciles Drive file counts against Photo_Files records for one event.
  *
- * Walk strategy:
- *   - Layer 1 → event Drive folder
- *   - Layer 2 → club sub-folders  (count JPEG/PNG/HEIC files across all batches)
- *   - Compare each club's Drive count vs Photo_Files rows for that club's album
+ * Walk strategy (strict — every batch must live under a tag folder):
+ *   Event / Club / Tag / Batch / files
+ *
+ * Stray batch folders directly under a club (matching BATCH_FOLDER_RE) are
+ * counted but flagged as errors since they have no tag bucket to compare to.
  *
  * This is a READ-ONLY operation — it does not create albums or upload files.
  *
@@ -992,7 +1027,7 @@ export function reconcileEventPhotos(
   const eventAlbums = albumsByEventId.get(event.eventId) ?? [];
   const eventAlbumRecord = eventAlbums.find((a) => a.albumType === 'event') ?? null;
   const errors: string[] = [];
-  const clubs: ClubReconciliationResult[] = [];
+  const clubTags: ClubTagReconciliationResult[] = [];
   let driveTotal = 0;
 
   // Count Photo_Files rows for the event album
@@ -1009,55 +1044,55 @@ export function reconcileEventPhotos(
   }
 
   if (eventFolder) {
-    // Walk club (Layer-2) folders
     const clubIter = eventFolder.getFolders();
     while (clubIter.hasNext()) {
       const clubFolder = clubIter.next();
       const clubName = clubFolder.getName();
 
-      // Count photo files across all batch (Layer-3) folders.
-      // Drive structure may be either:
-      //   Club / Batch / files                (legacy untagged uploads)
-      //   Club / Tag / Batch / files          (post-DEFAULT_TAG uploads)
-      // We detect the case by name pattern (BATCH_FOLDER_RE matches batch dirs).
-      let clubDriveCount = 0;
       try {
-        const layer3Iter = clubFolder.getFolders();
-        while (layer3Iter.hasNext()) {
-          const layer3Folder = layer3Iter.next();
-          if (BATCH_FOLDER_RE.test(layer3Folder.getName())) {
-            // Direct batch — count its files.
-            clubDriveCount += countPhotoFiles(layer3Folder);
-          } else {
-            // Tag folder — descend one level.
-            const innerIter = layer3Folder.getFolders();
-            while (innerIter.hasNext()) {
-              clubDriveCount += countPhotoFiles(innerIter.next());
-            }
+        const tagIter = clubFolder.getFolders();
+        while (tagIter.hasNext()) {
+          const tagFolder = tagIter.next();
+          const tagName   = tagFolder.getName();
+
+          if (BATCH_FOLDER_RE.test(tagName)) {
+            errors.push(
+              `Club "${clubName}": batch folder "${tagName}" sits directly under the club — ` +
+              `expected a tag folder. Skipping.`
+            );
+            continue;
           }
+
+          const tag = tagName;
+          let bucketDriveCount = 0;
+          const batchIter = tagFolder.getFolders();
+          while (batchIter.hasNext()) {
+            bucketDriveCount += countPhotoFiles(batchIter.next());
+          }
+
+          driveTotal += bucketDriveCount;
+
+          // Find (club, tag) album and count Photo_Files rows
+          const clubTagAlbumRecord = eventAlbums.find(
+            (a) => a.albumType === 'club' && a.clubName === clubName && a.tag === tag
+          ) ?? null;
+          const clubTagAlbumId = clubTagAlbumRecord?.albumId ?? '';
+          const syncedCount = clubTagAlbumId
+            ? fileRecords.filter((r) => r.albumId === clubTagAlbumId).length
+            : 0;
+
+          clubTags.push({
+            clubName,
+            tag,
+            driveCount:    bucketDriveCount,
+            syncedCount,
+            missingCount:  bucketDriveCount - syncedCount,
+            clubTagAlbumId,
+          });
         }
       } catch (err) {
         errors.push(`Club "${clubName}" Drive walk error: ${String(err)}`);
       }
-
-      driveTotal += clubDriveCount;
-
-      // Find club album and count Photo_Files rows
-      const clubAlbumRecord = eventAlbums.find(
-        (a) => a.albumType === 'club' && a.clubName === clubName
-      ) ?? null;
-      const clubAlbumId = clubAlbumRecord?.albumId ?? '';
-      const syncedCount = clubAlbumId
-        ? fileRecords.filter((r) => r.albumId === clubAlbumId).length
-        : 0;
-
-      clubs.push({
-        clubName,
-        driveCount:   clubDriveCount,
-        syncedCount,
-        missingCount: clubDriveCount - syncedCount,
-        clubAlbumId,
-      });
     }
   }
 
@@ -1069,7 +1104,7 @@ export function reconcileEventPhotos(
     eventAlbumId:     eventAlbumRecord?.albumId ?? '',
     driveTotal,
     eventSyncedCount,
-    clubs,
+    clubTags,
     errors,
   };
 }
@@ -1132,7 +1167,7 @@ export function reconcileAllPhotos(): ServiceResult<ReconciliationReport> {
     results.push(result);
     totalDrive  += result.driveTotal;
     totalSynced += result.eventSyncedCount;
-    const eventMissing = result.clubs.reduce((sum, c) => sum + Math.max(0, c.missingCount), 0);
+    const eventMissing = result.clubTags.reduce((sum, c) => sum + Math.max(0, c.missingCount), 0);
     if (eventMissing > 0 || !result.hasEventAlbum) eventsWithGaps++;
   }
 

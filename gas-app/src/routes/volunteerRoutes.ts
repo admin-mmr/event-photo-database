@@ -599,6 +599,7 @@ export function serverCompleteVolunteerUpload(
         enqueueBatchSync({
           eventId:         link.eventId,
           clubName:        link.clubName,
+          tag:             (link.tag ?? '').trim(),
           batchFolderId,
           batchFolderName,
         });

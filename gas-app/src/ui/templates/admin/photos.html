@@ -617,17 +617,26 @@
     var EVENTS  = JSON.parse('<?!= events ?>');
     var ALBUMS  = JSON.parse('<?!= albums ?>');
 
-    // Build a lookup: eventId → { event: PhotosAlbumRecord, clubs: PhotosAlbumRecord[] }
+    // Build a lookup:
+    //   eventId → { event: PhotosAlbumRecord,
+    //               clubTags: PhotosAlbumRecord[] }   // each entry is one (club, tag) album
     var albumsByEvent = {};
     ALBUMS.forEach(function(album) {
       if (!albumsByEvent[album.eventId]) {
-        albumsByEvent[album.eventId] = { event: null, clubs: [] };
+        albumsByEvent[album.eventId] = { event: null, clubTags: [] };
       }
       if (album.albumType === 'event') {
         albumsByEvent[album.eventId].event = album;
       } else if (album.albumType === 'club') {
-        albumsByEvent[album.eventId].clubs.push(album);
+        albumsByEvent[album.eventId].clubTags.push(album);
       }
+    });
+    // Sort each event's club/tag albums by clubName then tag for stable rendering.
+    Object.keys(albumsByEvent).forEach(function(eid) {
+      albumsByEvent[eid].clubTags.sort(function(a, b) {
+        var c = String(a.clubName || '').localeCompare(String(b.clubName || ''));
+        return c !== 0 ? c : String(a.tag || '').localeCompare(String(b.tag || ''));
+      });
     });
 
     // ── Stats ──────────────────────────────────────────────────────────────────
@@ -645,7 +654,7 @@
       statRow.innerHTML = [
         pill('photo_library', totalAlbums, 'Total Albums'),
         pill('event',         eventAlbums,  'Event Albums'),
-        pill('groups',        clubAlbums,   'Club Albums'),
+        pill('groups',        clubAlbums,   'Club + Tag Albums'),
         pill('image',         totalPhotos,  'Photos Synced'),
         missingCount > 0
           ? pillWarn('warning', missingCount, 'Missing Albums')
@@ -741,10 +750,10 @@
       }
 
       EVENTS.forEach(function(ev, idx) {
-        var albumData   = albumsByEvent[ev.eventId] || { event: null, clubs: [] };
-        var hasEvent    = !!albumData.event;
-        var clubAlbums  = albumData.clubs;
-        var totalSynced = (albumData.event ? albumData.event.syncedFileCount : 0) || 0;
+        var albumData     = albumsByEvent[ev.eventId] || { event: null, clubTags: [] };
+        var hasEvent      = !!albumData.event;
+        var clubTagAlbums = albumData.clubTags;
+        var totalSynced   = (albumData.event ? albumData.event.syncedFileCount : 0) || 0;
 
         var eventChip = hasEvent
           ? chipLink('exists', 'check', 'Event Album', albumData.event.albumUrl || albumData.event.shareableUrl)
@@ -753,26 +762,50 @@
         var btnLabel = hasEvent ? 'Sync Albums' : 'Create Albums';
         var btnIcon  = hasEvent ? 'sync' : 'add_photo_alternate';
 
+        // Group (club, tag) albums by club so the UI shows:
+        //   ClubName
+        //     ├─ tag1: chip (n photos)
+        //     └─ tag2: chip (n photos)
         var clubRows = '';
-        if (clubAlbums.length > 0) {
-          clubRows = '<div class="club-album-list">';
-          clubAlbums.forEach(function(ca) {
-            var url = ca.shareableUrl || ca.albumUrl;
+        if (clubTagAlbums.length > 0) {
+          var byClub = {};
+          clubTagAlbums.forEach(function(ca) {
+            var k = ca.clubName || '';
+            if (!byClub[k]) byClub[k] = [];
+            byClub[k].push(ca);
+          });
+          var clubNames = Object.keys(byClub).sort();
+          clubRows = '<div class="club-album-list" style="flex-direction:column;align-items:stretch;">';
+          clubNames.forEach(function(clubName) {
+            var clubLabel = clubName.replace(/_/g, ' ');
             clubRows +=
-              '<div class="club-album-item">' +
-              '  <span class="club-label">' + escHtml(ca.clubName.replace(/_/g, ' ')) + '</span>' +
-              '  ' + (url
-                ? '<a href="' + escHtml(url) + '" target="_blank" rel="noopener" class="album-chip exists">' +
-                  '  <i class="material-icons">photo_album</i>' +
-                  '  ' + (ca.syncedFileCount || 0) + ' photos' +
-                  '</a>'
-                : '<span class="album-chip missing"><i class="material-icons">error_outline</i>No URL</span>') +
+              '<div style="margin-bottom:6px;">' +
+              '  <div style="font-weight:600;font-size:.86rem;color:#444;margin-bottom:4px;">' +
+                   escHtml(clubLabel) +
+              '  </div>' +
+              '  <div style="display:flex;flex-wrap:wrap;gap:6px;padding-left:12px;">';
+            byClub[clubName].forEach(function(ca) {
+              var url = ca.shareableUrl || ca.albumUrl;
+              var tagText = escHtml(ca.tag || '(untagged)');
+              clubRows +=
+                '<div class="club-album-item" style="gap:4px;">' +
+                '  <span style="font-size:.8rem;color:#666;">' + tagText + ':</span>' +
+                '  ' + (url
+                  ? '<a href="' + escHtml(url) + '" target="_blank" rel="noopener" class="album-chip exists">' +
+                    '  <i class="material-icons">photo_album</i>' +
+                    '  ' + (ca.syncedFileCount || 0) + ' photos' +
+                    '</a>'
+                  : '<span class="album-chip missing"><i class="material-icons">error_outline</i>No URL</span>') +
+                '</div>';
+            });
+            clubRows +=
+              '  </div>' +
               '</div>';
           });
           clubRows += '</div>';
         } else if (hasEvent) {
           clubRows = '<p style="margin:8px 0 0;font-size:.84rem;color:#999;">' +
-            'No club albums yet — click <em>Sync Albums</em> to create them for all clubs that have uploads.' +
+            'No (club, tag) albums yet — click <em>Sync Albums</em> to create one per club + tag bucket that has uploads.' +
             '</p>';
         }
 
@@ -806,8 +839,8 @@
           '    <span style="font-size:.82rem;color:#555;font-family:monospace;">' + escHtml(ev.folderName || '') + '</span>' +
           '    ' + lastSync +
           '  </div>' +
-          (clubAlbums.length > 0 || hasEvent
-            ? '<h6 style="margin:0 0 6px;font-size:.82rem;text-transform:uppercase;letter-spacing:.5px;color:#888;">Club Albums</h6>' + clubRows
+          (clubTagAlbums.length > 0 || hasEvent
+            ? '<h6 style="margin:0 0 6px;font-size:.82rem;text-transform:uppercase;letter-spacing:.5px;color:#888;">Club + Tag Albums</h6>' + clubRows
             : '<p style="margin:0;font-size:.84rem;color:#999;">No albums yet — click <em>Create Albums</em> to get started.</p>') +
           '</div>';
 

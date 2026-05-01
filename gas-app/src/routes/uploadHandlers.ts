@@ -238,13 +238,29 @@ export function serverCompleteUpload(payload: WithSession<{
     });
     if (Number(payload.fileCount) > 0) {
       try {
+        // Derive the tag from the batch folder's parent. The Drive layout is
+        // Event / Club / Tag / Batch — so the immediate parent of the batch
+        // is the tag folder. The admin upload path doesn't accept a tag in
+        // the payload, so we read it back from Drive here.
+        let tag = '';
+        try {
+          const parents = DriveApp.getFolderById(payload.batchFolderId).getParents();
+          if (parents.hasNext()) {
+            const parentName = parents.next().getName();
+            if (parentName !== payload.clubFolderName) tag = parentName;
+          }
+        } catch (tagErr) {
+          Logger.log(`[serverCompleteUpload] could not derive tag for batch ${payload.batchFolderId}: ${String(tagErr)}`);
+        }
+
         enqueueBatchSync({
           eventId:         payload.eventId,
           clubName:        payload.clubFolderName,
+          tag,
           batchFolderId:   payload.batchFolderId,
           batchFolderName: payload.batchFolderName,
         });
-        Logger.log(`[serverCompleteUpload] Batch enqueued — event=${payload.eventId} batch=${payload.batchFolderName}`);
+        Logger.log(`[serverCompleteUpload] Batch enqueued — event=${payload.eventId} club=${payload.clubFolderName} tag=${tag} batch=${payload.batchFolderName}`);
       } catch (enqueueErr) {
         Logger.log(`[serverCompleteUpload] enqueueBatchSync failed (non-fatal): ${String(enqueueErr)}`);
       }

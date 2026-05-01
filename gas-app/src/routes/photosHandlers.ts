@@ -92,7 +92,7 @@ export function serverSyncAlbum(
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.ALBUM_SYNCED,
         resourceType: 'event', resourceId: event.eventId,
-        details: { totalSynced: result.data.totalSynced, clubs: result.data.clubsSynced.length, errors: result.data.errors.length },
+        details: { totalSynced: result.data.totalSynced, clubTags: result.data.clubTagsSynced.length, errors: result.data.errors.length },
       });
       if (result.data.errors.length > 0) {
         appendAuditLog({
@@ -105,7 +105,7 @@ export function serverSyncAlbum(
         const finalState = getJob(jobId);
         if (finalState?.cancelRequested) {
           completeJob(jobId, 'cancelled',
-            `Cancelled after syncing ${result.data.totalSynced} photo(s) across ${result.data.clubsSynced.length} club(s)`);
+            `Cancelled after syncing ${result.data.totalSynced} photo(s) across ${result.data.clubTagsSynced.length} (club, tag) bucket(s)`);
         } else {
           completeJob(jobId, 'completed', result.message);
         }
@@ -316,7 +316,10 @@ export function drainSyncQueueTrigger(): void {
           continue;
         }
         const clubDisplayName = clubDisplayNames[item.clubName] ?? item.clubName.replace(/_/g, ' ');
-        const syncResult = syncBatchToAlbums(event.eventId, event.eventName, event.eventDate, item.clubName, clubDisplayName, item.batchFolderId);
+        const syncResult = syncBatchToAlbums(
+          event.eventId, event.eventName, event.eventDate,
+          item.clubName, clubDisplayName, item.tag, item.batchFolderId
+        );
         if (syncResult.status === ResultStatus.SUCCESS || syncResult.status === 'warning') {
           Logger.log(`[drainSyncQueueTrigger] Done: ${label} — ${syncResult.message}`);
           succeeded++;

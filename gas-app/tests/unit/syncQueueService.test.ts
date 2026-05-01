@@ -105,9 +105,10 @@ function makeQueueRow(
   lastAttemptAt    = '',
   errorMsg         = '',
   completedAt      = '',
+  tag              = 'finish_line',
 ): unknown[] {
   return [
-    queueId, eventId, clubName, batchFolderId, batchFolderName,
+    queueId, eventId, clubName, tag, batchFolderId, batchFolderName,
     enqueuedAt, status, attempts, lastAttemptAt, errorMsg, completedAt,
   ];
 }
@@ -119,7 +120,7 @@ describe('enqueueBatchSync()', () => {
 
   it('returns a record with status pending and attempts 0', () => {
     const record = enqueueBatchSync({
-      eventId: 'evt-001', clubName: 'New_Bee',
+      eventId: 'evt-001', clubName: 'New_Bee', tag: 'finish_line',
       batchFolderId: 'folder-id', batchFolderName: 'batch-name',
     });
     expect(record.status).toBe(SyncQueueStatus.PENDING);
@@ -130,29 +131,30 @@ describe('enqueueBatchSync()', () => {
 
   it('returns a record with the provided fields', () => {
     const record = enqueueBatchSync({
-      eventId: 'evt-xyz', clubName: 'Speed_Demon',
+      eventId: 'evt-xyz', clubName: 'Speed_Demon', tag: 'finish_line',
       batchFolderId: 'f-123', batchFolderName: 'batch-xyz',
     });
     expect(record.eventId).toBe('evt-xyz');
     expect(record.clubName).toBe('Speed_Demon');
+    expect(record.tag).toBe('finish_line');
     expect(record.batchFolderId).toBe('f-123');
     expect(record.batchFolderName).toBe('batch-xyz');
   });
 
   it('assigns a unique queueId via Utilities.getUuid', () => {
-    const r1 = enqueueBatchSync({ eventId: 'e', clubName: 'c', batchFolderId: 'f1', batchFolderName: 'b1' });
-    const r2 = enqueueBatchSync({ eventId: 'e', clubName: 'c', batchFolderId: 'f2', batchFolderName: 'b2' });
+    const r1 = enqueueBatchSync({ eventId: 'e', clubName: 'c', tag: 't', batchFolderId: 'f1', batchFolderName: 'b1' });
+    const r2 = enqueueBatchSync({ eventId: 'e', clubName: 'c', tag: 't', batchFolderId: 'f2', batchFolderName: 'b2' });
     expect(r1.queueId).not.toBe(r2.queueId);
   });
 
   it('appends one row to the Sync_Queue sheet', () => {
-    enqueueBatchSync({ eventId: 'evt-001', clubName: 'New_Bee', batchFolderId: 'f', batchFolderName: 'b' });
+    enqueueBatchSync({ eventId: 'evt-001', clubName: 'New_Bee', tag: 't', batchFolderId: 'f', batchFolderName: 'b' });
     expect(mockAppendRow).toHaveBeenCalledTimes(1);
     expect(mockAppendRow).toHaveBeenCalledWith('Sync_Queue', expect.any(Array));
   });
 
   it('sets enqueuedAt to a non-empty ISO timestamp', () => {
-    const record = enqueueBatchSync({ eventId: 'e', clubName: 'c', batchFolderId: 'f', batchFolderName: 'b' });
+    const record = enqueueBatchSync({ eventId: 'e', clubName: 'c', tag: 't', batchFolderId: 'f', batchFolderName: 'b' });
     expect(record.enqueuedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 });
@@ -566,7 +568,7 @@ describe('buildQueueRowMap()', () => {
 
 describe('computeInProgressUpdate()', () => {
   const baseRecord = {
-    queueId: 'q-001', eventId: 'evt', clubName: 'c',
+    queueId: 'q-001', eventId: 'evt', clubName: 'c', tag: 'finish_line',
     batchFolderId: 'f', batchFolderName: 'b',
     enqueuedAt: '2026-04-19T10:00:00.000Z',
     status: SyncQueueStatus.PENDING,
@@ -598,7 +600,7 @@ describe('computeInProgressUpdate()', () => {
 
 describe('computeDoneUpdate()', () => {
   const baseRecord = {
-    queueId: 'q-001', eventId: 'evt', clubName: 'c',
+    queueId: 'q-001', eventId: 'evt', clubName: 'c', tag: 'finish_line',
     batchFolderId: 'f', batchFolderName: 'b',
     enqueuedAt: '2026-04-19T10:00:00.000Z',
     status: SyncQueueStatus.IN_PROGRESS,
@@ -630,7 +632,7 @@ describe('computeDoneUpdate()', () => {
 
 describe('computeFailedUpdate()', () => {
   const baseRecord = {
-    queueId: 'q-001', eventId: 'evt', clubName: 'c',
+    queueId: 'q-001', eventId: 'evt', clubName: 'c', tag: 'finish_line',
     batchFolderId: 'f', batchFolderName: 'b',
     enqueuedAt: '2026-04-19T10:00:00.000Z',
     status: SyncQueueStatus.IN_PROGRESS,
