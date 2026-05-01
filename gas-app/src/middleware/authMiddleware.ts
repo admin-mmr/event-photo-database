@@ -9,6 +9,8 @@ import { lookupSession } from '../services/sessionService';
 import { findByToken } from '../services/uploadLinkService';
 import { requireRole } from './roleGuard';
 
+/* global Session, console */
+
 /**
  * AuthMiddleware — request authentication and user resolution pipeline.
  *
@@ -240,6 +242,17 @@ export type AdminCheckResult =
 export function requireAdminOrFail(sessionToken?: string): AdminCheckResult {
   const authResult = authenticateRequest(sessionToken);
   if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+    // Debug log so future auth-required failures reveal which credential was
+    // present (sessionToken in payload? GAS native session?). The user-facing
+    // message stays generic to avoid leaking auth internals.
+    const tokenPresent = sessionToken ? `yes (len=${sessionToken.length})` : 'no';
+    let nativeEmail = '';
+    try { nativeEmail = Session.getActiveUser().getEmail() || ''; } catch (_) { /* ignore */ }
+    console.warn(
+      `[authMiddleware.requireAdminOrFail] auth failed — ` +
+      `sessionToken=${tokenPresent}, nativeEmail="${nativeEmail}", ` +
+      `inner="${authResult.message}"`
+    );
     return { ok: false, response: { status: 'error', message: '需要登录验证。\nAuthentication required' } };
   }
   const user = authResult.data;
@@ -256,6 +269,14 @@ export function requireAdminOrFail(sessionToken?: string): AdminCheckResult {
 export function requireSuperAdminOrFail(sessionToken?: string): AdminCheckResult {
   const authResult = authenticateRequest(sessionToken);
   if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+    const tokenPresent = sessionToken ? `yes (len=${sessionToken.length})` : 'no';
+    let nativeEmail = '';
+    try { nativeEmail = Session.getActiveUser().getEmail() || ''; } catch (_) { /* ignore */ }
+    console.warn(
+      `[authMiddleware.requireSuperAdminOrFail] auth failed — ` +
+      `sessionToken=${tokenPresent}, nativeEmail="${nativeEmail}", ` +
+      `inner="${authResult.message}"`
+    );
     return { ok: false, response: { status: 'error', message: '需要登录验证。\nAuthentication required' } };
   }
   const guard = requireRole(authResult.data.role, UserRole.SUPER_ADMIN);

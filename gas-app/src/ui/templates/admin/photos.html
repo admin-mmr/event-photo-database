@@ -906,7 +906,14 @@
           // Step 3: fire the worker RPC. It will run for up to ~30 minutes.
           // Note we do NOT await it here — google.script.run is async and the
           // poll loop below runs in parallel.
-          var workerPayload = Object.assign({}, payload, { jobId: job.jobId });
+          //
+          // sessionToken MUST be included in the payload — under USER_DEPLOYING
+          // deployment mode, Session.getActiveUser() returns "" for visitors,
+          // so the backend's authenticateRequest() relies on this token.
+          var workerPayload = Object.assign({}, payload, {
+            jobId:        job.jobId,
+            sessionToken: window.SESSION_TOKEN || '',
+          });
           var runner = google.script.run
             .withSuccessHandler(onWorkerDone)
             .withFailureHandler(onWorkerFailed);
@@ -931,6 +938,7 @@
         .serverCreateSyncJob({
           jobType: jobType,
           eventId: payload.eventId || '',
+          sessionToken: window.SESSION_TOKEN || '',
         });
     }
 
@@ -952,7 +960,10 @@
         .withFailureHandler(function() {
           // Swallow — transient failures are recoverable on the next tick.
         })
-        .serverGetSyncJob({ jobId: currentJob.jobId });
+        .serverGetSyncJob({
+          jobId:        currentJob.jobId,
+          sessionToken: window.SESSION_TOKEN || '',
+        });
     }
 
     function onWorkerDone(result) {
@@ -1039,7 +1050,10 @@
           btn.disabled = false;
           btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">cancel</i>Cancel';
         })
-        .serverCancelSyncJob({ jobId: currentJob.jobId });
+        .serverCancelSyncJob({
+          jobId:        currentJob.jobId,
+          sessionToken: window.SESSION_TOKEN || '',
+        });
     }
 
     function dismissProgress() {
@@ -1256,7 +1270,7 @@
           btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">rule</i>Reconcile';
           showErrorBanner('Reconcile error: ' + String(err));
         })
-        .serverReconcilePhotos({});
+        .serverReconcilePhotos({ sessionToken: window.SESSION_TOKEN || '' });
     }
 
     function rPill(icon, val, label) {
