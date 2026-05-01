@@ -68,10 +68,10 @@ export interface UploadLogRecord {
  * survives rotation.
  *
  * `tag` is an optional photographer/location label (e.g. "finish_line", "mile_10").
- * Empty string means no tag — uploads go directly into the club folder (the
- * original "all photographers" behaviour). When a tag is set, uploads land in a
- * tag-named subfolder inside the club folder, keeping photos from different
- * photographer positions separate.
+ * Defaults to 'ALL' (DEFAULT_TAG) when not specified, ensuring a uniform Drive
+ * hierarchy: Event / Club / Tag / batch_folders / files.
+ * Legacy rows written before DEFAULT_TAG was introduced carry tag = '' and their
+ * files remain directly under Club/ — the drive tree walker handles both.
  *
  * Bearer-token semantics: anyone who holds the URL can upload within the scope
  * encoded in the link, provided they also authenticate via Google OAuth.

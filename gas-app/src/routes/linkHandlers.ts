@@ -7,6 +7,7 @@
 import { ResultStatus, UserRole } from '../types/enums';
 import { ServerResponse, WithSession } from '../types/responses';
 import { requireAdminOrFail } from '../middleware/authMiddleware';
+import { DEFAULT_TAG } from '../config/constants';
 import {
   generateLink,
   revokeLink,
@@ -28,7 +29,7 @@ export function serverGenerateLink(
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
     const { eventId, clubName } = payload;
-    const tag = (payload.tag ?? '').trim();
+    const tag = (payload.tag ?? '').trim() || DEFAULT_TAG;
     if (!eventId || !clubName) {
       return { status: 'error', message: 'eventId and clubName are required' };
     }

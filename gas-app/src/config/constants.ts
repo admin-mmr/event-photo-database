@@ -15,6 +15,19 @@ export const DEFAULT_EVENT_PAGE_SIZE = 20;
 /** Maximum page size to prevent abuse */
 export const MAX_EVENT_PAGE_SIZE = 100;
 
+// ─── Upload link tag ──────────────────────────────────────────────────────────
+
+/**
+ * Default tag applied to upload links when none is specified.
+ * Ensures a consistent Drive folder structure:
+ *   Event / Club / Tag / batch_folders / files
+ *
+ * Legacy links written before this constant existed carry tag = '' in the
+ * Upload_Links sheet and their files live directly under Club/ — the tree
+ * walker still handles those rows correctly. Only new links use DEFAULT_TAG.
+ */
+export const DEFAULT_TAG = 'ALL';
+
 // ─── Admin club ───────────────────────────────────────────────────────────────
 
 /**

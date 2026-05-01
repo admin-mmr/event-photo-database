@@ -2,7 +2,7 @@ import { ResultStatus } from '../types/enums';
 import { UploadLinkRecord } from '../types/models';
 import { GenerateLinkInput, RevokeLinkInput, ValidateLinkInput } from '../types/requests';
 import { ServiceResult } from '../types/responses';
-import { getConfig } from '../config/constants';
+import { getConfig, DEFAULT_TAG } from '../config/constants';
 import { getAllRows, appendRow, findRowIndex, updateRow } from './sheetService';
 import { toUploadLinkRecord, fromUploadLinkRecord } from '../utils/sheetMapper';
 import { generateUuid } from '../utils/uuid';
@@ -71,7 +71,7 @@ export function findByToken(token: string): UploadLinkRecord | null {
  * `tag` defaults to '' (no tag / "all") when not supplied.
  * Returns null if no active link exists for the triple.
  */
-export function findActiveLink(eventId: string, clubName: string, tag = ''): UploadLinkRecord | null {
+export function findActiveLink(eventId: string, clubName: string, tag = DEFAULT_TAG): UploadLinkRecord | null {
   const normalizedTag = tag.trim();
   return loadAllLinks().find(
     (r) =>
@@ -138,8 +138,10 @@ export function validateLink(input: ValidateLinkInput): ServiceResult<UploadLink
  * If an active link already exists for this triple, returns it without creating
  * a duplicate. If only revoked links exist, creates a fresh record.
  *
- * `tag` (from input) is optional. Empty / omitted → "all" behaviour (no subfolder).
- * Non-empty → uploads go into a tag-named subfolder inside the club folder.
+ * `tag` (from input) is optional. Empty / omitted → defaults to DEFAULT_TAG ('ALL'),
+ * which creates an ALL/ subfolder inside the club folder, keeping the Drive
+ * hierarchy uniform: Event / Club / Tag / batch_folders / files.
+ * Non-empty tag → uploads go into a tag-named subfolder inside the club folder.
  *
  * Returns the UploadLinkRecord on success.
  */
@@ -148,7 +150,7 @@ export function generateLink(
   adminEmail: string
 ): ServiceResult<UploadLinkRecord> {
   const { eventId, clubName } = input;
-  const tag = (input.tag ?? '').trim();
+  const tag = (input.tag ?? '').trim() || DEFAULT_TAG;
 
   if (!eventId || !clubName) {
     return { status: ResultStatus.ERROR, message: 'eventId and clubName are required.' };
