@@ -20,6 +20,7 @@ import {
   adminAuditPage,
   adminEmailPrefsPage,
   adminPhotosPage,
+  adminAlbumsPage,
   adminLinksPage,
   driveTreePage,
   uploadPage,
@@ -89,6 +90,7 @@ function getGetRoutes(): Readonly<Record<string, RouteConfig>> {
     [RouteAction.ADMIN_SUMMARY]: { requiredRole: UserRole.CLUB_ADMIN },
     [RouteAction.ADMIN_AUDIT]:   { requiredRole: UserRole.CLUB_ADMIN },
     [RouteAction.ADMIN_PHOTOS]:  { requiredRole: UserRole.CLUB_ADMIN },
+    [RouteAction.ADMIN_ALBUMS]:  { requiredRole: UserRole.CLUB_ADMIN },
     [RouteAction.ADMIN_EMAIL_PREFS]: { requiredRole: UserRole.CLUB_ADMIN },
     [RouteAction.ADMIN_LINKS]:   { requiredRole: UserRole.CLUB_ADMIN },
     [RouteAction.DRIVE_TREE]:    { requiredRole: null }, // all authenticated users
@@ -324,6 +326,8 @@ function dispatchGetHandler(
       return adminAuditPage(user, sessionToken);
     case RouteAction.ADMIN_PHOTOS:
       return adminPhotosPage(user, sessionToken);
+    case RouteAction.ADMIN_ALBUMS:
+      return adminAlbumsPage(user, sessionToken);
     case RouteAction.ADMIN_EMAIL_PREFS:
       return adminEmailPrefsPage(user, sessionToken);
     case RouteAction.ADMIN_LINKS:

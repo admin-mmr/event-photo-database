@@ -238,6 +238,74 @@ export function photosBatchAddMediaItemsToAlbum(
   return { failures };
 }
 
+// ─── Album listing ────────────────────────────────────────────────────────────
+
+/**
+ * Subset of mediaItem fields we care about when listing an album.
+ * The Photos API returns more fields; we strip them out at the boundary.
+ */
+export interface ListedMediaItem {
+  id:           string;
+  filename:     string;
+  productUrl:   string;
+  creationTime: string;  // ISO-8601 from mediaMetadata.creationTime; '' if missing
+}
+
+/**
+ * Lists every media item in the given album using POST /mediaItems:search.
+ * Paginates internally — Photos API caps pageSize at 100.
+ *
+ * Returns ALL items in one shot. Caller should be aware this can be slow
+ * (one HTTP round-trip per 100 items) and may approach the GAS 6-minute
+ * execution limit on very large albums.
+ */
+export function photosListAlbumMediaItems(
+  albumId: string
+): { ok: boolean; items?: ListedMediaItem[]; error?: string } {
+  const out: ListedMediaItem[] = [];
+  let pageToken: string | undefined = undefined;
+  let safetyPages = 0;
+  const MAX_PAGES = 200; // 200 × 100 = 20,000 items hard cap
+
+  do {
+    const body: { albumId: string; pageSize: number; pageToken?: string } = {
+      albumId,
+      pageSize: 100,
+    };
+    if (pageToken) body.pageToken = pageToken;
+
+    const resp = photosPost('/mediaItems:search', body);
+    if (!resp.ok || !resp.data) {
+      return { ok: false, error: resp.error ?? 'mediaItems:search failed' };
+    }
+
+    const data = resp.data as {
+      mediaItems?: Array<{
+        id?:            string;
+        filename?:      string;
+        productUrl?:    string;
+        mediaMetadata?: { creationTime?: string };
+      }>;
+      nextPageToken?: string;
+    };
+
+    for (const m of data.mediaItems ?? []) {
+      if (!m.id) continue;
+      out.push({
+        id:           m.id,
+        filename:     m.filename     ?? '',
+        productUrl:   m.productUrl   ?? '',
+        creationTime: m.mediaMetadata?.creationTime ?? '',
+      });
+    }
+
+    pageToken = data.nextPageToken;
+    safetyPages++;
+  } while (pageToken && safetyPages < MAX_PAGES);
+
+  return { ok: true, items: out };
+}
+
 // ─── Album creation ───────────────────────────────────────────────────────────
 
 export interface GoogleAlbumCreationResult {

@@ -249,6 +249,34 @@ export function adminPhotosPage(user: UserRecord, sessionToken = ""): GoogleApps
 }
 
 /**
+ * Albums admin page — flat list of every Google Photos album the system has
+ * created, with album link, type (event vs club+tag), photo count, last sync
+ * timestamp, and the latest mediaMetadata.creationTime fetched on demand.
+ *
+ * The "latest media taken" column is loaded lazily by the client via
+ * serverGetAlbumStats so the page renders immediately even when there are
+ * many albums; one Photos API call per row when refreshed.
+ *
+ * Admin-only; role is enforced at the router level before this is called.
+ */
+export function adminAlbumsPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
+  const albums = listAllAlbums();
+  const events = listAllEvents(1, 500, 'desc');
+  // Build eventId → eventName lookup so the page can show human-readable
+  // event names alongside the album rows without an extra round trip.
+  const eventNameById: Record<string, string> = {};
+  events.items.forEach((e) => { eventNameById[e.eventId] = e.eventName; });
+
+  return renderTemplate('admin/albums', { sessionToken,
+    userEmail:      user.email,
+    userRole:       user.role,
+    isAdmin:        isAdmin(user.role),
+    albums:         JSON.stringify(albums),
+    eventNameById:  JSON.stringify(eventNameById),
+  });
+}
+
+/**
  * Drive File System Tree page (all authenticated users).
  *
  * Pre-loads the full event list so the page can render the event list

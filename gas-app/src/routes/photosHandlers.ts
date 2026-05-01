@@ -20,6 +20,7 @@ import {
   reconcileAllPhotos,
   EventInfo,
 } from '../services/photosService';
+import { photosListAlbumMediaItems } from '../services/photosApiClient';
 import {
   createJob,
   getJob,
@@ -263,6 +264,53 @@ export function serverGetSyncQueueStatus(payload: WithSession): ServerResponse {
   } catch (err) {
     Logger.log(`serverGetSyncQueueStatus error: ${String(err)}`);
     return { status: 'error', message: `Internal error reading sync queue status: ${String(err)}` };
+  }
+}
+
+/**
+ * Returns live stats for one Google Photos album, computed from the Photos
+ * API (not the cached Photo_Albums sheet). Used by the Albums page to render
+ * the actual mediaCount and the latest mediaMetadata.creationTime ("max time
+ * a photo in this album was taken").
+ *
+ * One HTTP page per 100 items; albums under that resolve in a single round
+ * trip. Cached lazily by the client — only refreshed on user click.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function serverGetAlbumStats(
+  payload: WithSession<{ albumId: string }>
+): ServerResponse {
+  try {
+    const auth = requireAdminOrFail(payload?.sessionToken);
+    if (!auth.ok) return auth.response;
+    if (!payload.albumId) {
+      return { status: 'error', message: 'albumId is required' };
+    }
+
+    const result = photosListAlbumMediaItems(payload.albumId);
+    if (!result.ok || !result.items) {
+      return { status: 'error', message: result.error ?? 'Photos API call failed' };
+    }
+
+    let maxMediaTakenAt = '';
+    for (const item of result.items) {
+      if (item.creationTime && item.creationTime > maxMediaTakenAt) {
+        maxMediaTakenAt = item.creationTime;
+      }
+    }
+
+    return {
+      status: 'success',
+      message: `Album has ${result.items.length} item(s)`,
+      data: {
+        albumId:         payload.albumId,
+        mediaCount:      result.items.length,
+        maxMediaTakenAt,
+      },
+    };
+  } catch (err) {
+    Logger.log(`serverGetAlbumStats error: ${String(err)}`);
+    return { status: 'error', message: `Internal error reading album stats: ${String(err)}` };
   }
 }
 

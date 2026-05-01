@@ -107,6 +107,7 @@ export enum RouteAction {
   BACKFILL_ALBUMS  = 'backfill_albums',   // Admin: create + sync albums for all events
   GET_EVENT_ALBUMS = 'get_event_albums',  // Any user: get album links for an event
   ADMIN_PHOTOS     = 'admin_photos',      // Admin: photo upload overview + album management
+  ADMIN_ALBUMS     = 'admin_albums',      // Admin: flat list of every Photos album with stats
 
   // Drive file system tree (all authenticated users)
   DRIVE_TREE = 'drive_tree',            // Visual hierarchy browser: Event → Club → Batch
