@@ -50,6 +50,7 @@ import {
   saveFileRecord,
   updateAlbumSyncStats,
 } from './photoAlbumsRepo';
+import { tryRebuildPublicAlbumIndex } from './publicSpreadsheetService';
 
 // ── Re-exports (keep existing import paths working) ───────────────────────────
 export {
@@ -178,6 +179,10 @@ export function ensureEventAlbum(
   saveAlbum(record);
   Logger.log(`[PhotosService] Created event album: "${title}" (${record.albumId})`);
 
+  // Refresh the public, view-only album index spreadsheet (best-effort —
+  // never fail album creation if the public sheet is misconfigured or down).
+  tryRebuildPublicAlbumIndex();
+
   return {
     status: ResultStatus.SUCCESS,
     message: `Event album created: "${title}"`,
@@ -251,6 +256,9 @@ export function ensureClubTagAlbum(
 
   saveAlbum(record);
   Logger.log(`[PhotosService] Created club/tag album: "${title}" (${record.albumId})`);
+
+  // Refresh the public, view-only album index spreadsheet (best-effort).
+  tryRebuildPublicAlbumIndex();
 
   return {
     status: ResultStatus.SUCCESS,
@@ -857,6 +865,10 @@ export function syncBatchToAlbums(
     `[PhotosService] syncBatchToAlbums: event="${eventName}", club="${clubName}", ` +
     `tag="${tag}", synced=${synced}, errors=${errors.length}`
   );
+
+  // Refresh the public, view-only album index so the syncedFileCount column
+  // reflects this batch. Best-effort — see tryRebuildPublicAlbumIndex docs.
+  if (synced > 0) tryRebuildPublicAlbumIndex();
 
   return {
     status: ResultStatus.SUCCESS,
