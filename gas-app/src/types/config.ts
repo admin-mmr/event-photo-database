@@ -134,8 +134,9 @@ export interface UploadLogSheetColumns {
 
 /**
  * Upload_Links sheet columns.
- * One row per (event, club) pair. The token changes on rotation but the
+ * One row per (event, club, tag) triple. The token changes on rotation but the
  * linkId remains stable, preserving audit history.
+ * tag is an optional photographer/location label (e.g. "finish_line"); empty = default/all.
  */
 export interface UploadLinksSheetColumns {
   readonly LINK_ID:        0;  // UUID v4 — stable identifier across rotations
@@ -148,6 +149,7 @@ export interface UploadLinksSheetColumns {
   readonly REVOKED_AT:     7;  // ISO 8601 timestamp of revocation; empty if active
   readonly REVOKED_BY:     8;  // Admin email who revoked; empty if not revoked
   readonly REVOKED_REASON: 9;  // Free-text reason; empty if not revoked
+  readonly TAG:           10;  // Optional photographer/location label; empty = default (all)
 }
 
 export interface ClubSheetColumns {

@@ -81,6 +81,7 @@ export const COLUMNS: SheetColumnMap = {
     REVOKED_AT:     7,
     REVOKED_BY:     8,
     REVOKED_REASON: 9,
+    TAG:           10,
   },
   RATE_LIMIT: {
     API_KEY: 0,
@@ -206,6 +207,7 @@ export const UPLOAD_LINKS_HEADERS: ReadonlyArray<string> = [
   'REVOKED_AT',
   'REVOKED_BY',
   'REVOKED_REASON',
+  'TAG',
 ];
 
 export const AUDIT_LOG_HEADERS: ReadonlyArray<string> = [

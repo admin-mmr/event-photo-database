@@ -466,6 +466,16 @@
      * shrink the dropdown's items below the rows' visual width. */
     margin: 0;
     padding: 0;
+    /* Override MDL's fixed 64px (56px on ≤1024px viewports) height on
+     * `.mdl-layout__header-row .mdl-navigation`. That row-height was sized
+     * for the inline header row; with flex-direction:column it caps the
+     * stacked dropdown at one item tall, and the parent's overflow-y:auto
+     * (set on .nav-panel above) clips everything past the first link.
+     * Visible result: dropdown only shows "Home" and silently drops every
+     * other nav item. height:auto + align-items:stretch lets the column
+     * grow to its content and each link fill the dropdown width. */
+    height: auto;
+    align-items: stretch;
   }
 
   .mdl-layout__header-row.nav-collapsed .nav-panel .mdl-navigation__link {

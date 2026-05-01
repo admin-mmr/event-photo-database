@@ -10,10 +10,13 @@ import { generateUuid } from '../utils/uuid';
 /* global Utilities */
 
 /**
- * UploadLinkService — CRUD for per-(event, club) upload links.
+ * UploadLinkService — CRUD for per-(event, club, tag) upload links.
  *
  * Design rules from DESIGN_DECISIONS.md §4:
- *   - One unique link per (event, club) pair. Permanent (no expiration).
+ *   - One unique active link per (event, club, tag) triple. Permanent (no expiration).
+ *   - `tag` is an optional photographer/location label (e.g. "finish_line").
+ *     An empty tag means "all" — uploads go into the club folder directly.
+ *     A non-empty tag routes uploads into a subfolder named after the tag.
  *   - Bearer-token semantics: anyone with the URL + a Google account can upload.
  *   - Revocable and rotatable by club admins (own club) or super admins (any).
  *   - Audit trail records the link version for forensic integrity after rotation.
@@ -64,12 +67,18 @@ export function findByToken(token: string): UploadLinkRecord | null {
 }
 
 /**
- * Looks up the single active (non-revoked) link for a given (eventId, clubName) pair.
- * Returns null if no active link exists.
+ * Looks up the single active (non-revoked) link for a given (eventId, clubName, tag) triple.
+ * `tag` defaults to '' (no tag / "all") when not supplied.
+ * Returns null if no active link exists for the triple.
  */
-export function findActiveLink(eventId: string, clubName: string): UploadLinkRecord | null {
+export function findActiveLink(eventId: string, clubName: string, tag = ''): UploadLinkRecord | null {
+  const normalizedTag = tag.trim();
   return loadAllLinks().find(
-    (r) => r.eventId === eventId && r.clubName === clubName && !r.revokedAt
+    (r) =>
+      r.eventId === eventId &&
+      r.clubName === clubName &&
+      (r.tag ?? '') === normalizedTag &&
+      !r.revokedAt
   ) ?? null;
 }
 
@@ -124,10 +133,13 @@ export function validateLink(input: ValidateLinkInput): ServiceResult<UploadLink
 }
 
 /**
- * Generates a new upload link for a (event, club) pair.
+ * Generates a new upload link for a (event, club, tag) triple.
  *
- * If an active link already exists for this pair, returns it without creating
+ * If an active link already exists for this triple, returns it without creating
  * a duplicate. If only revoked links exist, creates a fresh record.
+ *
+ * `tag` (from input) is optional. Empty / omitted → "all" behaviour (no subfolder).
+ * Non-empty → uploads go into a tag-named subfolder inside the club folder.
  *
  * Returns the UploadLinkRecord on success.
  */
@@ -136,17 +148,18 @@ export function generateLink(
   adminEmail: string
 ): ServiceResult<UploadLinkRecord> {
   const { eventId, clubName } = input;
+  const tag = (input.tag ?? '').trim();
 
   if (!eventId || !clubName) {
     return { status: ResultStatus.ERROR, message: 'eventId and clubName are required.' };
   }
 
   // Return existing active link rather than creating a duplicate
-  const existing = findActiveLink(eventId, clubName);
+  const existing = findActiveLink(eventId, clubName, tag);
   if (existing) {
     return {
       status: ResultStatus.SUCCESS,
-      message: 'An active link already exists for this event and club.',
+      message: 'An active link already exists for this event, club, and tag.',
       data: existing,
     };
   }
@@ -163,14 +176,16 @@ export function generateLink(
     revokedAt:     '',
     revokedBy:     '',
     revokedReason: '',
+    tag,
   };
 
   const config = getConfig();
   appendRow(config.SHEET_NAMES.UPLOAD_LINKS, fromUploadLinkRecord(record));
 
+  const tagLabel = tag ? ` [${tag}]` : '';
   return {
     status: ResultStatus.SUCCESS,
-    message: `Upload link generated for ${clubName} / event ${eventId}`,
+    message: `Upload link generated for ${clubName}${tagLabel} / event ${eventId}`,
     data: record,
   };
 }
@@ -231,7 +246,7 @@ export function revokeLink(
 
 /**
  * Rotates an upload link: revokes the current active link and immediately
- * issues a new one for the same (event, club) pair.
+ * issues a new one for the same (event, club, tag) triple.
  *
  * The new record gets version = existing.version + 1.
  * Returns the newly-generated link record on success.
@@ -262,6 +277,7 @@ export function rotateLink(
   if (revokeResult.status !== ResultStatus.SUCCESS) return revokeResult;
 
   // Step 2: issue new link — increment version so audit trail shows continuity
+  // Preserve the tag from the existing link so the rotation stays in the same triple.
   const now = new Date().toISOString();
   const newRecord: UploadLinkRecord = {
     linkId:        generateUuid(),
@@ -274,6 +290,7 @@ export function rotateLink(
     revokedAt:     '',
     revokedBy:     '',
     revokedReason: '',
+    tag:           existing.tag ?? '',
   };
 
   const config = getConfig();

@@ -324,6 +324,9 @@ export function fromAuditLogRecord(record: AuditLogRecord): unknown[] {
 /**
  * Converts a raw Sheets row to an UploadLinkRecord.
  * Returns null if required key fields (linkId, eventId, token) are missing.
+ *
+ * The TAG column (index 10) is optional — legacy rows only have 10 columns
+ * (indices 0-9). Those rows default to an empty tag (original "all" behaviour).
  */
 export function toUploadLinkRecord(row: unknown[]): UploadLinkRecord | null {
   const COL = COLUMNS.UPLOAD_LINKS;
@@ -348,6 +351,8 @@ export function toUploadLinkRecord(row: unknown[]): UploadLinkRecord | null {
     revokedAt:     String(row[COL.REVOKED_AT]     ?? '').trim(),
     revokedBy:     String(row[COL.REVOKED_BY]     ?? '').trim().toLowerCase(),
     revokedReason: String(row[COL.REVOKED_REASON] ?? '').trim(),
+    // TAG column may be absent on legacy rows — default to '' (no tag)
+    tag:           row.length > COL.TAG ? String(row[COL.TAG] ?? '').trim() : '',
   };
 }
 
@@ -367,6 +372,7 @@ export function fromUploadLinkRecord(record: UploadLinkRecord): unknown[] {
     record.revokedAt,
     record.revokedBy,
     record.revokedReason,
+    record.tag,
   ];
 }
 

@@ -78,6 +78,46 @@
       font-weight: 600;
       margin-left: 6px;
     }
+    .tag-badge {
+      display: inline-block;
+      background: #fff3e0;
+      color: #e65100;
+      border-radius: 10px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-left: 6px;
+    }
+    .tag-input-group {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+    .tag-input-group label {
+      font-size: 13px;
+      color: #555;
+      white-space: nowrap;
+    }
+    .tag-input-group input[type="text"] {
+      flex: 1;
+      min-width: 160px;
+      max-width: 280px;
+      padding: 6px 10px;
+      border: 1px solid #bdbdbd;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    .tag-input-group input[type="text"]:focus {
+      outline: none;
+      border-color: #3f51b5;
+    }
+    .tag-hint {
+      font-size: 11px;
+      color: #888;
+      margin-top: 4px;
+    }
     .revoked-badge {
       display: inline-block;
       background: #ffebee;
@@ -184,10 +224,11 @@
           <div style="display:flex;gap:10px;align-items:flex-start;">
             <i class="material-icons" style="color:#3f51b5;flex-shrink:0;">info_outline</i>
             <div style="font-size:14px;line-height:1.5;">
-              Each upload link is scoped to one <strong>event + club</strong> pair.
+              Each upload link is scoped to one <strong>event + club</strong> pair, with an optional
+              <strong>tag</strong> (e.g. "finish_line", "mile_10") to separate photos by photographer
+              location. Leave tag empty to create a single shared link — all photos go into one album.
               Links are permanent and bearer-token based — anyone with the URL and a Google account can upload.
-              Rotate a link to invalidate the old URL; the event–club pair is preserved and all prior
-              audit records remain intact.
+              Rotate a link to invalidate the old URL; all prior audit records remain intact.
             </div>
           </div>
         </div>
@@ -241,17 +282,42 @@
 
           <!-- Generate new link button (shown when no active link) -->
           <div id="generate-section" style="display:none;margin-bottom:20px;">
-            <div class="card" style="border:2px dashed #c8e6c9;background:#f9fbe7;padding:20px;text-align:center;">
-              <i class="material-icons" style="font-size:40px;color:#a5d6a7;display:block;margin-bottom:8px;">add_link</i>
-              <p style="margin:0 0 16px;color:#555;font-size:14px;">
-                No active upload link exists for this event and club.
-              </p>
-              <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
-                      id="btn-generate" onclick="generateLink()">
-                <i class="material-icons" style="vertical-align:middle;margin-right:4px;">add_link</i>
-                Generate Upload Link
-              </button>
-              <div class="spinner hidden" id="generate-spinner" style="display:inline-block;margin-left:8px;"></div>
+            <div class="card" style="border:2px dashed #c8e6c9;background:#f9fbe7;padding:20px;">
+              <div style="text-align:center;">
+                <i class="material-icons" style="font-size:40px;color:#a5d6a7;display:block;margin-bottom:8px;">add_link</i>
+                <p style="margin:0 0 12px;color:#555;font-size:14px;">
+                  No active upload link exists for this event and club.
+                </p>
+              </div>
+
+              <!-- Optional tag input -->
+              <div style="max-width:480px;margin:0 auto 16px;">
+                <div class="tag-input-group">
+                  <label for="input-tag">
+                    <i class="material-icons" style="font-size:16px;vertical-align:middle;margin-right:4px;color:#e65100;">local_offer</i>
+                    Tag (optional):
+                  </label>
+                  <input type="text" id="input-tag" placeholder="e.g. finish_line, mile_10"
+                         maxlength="40"
+                         pattern="[A-Za-z0-9_\-]*"
+                         title="Letters, digits, underscores, and hyphens only"
+                         style="flex:1;">
+                </div>
+                <div class="tag-hint">
+                  Leave empty to create a shared link where all photos go into one folder.
+                  Add a tag (e.g. "finish_line") to send photos to a separate subfolder —
+                  useful when multiple photographers cover different spots.
+                </div>
+              </div>
+
+              <div style="text-align:center;">
+                <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
+                        id="btn-generate" onclick="generateLink()">
+                  <i class="material-icons" style="vertical-align:middle;margin-right:4px;">add_link</i>
+                  Generate Upload Link
+                </button>
+                <div class="spinner hidden" id="generate-spinner" style="display:inline-block;margin-left:8px;"></div>
+              </div>
             </div>
           </div>
 
@@ -443,82 +509,94 @@
         filtered = filtered.filter(function(l) { return l.clubName === selectedClubName; });
       }
 
-      var activeLink = filtered.find(function(l) { return !l.revokedAt; });
+      // With tags, there can be multiple active links per (event, club) — one per tag.
+      var activeLinks  = filtered.filter(function(l) { return !l.revokedAt; });
       var revokedLinks = filtered.filter(function(l) { return !!l.revokedAt; });
 
-      renderActiveLink(activeLink);
+      renderActiveLinks(activeLinks);
       renderHistory(revokedLinks);
       document.getElementById('links-content').style.display = 'block';
       document.getElementById('initial-hint') && (document.getElementById('initial-hint').style.display = 'none');
     }
 
-    function renderActiveLink(link) {
-      var section = document.getElementById('active-link-section');
+    /**
+     * Renders all active links (one card per link).
+     * With tags, there can be multiple active links per (event, club) — one per tag.
+     * The generate-section is always shown below so admins can add more tagged links.
+     */
+    function renderActiveLinks(activeLinks) {
+      var section    = document.getElementById('active-link-section');
       var genSection = document.getElementById('generate-section');
 
-      if (!link) {
+      if (!activeLinks || activeLinks.length === 0) {
         section.innerHTML = '';
         genSection.style.display = 'block';
         return;
       }
 
-      genSection.style.display = 'none';
-
-      var url = buildUploadUrl(link.token);
-      var canRevoke = !link.revokedAt;
-      var canRotate = !link.revokedAt;
-
-      section.innerHTML =
-        '<h5 style="margin:0 0 12px;font-size:15px;">' +
-          '<span class="active-badge">● Active Link</span>' +
-          '<span class="version-badge">v' + link.version + '</span>' +
-        '</h5>' +
-        '<div class="link-card active">' +
-          '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">' +
-            '<div>' +
-              '<strong style="font-size:14px;">' + escHtml(getEventName(link.eventId)) + '</strong>' +
-              ' &mdash; ' +
-              '<span style="color:#555;">' + escHtml(link.clubName) + '</span>' +
+      section.innerHTML = activeLinks.map(function(link) {
+        var url = buildUploadUrl(link.token);
+        return (
+          '<div style="margin-bottom:16px;">' +
+            '<h5 style="margin:0 0 8px;font-size:15px;">' +
+              '<span class="active-badge">● Active Link</span>' +
+              '<span class="version-badge">v' + link.version + '</span>' +
+              (link.tag ? '<span class="tag-badge"><i class="material-icons" style="font-size:11px;vertical-align:middle;">local_offer</i> ' + escHtml(link.tag) + '</span>' : '') +
+            '</h5>' +
+            '<div class="link-card active">' +
+              '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">' +
+                '<div>' +
+                  '<strong style="font-size:14px;">' + escHtml(getEventName(link.eventId)) + '</strong>' +
+                  ' &mdash; ' +
+                  '<span style="color:#555;">' + escHtml(link.clubName) + '</span>' +
+                  (link.tag
+                    ? ' &mdash; <span style="color:#e65100;font-size:13px;"><i class="material-icons" style="font-size:13px;vertical-align:middle;">local_offer</i> ' + escHtml(link.tag) + '</span>'
+                    : ' <span style="color:#aaa;font-size:12px;">(all photographers)</span>') +
+                '</div>' +
+                '<span class="active-badge">Active</span>' +
+              '</div>' +
+              '<div class="link-meta">Generated by ' + escHtml(link.generatedBy) + ' &bull; ' + formatDate(link.generatedAt) + '</div>' +
+              '<div style="margin-top:12px;">' +
+                '<div style="font-size:12px;color:#666;margin-bottom:6px;">Upload URL</div>' +
+                '<div class="link-url-box">' +
+                  '<span class="url-text">' + escHtml(url) + '</span>' +
+                  '<button class="mdl-button mdl-js-button mdl-button--icon" title="Copy URL"' +
+                    ' onclick="copyUrl(\'' + escAttr(url) + '\')">' +
+                    '<i class="material-icons">content_copy</i>' +
+                  '</button>' +
+                '</div>' +
+              '</div>' +
+              '<div class="link-actions">' +
+                '<button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"' +
+                  ' onclick="copyUrl(\'' + escAttr(url) + '\')">' +
+                  '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">content_copy</i>' +
+                  'Copy URL' +
+                '</button>' +
+                '<button class="mdl-button mdl-js-button mdl-button--raised"' +
+                  ' style="background:#ff9800;color:#fff;"' +
+                  ' onclick="openRotateDialog(\'' + escAttr(link.linkId) + '\')">' +
+                  '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">autorenew</i>' +
+                  'Rotate' +
+                '</button>' +
+                '<button class="mdl-button mdl-js-button mdl-button--raised"' +
+                  ' style="background:#e53935;color:#fff;"' +
+                  ' onclick="openRevokeDialog(\'' + escAttr(link.linkId) + '\')">' +
+                  '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">link_off</i>' +
+                  'Revoke' +
+                '</button>' +
+              '</div>' +
             '</div>' +
-            '<span class="active-badge">Active</span>' +
-          '</div>' +
-          '<div class="link-meta">' +
-            'Generated by ' + escHtml(link.generatedBy) + ' &bull; ' + formatDate(link.generatedAt) +
-          '</div>' +
+          '</div>'
+        );
+      }).join('');
 
-          '<div style="margin-top:12px;">' +
-            '<div style="font-size:12px;color:#666;margin-bottom:6px;">Upload URL</div>' +
-            '<div class="link-url-box">' +
-              '<span class="url-text" id="link-url-text-' + link.linkId + '">' + escHtml(url) + '</span>' +
-              '<button class="mdl-button mdl-js-button mdl-button--icon" title="Copy URL"' +
-                ' onclick="copyUrl(\'' + escHtml(url) + '\')">' +
-                '<i class="material-icons">content_copy</i>' +
-              '</button>' +
-            '</div>' +
-          '</div>' +
-
-          '<div class="link-actions">' +
-            '<button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"' +
-              ' onclick="copyUrl(\'' + escAttr(url) + '\')">' +
-              '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">content_copy</i>' +
-              'Copy URL' +
-            '</button>' +
-            (canRotate ?
-              '<button class="mdl-button mdl-js-button mdl-button--raised"' +
-                ' style="background:#ff9800;color:#fff;"' +
-                ' onclick="openRotateDialog(\'' + escAttr(link.linkId) + '\')">' +
-                '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">autorenew</i>' +
-                'Rotate' +
-              '</button>' : '') +
-            (canRevoke ?
-              '<button class="mdl-button mdl-js-button mdl-button--raised"' +
-                ' style="background:#e53935;color:#fff;"' +
-                ' onclick="openRevokeDialog(\'' + escAttr(link.linkId) + '\')">' +
-                '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">link_off</i>' +
-                'Revoke' +
-              '</button>' : '') +
-          '</div>' +
-        '</div>';
+      // Always show the generate section — admins can always add more tagged links
+      genSection.style.display = 'block';
+      // Update the generate section label to reflect that more links can be added
+      var genPara = genSection.querySelector('p');
+      if (genPara) {
+        genPara.textContent = 'Add another upload link with a different tag (photographer location).';
+      }
     }
 
     function renderHistory(revokedLinks) {
@@ -533,6 +611,7 @@
       section.style.display = 'block';
 
       list.innerHTML = revokedLinks.map(function(link) {
+        var tagPill = link.tag ? '<span class="tag-badge"><i class="material-icons" style="font-size:11px;vertical-align:middle;">local_offer</i> ' + escHtml(link.tag) + '</span>' : '';
         return '<div class="link-card revoked">' +
           '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">' +
             '<div>' +
@@ -540,6 +619,7 @@
               ' &mdash; ' +
               '<span style="color:#777;font-size:13px;">' + escHtml(link.clubName) + '</span>' +
               '<span class="version-badge">v' + link.version + '</span>' +
+              tagPill +
             '</div>' +
             '<span class="revoked-badge">Revoked</span>' +
           '</div>' +
@@ -568,6 +648,12 @@
         return;
       }
 
+      // Read and sanitise the optional tag value
+      var tagInput = document.getElementById('input-tag');
+      var tag = tagInput ? tagInput.value.trim() : '';
+      // Strip any characters that aren't letters, digits, underscores, or hyphens
+      tag = tag.replace(/[^A-Za-z0-9_\-]/g, '');
+
       var btn     = document.getElementById('btn-generate');
       var spinner = document.getElementById('generate-spinner');
       spinner.classList.remove('hidden');
@@ -576,17 +662,28 @@
       callServer('serverGenerateLink', {
         eventId:  selectedEventId,
         clubName: clubName,
+        tag:      tag || undefined,
       }).then(function(result) {
         spinner.classList.add('hidden');
         if (btn) btn.disabled = false;
 
         if (result.status === 'success') {
-          showToast('Upload link generated!', 'success', 6000);
+          var msg = tag
+            ? 'Upload link generated for tag "' + tag + '"!'
+            : 'Upload link generated!';
+          showToast(msg, 'success', 6000);
           currentLinks = currentLinks.filter(function(l) {
-            return !(l.eventId === result.data.eventId && l.clubName === result.data.clubName && !l.revokedAt);
+            return !(
+              l.eventId  === result.data.eventId &&
+              l.clubName === result.data.clubName &&
+              (l.tag || '') === (result.data.tag || '') &&
+              !l.revokedAt
+            );
           });
           currentLinks.unshift(result.data);
           renderLinks(currentLinks);
+          // Clear the tag input after generating
+          if (tagInput) tagInput.value = '';
         } else {
           showToast(result.message, 'error');
         }

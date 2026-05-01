@@ -263,7 +263,15 @@ export function handleGet(
 
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       Logger.log(`[Router.handleGet] Auth failed — redirecting to login`);
-      return loginPage(authResult.message);
+      // Distinguish "no auth attempt yet" from "auth was attempted and failed".
+      // Under USER_DEPLOYING, an empty Session is the *normal* first-visit
+      // state — the visitor hasn't clicked Sign in with Google yet. Surfacing
+      // the authService "Not authenticated" banner here alarms legitimate
+      // users on a fresh page load. Only show an error message when a real
+      // attempt was made (sessionToken provided but invalid/expired, or the
+      // GAS session lookup itself threw).
+      const hadAuthAttempt = !!sessionToken || !!detectedEmail;
+      return loginPage(hadAuthAttempt ? authResult.message : '');
     }
 
     const user = authResult.data;

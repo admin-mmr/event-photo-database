@@ -15,8 +15,12 @@ import { nowIsoTimestamp } from '../utils/dateFormatter';
  *   <ROOT_FOLDER>                        ← set via Script Property ROOT_FOLDER_ID
  *   └── YYYY-MM-DD_Event_Name/           ← Layer 1: event folder (created by admin)
  *       └── Club_Name/                   ← Layer 2: club folder (auto-created on upload)
- *           └── YYYYMMDD-HHMMSS_user/    ← Layer 3: batch folder (auto-created per upload)
- *               └── photo.jpg
+ *           └── [tag_name/]              ← Layer 2.5: optional tag subfolder (photographer location)
+ *               └── YYYYMMDD-HHMMSS_user/ ← Layer 3: batch folder (auto-created per upload)
+ *                   └── photo.jpg
+ *
+ * The tag subfolder is only created when an upload link has a non-empty tag.
+ * Links with no tag write batch folders directly inside the club folder (original behaviour).
  *
  * All folder names must pass FolderNameValidator before reaching this service.
  *
@@ -257,6 +261,41 @@ export function createBatchFolder(
     status: ResultStatus.SUCCESS,
     message: `Batch folder "${batchFolderName}" created`,
     data: { folderId: result.data.getId(), folderName: batchFolderName },
+  };
+}
+
+/**
+ * Gets or creates a tag subfolder (Layer 2.5) inside the club folder.
+ *
+ * Called only when an upload link carries a non-empty tag (e.g. "finish_line").
+ * The tag folder sits between the club folder and the batch folder:
+ *   Club_Name / tag_name / YYYYMMDD-HHMMSS_user / ...
+ *
+ * If the folder already exists it is reused (idempotent). No validation of the
+ * tag name format is enforced here — the admin UI is responsible for restricting
+ * input to safe characters (letters, digits, hyphens, underscores).
+ *
+ * @param clubFolderId  Drive ID of the Layer 2 club folder
+ * @param tagName       Non-empty photographer/location label (e.g. "finish_line")
+ */
+export function getOrCreateTagFolder(
+  clubFolderId: string,
+  tagName: string
+): ServiceResult<{ folderId: string; folderName: string }> {
+  const parentResult = getFolderById(clubFolderId);
+  if (parentResult.status !== ResultStatus.SUCCESS || !parentResult.data) {
+    return { status: ResultStatus.ERROR, message: parentResult.message };
+  }
+
+  const result = getOrCreateSubfolder(parentResult.data, tagName);
+  if (result.status !== ResultStatus.SUCCESS || !result.data) {
+    return { status: ResultStatus.ERROR, message: result.message };
+  }
+
+  return {
+    status: ResultStatus.SUCCESS,
+    message: result.message,
+    data: { folderId: result.data.getId(), folderName: tagName },
   };
 }
 

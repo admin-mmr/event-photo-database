@@ -61,11 +61,17 @@ export interface UploadLogRecord {
 /**
  * A row in the "Upload_Links" sheet.
  *
- * One record per (event, club) pair. A link is permanent (no expiration) but
- * revocable. Rotating a link increments `version` and clears `revokedAt`; the
+ * One record per (event, club, tag) triple. A link is permanent (no expiration)
+ * but revocable. Rotating a link increments `version` and clears `revokedAt`; the
  * old token can no longer be used, but the (linkId, version) pair is preserved
  * in every audit row written while that token was active — so forensic history
  * survives rotation.
+ *
+ * `tag` is an optional photographer/location label (e.g. "finish_line", "mile_10").
+ * Empty string means no tag — uploads go directly into the club folder (the
+ * original "all photographers" behaviour). When a tag is set, uploads land in a
+ * tag-named subfolder inside the club folder, keeping photos from different
+ * photographer positions separate.
  *
  * Bearer-token semantics: anyone who holds the URL can upload within the scope
  * encoded in the link, provided they also authenticate via Google OAuth.
@@ -81,6 +87,7 @@ export interface UploadLinkRecord {
   readonly revokedAt:     string;  // ISO 8601 timestamp of revocation; empty if active
   readonly revokedBy:     string;  // Admin email who revoked; empty if not revoked
   readonly revokedReason: string;  // Free-text reason for revocation; empty if not revoked
+  readonly tag:           string;  // Optional location/photographer label; empty = default (all)
 }
 
 /**

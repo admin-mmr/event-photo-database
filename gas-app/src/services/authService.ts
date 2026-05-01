@@ -6,15 +6,23 @@ import { ServiceResult } from '../types/responses';
 /**
  * AuthService — thin wrapper around GAS Session API.
  *
- * The Web App is deployed with "Execute as: Me (owner)", so the script
- * always runs with the owner's credentials and can access owner-shared
- * resources (e.g. the spreadsheet) regardless of who is logged in.
+ * The Web App is deployed with "Execute as: Me (owner)" (USER_DEPLOYING) and
+ * "Who has access: Anyone with a Google account". Under this configuration
+ * the script ALWAYS runs as the deploying account, so:
  *
- * "Who has access" is set to "Anyone with a Google account", which means
- * Google forces the visitor to sign in before the script runs. Once signed
- * in, Session.getActiveUser().getEmail() returns the *visitor's* email —
- * not the owner's — so we can still identify and authorize each user
- * against the Users sheet.
+ *   - Session.getActiveUser().getEmail() returns "" for visitors. This is
+ *     normal and expected — it does NOT mean auth failed.
+ *   - Visitor identity comes from the OAuth 2.0 authorization code flow:
+ *     login.html redirects to accounts.google.com, Google redirects back
+ *     with ?code=…, router.handleOAuthCallback exchanges the code for an
+ *     ID token, and we mint a CacheService session token that the client
+ *     passes back on every subsequent request.
+ *
+ * So the auth pipeline is:
+ *   1. authMiddleware.authenticateRequest tries this service first (cheap
+ *      no-op under USER_DEPLOYING — always returns empty for visitors).
+ *   2. Falls back to authenticateBySession(sessionToken) which looks up
+ *      the OAuth-minted token in CacheService.
  *
  * This service is intentionally minimal — it only verifies session state.
  * Authorization (who can do what) is handled by RoleGuard.
@@ -24,14 +32,18 @@ import { ServiceResult } from '../types/responses';
 /**
  * Retrieves the current user's email from the active GAS session.
  *
- * With "Execute as: Me" + "Anyone with a Google account", GAS guarantees
- * the visitor is signed in before doGet/doPost runs, so this should always
- * return a non-empty email in production.
+ * Under USER_DEPLOYING (the live deployment mode) this returns ERROR with
+ * an empty-session message for every unauthenticated visitor — that's the
+ * expected first-visit state, NOT a misconfiguration. Callers (the router)
+ * should treat that case as "fall through to session-token auth" and show
+ * a clean login page rather than surfacing the message.
  *
- * Returns ERROR status if:
- *   - The Web App access setting was accidentally changed to "Anyone" (no login)
- *   - The script is being run from the GAS editor preview (not the published URL)
- *   - GAS returns an empty string for any other reason
+ * The error text is kept generic so it never alarms end users if it does
+ * leak through to the login page on a stale code path.
+ *
+ * Will only return SUCCESS if:
+ *   - The deployment was changed to USER_ACCESSING (legacy / future), OR
+ *   - The visitor is the script owner running it from the GAS editor.
  */
 export function getCurrentUserEmail(): ServiceResult<{ email: string }> {
   let email: string;
@@ -40,18 +52,14 @@ export function getCurrentUserEmail(): ServiceResult<{ email: string }> {
   } catch {
     return {
       status: ResultStatus.ERROR,
-      message:
-        'Unable to retrieve user session. ' +
-        'Ensure the Web App is deployed with Google Account authentication.',
+      message: 'No active session.',
     };
   }
 
   if (!email || email.trim() === '') {
     return {
       status: ResultStatus.ERROR,
-      message:
-        'Not authenticated. Please access this app through the published Web App URL, ' +
-        'not via the GAS editor preview.',
+      message: 'No active session.',
     };
   }
 

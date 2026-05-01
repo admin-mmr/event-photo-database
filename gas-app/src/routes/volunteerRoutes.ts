@@ -36,6 +36,7 @@ import { lookupSession, createSession, deleteSession } from '../services/session
 import { exchangeOAuthCode } from '../services/tokenService';
 import {
   getOrCreateClubFolder,
+  getOrCreateTagFolder,
   createBatchFolder,
 } from '../services/driveService';
 import { appendUploadLog } from '../services/uploadLogService';
@@ -347,17 +348,35 @@ export function serverGetVolunteerDriveToken(
       return { error: `Could not access club folder: ${clubFolderResult.message}` };
     }
 
+    // If this link has a tag, route uploads into a tag-named subfolder inside
+    // the club folder (e.g. Club / finish_line / Batch).
+    // Links with no tag go straight into the club folder (original behaviour).
+    const tag = (link.tag ?? '').trim();
+    let uploadParentFolderId = clubFolderResult.data.folderId;
+    if (tag) {
+      const tagFolderResult = getOrCreateTagFolder(clubFolderResult.data.folderId, tag);
+      if (tagFolderResult.status !== ResultStatus.SUCCESS || !tagFolderResult.data) {
+        return { error: `Could not access tag folder "${tag}": ${tagFolderResult.message}` };
+      }
+      uploadParentFolderId = tagFolderResult.data.folderId;
+      Logger.log(
+        `[VolunteerRoutes.serverGetVolunteerDriveToken] using tag subfolder "${tag}" ` +
+        `(${uploadParentFolderId}) for ${email}`
+      );
+    }
+
     // Create the batch folder (Layer 3: YYYYMMDD-HHMMSS_username)
     const batchTimestamp  = toBatchTimestamp(new Date());
     const batchFolderName = buildLayer3FolderName(batchTimestamp, email);
-    const batchResult     = createBatchFolder(clubFolderResult.data.folderId, batchFolderName);
+    const batchResult     = createBatchFolder(uploadParentFolderId, batchFolderName);
     if (batchResult.status !== ResultStatus.SUCCESS || !batchResult.data) {
       return { error: `Could not create upload folder: ${batchResult.message}` };
     }
 
     Logger.log(
       `[VolunteerRoutes.serverGetVolunteerDriveToken] batch folder created: ` +
-      `"${batchFolderName}" (${batchResult.data.folderId}) for ${email}`
+      `"${batchFolderName}" (${batchResult.data.folderId}) for ${email}` +
+      (tag ? ` [tag: ${tag}]` : '')
     );
 
     return {

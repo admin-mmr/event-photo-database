@@ -97,15 +97,20 @@ export interface UpdateClubInput {
 /**
  * Input DTO for generating a new (event, club) upload link.
  *
- * Only one active link per (eventId, clubName) pair is allowed. Calling
- * generateLink when an active link already exists returns the existing link
- * rather than creating a duplicate.
+ * Only one active link per (eventId, clubName, tag) triple is allowed. Calling
+ * generateLink when an active link already exists for the same triple returns
+ * the existing link rather than creating a duplicate.
  *
- * If a previously revoked link exists for the same pair, a fresh link is created.
+ * If a previously revoked link exists for the same triple, a fresh link is created.
+ *
+ * `tag` is optional. When provided, uploads via this link will be stored in a
+ * tag-named subfolder inside the club folder (e.g. "finish_line"). When omitted
+ * or empty, uploads go directly into the club folder (the default / "all" behaviour).
  */
 export interface GenerateLinkInput {
   readonly eventId: string;    // FK → EventRecord.eventId
   readonly clubName: string;   // Normalized club name
+  readonly tag?: string;       // Optional photographer/location label (e.g. "finish_line")
 }
 
 /**

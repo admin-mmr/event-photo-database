@@ -22,12 +22,13 @@ import { AuditAction } from '../types/enums';
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function serverGenerateLink(
-  payload: WithSession<{ eventId: string; clubName: string }>
+  payload: WithSession<{ eventId: string; clubName: string; tag?: string }>
 ): ServerResponse {
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
     const { eventId, clubName } = payload;
+    const tag = (payload.tag ?? '').trim();
     if (!eventId || !clubName) {
       return { status: 'error', message: 'eventId and clubName are required' };
     }
@@ -37,12 +38,12 @@ export function serverGenerateLink(
         message: `You are the admin for "${auth.adminClubId}" and cannot generate links for "${clubName}".`,
       };
     }
-    const result = generateLink({ eventId, clubName }, auth.adminEmail);
+    const result = generateLink({ eventId, clubName, tag }, auth.adminEmail);
     if (result.status === ResultStatus.SUCCESS && result.data) {
       appendAuditLog({
         actorEmail: auth.adminEmail, action: AuditAction.LINK_GENERATED,
         resourceType: 'link', resourceId: result.data.linkId,
-        details: { eventId, clubName, linkId: result.data.linkId, version: result.data.version },
+        details: { eventId, clubName, tag, linkId: result.data.linkId, version: result.data.version },
       });
     }
     return { status: result.status, message: result.message, data: result.data };

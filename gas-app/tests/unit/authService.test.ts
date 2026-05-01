@@ -22,7 +22,9 @@ describe('authService', () => {
       setMockUser('');
       const result = getCurrentUserEmail();
       expect(result.status).toBe(ResultStatus.ERROR);
-      expect(result.message).toContain('Not authenticated');
+      // Generic message — under USER_DEPLOYING this is the expected first-visit
+      // state, so the text is intentionally non-alarming.
+      expect(result.message).toContain('No active session');
     });
 
     it('returns ERROR when Session.getActiveUser throws', () => {
@@ -34,7 +36,7 @@ describe('authService', () => {
       });
       const result = getCurrentUserEmail();
       expect(result.status).toBe(ResultStatus.ERROR);
-      expect(result.message).toContain('Unable to retrieve user session');
+      expect(result.message).toContain('No active session');
     });
   });
 

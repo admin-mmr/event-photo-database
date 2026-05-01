@@ -63,7 +63,9 @@ describe('AuthMiddleware — getCurrentUser()', () => {
     setMockUser('');
     const result = getCurrentUser();
     expect(result.status).toBe(ResultStatus.ERROR);
-    expect(result.message).toContain('Not authenticated');
+    // Generic message — under USER_DEPLOYING this is the expected first-visit
+    // state; the router treats it as "fall through to session-token auth".
+    expect(result.message).toContain('No active session');
   });
 
   it('returns ERROR when Session.getActiveUser throws', () => {
@@ -152,7 +154,7 @@ describe('AuthMiddleware — authenticateRequest()', () => {
     setMockUser('');
     const result = authenticateRequest();
     expect(result.status).toBe(ResultStatus.ERROR);
-    expect(result.message).toContain('Not authenticated');
+    expect(result.message).toContain('No active session');
   });
 
   it('returns ERROR when user is not in the Users sheet (step 2 fails)', () => {
@@ -177,6 +179,6 @@ describe('AuthMiddleware — authenticateRequest()', () => {
     });
     const result = authenticateRequest();
     expect(result.status).toBe(ResultStatus.ERROR);
-    expect(result.message).toContain('Not authenticated');
+    expect(result.message).toContain('No active session');
   });
 });
