@@ -161,7 +161,8 @@ export enum AuditAction {
   FILE_RESTORED = 'FILE_RESTORED',  // File recovered from trash
 
   // Upload lifecycle
-  UPLOAD_COMPLETED = 'UPLOAD_COMPLETED',  // A volunteer finished uploading a batch
+  UPLOAD_COMPLETED     = 'UPLOAD_COMPLETED',      // A volunteer finished uploading a batch
+  UPLOAD_CLIENT_ERROR  = 'UPLOAD_CLIENT_ERROR',   // Browser-side Drive upload failure reported by client
 
   // Super admin masquerade
   MASQUERADE_START = 'MASQUERADE_START',  // Super admin began acting as a club admin
@@ -204,6 +205,7 @@ export enum EmailType {
   EVENT_CREATED     = 'event_created',       // Sent TO all admins when a new event is created
   DAILY_REPORT      = 'daily_report',        // Scheduled digest, once per day
   WEEKLY_REPORT     = 'weekly_report',       // Scheduled digest, once per week
+  UPLOAD_ERROR      = 'upload_error',        // Sent TO admins when client-side Drive upload fails
 }
 
 /**

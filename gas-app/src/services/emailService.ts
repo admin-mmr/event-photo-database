@@ -416,6 +416,87 @@ export function notifyAdminUserCreationFailed(
   });
 }
 
+// ─── Upload error notifications ───────────────────────────────────────────────
+
+/**
+ * Sent TO opted-in admins when the browser reports a Drive API error during a
+ * volunteer upload.  Routed through the UPLOAD_ERROR type, which shares the
+ * securityEvent opt-in flag (no sheet schema change required).
+ *
+ * @param uploaderEmail   Volunteer's email (from vsession; may be 'unknown' if session expired)
+ * @param fileName        Name of the file that failed
+ * @param errorMessage    Error string captured client-side (includes HTTP status + Drive response body)
+ * @param httpStatus      HTTP status code from the Drive API call, if available
+ * @param driveResponse   First 300 chars of the Drive response body, if available
+ * @param batchFolderName Name of the Drive batch folder (Layer 3) for cross-referencing
+ */
+export function notifyUploadClientError(
+  uploaderEmail: string,
+  fileName: string,
+  errorMessage: string,
+  httpStatus?: number,
+  driveResponse?: string,
+  batchFolderName?: string,
+): ServiceResult<{ to: string[]; cc: string[] }> {
+  const recipients = listRecipientsForType(EmailType.UPLOAD_ERROR);
+  if (recipients.length === 0) {
+    Logger.log(`[emailService] UPLOAD_ERROR: no opted-in recipients — skipped`);
+    return {
+      status:  ResultStatus.SUCCESS,
+      message: 'No admins opted in — skipped',
+      data:    { to: [], cc: [] },
+    };
+  }
+
+  const statusRow = httpStatus !== undefined
+    ? `<tr><td style="padding:4px 12px 4px 0;color:#666;">HTTP status</td>
+           <td style="padding:4px 0;font-family:monospace;color:#b71c1c;">${esc(String(httpStatus))}</td></tr>`
+    : '';
+  const responseRow = driveResponse
+    ? `<tr><td style="padding:4px 12px 4px 0;color:#666;vertical-align:top;">Drive response</td>
+           <td style="padding:4px 0;font-family:monospace;font-size:11px;word-break:break-all;">${esc(driveResponse)}</td></tr>`
+    : '';
+  const folderRow = batchFolderName
+    ? `<tr><td style="padding:4px 12px 4px 0;color:#666;">Batch folder</td>
+           <td style="padding:4px 0;font-family:monospace;">${esc(batchFolderName)}</td></tr>`
+    : '';
+
+  const html = wrapHtml(
+    `Upload error — Drive API failure`,
+    `<p>A volunteer's browser reported a Drive API error while uploading photos.
+        The upload was <b>not</b> recorded in the upload log.</p>
+     <table style="border-collapse:collapse;margin:12px 0;font-size:14px;">
+       <tr><td style="padding:4px 12px 4px 0;color:#666;">Uploader</td>
+           <td style="padding:4px 0;font-family:monospace;">${esc(uploaderEmail)}</td></tr>
+       <tr><td style="padding:4px 12px 4px 0;color:#666;">File</td>
+           <td style="padding:4px 0;font-family:monospace;">${esc(fileName)}</td></tr>
+       ${statusRow}
+       <tr><td style="padding:4px 12px 4px 0;color:#666;vertical-align:top;">Error</td>
+           <td style="padding:4px 0;">${esc(errorMessage)}</td></tr>
+       ${responseRow}
+       ${folderRow}
+       <tr><td style="padding:4px 12px 4px 0;color:#666;">Detected at</td>
+           <td style="padding:4px 0;font-family:monospace;">${esc(new Date().toISOString())}</td></tr>
+     </table>
+     <p style="color:#b71c1c;font-weight:500;">
+       Common causes: OAuth token expired between folder creation and upload
+       (~26 s window), wrong Drive folder permissions, or token scope too narrow.
+       Check that <code>ScriptApp.getOAuthToken()</code> covers
+       <code>drive.file</code> scope and that the batch folder ID is valid.
+     </p>`,
+    'Open audit log',
+    mainPageUrl('admin_audit'),
+  );
+
+  return send({
+    to:         recipients,
+    subject:    `[${PRODUCT_NAME_EN}] Upload error — Drive ${httpStatus ?? 'API'} for ${uploaderEmail}`,
+    html,
+    type:       EmailType.UPLOAD_ERROR,
+    resourceId: uploaderEmail,
+  });
+}
+
 // ─── Event lifecycle notifications ────────────────────────────────────────────
 
 /**

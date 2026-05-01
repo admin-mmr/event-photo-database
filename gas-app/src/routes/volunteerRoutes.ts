@@ -41,6 +41,7 @@ import {
 } from '../services/driveService';
 import { appendUploadLog } from '../services/uploadLogService';
 import { appendAuditLog } from '../services/auditLogService';
+import { notifyUploadClientError } from '../services/emailService';
 import { enqueueBatchSync } from '../services/syncQueueService';
 import { getCanonicalScriptUrl } from '../utils/scriptUrl';
 import { buildLayer3FolderName } from '../utils/folderNameValidator';
@@ -289,6 +290,91 @@ export function volunteerUploadPage(
  * @param message    Human-readable reason (e.g., "link revoked").
  * @param isRevoked  If true, suggests contacting the club admin for a new link.
  */
+/**
+ * Payload sent from the browser when a Drive API call fails during upload.
+ * All fields are optional except vsession so the server can still log partial
+ * information if the client had not yet received a batch folder.
+ */
+export interface ClientErrorPayload {
+  vsession:        string;
+  fileName:        string;
+  errorMessage:    string;
+  httpStatus?:     number;
+  driveResponse?:  string;
+  batchFolderId?:  string;
+  batchFolderName?: string;
+}
+
+/**
+ * Called by the client (google.script.run) when a Drive REST API call returns
+ * a non-200 status.  Writes an audit log entry and emails opted-in admins with
+ * full error details so failures are visible without digging through Logs Explorer.
+ *
+ * Design notes:
+ *   - Best-effort: never throws.  A logging failure must not disrupt the
+ *     upload UX (the file error icon is already shown client-side).
+ *   - The client deduplicates: only the FIRST Drive error per upload session
+ *     is reported, to avoid flooding admins when all files in a batch fail
+ *     for the same root cause (e.g. expired token).
+ *   - vsession validation is advisory: even if the session has just expired
+ *     we still log as much as we can with email='unknown'.
+ */
+export function serverReportClientError(payload: ClientErrorPayload): void {
+  try {
+    const {
+      vsession,
+      fileName,
+      errorMessage,
+      httpStatus,
+      driveResponse,
+      batchFolderId,
+      batchFolderName,
+    } = payload;
+
+    // Resolve email from session — non-fatal if expired.
+    let email = 'unknown';
+    try {
+      const sessionData = lookupVolunteerSession(vsession);
+      if (sessionData) email = sessionData.email;
+    } catch { /* ignore */ }
+
+    Logger.log(
+      `[VolunteerRoutes.serverReportClientError] ` +
+      `email=${email} file="${fileName}" httpStatus=${httpStatus ?? 'N/A'} ` +
+      `error="${errorMessage}" ` +
+      `driveResponse="${driveResponse ?? ''}" ` +
+      `batchFolder="${batchFolderName ?? ''}" (${batchFolderId ?? ''})`
+    );
+
+    appendAuditLog({
+      actorEmail:   email,
+      action:       AuditAction.UPLOAD_CLIENT_ERROR,
+      resourceType: 'upload',
+      resourceId:   batchFolderId ?? '',
+      details: {
+        fileName,
+        errorMessage,
+        httpStatus,
+        driveResponse,
+        batchFolderName,
+        batchFolderId,
+      },
+    });
+
+    notifyUploadClientError(
+      email,
+      fileName,
+      errorMessage,
+      httpStatus,
+      driveResponse,
+      batchFolderName,
+    );
+  } catch (err) {
+    // Swallow — logging must not disrupt the upload UI.
+    Logger.log(`[VolunteerRoutes.serverReportClientError] unexpected error: ${String(err)}`);
+  }
+}
+
 export function linkErrorPage(
   message: string,
   isRevoked = false
@@ -373,14 +459,18 @@ export function serverGetVolunteerDriveToken(
       return { error: `Could not create upload folder: ${batchResult.message}` };
     }
 
+    const accessToken = ScriptApp.getOAuthToken();
     Logger.log(
       `[VolunteerRoutes.serverGetVolunteerDriveToken] batch folder created: ` +
       `"${batchFolderName}" (${batchResult.data.folderId}) for ${email}` +
-      (tag ? ` [tag: ${tag}]` : '')
+      (tag ? ` [tag: ${tag}]` : '') +
+      ` | eventDriveFolderId=${event.driveFolderId}` +
+      ` | uploadParentFolderId=${uploadParentFolderId}` +
+      ` | tokenLength=${accessToken ? accessToken.length : 0}`
     );
 
     return {
-      accessToken:    ScriptApp.getOAuthToken(),
+      accessToken,
       batchFolderId:  batchResult.data.folderId,
       batchFolderName,
       linkId:         link.linkId,
@@ -435,6 +525,13 @@ export function serverCompleteVolunteerUpload(
       skippedNonMedia,
       durationMs,
     } = payload;
+
+    Logger.log(
+      `[VolunteerRoutes.serverCompleteVolunteerUpload] incoming payload: ` +
+      `fileCount=${fileCount} totalSizeMb=${totalSizeMb} ` +
+      `skippedDuplicates=${skippedDuplicates} skippedNonMedia=${skippedNonMedia} ` +
+      `batchFolder="${batchFolderName}" (${batchFolderId}) linkId=${linkId}`
+    );
 
     // Validate session
     const sessionData = lookupVolunteerSession(vsession);

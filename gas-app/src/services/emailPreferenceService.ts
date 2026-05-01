@@ -204,6 +204,7 @@ export function isOptedIn(prefs: EmailPreferenceRecord, type: EmailType): boolea
     case EmailType.EVENT_CREATED:     return prefs.eventCreated;
     case EmailType.DAILY_REPORT:      return prefs.dailyReport;
     case EmailType.WEEKLY_REPORT:     return prefs.weeklyReport;
+    case EmailType.UPLOAD_ERROR:      return prefs.securityEvent; // reuse security-event opt-in; no schema change needed
     case EmailType.WELCOME_USER:      return false; // never routed through opt-in
     default:                          return false;
   }

@@ -475,6 +475,48 @@
     var selectedFiles = [];
     var uploadAborted = false;
 
+    // ── Client error reporting ────────────────────────────────────────────────
+    // Only send the FIRST Drive error per upload session to avoid flooding
+    // admins when all files fail for the same root cause (e.g. expired token).
+    var _errorReported = false;
+
+    /**
+     * Fires google.script.run.serverReportClientError() once per upload session.
+     * Parses httpStatus out of the error message string so the server can log it.
+     * Best-effort: swallows all exceptions so the upload UI is never disrupted.
+     *
+     * @param {string} fileName        Name of the file that failed
+     * @param {string} errorMessage    Full error string from uploadToDrive's reject
+     * @param {string} batchFolderId   Drive folder ID for cross-reference
+     * @param {string} batchFolderName Drive folder name for cross-reference
+     */
+    function reportClientError(fileName, errorMessage, batchFolderId, batchFolderName) {
+      if (_errorReported) return;  // deduplicate — one report per session
+      _errorReported = true;
+      try {
+        // Parse "Drive API error: 404 {...}" → httpStatus=404, driveResponse="{...}"
+        var httpStatus;
+        var driveResponse;
+        var match = errorMessage.match(/Drive API error:\s*(\d+)\s*([\s\S]*)/);
+        if (match) {
+          httpStatus    = parseInt(match[1], 10);
+          driveResponse = (match[2] || '').substring(0, 300);
+        }
+        google.script.run
+          .serverReportClientError({
+            vsession:        VSESSION,
+            fileName:        fileName,
+            errorMessage:    errorMessage,
+            httpStatus:      httpStatus,
+            driveResponse:   driveResponse,
+            batchFolderId:   batchFolderId   || '',
+            batchFolderName: batchFolderName || '',
+          });
+      } catch (e) {
+        // Best-effort only.
+      }
+    }
+
     // ── Upload-in-progress guard (blocks accidental tab close) ────────────
     var uploadInProgress = false;
 
@@ -670,6 +712,13 @@
           .catch(function(err) {
             updateFileStatus(idx, '❌');
             skippedNonMedia++;   // count errors as skipped so receipt is accurate
+            // Report first Drive error back to server for audit log + admin email.
+            reportClientError(
+              file.name,
+              err.message || String(err),
+              batchFolderId,
+              batchFolderName
+            );
             settle(file.size);
           });
       }
