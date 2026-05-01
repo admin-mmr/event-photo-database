@@ -135,7 +135,7 @@ export function authenticateBySession(sessionToken: string): ServiceResult<UserR
   if (!session) {
     return {
       status:  ResultStatus.ERROR,
-      message: 'Session expired or invalid. Please sign in again.',
+      message: '登录已过期或无效，请重新登录。\nSession expired or invalid. Please sign in again.',
     };
   }
   return resolveUser(session.email);

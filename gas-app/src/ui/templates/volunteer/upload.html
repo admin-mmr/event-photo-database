@@ -821,7 +821,10 @@
           ]);
 
           var xhr = new XMLHttpRequest();
-          xhr.open('POST', 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart');
+          // supportsAllDrives=true is required for uploads into Shared Drive folders.
+          // Without it the Drive API returns 404 "File not found" for valid parent
+          // folder IDs that live in a Shared Drive, even with a valid drive-scope token.
+          xhr.open('POST', 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true');
           xhr.setRequestHeader('Authorization', 'Bearer ' + accessToken);
           xhr.setRequestHeader('Content-Type', 'multipart/related; boundary=' + boundary);
 
