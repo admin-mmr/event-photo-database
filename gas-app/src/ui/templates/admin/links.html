@@ -470,8 +470,8 @@
         showToast('Please select an event first.', 'warning');
         return;
       }
-      // For club admins, club is always MY_CLUB_ID
-      var clubName = IS_SUPER ? selectedClubName : MY_CLUB_ID;
+      // MY_CLUB_ID is set for club admins; selectedClubName for super admins.
+      var clubName = MY_CLUB_ID || selectedClubName;
 
       var btn     = document.getElementById('btn-load');
       var spinner = document.getElementById('load-spinner');
@@ -529,9 +529,11 @@
       var section    = document.getElementById('active-link-section');
       var genSection = document.getElementById('generate-section');
 
-      // Super admins must have a club selected before generating a link.
-      // Without one, we don't know which club the new link belongs to.
-      var canGenerate = !IS_SUPER || !!selectedClubName;
+      // A club is "in scope" when MY_CLUB_ID is set (club admin — always fixed)
+      // or when the super admin has selected one from the dropdown.
+      // Derived purely from string values to avoid any IS_SUPER coercion issues.
+      var effectiveClub = MY_CLUB_ID || selectedClubName;
+      var canGenerate   = !!effectiveClub;
 
       if (!activeLinks || activeLinks.length === 0) {
         section.innerHTML = '';
@@ -660,9 +662,11 @@
         showToast('Please select an event first.', 'warning');
         return;
       }
-      var clubName = IS_SUPER ? selectedClubName : MY_CLUB_ID;
-      // Club admins have a fixed club — only super admins need to pick one
-      if (IS_SUPER && !clubName) {
+      // MY_CLUB_ID is set for club admins (always fixed server-side).
+      // selectedClubName is set for super admins who picked a club from the dropdown.
+      // Avoid using IS_SUPER here to sidestep any boolean-vs-string coercion issues.
+      var clubName = MY_CLUB_ID || selectedClubName;
+      if (!clubName) {
         showToast('Please select a club first.', 'warning');
         return;
       }
