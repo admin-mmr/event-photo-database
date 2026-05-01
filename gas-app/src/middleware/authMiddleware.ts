@@ -68,8 +68,8 @@ export function resolveUser(email: string): ServiceResult<UserRecord> {
     return {
       status: ResultStatus.ERROR,
       message: isPermissionError
-        ? 'System configuration error — the app needs to be re-authorized by its owner. Please contact admin@mmrunners.org.'
-        : 'Unable to load user data. Please try again, or contact admin@mmrunners.org if the problem persists.',
+        ? '系统配置错误——应用需要由所有者重新授权。请联系 admin@mmrunners.org。\nSystem configuration error — the app needs to be re-authorized by its owner. Please contact admin@mmrunners.org.'
+        : '无法加载用户数据，请重试。如问题持续，请联系 admin@mmrunners.org。\nUnable to load user data. Please try again, or contact admin@mmrunners.org if the problem persists.',
     };
   }
 
@@ -172,13 +172,13 @@ export function authenticateByUploadLink(
   callerEmail: string
 ): ServiceResult<UploadLinkContext> {
   if (!token || !token.trim()) {
-    return { status: ResultStatus.ERROR, message: 'Upload link token is required.' };
+    return { status: ResultStatus.ERROR, message: '上传链接令牌不能为空。\nUpload link token is required.' };
   }
 
   if (!callerEmail || !callerEmail.trim()) {
     return {
       status: ResultStatus.ERROR,
-      message: 'Google authentication is required to use this upload link.',
+      message: '使用此上传链接需要先完成Google登录验证。\nGoogle authentication is required to use this upload link.',
     };
   }
 
@@ -187,7 +187,7 @@ export function authenticateByUploadLink(
   if (!link) {
     return {
       status: ResultStatus.ERROR,
-      message: 'This upload link is not recognized.',
+      message: '未识别此上传链接。\nThis upload link is not recognized.',
     };
   }
 
@@ -195,7 +195,7 @@ export function authenticateByUploadLink(
     return {
       status: ResultStatus.ERROR,
       message:
-        'This upload link has been revoked. Please contact your club administrator for a new link.',
+        '此上传链接已被撤销，请联系您的跑团管理员获取新链接。\nThis upload link has been revoked. Please contact your club administrator for a new link.',
     };
   }
 
@@ -240,11 +240,11 @@ export type AdminCheckResult =
 export function requireAdminOrFail(sessionToken?: string): AdminCheckResult {
   const authResult = authenticateRequest(sessionToken);
   if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
-    return { ok: false, response: { status: 'error', message: 'Authentication required' } };
+    return { ok: false, response: { status: 'error', message: '需要登录验证。\nAuthentication required' } };
   }
   const user = authResult.data;
   if (user.role !== UserRole.SUPER_ADMIN && user.role !== UserRole.CLUB_ADMIN) {
-    return { ok: false, response: { status: 'error', message: 'Admin access required.' } };
+    return { ok: false, response: { status: 'error', message: '需要管理员权限。\nAdmin access required.' } };
   }
   return { ok: true, adminEmail: user.email, adminRole: user.role, adminClubId: user.clubId };
 }
@@ -256,7 +256,7 @@ export function requireAdminOrFail(sessionToken?: string): AdminCheckResult {
 export function requireSuperAdminOrFail(sessionToken?: string): AdminCheckResult {
   const authResult = authenticateRequest(sessionToken);
   if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
-    return { ok: false, response: { status: 'error', message: 'Authentication required' } };
+    return { ok: false, response: { status: 'error', message: '需要登录验证。\nAuthentication required' } };
   }
   const guard = requireRole(authResult.data.role, UserRole.SUPER_ADMIN);
   if (guard.status !== ResultStatus.SUCCESS) {

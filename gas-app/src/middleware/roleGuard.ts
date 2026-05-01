@@ -49,7 +49,7 @@ export function requireRole(
   }
   return {
     status: ResultStatus.ERROR,
-    message: `This action requires ${requiredRole} role. Your current role is ${userRole}.`,
+    message: `此操作需要 ${requiredRole} 权限，您当前的权限为 ${userRole}。\nThis action requires ${requiredRole} role. Your current role is ${userRole}.`,
   };
 }
 
