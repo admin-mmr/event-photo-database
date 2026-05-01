@@ -18,7 +18,7 @@ import {
 import { verifyGoogleIdToken } from '../services/tokenService';
 import { createSession, deleteSession } from '../services/sessionService';
 import { createUser, deactivateUser, reactivateUser, updateUser, recordLogin } from '../services/userService';
-import { appendAuditLog } from '../services/auditLogService';
+import { appendAuditLog, appendAuditFailure } from '../services/auditLogService';
 import {
   notifyUserCreated,
   notifyUserRoleChanged,
@@ -30,6 +30,12 @@ import { findByEmail as findUserByEmail } from '../services/userService';
 import { AuditAction } from '../types/enums';
 
 /* global Logger */
+
+/** Returns the keys of the payload, with credential keys masked. */
+function payloadKeys(payload: unknown): string {
+  if (!payload || typeof payload !== 'object') return '(empty)';
+  return Object.keys(payload as Record<string, unknown>).join(',');
+}
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function serverVerifyGoogleToken(idToken: string): ServerResponse {
@@ -90,9 +96,22 @@ export function serverVerifyGoogleToken(idToken: string): ServerResponse {
 export function serverCreateUser(
   payload: WithSession<{ email: string; firstName: string; lastName: string; role: string; clubId?: string }>
 ): ServerResponse {
+  Logger.log(`[serverCreateUser] entry — payload keys=[${payloadKeys(payload)}]`);
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
-    if (!auth.ok) return auth.response;
+    if (!auth.ok) {
+      Logger.log(`[serverCreateUser] auth rejected — sessionToken present=${!!payload?.sessionToken}`);
+      appendAuditFailure({
+        actorEmail:   '',
+        action:       AuditAction.ADMIN_AUTH_REJECTED,
+        resourceType: 'user',
+        stage:        'auth',
+        message:      auth.response?.message,
+        attemptedPayload: payload as unknown as Record<string, unknown>,
+      });
+      return auth.response;
+    }
+    Logger.log(`[serverCreateUser] authenticated as ${auth.adminEmail} (role=${auth.adminRole})`);
 
     const raw = sanitizePayload(payload as unknown as Record<string, unknown>);
     const validation = validateCreateUserPayload(raw);
@@ -104,6 +123,16 @@ export function serverCreateUser(
         `[serverCreateUser] Validation failed — actor=${auth.adminEmail} ` +
         `attempted_email=${raw['email'] ?? '(empty)'} errors=[${fieldSummary}]`,
       );
+      appendAuditFailure({
+        actorEmail:   auth.adminEmail,
+        action:       AuditAction.USER_CREATE_FAILED,
+        resourceType: 'user',
+        resourceId:   String(raw['email'] ?? ''),
+        stage:        'payload_validation',
+        message:      validation.message,
+        errors:       validation.errors,
+        attemptedPayload: raw,
+      });
       try {
         notifyAdminUserCreationFailed(
           String(raw['email'] ?? ''),
@@ -118,99 +147,206 @@ export function serverCreateUser(
     const input = validation.data;
 
     const result = createUser(input, auth.adminEmail);
-    if (result.status === ResultStatus.SUCCESS && result.data) {
-      appendAuditLog({
-        actorEmail: auth.adminEmail, action: AuditAction.USER_CREATED,
-        resourceType: 'user', resourceId: input.email,
-        details: { email: input.email, clubId: input.clubId, role: input.role },
+    if (result.status !== ResultStatus.SUCCESS || !result.data) {
+      Logger.log(`[serverCreateUser] service failed — actor=${auth.adminEmail} email=${input.email} message="${result.message}"`);
+      appendAuditFailure({
+        actorEmail:   auth.adminEmail,
+        action:       AuditAction.USER_CREATE_FAILED,
+        resourceType: 'user',
+        resourceId:   input.email,
+        stage:        'service_layer',
+        message:      result.message,
+        errors:       result.errors,
+        attemptedPayload: raw,
       });
-      const warnings: string[] = [];
-      try {
-        notifyUserCreated(result.data, auth.adminEmail);
-      } catch (emailErr) {
-        const msg = `Welcome email could not be sent: ${String(emailErr)}`;
-        Logger.log(`serverCreateUser: notifyUserCreated failed (non-fatal): ${String(emailErr)}`);
-        warnings.push(msg);
-      }
-      return {
-        status: result.status,
-        message: result.message,
-        data: result.data,
-        errors: result.errors,
-        ...(warnings.length > 0 && { warnings }),
-      };
+      return { status: result.status, message: result.message, data: result.data, errors: result.errors };
     }
-    return { status: result.status, message: result.message, data: result.data, errors: result.errors };
+    appendAuditLog({
+      actorEmail: auth.adminEmail, action: AuditAction.USER_CREATED,
+      resourceType: 'user', resourceId: input.email,
+      details: { email: input.email, clubId: input.clubId, role: input.role },
+    });
+    Logger.log(`[serverCreateUser] success — email=${input.email} actor=${auth.adminEmail}`);
+    const warnings: string[] = [];
+    try {
+      notifyUserCreated(result.data, auth.adminEmail);
+    } catch (emailErr) {
+      const msg = `Welcome email could not be sent: ${String(emailErr)}`;
+      Logger.log(`serverCreateUser: notifyUserCreated failed (non-fatal): ${String(emailErr)}`);
+      warnings.push(msg);
+    }
+    return {
+      status: result.status,
+      message: result.message,
+      data: result.data,
+      errors: result.errors,
+      ...(warnings.length > 0 && { warnings }),
+    };
   } catch (err) {
-    Logger.log(`serverCreateUser error: ${String(err)}`);
+    Logger.log(`[serverCreateUser] unhandled exception: ${String(err)}`);
+    appendAuditFailure({
+      actorEmail:   '',
+      action:       AuditAction.USER_CREATE_FAILED,
+      resourceType: 'user',
+      stage:        'unhandled_exception',
+      message:      String(err),
+      attemptedPayload: payload as unknown as Record<string, unknown>,
+    });
     return { status: 'error', message: 'Internal error creating user' };
   }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function serverUpdateUser(payload: WithSession): ServerResponse {
+  Logger.log(`[serverUpdateUser] entry — payload keys=[${payloadKeys(payload)}]`);
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
-    if (!auth.ok) return auth.response;
+    if (!auth.ok) {
+      Logger.log(`[serverUpdateUser] auth rejected — sessionToken present=${!!payload?.sessionToken}`);
+      appendAuditFailure({
+        actorEmail:   '',
+        action:       AuditAction.ADMIN_AUTH_REJECTED,
+        resourceType: 'user',
+        stage:        'auth',
+        message:      auth.response?.message,
+        attemptedPayload: payload as unknown as Record<string, unknown>,
+      });
+      return auth.response;
+    }
+    Logger.log(`[serverUpdateUser] authenticated as ${auth.adminEmail} (role=${auth.adminRole})`);
 
     const raw = sanitizePayload(payload as unknown as Record<string, unknown>);
     const validation = validateUpdateUserPayload(raw);
     if (validation.status !== ResultStatus.SUCCESS || !validation.data) {
+      Logger.log(`[serverUpdateUser] validation failed — actor=${auth.adminEmail} message="${validation.message}"`);
+      appendAuditFailure({
+        actorEmail:   auth.adminEmail,
+        action:       AuditAction.USER_UPDATE_FAILED,
+        resourceType: 'user',
+        resourceId:   String(raw['email'] ?? ''),
+        stage:        'payload_validation',
+        message:      validation.message,
+        errors:       validation.errors,
+        attemptedPayload: raw,
+      });
       return { status: 'error', message: validation.message, errors: validation.errors };
     }
     const input = validation.data;
 
     const previous = findUserByEmail(input.email);
     const result = updateUser(input, auth.adminEmail);
-    if (result.status === ResultStatus.SUCCESS && result.data) {
-      appendAuditLog({
-        actorEmail: auth.adminEmail, action: AuditAction.USER_UPDATED,
-        resourceType: 'user', resourceId: input.email,
-        details: input as unknown as Record<string, unknown>,
+    if (result.status !== ResultStatus.SUCCESS || !result.data) {
+      Logger.log(`[serverUpdateUser] service failed — actor=${auth.adminEmail} email=${input.email} message="${result.message}"`);
+      appendAuditFailure({
+        actorEmail:   auth.adminEmail,
+        action:       AuditAction.USER_UPDATE_FAILED,
+        resourceType: 'user',
+        resourceId:   input.email,
+        stage:        'service_layer',
+        message:      result.message,
+        errors:       result.errors,
+        attemptedPayload: raw,
       });
-      try {
-        if (previous && previous.role !== result.data.role) {
-          notifyUserRoleChanged(result.data, previous.role, auth.adminEmail);
-        }
-        if (previous && previous.status !== result.data.status) {
-          notifyUserStatusChanged(result.data, auth.adminEmail);
-        }
-      } catch (emailErr) {
-        Logger.log(`serverUpdateUser: notify* failed (non-fatal): ${String(emailErr)}`);
+      return { status: result.status, message: result.message, data: result.data, errors: result.errors };
+    }
+    appendAuditLog({
+      actorEmail: auth.adminEmail, action: AuditAction.USER_UPDATED,
+      resourceType: 'user', resourceId: input.email,
+      details: input as unknown as Record<string, unknown>,
+    });
+    Logger.log(`[serverUpdateUser] success — email=${input.email} actor=${auth.adminEmail}`);
+    try {
+      if (previous && previous.role !== result.data.role) {
+        notifyUserRoleChanged(result.data, previous.role, auth.adminEmail);
       }
+      if (previous && previous.status !== result.data.status) {
+        notifyUserStatusChanged(result.data, auth.adminEmail);
+      }
+    } catch (emailErr) {
+      Logger.log(`serverUpdateUser: notify* failed (non-fatal): ${String(emailErr)}`);
     }
     return { status: result.status, message: result.message, data: result.data, errors: result.errors };
   } catch (err) {
-    Logger.log(`serverUpdateUser error: ${String(err)}`);
+    Logger.log(`[serverUpdateUser] unhandled exception: ${String(err)}`);
+    appendAuditFailure({
+      actorEmail:   '',
+      action:       AuditAction.USER_UPDATE_FAILED,
+      resourceType: 'user',
+      stage:        'unhandled_exception',
+      message:      String(err),
+      attemptedPayload: payload as unknown as Record<string, unknown>,
+    });
     return { status: 'error', message: 'Internal error updating user' };
   }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function serverDeactivateUser(payload: WithSession<{ email: string }>): ServerResponse {
+  Logger.log(`[serverDeactivateUser] entry — payload keys=[${payloadKeys(payload)}]`);
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
-    if (!auth.ok) return auth.response;
+    if (!auth.ok) {
+      Logger.log(`[serverDeactivateUser] auth rejected`);
+      appendAuditFailure({
+        actorEmail:   '',
+        action:       AuditAction.ADMIN_AUTH_REJECTED,
+        resourceType: 'user',
+        stage:        'auth',
+        message:      auth.response?.message,
+        attemptedPayload: payload as unknown as Record<string, unknown>,
+      });
+      return auth.response;
+    }
     const emailResult = requireString(sanitizeEmail(payload?.email), 'email');
     if (emailResult.status !== ResultStatus.SUCCESS) {
+      Logger.log(`[serverDeactivateUser] validation failed — actor=${auth.adminEmail}`);
+      appendAuditFailure({
+        actorEmail:   auth.adminEmail,
+        action:       AuditAction.USER_DEACTIVATE_FAILED,
+        resourceType: 'user',
+        stage:        'payload_validation',
+        message:      emailResult.message,
+        errors:       emailResult.errors,
+        attemptedPayload: payload as unknown as Record<string, unknown>,
+      });
       return { status: 'error', message: emailResult.message, errors: emailResult.errors };
     }
     const email = emailResult.data!;
     const result = deactivateUser(email);
-    if (result.status === ResultStatus.SUCCESS && result.data) {
-      appendAuditLog({
-        actorEmail: auth.adminEmail, action: AuditAction.USER_DEACTIVATED,
-        resourceType: 'user', resourceId: email, details: { email },
+    if (result.status !== ResultStatus.SUCCESS || !result.data) {
+      Logger.log(`[serverDeactivateUser] service failed — actor=${auth.adminEmail} email=${email} message="${result.message}"`);
+      appendAuditFailure({
+        actorEmail:   auth.adminEmail,
+        action:       AuditAction.USER_DEACTIVATE_FAILED,
+        resourceType: 'user',
+        resourceId:   email,
+        stage:        'service_layer',
+        message:      result.message,
+        attemptedPayload: payload as unknown as Record<string, unknown>,
       });
-      try {
-        notifyUserStatusChanged(result.data, auth.adminEmail);
-      } catch (emailErr) {
-        Logger.log(`serverDeactivateUser: notifyUserStatusChanged failed (non-fatal): ${String(emailErr)}`);
-      }
+      return { status: result.status, message: result.message, data: result.data };
+    }
+    appendAuditLog({
+      actorEmail: auth.adminEmail, action: AuditAction.USER_DEACTIVATED,
+      resourceType: 'user', resourceId: email, details: { email },
+    });
+    Logger.log(`[serverDeactivateUser] success — email=${email} actor=${auth.adminEmail}`);
+    try {
+      notifyUserStatusChanged(result.data, auth.adminEmail);
+    } catch (emailErr) {
+      Logger.log(`serverDeactivateUser: notifyUserStatusChanged failed (non-fatal): ${String(emailErr)}`);
     }
     return { status: result.status, message: result.message, data: result.data };
   } catch (err) {
-    Logger.log(`serverDeactivateUser error: ${String(err)}`);
+    Logger.log(`[serverDeactivateUser] unhandled exception: ${String(err)}`);
+    appendAuditFailure({
+      actorEmail:   '',
+      action:       AuditAction.USER_DEACTIVATE_FAILED,
+      resourceType: 'user',
+      stage:        'unhandled_exception',
+      message:      String(err),
+      attemptedPayload: payload as unknown as Record<string, unknown>,
+    });
     return { status: 'error', message: 'Internal error deactivating user' };
   }
 }
@@ -246,29 +382,71 @@ export function serverLogout(payload: WithSession): ServerResponse {
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function serverReactivateUser(payload: WithSession<{ email: string }>): ServerResponse {
+  Logger.log(`[serverReactivateUser] entry — payload keys=[${payloadKeys(payload)}]`);
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
-    if (!auth.ok) return auth.response;
+    if (!auth.ok) {
+      Logger.log(`[serverReactivateUser] auth rejected`);
+      appendAuditFailure({
+        actorEmail:   '',
+        action:       AuditAction.ADMIN_AUTH_REJECTED,
+        resourceType: 'user',
+        stage:        'auth',
+        message:      auth.response?.message,
+        attemptedPayload: payload as unknown as Record<string, unknown>,
+      });
+      return auth.response;
+    }
     const emailResult = requireString(sanitizeEmail(payload?.email), 'email');
     if (emailResult.status !== ResultStatus.SUCCESS) {
+      Logger.log(`[serverReactivateUser] validation failed — actor=${auth.adminEmail}`);
+      appendAuditFailure({
+        actorEmail:   auth.adminEmail,
+        action:       AuditAction.USER_REACTIVATE_FAILED,
+        resourceType: 'user',
+        stage:        'payload_validation',
+        message:      emailResult.message,
+        errors:       emailResult.errors,
+        attemptedPayload: payload as unknown as Record<string, unknown>,
+      });
       return { status: 'error', message: emailResult.message, errors: emailResult.errors };
     }
     const email = emailResult.data!;
     const result = reactivateUser(email);
-    if (result.status === ResultStatus.SUCCESS && result.data) {
-      appendAuditLog({
-        actorEmail: auth.adminEmail, action: AuditAction.USER_REACTIVATED,
-        resourceType: 'user', resourceId: email, details: { email },
+    if (result.status !== ResultStatus.SUCCESS || !result.data) {
+      Logger.log(`[serverReactivateUser] service failed — actor=${auth.adminEmail} email=${email} message="${result.message}"`);
+      appendAuditFailure({
+        actorEmail:   auth.adminEmail,
+        action:       AuditAction.USER_REACTIVATE_FAILED,
+        resourceType: 'user',
+        resourceId:   email,
+        stage:        'service_layer',
+        message:      result.message,
+        attemptedPayload: payload as unknown as Record<string, unknown>,
       });
-      try {
-        notifyUserStatusChanged(result.data, auth.adminEmail);
-      } catch (emailErr) {
-        Logger.log(`serverReactivateUser: notifyUserStatusChanged failed (non-fatal): ${String(emailErr)}`);
-      }
+      return { status: result.status, message: result.message, data: result.data };
+    }
+    appendAuditLog({
+      actorEmail: auth.adminEmail, action: AuditAction.USER_REACTIVATED,
+      resourceType: 'user', resourceId: email, details: { email },
+    });
+    Logger.log(`[serverReactivateUser] success — email=${email} actor=${auth.adminEmail}`);
+    try {
+      notifyUserStatusChanged(result.data, auth.adminEmail);
+    } catch (emailErr) {
+      Logger.log(`serverReactivateUser: notifyUserStatusChanged failed (non-fatal): ${String(emailErr)}`);
     }
     return { status: result.status, message: result.message, data: result.data };
   } catch (err) {
-    Logger.log(`serverReactivateUser error: ${String(err)}`);
+    Logger.log(`[serverReactivateUser] unhandled exception: ${String(err)}`);
+    appendAuditFailure({
+      actorEmail:   '',
+      action:       AuditAction.USER_REACTIVATE_FAILED,
+      resourceType: 'user',
+      stage:        'unhandled_exception',
+      message:      String(err),
+      attemptedPayload: payload as unknown as Record<string, unknown>,
+    });
     return { status: 'error', message: 'Internal error reactivating user' };
   }
 }

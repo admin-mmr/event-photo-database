@@ -19,7 +19,7 @@ import {
   invalidateEventDriveTreeCache,
   trashBatchFolder,
 } from '../services/driveService';
-import { appendAuditLog } from '../services/auditLogService';
+import { appendAuditLog, appendAuditFailure } from '../services/auditLogService';
 import { appendUploadLog } from '../services/uploadLogService';
 import { enqueueBatchSync } from '../services/syncQueueService';
 import { ADMIN_CLUB_ID } from '../config/constants';
@@ -306,23 +306,66 @@ export function serverGetDriveTree(payload: WithSession): ServerResponse {
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function serverDeleteBatchFolder(payload: WithSession): ServerResponse {
+  Logger.log(
+    `[serverDeleteBatchFolder] entry — payload keys=[${
+      payload && typeof payload === 'object'
+        ? Object.keys(payload as Record<string, unknown>).join(',')
+        : '(empty)'
+    }]`
+  );
   try {
     const authResult = authenticateRequest(payload?.sessionToken);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      Logger.log(`[serverDeleteBatchFolder] auth rejected — sessionToken present=${!!payload?.sessionToken}`);
+      appendAuditFailure({
+        actorEmail:   '',
+        action:       AuditAction.ADMIN_AUTH_REJECTED,
+        resourceType: 'folder',
+        stage:        'auth',
+        message:      authResult.message,
+        attemptedPayload: payload as unknown as Record<string, unknown>,
+      });
       return { status: 'error', message: 'Authentication required' };
     }
     const user = authResult.data;
+    Logger.log(`[serverDeleteBatchFolder] authenticated as ${user.email} (role=${user.role})`);
 
     const batchFolderId = String(payload.batchFolderId ?? '').trim();
     const clubName      = String(payload.clubName      ?? '').trim();
     const eventId       = String(payload.eventId       ?? '').trim();
 
     if (!batchFolderId || !clubName || !eventId) {
+      Logger.log(
+        `[serverDeleteBatchFolder] validation failed — actor=${user.email} ` +
+        `batchFolderId="${batchFolderId}" clubName="${clubName}" eventId="${eventId}"`
+      );
+      appendAuditFailure({
+        actorEmail:   user.email,
+        action:       AuditAction.FOLDER_DELETE_FAILED,
+        resourceType: 'folder',
+        resourceId:   batchFolderId,
+        stage:        'payload_validation',
+        message:      'batchFolderId, clubName, and eventId are required',
+        attemptedPayload: payload as unknown as Record<string, unknown>,
+      });
       return { status: 'error', message: 'batchFolderId, clubName, and eventId are required' };
     }
 
     // Club admins are scoped to their own club only.
     if (user.role === UserRole.CLUB_ADMIN && user.clubId !== clubName) {
+      Logger.log(
+        `[serverDeleteBatchFolder] authorization rejected — actor=${user.email} ` +
+        `actorClub=${user.clubId} requestedClub=${clubName}`
+      );
+      appendAuditFailure({
+        actorEmail:   user.email,
+        action:       AuditAction.FOLDER_DELETE_FAILED,
+        resourceType: 'folder',
+        resourceId:   batchFolderId,
+        stage:        'authorization',
+        message:      `Cross-club access denied (actorClub=${user.clubId}, requestedClub=${clubName})`,
+        attemptedPayload: payload as unknown as Record<string, unknown>,
+      });
       return {
         status: 'error',
         message: `You administer "${user.clubId}" and cannot delete folders for "${clubName}".`,
@@ -331,6 +374,16 @@ export function serverDeleteBatchFolder(payload: WithSession): ServerResponse {
 
     const result = trashBatchFolder(batchFolderId, clubName);
     if (result.status !== ResultStatus.SUCCESS || !result.data) {
+      Logger.log(`[serverDeleteBatchFolder] service failed — actor=${user.email} batchFolderId=${batchFolderId} message="${result.message}"`);
+      appendAuditFailure({
+        actorEmail:   user.email,
+        action:       AuditAction.FOLDER_DELETE_FAILED,
+        resourceType: 'folder',
+        resourceId:   batchFolderId,
+        stage:        'service_layer',
+        message:      result.message,
+        attemptedPayload: payload as unknown as Record<string, unknown>,
+      });
       return { status: 'error', message: result.message };
     }
 
@@ -351,13 +404,21 @@ export function serverDeleteBatchFolder(payload: WithSession): ServerResponse {
     });
 
     Logger.log(
-      `[serverDeleteBatchFolder] "${result.data.folderName}" (${batchFolderId}) ` +
+      `[serverDeleteBatchFolder] success — "${result.data.folderName}" (${batchFolderId}) ` +
       `trashed by ${user.email} — event=${eventId} club=${clubName}`
     );
 
     return { status: 'success', message: result.message, data: result.data };
   } catch (err) {
-    Logger.log(`serverDeleteBatchFolder error: ${String(err)}`);
+    Logger.log(`[serverDeleteBatchFolder] unhandled exception: ${String(err)}`);
+    appendAuditFailure({
+      actorEmail:   '',
+      action:       AuditAction.FOLDER_DELETE_FAILED,
+      resourceType: 'folder',
+      stage:        'unhandled_exception',
+      message:      String(err),
+      attemptedPayload: payload as unknown as Record<string, unknown>,
+    });
     return { status: 'error', message: `Internal error deleting batch folder: ${String(err)}` };
   }
 }

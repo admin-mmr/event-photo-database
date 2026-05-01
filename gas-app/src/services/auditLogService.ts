@@ -1,6 +1,6 @@
 import { AuditAction, ResultStatus } from '../types/enums';
 import { AuditLogRecord } from '../types/models';
-import { ServiceResult } from '../types/responses';
+import { ServiceResult, ValidationError } from '../types/responses';
 import { getConfig } from '../config/constants';
 import { getAllRows, appendRow } from './sheetService';
 import { toAuditLogRecord, fromAuditLogRecord } from '../utils/sheetMapper';
@@ -91,6 +91,54 @@ export function appendAuditLog(input: CreateAuditLogInput): void {
     /* global Logger */
     Logger.log(`[AuditLog] appendAuditLog failed (non-fatal): ${String(err)}`);
   }
+}
+
+/**
+ * Convenience helper for recording a *failed* admin attempt.
+ *
+ * Captures the actor, the *_FAILED action, the stage at which the request
+ * died (auth / validation / authorization / service_layer), and a structured
+ * details blob with the validation errors and the attempted payload (with
+ * sessionToken stripped).
+ *
+ * Mirrors appendAuditLog's swallow-errors policy: an audit-write failure
+ * must never break the response path.
+ */
+export interface AppendAuditFailureInput {
+  readonly actorEmail:    string;             // '' when auth failed before resolving
+  readonly action:        AuditAction;        // a *_FAILED enum value
+  readonly resourceType:  string;
+  readonly resourceId?:   string;
+  readonly stage:         'auth' | 'authorization' | 'payload_validation' | 'service_layer' | 'unhandled_exception';
+  readonly message?:      string;
+  readonly errors?:       readonly ValidationError[];
+  readonly attemptedPayload?: Record<string, unknown>;
+  readonly reason?:       string;
+}
+
+export function appendAuditFailure(input: AppendAuditFailureInput): void {
+  // Strip credentials before writing the attempted payload to the sheet.
+  let safePayload: Record<string, unknown> | undefined;
+  if (input.attemptedPayload) {
+    safePayload = {};
+    for (const [k, v] of Object.entries(input.attemptedPayload)) {
+      if (k === 'sessionToken' || k === 'session' || k === 'idToken' || k === 'password') continue;
+      safePayload[k] = v;
+    }
+  }
+  appendAuditLog({
+    actorEmail:   input.actorEmail || 'unauthenticated',
+    action:       input.action,
+    resourceType: input.resourceType,
+    resourceId:   input.resourceId ?? '',
+    details: {
+      stage:    input.stage,
+      message:  input.message,
+      errors:   input.errors,
+      payload:  safePayload,
+    },
+    reason: input.reason,
+  });
 }
 
 /**

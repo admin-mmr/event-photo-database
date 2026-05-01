@@ -138,29 +138,48 @@ export enum RouteAction {
  */
 export enum AuditAction {
   // User management
-  USER_CREATED     = 'USER_CREATED',
-  USER_UPDATED     = 'USER_UPDATED',
-  USER_DEACTIVATED = 'USER_DEACTIVATED',
-  USER_REACTIVATED = 'USER_REACTIVATED',
+  USER_CREATED         = 'USER_CREATED',
+  USER_UPDATED         = 'USER_UPDATED',
+  USER_DEACTIVATED     = 'USER_DEACTIVATED',
+  USER_REACTIVATED     = 'USER_REACTIVATED',
+  USER_CREATE_FAILED   = 'USER_CREATE_FAILED',
+  USER_UPDATE_FAILED   = 'USER_UPDATE_FAILED',
+  USER_DEACTIVATE_FAILED = 'USER_DEACTIVATE_FAILED',
+  USER_REACTIVATE_FAILED = 'USER_REACTIVATE_FAILED',
 
   // Event management
-  EVENT_CREATED = 'EVENT_CREATED',
-  EVENT_UPDATED = 'EVENT_UPDATED',
+  EVENT_CREATED       = 'EVENT_CREATED',
+  EVENT_UPDATED       = 'EVENT_UPDATED',
+  EVENT_CREATE_FAILED = 'EVENT_CREATE_FAILED',
+  EVENT_UPDATE_FAILED = 'EVENT_UPDATE_FAILED',
 
   // Club management
-  CLUB_CREATED     = 'CLUB_CREATED',
-  CLUB_UPDATED     = 'CLUB_UPDATED',
-  CLUB_DEACTIVATED = 'CLUB_DEACTIVATED',
-  CLUB_REACTIVATED = 'CLUB_REACTIVATED',
+  CLUB_CREATED            = 'CLUB_CREATED',
+  CLUB_UPDATED            = 'CLUB_UPDATED',
+  CLUB_DEACTIVATED        = 'CLUB_DEACTIVATED',
+  CLUB_REACTIVATED        = 'CLUB_REACTIVATED',
+  CLUB_CREATE_FAILED      = 'CLUB_CREATE_FAILED',
+  CLUB_UPDATE_FAILED      = 'CLUB_UPDATE_FAILED',
+  CLUB_DEACTIVATE_FAILED  = 'CLUB_DEACTIVATE_FAILED',
+  CLUB_REACTIVATE_FAILED  = 'CLUB_REACTIVATE_FAILED',
 
   // Upload link management (Phase 2)
-  LINK_GENERATED = 'LINK_GENERATED',  // A new (event, club) upload link was created
-  LINK_REVOKED   = 'LINK_REVOKED',    // An upload link was revoked/rotated
+  LINK_GENERATED       = 'LINK_GENERATED',     // A new (event, club) upload link was created
+  LINK_REVOKED         = 'LINK_REVOKED',       // An upload link was revoked/rotated
+  LINK_GENERATE_FAILED = 'LINK_GENERATE_FAILED',
+  LINK_REVOKE_FAILED   = 'LINK_REVOKE_FAILED',
+  LINK_ROTATE_FAILED   = 'LINK_ROTATE_FAILED',
 
   // File management (Phase 7 — soft delete / restore)
-  FILE_DELETED   = 'FILE_DELETED',    // File moved to trash (soft delete)
-  FILE_RESTORED  = 'FILE_RESTORED',   // File recovered from trash
-  FOLDER_DELETED = 'FOLDER_DELETED',  // Batch folder moved to Drive trash
+  FILE_DELETED          = 'FILE_DELETED',     // File moved to trash (soft delete)
+  FILE_RESTORED         = 'FILE_RESTORED',    // File recovered from trash
+  FOLDER_DELETED        = 'FOLDER_DELETED',   // Batch folder moved to Drive trash
+  FILE_DELETE_FAILED    = 'FILE_DELETE_FAILED',
+  FILE_RESTORE_FAILED   = 'FILE_RESTORE_FAILED',
+  FOLDER_DELETE_FAILED  = 'FOLDER_DELETE_FAILED',
+
+  // Auth failures on admin endpoints (actor unknown when token invalid)
+  ADMIN_AUTH_REJECTED = 'ADMIN_AUTH_REJECTED',
 
   // Upload lifecycle
   UPLOAD_COMPLETED     = 'UPLOAD_COMPLETED',      // A volunteer finished uploading a batch
