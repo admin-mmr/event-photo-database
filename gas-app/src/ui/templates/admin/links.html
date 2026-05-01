@@ -237,12 +237,12 @@
         <div class="card filter-card">
 
           <!-- Event selector -->
-          <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label is-dirty"
-               style="min-width:240px;flex:2;padding:0;">
-            <select id="sel-event" class="mdl-textfield__input" onchange="onEventChange()">
+          <div style="min-width:240px;flex:2;display:flex;flex-direction:column;justify-content:flex-end;">
+            <label for="sel-event" style="font-size:11px;color:#777;margin-bottom:2px;letter-spacing:.04em;">EVENT</label>
+            <select id="sel-event" onchange="onEventChange()"
+                    style="border:none;border-bottom:1px solid #bdbdbd;padding:6px 0;font-size:14px;background:transparent;width:100%;cursor:pointer;outline:none;">
               <option value="">— Select event —</option>
             </select>
-            <label class="mdl-textfield__label" for="sel-event">Event</label>
           </div>
 
           <!-- Club selector (hidden for club admins — their club is locked) -->
@@ -643,7 +643,8 @@
         return;
       }
       var clubName = IS_SUPER ? selectedClubName : MY_CLUB_ID;
-      if (!clubName) {
+      // Club admins have a fixed club — only super admins need to pick one
+      if (IS_SUPER && !clubName) {
         showToast('Please select a club first.', 'warning');
         return;
       }
