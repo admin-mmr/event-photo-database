@@ -522,15 +522,29 @@
     /**
      * Renders all active links (one card per link).
      * With tags, there can be multiple active links per (event, club) — one per tag.
-     * The generate-section is always shown below so admins can add more tagged links.
+     * The generate-section is shown below so admins can add more tagged links —
+     * but only when a specific club is in scope (super admins must pick one first).
      */
     function renderActiveLinks(activeLinks) {
       var section    = document.getElementById('active-link-section');
       var genSection = document.getElementById('generate-section');
 
+      // Super admins must have a club selected before generating a link.
+      // Without one, we don't know which club the new link belongs to.
+      var canGenerate = !IS_SUPER || !!selectedClubName;
+
       if (!activeLinks || activeLinks.length === 0) {
         section.innerHTML = '';
-        genSection.style.display = 'block';
+        if (canGenerate) {
+          genSection.style.display = 'block';
+        } else {
+          genSection.style.display = 'none';
+          section.innerHTML =
+            '<div class="card" style="padding:20px;text-align:center;color:#888;border:1px dashed #ddd;">' +
+              '<i class="material-icons" style="font-size:36px;display:block;margin-bottom:8px;color:#bbb;">manage_search</i>' +
+              'No active links for this event. Select a specific club to generate one.' +
+            '</div>';
+        }
         return;
       }
 
@@ -590,12 +604,16 @@
         );
       }).join('');
 
-      // Always show the generate section — admins can always add more tagged links
-      genSection.style.display = 'block';
-      // Update the generate section label to reflect that more links can be added
-      var genPara = genSection.querySelector('p');
-      if (genPara) {
-        genPara.textContent = 'Add another upload link with a different tag (photographer location).';
+      // Show the generate section so admins can add more tagged links —
+      // but only when a specific club is in scope.
+      if (canGenerate) {
+        genSection.style.display = 'block';
+        var genPara = genSection.querySelector('p');
+        if (genPara) {
+          genPara.textContent = 'Add another upload link with a different tag (photographer location).';
+        }
+      } else {
+        genSection.style.display = 'none';
       }
     }
 
