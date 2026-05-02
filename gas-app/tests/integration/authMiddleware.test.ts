@@ -118,7 +118,7 @@ describe('AuthMiddleware — resolveUser()', () => {
     });
     const result = resolveUser(TEST_ADMIN_EMAIL);
     expect(result.status).toBe(ResultStatus.ERROR);
-    expect(result.message).toContain('Failed to read Users sheet');
+    expect(result.message).toContain('Unable to load user data');
   });
 
   it('is case-sensitive for email lookup (emails are stored lowercase)', () => {

@@ -53,8 +53,8 @@ const mockSpreadsheetApp = (global as Record<string, unknown>)['SpreadsheetApp']
  */
 // Must match the actual Clubs sheet header row (5 columns).
 const CLUB_HEADERS = [
-  'display_name', 'normalized_name',
-  'status', 'added_date', 'added_by',
+  'DISPLAY_NAME', 'NORMALIZED_NAME',
+  'STATUS', 'ADDED_DATE', 'ADDED_BY',
 ];
 
 function createClubSheet(dataRows: unknown[][] = DEFAULT_CLUBS_ROWS) {

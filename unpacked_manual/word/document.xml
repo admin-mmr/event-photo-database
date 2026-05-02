@@ -108,7 +108,7 @@
           <w:sz w:val="22"/>
           <w:szCs w:val="22"/>
         </w:rPr>
-        <w:t xml:space="preserve">管理员：cathy.lin@mmrunners.org</w:t>
+        <w:t xml:space="preserve">管理员：admin@mmrunners.org</w:t>
       </w:r>
     </w:p>
     <w:p>
@@ -652,7 +652,7 @@
                 <w:sz w:val="22"/>
                 <w:szCs w:val="22"/>
               </w:rPr>
-              <w:t xml:space="preserve">您的角色由系统管理员分配，如需变更请联系 cathy.lin@mmrunners.org。</w:t>
+              <w:t xml:space="preserve">您的角色由系统管理员分配，如需变更请联系 admin@mmrunners.org。</w:t>
             </w:r>
           </w:p>
         </w:tc>
@@ -6009,7 +6009,7 @@
           <w:sz w:val="22"/>
           <w:szCs w:val="22"/>
         </w:rPr>
-        <w:t xml:space="preserve">请联系管理员（cathy.lin@mmrunners.org）重新获取 Web App 链接。建议将链接收藏到浏览器书签中，以便日后快速访问。</w:t>
+        <w:t xml:space="preserve">请联系管理员（admin@mmrunners.org）重新获取 Web App 链接。建议将链接收藏到浏览器书签中，以便日后快速访问。</w:t>
       </w:r>
     </w:p>
     <w:p>
@@ -6468,7 +6468,7 @@
           <w:sz w:val="20"/>
           <w:szCs w:val="20"/>
         </w:rPr>
-        <w:t xml:space="preserve">如有疑问，请联系系统管理员：cathy.lin@mmrunners.org</w:t>
+        <w:t xml:space="preserve">如有疑问，请联系系统管理员：admin@mmrunners.org</w:t>
       </w:r>
     </w:p>
     <w:p>

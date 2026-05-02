@@ -205,7 +205,7 @@ describe('assertSuperAdmin', () => {
   });
 
   it('does not throw for a user in SUPER_ADMINS list', () => {
-    setMockUser('cathy.lin@mmrunners.org');
+    setMockUser('admin@mmrunners.org');
     expect(() => assertSuperAdmin()).not.toThrow();
   });
 

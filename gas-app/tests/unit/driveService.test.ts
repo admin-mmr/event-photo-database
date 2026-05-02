@@ -545,8 +545,8 @@ describe('driveService', () => {
     // 5-column schema matching CLUB_HEADERS in clubService.ts:
     // display_name(0) normalized_name(1) status(2) added_date(3) added_by(4)
     const CLUBS_HEADERS = [
-      'display_name', 'normalized_name',
-      'status', 'added_date', 'added_by',
+      'DISPLAY_NAME', 'NORMALIZED_NAME',
+      'STATUS', 'ADDED_DATE', 'ADDED_BY',
     ];
     const CLUBS_DATA: unknown[][] = [
       ['新蜂', 'New_Bee',        'active', '2025-01-01', 'system'],
@@ -710,7 +710,10 @@ describe('driveService', () => {
      * Builds a minimal mock Drive file with just getMimeType().
      */
     function makeMockFile(mimeType: string) {
-      return { getMimeType: jest.fn().mockReturnValue(mimeType) };
+      return { 
+        getMimeType: jest.fn().mockReturnValue(mimeType),
+        getSize: jest.fn().mockReturnValue(1024)
+      };
     }
 
     /**
