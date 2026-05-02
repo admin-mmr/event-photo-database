@@ -52,14 +52,18 @@ import { ServerResponse } from './types/responses';
 export function doGet(
   e: GoogleAppsScript.Events.DoGet
 ): GoogleAppsScript.HTML.HtmlOutput | GoogleAppsScript.Content.TextOutput {
-  return handleGet(e);
+  e = e || {};
+  e.parameter = e.parameter || {};
+   return handleGet(e);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function doPost(
   e: GoogleAppsScript.Events.DoPost
 ): GoogleAppsScript.Content.TextOutput {
-  return handlePost(e);
+  e = e || {};
+  e.parameter = e.parameter || {};
+   return handlePost(e);
 }
 
 // ─── Debug helpers (editor-only; guarded to super-admins) ────────────────────

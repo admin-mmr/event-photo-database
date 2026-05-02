@@ -220,6 +220,7 @@
           <h4 style="margin:0;">
             <i class="material-icons" style="vertical-align:middle;margin-right:8px;color:#3f51b5;">link</i>
             Upload Link Management
+            <span style="display:block;font-size:14px;font-weight:normal;color:#666;margin-top:2px;margin-left:32px;">上传链接管理</span>
           </h4>
         </div>
 
@@ -233,6 +234,12 @@
               location. Leave tag empty to create a single shared link — all photos go into one album.
               Links are permanent and bearer-token based — anyone with the URL and a Google account can upload.
               Rotate a link to invalidate the old URL; all prior audit records remain intact.
+              <br>
+              <span style="color:#555;">
+                每条上传链接绑定一个<strong>赛事 + 俱乐部</strong>组合，可附加可选的<strong>标签</strong>（如"终点线"、"10公里处"）以按摄影师位置分类照片。
+                不填标签则所有照片进入同一相册。链接永久有效，基于Bearer令牌——任何持有链接且有Google账号的人均可上传。
+                轮换链接可使旧URL失效，所有历史审计记录保持完整。
+              </span>
             </div>
           </div>
         </div>
@@ -242,28 +249,28 @@
 
           <!-- Event selector -->
           <div style="min-width:240px;flex:2;display:flex;flex-direction:column;justify-content:flex-end;">
-            <label for="sel-event" style="font-size:11px;color:#777;margin-bottom:2px;letter-spacing:.04em;">EVENT</label>
+            <label for="sel-event" style="font-size:11px;color:#777;margin-bottom:2px;letter-spacing:.04em;">EVENT / 赛事</label>
             <select id="sel-event" onchange="onEventChange()"
                     style="border:none;border-bottom:1px solid #bdbdbd;padding:6px 0;font-size:14px;background:transparent;width:100%;cursor:pointer;outline:none;">
-              <option value="">— Select event —</option>
+              <option value="">— Select event / 选择赛事 —</option>
             </select>
           </div>
 
           <!-- Club selector (hidden for club admins — their club is locked) -->
           <? if (isSuperAdmin) { ?>
-          <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label is-dirty"
-               style="min-width:200px;flex:1;padding:0;">
-            <select id="sel-club" class="mdl-textfield__input" onchange="onClubChange()">
-              <option value="">— All clubs —</option>
+          <div style="min-width:200px;flex:1;display:flex;flex-direction:column;justify-content:flex-end;">
+            <label for="sel-club" style="font-size:11px;color:#777;margin-bottom:2px;letter-spacing:.04em;">CLUB / 俱乐部</label>
+            <select id="sel-club" onchange="onClubChange()"
+                    style="border:none;border-bottom:1px solid #bdbdbd;padding:6px 0;font-size:14px;background:transparent;width:100%;cursor:pointer;outline:none;">
+              <option value="">— All clubs / 所有俱乐部 —</option>
             </select>
-            <label class="mdl-textfield__label" for="sel-club">Club</label>
           </div>
           <? } else { ?>
           <!-- Club admin: locked to their own club -->
           <div style="display:flex;align-items:center;gap:8px;min-width:180px;">
             <i class="material-icons" style="color:#666;font-size:20px;">lock</i>
             <span style="font-size:14px;color:#555;">
-              Club: <strong><?= clubId ?></strong>
+              Club / 俱乐部: <strong><?= clubId ?></strong>
             </span>
           </div>
           <? } ?>
@@ -271,7 +278,7 @@
           <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
                   id="btn-load" onclick="loadLinks()" style="height:36px;align-self:flex-end;">
             <i class="material-icons" style="vertical-align:middle;margin-right:4px;">search</i>
-            Load Links
+            Load Links / 加载链接
           </button>
           <div class="spinner hidden" id="load-spinner" style="align-self:center;"></div>
         </div>
@@ -290,7 +297,8 @@
               <div style="text-align:center;">
                 <i class="material-icons" style="font-size:40px;color:#a5d6a7;display:block;margin-bottom:8px;">add_link</i>
                 <p style="margin:0 0 12px;color:#555;font-size:14px;">
-                  No active upload link exists for this event and club.
+                  No active upload link exists for this event and club.<br>
+                  <span style="font-size:13px;color:#888;">此赛事与俱乐部暂无有效上传链接。</span>
                 </p>
               </div>
 
@@ -299,7 +307,7 @@
                 <div class="tag-input-group">
                   <label for="input-tag">
                     <i class="material-icons" style="font-size:16px;vertical-align:middle;margin-right:4px;color:#e65100;">local_offer</i>
-                    Tag (optional):
+                    Tag / 标签 (optional / 可选):
                   </label>
                   <!--
                     Pattern blocks whitespace + Drive-illegal chars as a first guard.
@@ -317,7 +325,8 @@
                   Leave empty to create a shared link where all photos go into one folder.
                   Add a tag (e.g. "finish_line" or "终点线") to send photos to a separate subfolder —
                   useful when multiple photographers cover different spots.
-                  Letters (any language), digits, underscore, and hyphen only — no spaces.
+                  Letters (any language), digits, underscore, and hyphen only — no spaces.<br>
+                  留空则所有照片进入同一文件夹；填写标签（如"finish_line"或"终点线"）可将照片存入独立子文件夹，适合多名摄影师分点拍摄的情况。仅限字母（任意语言）、数字、下划线和连字符，不能含空格。
                 </div>
               </div>
 
@@ -325,7 +334,7 @@
                 <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
                         id="btn-generate" onclick="generateLink()">
                   <i class="material-icons" style="vertical-align:middle;margin-right:4px;">add_link</i>
-                  Generate Upload Link
+                  Generate Upload Link / 生成上传链接
                 </button>
                 <div class="spinner hidden" id="generate-spinner" style="display:inline-block;margin-left:8px;"></div>
               </div>
@@ -336,7 +345,7 @@
           <div id="history-section" style="display:none;">
             <h5 style="margin:0 0 12px;color:#666;font-size:15px;">
               <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;">history</i>
-              Link History (Revoked)
+              Link History (Revoked) / 链接历史记录（已撤销）
             </h5>
             <div id="history-list">
               <!-- Populated by JS -->
@@ -368,23 +377,24 @@
       <div style="padding:24px;">
         <h5 style="margin:0 0 12px;color:#c62828;">
           <i class="material-icons" style="vertical-align:middle;margin-right:6px;">link_off</i>
-          Revoke Upload Link
+          Revoke Upload Link / 撤销上传链接
         </h5>
         <p style="font-size:14px;color:#555;margin:0 0 16px;">
           Holders of the current URL will immediately receive a "link revoked" message.
-          The event–club pair is preserved; generate a new link afterward if needed.
+          The event–club pair is preserved; generate a new link afterward if needed.<br>
+          <span style="font-size:13px;color:#888;">当前URL的持有者将立即收到"链接已撤销"提示。赛事-俱乐部关联保留，如需可重新生成新链接。</span>
         </p>
         <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label" style="width:100%;">
           <input type="text" id="revoke-reason" class="mdl-textfield__input" maxlength="200">
-          <label class="mdl-textfield__label" for="revoke-reason">Reason (optional)</label>
+          <label class="mdl-textfield__label" for="revoke-reason">Reason / 原因 (optional / 可选)</label>
         </div>
         <input type="hidden" id="revoke-link-id">
         <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
-          <button class="mdl-button mdl-js-button" onclick="closeRevokeDialog()">Cancel</button>
+          <button class="mdl-button mdl-js-button" onclick="closeRevokeDialog()">Cancel / 取消</button>
           <button class="mdl-button mdl-js-button mdl-button--raised"
                   style="background:#c62828;color:#fff;"
                   id="btn-confirm-revoke" onclick="confirmRevoke()">
-            Revoke Link
+            Revoke Link / 撤销链接
           </button>
           <div class="spinner hidden" id="revoke-spinner"></div>
         </div>
@@ -396,22 +406,23 @@
       <div style="padding:24px;">
         <h5 style="margin:0 0 12px;color:#e65100;">
           <i class="material-icons" style="vertical-align:middle;margin-right:6px;">autorenew</i>
-          Rotate Upload Link
+          Rotate Upload Link / 轮换上传链接
         </h5>
         <p style="font-size:14px;color:#555;margin:0 0 16px;">
           The current URL will be invalidated and a new one generated for the same event and club.
-          All prior audit records remain intact — the rotation is noted in the audit log.
+          All prior audit records remain intact — the rotation is noted in the audit log.<br>
+          <span style="font-size:13px;color:#888;">当前URL将失效，同一赛事与俱乐部将生成新链接。所有历史审计记录保持完整，本次轮换操作将记入审计日志。</span>
         </p>
         <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label" style="width:100%;">
           <input type="text" id="rotate-reason" class="mdl-textfield__input" maxlength="200">
-          <label class="mdl-textfield__label" for="rotate-reason">Reason (optional)</label>
+          <label class="mdl-textfield__label" for="rotate-reason">Reason / 原因 (optional / 可选)</label>
         </div>
         <input type="hidden" id="rotate-link-id">
         <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
-          <button class="mdl-button mdl-js-button" onclick="closeRotateDialog()">Cancel</button>
+          <button class="mdl-button mdl-js-button" onclick="closeRotateDialog()">Cancel / 取消</button>
           <button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"
                   id="btn-confirm-rotate" onclick="confirmRotate()">
-            Rotate Link
+            Rotate Link / 轮换链接
           </button>
           <div class="spinner hidden" id="rotate-spinner"></div>
         </div>
@@ -478,7 +489,7 @@
     // ─── Load links ───────────────────────────────────────────────────────────
     function loadLinks() {
       if (!selectedEventId) {
-        showToast('Please select an event first.', 'warning');
+        showToast('Please select an event first. / 请先选择赛事。', 'warning');
         return;
       }
       // MY_CLUB_ID is set for club admins; selectedClubName for super admins.
@@ -555,7 +566,7 @@
           section.innerHTML =
             '<div class="card" style="padding:20px;text-align:center;color:#888;border:1px dashed #ddd;">' +
               '<i class="material-icons" style="font-size:36px;display:block;margin-bottom:8px;color:#bbb;">manage_search</i>' +
-              'No active links for this event. Select a specific club to generate one.' +
+              'No active links for this event. Select a specific club to generate one.<br><span style="font-size:12px;">此赛事暂无有效链接，请选择具体俱乐部以生成链接。</span>' +
             '</div>';
         }
         return;
@@ -566,7 +577,7 @@
         return (
           '<div style="margin-bottom:16px;">' +
             '<h5 style="margin:0 0 8px;font-size:15px;">' +
-              '<span class="active-badge">● Active Link</span>' +
+              '<span class="active-badge">● Active Link / 有效链接</span>' +
               '<span class="version-badge">v' + link.version + '</span>' +
               (link.tag ? '<span class="tag-badge"><i class="material-icons" style="font-size:11px;vertical-align:middle;">local_offer</i> ' + escHtml(link.tag) + '</span>' : '') +
             '</h5>' +
@@ -578,13 +589,13 @@
                   '<span style="color:#555;">' + escHtml(link.clubName) + '</span>' +
                   (link.tag
                     ? ' &mdash; <span style="color:#e65100;font-size:13px;"><i class="material-icons" style="font-size:13px;vertical-align:middle;">local_offer</i> ' + escHtml(link.tag) + '</span>'
-                    : ' <span style="color:#aaa;font-size:12px;">(all photographers)</span>') +
+                    : ' <span style="color:#aaa;font-size:12px;">(all photographers / 全体摄影师)</span>') +
                 '</div>' +
                 '<span class="active-badge">Active</span>' +
               '</div>' +
               '<div class="link-meta">Generated by ' + escHtml(link.generatedBy) + ' &bull; ' + formatDate(link.generatedAt) + '</div>' +
               '<div style="margin-top:12px;">' +
-                '<div style="font-size:12px;color:#666;margin-bottom:6px;">Upload URL</div>' +
+                '<div style="font-size:12px;color:#666;margin-bottom:6px;">Upload URL / 上传链接</div>' +
                 '<div class="link-url-box">' +
                   '<span class="url-text">' + escHtml(url) + '</span>' +
                   '<button class="mdl-button mdl-js-button mdl-button--icon" title="Copy URL"' +
@@ -597,19 +608,19 @@
                 '<button class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored"' +
                   ' onclick="copyUrl(\'' + escAttr(url) + '\')">' +
                   '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">content_copy</i>' +
-                  'Copy URL' +
+                  'Copy URL / 复制链接' +
                 '</button>' +
                 '<button class="mdl-button mdl-js-button mdl-button--raised"' +
                   ' style="background:#ff9800;color:#fff;"' +
                   ' onclick="openRotateDialog(\'' + escAttr(link.linkId) + '\')">' +
                   '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">autorenew</i>' +
-                  'Rotate' +
+                  'Rotate / 轮换' +
                 '</button>' +
                 '<button class="mdl-button mdl-js-button mdl-button--raised"' +
                   ' style="background:#e53935;color:#fff;"' +
                   ' onclick="openRevokeDialog(\'' + escAttr(link.linkId) + '\')">' +
                   '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">link_off</i>' +
-                  'Revoke' +
+                  'Revoke / 撤销' +
                 '</button>' +
               '</div>' +
             '</div>' +
@@ -623,7 +634,7 @@
         genSection.style.display = 'block';
         var genPara = genSection.querySelector('p');
         if (genPara) {
-          genPara.textContent = 'Add another upload link with a different tag (photographer location).';
+          genPara.textContent = 'Add another upload link with a different tag (photographer location). / 添加不同标签的上传链接（摄影师位置）。';
         }
       } else {
         genSection.style.display = 'none';
@@ -670,7 +681,7 @@
     // ─── Generate link ────────────────────────────────────────────────────────
     function generateLink() {
       if (!selectedEventId) {
-        showToast('Please select an event first.', 'warning');
+        showToast('Please select an event first. / 请先选择赛事。', 'warning');
         return;
       }
       // MY_CLUB_ID is set for club admins (always fixed server-side).
@@ -678,7 +689,7 @@
       // Avoid using IS_SUPER here to sidestep any boolean-vs-string coercion issues.
       var clubName = MY_CLUB_ID || selectedClubName;
       if (!clubName) {
-        showToast('Please select a club first.', 'warning');
+        showToast('Please select a club first. / 请先选择俱乐部。', 'warning');
         return;
       }
 
@@ -706,8 +717,8 @@
 
         if (result.status === 'success') {
           var msg = tag
-            ? 'Upload link generated for tag "' + tag + '"!'
-            : 'Upload link generated!';
+            ? 'Upload link generated for tag "' + tag + '"! / 标签"' + tag + '"的上传链接已生成！'
+            : 'Upload link generated! / 上传链接已生成！';
           showToast(msg, 'success', 6000);
           currentLinks = currentLinks.filter(function(l) {
             return !(
@@ -758,7 +769,7 @@
         .then(function(result) {
           closeRevokeDialog();
           if (result.status === 'success') {
-            showToast('Link revoked.', 'success');
+            showToast('Link revoked. / 链接已撤销。', 'success');
             var idx = currentLinks.findIndex(function(l) { return l.linkId === linkId; });
             if (idx >= 0) currentLinks[idx] = result.data;
             renderLinks(currentLinks);
@@ -798,7 +809,7 @@
         .then(function(result) {
           closeRotateDialog();
           if (result.status === 'success') {
-            showToast('Link rotated — new URL is ready to copy.', 'success', 6000);
+            showToast('Link rotated — new URL is ready to copy. / 链接已轮换，新URL可复制使用。', 'success', 6000);
             // Reload current links to reflect both the revoked old one and the new one
             currentLinks = currentLinks.map(function(l) {
               return l.linkId === linkId ? Object.assign({}, l, { revokedAt: new Date().toISOString() }) : l;
@@ -818,7 +829,7 @@
     function copyUrl(url) {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(url).then(function() {
-          showToast('Upload URL copied to clipboard!', 'success');
+          showToast('Upload URL copied to clipboard! / 上传链接已复制！', 'success');
         }).catch(function() {
           fallbackCopy(url);
         });
@@ -835,9 +846,9 @@
       ta.select();
       try {
         document.execCommand('copy');
-        showToast('Upload URL copied to clipboard!', 'success');
+        showToast('Upload URL copied to clipboard! / 上传链接已复制！', 'success');
       } catch (e) {
-        showToast('Copy failed — please select and copy the URL manually.', 'warning');
+        showToast('Copy failed — please select and copy the URL manually. / 复制失败，请手动选中并复制链接。', 'warning');
       }
       document.body.removeChild(ta);
     }
