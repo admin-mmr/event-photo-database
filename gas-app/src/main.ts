@@ -35,6 +35,8 @@ import { purgeDeletedFiles as _purgeDeletedFiles } from './services/deleteServic
 import { migrateFromLegacy } from './services/migrationService';
 import { rebuildPublicAlbumIndex as _rebuildPublicAlbumIndex } from './services/publicSpreadsheetService';
 import { getSuperAdmins } from './config/superAdmins';
+import { auditUnsharedAlbums } from './services/albumShareAuditService';
+import { notifyAlbumNeedsShare } from './services/emailService';
 import { showUploadPrepSidebar as _showUploadPrepSidebar } from './routes/uploadPrepRoutes';
 import {
   uploadPrep_listEvents as _uploadPrep_listEvents,
@@ -203,6 +205,95 @@ export function rebuildPublicAlbumIndex(): void {
   Logger.log(`[rebuildPublicAlbumIndex] Manual rebuild started by ${callerEmail}`);
   const rowCount = _rebuildPublicAlbumIndex();
   Logger.log(`[rebuildPublicAlbumIndex] Done — ${rowCount} row(s) written`);
+}
+
+// ─── Album sharing audit ──────────────────────────────────────────────────────
+
+/**
+ * Scans every album in the Photo_Albums sheet and sends a
+ * notifyAlbumNeedsShare email to all super-admins for each album that has
+ * not yet been shared publicly in Google Photos.
+ *
+ * Run this:
+ *   • Manually from the GAS Script Editor (select function → Run).
+ *   • Or set up a time-driven trigger (e.g. weekly) via
+ *     Triggers → Add trigger → auditAlbumSharing → Time-driven → Week timer.
+ *
+ * The function is intentionally non-destructive: it only sends notification
+ * emails and never modifies sheet data or album settings.
+ *
+ * How sharing is detected:
+ *   The Photos Library API `albums.get` endpoint returns a `shareInfo` object
+ *   only when the album has been shared via "Anyone with the link".  If the
+ *   field is absent the album is treated as private.
+ *
+ * Super-admin only — guarded by Session.getActiveUser().
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function auditAlbumSharing(): void {
+  const callerEmail = Session.getActiveUser().getEmail().toLowerCase();
+  const admins = getSuperAdmins();
+
+  if (!admins.includes(callerEmail)) {
+    Logger.log(`[auditAlbumSharing] Permission denied for ${callerEmail}`);
+    return;
+  }
+
+  Logger.log(`[auditAlbumSharing] Started by ${callerEmail}`);
+
+  const result = auditUnsharedAlbums();
+
+  Logger.log(
+    `[auditAlbumSharing] Audit complete — ` +
+    `checked: ${result.checked}, unshared: ${result.unshared.length}, ` +
+    `skipped: ${result.skipped}`
+  );
+
+  if (result.unshared.length === 0) {
+    Logger.log('[auditAlbumSharing] All albums are already shared — no emails sent.');
+    return;
+  }
+
+  let emailsSent = 0;
+  let emailsFailed = 0;
+
+  for (const entry of result.unshared) {
+    try {
+      const emailResult = notifyAlbumNeedsShare(
+        entry.album.albumTitle,
+        entry.album.albumUrl,
+        entry.scope,
+        {
+          eventName:       entry.eventName,
+          eventDate:       entry.eventDate,
+          clubDisplayName: entry.clubDisplayName || undefined,
+          tag:             entry.album.tag || undefined,
+        },
+        admins,
+      );
+
+      if (emailResult.status === 'success') {
+        emailsSent++;
+        Logger.log(`[auditAlbumSharing] Email sent for: "${entry.album.albumTitle}"`);
+      } else {
+        emailsFailed++;
+        Logger.log(
+          `[auditAlbumSharing] Email send failed for "${entry.album.albumTitle}": ` +
+          emailResult.message
+        );
+      }
+    } catch (err) {
+      emailsFailed++;
+      Logger.log(
+        `[auditAlbumSharing] Unexpected error sending email for ` +
+        `"${entry.album.albumTitle}": ${String(err)}`
+      );
+    }
+  }
+
+  Logger.log(
+    `[auditAlbumSharing] Done — ${emailsSent} email(s) sent, ${emailsFailed} failed.`
+  );
 }
 
 // ─── Legacy migration ─────────────────────────────────────────────────────────

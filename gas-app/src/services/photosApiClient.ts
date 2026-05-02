@@ -358,3 +358,74 @@ export function createGoogleAlbum(
     data: { albumId, productUrl, shareableUrl },
   };
 }
+
+// ─── Album sharing-status check ───────────────────────────────────────────────
+
+/**
+ * Makes a GET request to the Photos Library API.
+ * Returns parsed JSON data on 2xx, or an error description on failure.
+ */
+export function photosGet(
+  endpoint: string
+): { ok: boolean; data?: unknown; error?: string } {
+  try {
+    const response = UrlFetchApp.fetch(`${PHOTOS_API_BASE}${endpoint}`, {
+      method: 'get',
+      headers: {
+        Authorization: `Bearer ${getAuthToken()}`,
+      },
+      muteHttpExceptions: true,
+    });
+
+    const code = response.getResponseCode();
+    const text = response.getContentText();
+
+    if (code < 200 || code >= 300) {
+      return { ok: false, error: `HTTP ${code}: ${text.slice(0, 300)}` };
+    }
+    return { ok: true, data: JSON.parse(text) };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+export interface AlbumShareInfo {
+  /** True if the album has been shared (shareInfo present in API response). */
+  isShared: boolean;
+  /** The shareable link, if available from the API. May be empty. */
+  shareableUrl: string;
+}
+
+/**
+ * Fetches an album from the Photos Library API and returns its sharing status.
+ *
+ * The `albums.get` endpoint still works post-March-2025 deprecation; only
+ * the albums:share write endpoint was removed. The `shareInfo` field is
+ * present in the response only when the album has been shared manually by
+ * the owner from photos.google.com.
+ *
+ * Returns { isShared: false } on any API error so callers conservatively
+ * treat fetch failures as "not yet confirmed public".
+ */
+export function getGoogleAlbumShareInfo(
+  albumId: string
+): AlbumShareInfo {
+  const result = photosGet(`/albums/${encodeURIComponent(albumId)}`);
+  if (!result.ok || !result.data) {
+    return { isShared: false, shareableUrl: '' };
+  }
+
+  const album = result.data as {
+    shareInfo?: { shareableUrl?: string };
+    productUrl?: string;
+  };
+
+  if (!album.shareInfo) {
+    return { isShared: false, shareableUrl: '' };
+  }
+
+  return {
+    isShared:     true,
+    shareableUrl: album.shareInfo.shareableUrl ?? '',
+  };
+}
