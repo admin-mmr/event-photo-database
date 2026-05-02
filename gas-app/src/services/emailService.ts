@@ -630,6 +630,100 @@ export function notifyAlbumNeedsShare(
   });
 }
 
+/**
+ * Sends a summary of the latest album-reconciliation run to the album-admin
+ * mailbox. The full row-level detail is in the Reconciliation tab of the
+ * main spreadsheet — this email is a high-signal notification with the
+ * counts and a deep-link, not a verbose dump.
+ *
+ * Empty-result behaviour: if the run found no orphans and no drift, we
+ * return SUCCESS without sending mail (no news is good news). Callers can
+ * still inspect the ServiceResult to see whether anything went out.
+ *
+ * Recipients are passed in by the caller so the trigger can override the
+ * default mailbox via Script Property if needed (`ALBUM_ADMIN_EMAIL`).
+ */
+export function notifyAlbumReconciliationReport(
+  summary: {
+    orphansInSheet:  number;
+    orphansInPhotos: number;
+    matchedDrift:    number;
+    checkedSheet:    number;
+    checkedPhotos:   number;
+    photosApiError:  string;
+    spreadsheetUrl:  string;  // direct link to the Reconciliation tab
+  },
+  recipients: ReadonlyArray<string>,
+): ServiceResult<{ to: string[]; cc: string[] }> {
+  const noDrift =
+    summary.orphansInSheet === 0 &&
+    summary.orphansInPhotos === 0 &&
+    summary.matchedDrift === 0 &&
+    !summary.photosApiError;
+
+  if (noDrift) {
+    Logger.log('[emailService] album_reconcile_report: no drift — email skipped');
+    return {
+      status:  ResultStatus.SUCCESS,
+      message: 'No drift detected — email not sent',
+      data:    { to: [], cc: [] },
+    };
+  }
+
+  const apiBanner = summary.photosApiError
+    ? `<p style="background:#fff3cd;border:1px solid #f0c36d;padding:10px 12px;
+                  border-radius:4px;font-size:14px;margin:12px 0;">
+         <b>Photos API error:</b> ${esc(summary.photosApiError)}<br/>
+         <span style="color:#666;font-size:13px;">
+           The "Orphans in Photos" / "Matched drift" sections may be incomplete.
+         </span>
+       </p>`
+    : '';
+
+  const html = wrapHtml(
+    'Album reconciliation report',
+    `<p>The latest reconciliation run found differences between the
+        Photo_Albums sheet and the Google Photos albums owned by this app.</p>
+     ${apiBanner}
+     <table style="border-collapse:collapse;margin:12px 0;font-size:14px;">
+       <tr><td style="padding:4px 16px 4px 0;color:#666;">Sheet rows checked</td>
+           <td style="padding:4px 0;font-family:monospace;">${summary.checkedSheet}</td></tr>
+       <tr><td style="padding:4px 16px 4px 0;color:#666;">Photos albums checked</td>
+           <td style="padding:4px 0;font-family:monospace;">${summary.checkedPhotos}</td></tr>
+       <tr><td style="padding:4px 16px 4px 0;color:#666;">Orphans in sheet</td>
+           <td style="padding:4px 0;font-family:monospace;">${summary.orphansInSheet}</td></tr>
+       <tr><td style="padding:4px 16px 4px 0;color:#666;">Orphans in Photos</td>
+           <td style="padding:4px 0;font-family:monospace;">${summary.orphansInPhotos}</td></tr>
+       <tr><td style="padding:4px 16px 4px 0;color:#666;">Matched but drifted</td>
+           <td style="padding:4px 0;font-family:monospace;">${summary.matchedDrift}</td></tr>
+     </table>
+     <p style="font-size:14px;">
+       Open the <b>Reconciliation</b> tab in the main spreadsheet for the full
+       row-by-row breakdown. Suggested actions:
+     </p>
+     <ul style="font-size:14px;line-height:1.7;margin:0 0 16px 18px;padding:0;">
+       <li><b>Orphan in Sheet</b> — the Google Photos album was deleted; remove
+           or re-link the Photo_Albums row.</li>
+       <li><b>Orphan in Photos</b> — an album exists with no sheet row; add it
+           to Photo_Albums or delete it from Photos.</li>
+       <li><b>Matched (drift)</b> — counts or titles disagree; usually
+           self-heals on the next sync, manual edits otherwise.</li>
+     </ul>`,
+    'Open Reconciliation tab',
+    summary.spreadsheetUrl,
+  );
+
+  return send({
+    to:         Array.from(recipients),
+    subject:    `[${PRODUCT_NAME_EN}] Album reconciliation: ` +
+                `${summary.orphansInSheet + summary.orphansInPhotos} orphan(s), ` +
+                `${summary.matchedDrift} drifted`,
+    html,
+    type:       EmailType.ALBUM_RECONCILE_REPORT,
+    resourceId: 'album_reconciliation',
+  });
+}
+
 // ─── Scheduled digests ───────────────────────────────────────────────────────
 
 /**

@@ -236,6 +236,13 @@ export enum EmailType {
    * permission-denied page.
    */
   ALBUM_NEEDS_SHARE = 'album_needs_share',
+  /**
+   * Sent TO the album-admin mailbox when reconcileAlbums() detects drift
+   * between the Photo_Albums sheet and the actual albums owned by the app
+   * in Google Photos. Body summarizes orphans on each side so the admin
+   * can fix them up by hand.
+   */
+  ALBUM_RECONCILE_REPORT = 'album_reconcile_report',
 }
 
 /**

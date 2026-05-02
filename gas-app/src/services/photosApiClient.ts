@@ -397,6 +397,23 @@ export interface AlbumShareInfo {
 }
 
 /**
+ * Richer view of an album returned by `albums.get`. Includes everything
+ * AlbumShareInfo carries plus the live media-item count and whether the
+ * album was actually found (used by reconciliation to detect dangling
+ * sheet rows whose albumId no longer exists in Google Photos).
+ */
+export interface AlbumDetails extends AlbumShareInfo {
+  /** False if the API returned 404 or any other error for this albumId. */
+  found: boolean;
+  /** Live count from mediaMetadata (server-side), or null on error. */
+  mediaItemsCount: number | null;
+  /** Title as currently stored in Google Photos; empty on error. */
+  title: string;
+  /** Web URL viewable by the album owner; empty on error. */
+  productUrl: string;
+}
+
+/**
  * Fetches an album from the Photos Library API and returns its sharing status.
  *
  * The `albums.get` endpoint still works post-March-2025 deprecation; only
@@ -410,22 +427,140 @@ export interface AlbumShareInfo {
 export function getGoogleAlbumShareInfo(
   albumId: string
 ): AlbumShareInfo {
+  const details = getGoogleAlbumDetails(albumId);
+  return { isShared: details.isShared, shareableUrl: details.shareableUrl };
+}
+
+/**
+ * Single-call album fetch that returns share status, live media-items
+ * count, and whether the album exists at all. Public-sheet rebuild and
+ * reconciliation both call this so they only pay one HTTP round-trip per
+ * album to learn everything they need.
+ *
+ * mediaItemsCount comes from the API as a string; we coerce to number and
+ * surface null when the album is missing or the field is absent (older
+ * albums occasionally omit it).
+ */
+export function getGoogleAlbumDetails(
+  albumId: string
+): AlbumDetails {
   const result = photosGet(`/albums/${encodeURIComponent(albumId)}`);
   if (!result.ok || !result.data) {
-    return { isShared: false, shareableUrl: '' };
+    return {
+      isShared: false,
+      shareableUrl: '',
+      found: false,
+      mediaItemsCount: null,
+      title: '',
+      productUrl: '',
+    };
   }
 
   const album = result.data as {
-    shareInfo?: { shareableUrl?: string };
+    id?: string;
+    title?: string;
     productUrl?: string;
+    mediaItemsCount?: string | number;
+    shareInfo?: { shareableUrl?: string };
   };
 
-  if (!album.shareInfo) {
-    return { isShared: false, shareableUrl: '' };
+  const rawCount = album.mediaItemsCount;
+  let mediaItemsCount: number | null = null;
+  if (typeof rawCount === 'number' && Number.isFinite(rawCount)) {
+    mediaItemsCount = rawCount;
+  } else if (typeof rawCount === 'string' && rawCount.trim() !== '') {
+    const parsed = Number(rawCount);
+    mediaItemsCount = Number.isFinite(parsed) ? parsed : null;
   }
 
   return {
-    isShared:     true,
-    shareableUrl: album.shareInfo.shareableUrl ?? '',
+    isShared:        Boolean(album.shareInfo),
+    shareableUrl:    album.shareInfo?.shareableUrl ?? '',
+    found:           true,
+    mediaItemsCount,
+    title:           album.title    ?? '',
+    productUrl:      album.productUrl ?? '',
   };
+}
+
+// ─── Owner-album listing (reconciliation) ────────────────────────────────────
+
+/**
+ * One entry returned by `photosListOwnedAlbums`. Mirrors the subset of fields
+ * the reconciliation comparator needs; we strip the rest at the boundary.
+ */
+export interface ListedAlbum {
+  id:              string;
+  title:           string;
+  productUrl:      string;
+  mediaItemsCount: number | null;
+  isShared:        boolean;
+}
+
+/**
+ * Lists every album that this OAuth client owns (i.e. created via the
+ * appendonly / edit.appcreateddata scope).
+ *
+ * After the March 2025 Library API deprecation, GET /albums returns only the
+ * albums the calling app has access to — that's exactly the set we want to
+ * reconcile against the Photo_Albums sheet. Albums the user created manually
+ * in photos.google.com are intentionally not returned and would not appear
+ * here even with broader scopes.
+ *
+ * Paginates internally; the API caps pageSize at 50.
+ */
+export function photosListOwnedAlbums(): {
+  ok: boolean;
+  items?: ListedAlbum[];
+  error?: string;
+} {
+  const out: ListedAlbum[] = [];
+  let pageToken: string | undefined = undefined;
+  let safetyPages = 0;
+  const MAX_PAGES = 100; // 100 × 50 = 5,000 albums hard cap
+
+  do {
+    const qs = new URLSearchParams();
+    qs.set('pageSize', '50');
+    if (pageToken) qs.set('pageToken', pageToken);
+
+    const resp = photosGet(`/albums?${qs.toString()}`);
+    if (!resp.ok || !resp.data) {
+      return { ok: false, error: resp.error ?? 'albums.list failed' };
+    }
+
+    const data = resp.data as {
+      albums?: Array<{
+        id?:              string;
+        title?:           string;
+        productUrl?:      string;
+        mediaItemsCount?: string | number;
+        shareInfo?:       { shareableUrl?: string };
+      }>;
+      nextPageToken?: string;
+    };
+
+    for (const a of data.albums ?? []) {
+      if (!a.id) continue;
+      const raw = a.mediaItemsCount;
+      let count: number | null = null;
+      if (typeof raw === 'number' && Number.isFinite(raw)) count = raw;
+      else if (typeof raw === 'string' && raw.trim() !== '') {
+        const parsed = Number(raw);
+        count = Number.isFinite(parsed) ? parsed : null;
+      }
+      out.push({
+        id:              a.id,
+        title:           a.title      ?? '',
+        productUrl:      a.productUrl ?? '',
+        mediaItemsCount: count,
+        isShared:        Boolean(a.shareInfo),
+      });
+    }
+
+    pageToken = data.nextPageToken;
+    safetyPages++;
+  } while (pageToken && safetyPages < MAX_PAGES);
+
+  return { ok: true, items: out };
 }

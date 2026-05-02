@@ -46,6 +46,44 @@ export const DEFAULT_TAG = 'ALL';
  */
 export const ADMIN_CLUB_ID = '__admin__';
 
+// ─── Operations contact ───────────────────────────────────────────────────────
+
+/**
+ * Single mailbox that owns Google Photos album administration for the club.
+ *
+ * Used by:
+ *   • auditAlbumSharing — recipient of "please share this album" reminders.
+ *   • runAlbumReconciliation — recipient of the orphan-albums report.
+ *
+ * Why a hard-coded constant instead of the super-admins list?
+ *   The Library API can no longer toggle album sharing on our behalf, so the
+ *   action ("open in Photos and flip the share toggle") has to be performed
+ *   by the SAME Google account that created the album. Super-admin emails
+ *   often belong to a different account; sending the reminder to one of them
+ *   doesn't help. Routing every album-admin email to a single shared
+ *   mailbox owned by whoever holds that Google identity ensures the
+ *   responsible person actually sees the request.
+ *
+ * If this mailbox ever changes, override at deploy time by setting the
+ * `ALBUM_ADMIN_EMAIL` Script Property; constants.getAlbumAdminEmail()
+ * reads the property first and falls back to this default.
+ */
+export const ALBUM_ADMIN_EMAIL_DEFAULT = 'admin@mmrunners.org';
+
+/**
+ * Returns the configured album-admin recipient, preferring the Script
+ * Property override when set. Empty/whitespace property values fall back
+ * to the compiled-in default so a misconfigured deployment still notifies
+ * someone rather than silently dropping the email.
+ */
+export function getAlbumAdminEmail(): string {
+  /* global PropertiesService */
+  const override = PropertiesService.getScriptProperties()
+    .getProperty('ALBUM_ADMIN_EMAIL');
+  if (override && override.trim()) return override.trim();
+  return ALBUM_ADMIN_EMAIL_DEFAULT;
+}
+
 /**
  * Column indices (0-based) for every sheet.
  * These match the column order defined in the project plan.

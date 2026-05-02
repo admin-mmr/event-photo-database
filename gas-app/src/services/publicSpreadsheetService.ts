@@ -43,8 +43,9 @@
 import { listPublicAlbumIndex, PublicAlbumIndexEntry } from './publicAlbumIndexService';
 import { PhotosAlbumRecord } from '../types/models';
 import { nowIsoTimestamp } from '../utils/dateFormatter';
+import { getGoogleAlbumDetails, AlbumDetails } from './photosApiClient';
 
-/* global PropertiesService, SpreadsheetApp, Logger */
+/* global PropertiesService, SpreadsheetApp, Logger, Utilities */
 
 /** Tab name inside the public spreadsheet. */
 const PUBLIC_ALBUM_TAB = 'Albums';
@@ -53,11 +54,30 @@ const PUBLIC_ALBUM_TAB = 'Albums';
 const PROP_KEY = 'PUBLIC_ALBUM_INDEX_SHEET_ID';
 
 /**
+ * Throttle between Photos API calls during a live rebuild.
+ * `albums.get` has generous quota (10k/day) but we still pace per-second so a
+ * full rebuild over hundreds of albums never trips the per-second cap. With
+ * 150 ms × 100 albums ≈ 15 s, well under the 6-minute GAS execution limit.
+ */
+const REBUILD_INTER_CALL_DELAY_MS = 150;
+
+/**
  * Header row written at the top of the Albums tab.
  *
  * Column order is part of the public contract — anyone who has bookmarked
  * the published-to-web view will see this layout. Add new columns at the
  * end rather than reordering.
+ *
+ * "Permission" reflects the live share status read from Google Photos at
+ * rebuild time:
+ *   - "Public"  → album has shareInfo (Anyone with the link can view)
+ *   - "Private" → album exists but is unshared
+ *   - "Missing" → album was not found in Google Photos (likely deleted)
+ *   - "Unknown" → API call failed or feature disabled
+ *
+ * "Photos" is also refreshed live from `mediaItemsCount` on each rebuild,
+ * so albums that were populated outside the sync pipeline (e.g. backfills
+ * done manually in photos.google.com) no longer show 0.
  */
 const HEADERS: ReadonlyArray<string> = [
   'Event Date',     // YYYY-MM-DD
@@ -66,9 +86,10 @@ const HEADERS: ReadonlyArray<string> = [
   'Club',           // empty for Event-scope rows
   'Tag',            // empty for Event-scope rows
   'Album Title',
-  'Photos',         // syncedFileCount
+  'Photos',         // live mediaItemsCount, falls back to syncedFileCount
   'Album Link',     // shareableUrl (or albumUrl as fallback)
   'Last Sync',      // ISO timestamp of last sync; empty if never synced
+  'Permission',     // "Public" / "Private" / "Missing" / "Unknown"
 ];
 
 /**
@@ -173,11 +194,43 @@ function normalizeAlbumDisplay(
 }
 
 /**
+ * Maps live album-details into the user-facing permission label.
+ * `null` (missing entry in the cache) means we never asked the API — fall
+ * back to "Unknown" so the column never goes blank.
+ */
+function permissionLabel(details: AlbumDetails | null): string {
+  if (!details) return 'Unknown';
+  if (!details.found) return 'Missing';
+  return details.isShared ? 'Public' : 'Private';
+}
+
+/**
+ * Picks the photo count to display: prefer the live mediaItemsCount from
+ * Google Photos when available, otherwise fall back to the cached
+ * syncedFileCount on the sheet row. Resolves the "Photos always 0" pattern
+ * for albums that were populated out-of-band.
+ */
+function photoCount(album: PhotosAlbumRecord, details: AlbumDetails | null): number {
+  if (details && details.found && typeof details.mediaItemsCount === 'number') {
+    return details.mediaItemsCount;
+  }
+  return album.syncedFileCount;
+}
+
+/**
  * Flattens the grouped index into a 2D array matching HEADERS column order.
  * Within each event, the event-level album row is emitted first, followed by
  * the per-club rows in display-name order (already sorted upstream).
+ *
+ * `liveDetails` is keyed by albumId. When an entry is present, its values
+ * win over the cached sheet values (count, share status). When absent, we
+ * gracefully fall back to whatever the sheet has and stamp Permission as
+ * "Unknown" so callers can tell the live check didn't run for that row.
  */
-function buildRows(entries: ReadonlyArray<PublicAlbumIndexEntry>): unknown[][] {
+function buildRows(
+  entries: ReadonlyArray<PublicAlbumIndexEntry>,
+  liveDetails: Map<string, AlbumDetails>
+): unknown[][] {
   const rows: unknown[][] = [];
 
   for (const entry of entries) {
@@ -185,6 +238,7 @@ function buildRows(entries: ReadonlyArray<PublicAlbumIndexEntry>): unknown[][] {
       const a = entry.eventAlbum;
       const fallback = `${entry.eventDate} ${entry.eventName}`;
       const norm = normalizeAlbumDisplay(a, fallback);
+      const details = liveDetails.get(a.albumId) ?? null;
       rows.push([
         entry.eventDate,
         entry.eventName,
@@ -192,9 +246,10 @@ function buildRows(entries: ReadonlyArray<PublicAlbumIndexEntry>): unknown[][] {
         '',
         '',
         norm.title,
-        a.syncedFileCount,
+        photoCount(a, details),
         norm.url,
         norm.lastSyncAt,
+        permissionLabel(details),
       ]);
     }
     for (const c of entry.clubAlbums) {
@@ -202,6 +257,7 @@ function buildRows(entries: ReadonlyArray<PublicAlbumIndexEntry>): unknown[][] {
       const fallback = `${entry.eventDate} ${entry.eventName} – ${c.clubDisplayName}` +
         (a.tag ? ` – ${a.tag}` : '');
       const norm = normalizeAlbumDisplay(a, fallback);
+      const details = liveDetails.get(a.albumId) ?? null;
       rows.push([
         entry.eventDate,
         entry.eventName,
@@ -209,14 +265,56 @@ function buildRows(entries: ReadonlyArray<PublicAlbumIndexEntry>): unknown[][] {
         c.clubDisplayName,
         a.tag,
         norm.title,
-        a.syncedFileCount,
+        photoCount(a, details),
         norm.url,
         norm.lastSyncAt,
+        permissionLabel(details),
       ]);
     }
   }
 
   return rows;
+}
+
+/**
+ * Calls albums.get for every unique albumId in the index and returns a
+ * map of albumId → details. Errors are absorbed (left out of the map) so
+ * the rebuild can still write rows with "Unknown" permission for failed
+ * lookups rather than failing the whole tab.
+ *
+ * Throttles inter-call delays to stay well clear of the per-second quota.
+ */
+function fetchLiveAlbumDetails(
+  entries: ReadonlyArray<PublicAlbumIndexEntry>
+): Map<string, AlbumDetails> {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const entry of entries) {
+    if (entry.eventAlbum?.albumId && !seen.has(entry.eventAlbum.albumId)) {
+      seen.add(entry.eventAlbum.albumId);
+      ids.push(entry.eventAlbum.albumId);
+    }
+    for (const c of entry.clubAlbums) {
+      if (c.album.albumId && !seen.has(c.album.albumId)) {
+        seen.add(c.album.albumId);
+        ids.push(c.album.albumId);
+      }
+    }
+  }
+
+  const out = new Map<string, AlbumDetails>();
+  for (let i = 0; i < ids.length; i++) {
+    if (i > 0) Utilities.sleep(REBUILD_INTER_CALL_DELAY_MS);
+    try {
+      out.set(ids[i], getGoogleAlbumDetails(ids[i]));
+    } catch (err) {
+      Logger.log(
+        `[publicSpreadsheetService] albums.get failed for ${ids[i]}: ${String(err)}`
+      );
+      // Leave it out of the map — caller will render "Unknown".
+    }
+  }
+  return out;
 }
 
 /**
@@ -249,7 +347,11 @@ export function rebuildPublicAlbumIndex(): number {
   }
 
   const entries = listPublicAlbumIndex();
-  const dataRows = buildRows(entries);
+  // Live API calls happen ONCE per rebuild — share status + media count
+  // come from the same albums.get response, so we pay one HTTP round-trip
+  // per album and learn everything we need.
+  const liveDetails = fetchLiveAlbumDetails(entries);
+  const dataRows = buildRows(entries, liveDetails);
 
   // Clear and rewrite. clearContents() leaves formatting (frozen rows, column
   // widths) intact, which keeps any layout the admin set up by hand.
