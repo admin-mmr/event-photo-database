@@ -41,6 +41,7 @@
  */
 
 import { listPublicAlbumIndex, PublicAlbumIndexEntry } from './publicAlbumIndexService';
+import { PhotosAlbumRecord } from '../types/models';
 import { nowIsoTimestamp } from '../utils/dateFormatter';
 
 /* global PropertiesService, SpreadsheetApp, Logger */
@@ -81,6 +82,97 @@ function getPublicSheetId(): string | null {
 }
 
 /**
+ * Public-facing URL for the album-index spreadsheet, or empty string if the
+ * feature is unconfigured.
+ *
+ * Used by the dashboard and login pages to decide whether to render the
+ * "Browse all albums" banner card. We deliberately return '' (rather than
+ * throwing) so unconfigured deployments simply hide the card.
+ *
+ * The URL points to the standard Sheets editor surface; "Anyone with the
+ * link → Viewer" sharing on the file is required for unauthenticated visitors
+ * to actually see the data, and that sharing has to be set on the file in
+ * Drive (we cannot toggle it from a script under the GAS-only Drive scope).
+ */
+export function getPublicSpreadsheetUrl(): string {
+  const id = getPublicSheetId();
+  if (!id) return '';
+  return `https://docs.google.com/spreadsheets/d/${id}/edit#gid=0`;
+}
+
+/**
+ * Heuristic: detects when a Photo_Albums row appears column-shifted, i.e.
+ * the cell that should hold a human-readable title actually holds a URL, or
+ * the cell that should hold a URL actually holds a timestamp.
+ *
+ * We've seen exactly this shape historically on event-scope rows (where
+ * albumTitle = "https://photos.google.com/…" and albumUrl = an ISO timestamp),
+ * which made the public sheet show URLs in the "Album Title" column. Rather
+ * than silently propagate that into the public view, swap the two fields
+ * back into their intended slots so the sheet reads correctly even before the
+ * underlying Photo_Albums row is repaired.
+ */
+function looksLikeUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
+function looksLikeIsoTimestamp(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value);
+}
+
+interface NormalizedAlbumDisplay {
+  title: string;
+  url: string;
+  lastSyncAt: string;
+}
+
+/**
+ * Returns the (title, url, lastSyncAt) triple to display for a given album,
+ * with light auto-correction for the title/url-swap pattern documented above.
+ *
+ * - If albumTitle is an http(s) URL, treat it as the URL and prefer
+ *   `${eventDate} ${eventName}` (or display name) as the title.
+ * - If albumUrl looks like a timestamp rather than a URL, treat it as the
+ *   missing lastSyncAt value.
+ *
+ * Logging only — we never write back into Photo_Albums from here.
+ */
+function normalizeAlbumDisplay(
+  album: PhotosAlbumRecord,
+  fallbackTitle: string
+): NormalizedAlbumDisplay {
+  const rawTitle = album.albumTitle || '';
+  // shareableUrl is being deprecated (always equal to albumUrl); fall back to
+  // it only for legacy rows where albumUrl might be empty.
+  const rawUrl   = album.albumUrl || album.shareableUrl || '';
+  const rawSync  = album.lastSyncAt || '';
+
+  let title = rawTitle;
+  let url   = rawUrl;
+  let lastSyncAt = rawSync;
+
+  // Swap pattern: title cell holds a URL, url cell holds a timestamp.
+  if (looksLikeUrl(rawTitle) && looksLikeIsoTimestamp(rawUrl)) {
+    Logger.log(
+      `[publicSpreadsheetService] Repaired column-shifted row for albumId=${album.albumId}: ` +
+      `title looked like URL, url looked like timestamp.`
+    );
+    url        = rawTitle;
+    lastSyncAt = lastSyncAt || rawUrl;
+    title      = fallbackTitle;
+  } else if (looksLikeUrl(rawTitle) && !looksLikeUrl(rawUrl)) {
+    // Looser pattern: title is a URL but url cell isn't. Still fix the
+    // visible title; keep whatever the url cell had.
+    Logger.log(
+      `[publicSpreadsheetService] Album ${album.albumId} has a URL in its title field; using fallback title.`
+    );
+    if (!url) url = rawTitle;
+    title = fallbackTitle;
+  }
+
+  return { title, url, lastSyncAt };
+}
+
+/**
  * Flattens the grouped index into a 2D array matching HEADERS column order.
  * Within each event, the event-level album row is emitted first, followed by
  * the per-club rows in display-name order (already sorted upstream).
@@ -91,30 +183,35 @@ function buildRows(entries: ReadonlyArray<PublicAlbumIndexEntry>): unknown[][] {
   for (const entry of entries) {
     if (entry.eventAlbum) {
       const a = entry.eventAlbum;
+      const fallback = `${entry.eventDate} ${entry.eventName}`;
+      const norm = normalizeAlbumDisplay(a, fallback);
       rows.push([
         entry.eventDate,
         entry.eventName,
         'Event',
         '',
         '',
-        a.albumTitle,
+        norm.title,
         a.syncedFileCount,
-        a.shareableUrl || a.albumUrl,
-        a.lastSyncAt,
+        norm.url,
+        norm.lastSyncAt,
       ]);
     }
     for (const c of entry.clubAlbums) {
       const a = c.album;
+      const fallback = `${entry.eventDate} ${entry.eventName} – ${c.clubDisplayName}` +
+        (a.tag ? ` – ${a.tag}` : '');
+      const norm = normalizeAlbumDisplay(a, fallback);
       rows.push([
         entry.eventDate,
         entry.eventName,
         'Club',
         c.clubDisplayName,
         a.tag,
-        a.albumTitle,
+        norm.title,
         a.syncedFileCount,
-        a.shareableUrl || a.albumUrl,
-        a.lastSyncAt,
+        norm.url,
+        norm.lastSyncAt,
       ]);
     }
   }

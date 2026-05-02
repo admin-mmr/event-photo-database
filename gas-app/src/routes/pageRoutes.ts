@@ -8,6 +8,7 @@ import { listAll as listAllClubs, listActive as listActiveClubs } from '../servi
 import { generateSummary } from '../services/summaryService';
 import { listAllAlbums } from '../services/photosService';
 import { listPublicAlbumIndex } from '../services/publicAlbumIndexService';
+import { getPublicSpreadsheetUrl } from '../services/publicSpreadsheetService';
 import { getPreferencesFor } from '../services/emailPreferenceService';
 import { findByClub } from '../services/uploadLinkService';
 import { getCanonicalScriptUrl } from '../utils/scriptUrl';
@@ -68,6 +69,9 @@ export function loginPage(errorMessage = ''): GoogleAppsScript.HTML.HtmlOutput {
     clientId,
     buildTime:   BUILD_TIME,
     buildCommit: BUILD_COMMIT,
+    // Public album index — when configured, the login page links straight to
+    // the published spreadsheet so visitors can browse without signing in.
+    publicSpreadsheetUrl: getPublicSpreadsheetUrl(),
   });
 }
 
@@ -105,6 +109,10 @@ export function dashboardPage(user: UserRecord, sessionToken = ""): GoogleAppsSc
     isAdmin:      isAdmin(user.role),
     isSuperAdmin: isSuperAdmin(user.role),
     runningClub:  isSuperAdmin(user.role) ? '' : (user.clubId ?? ''),
+    // Public album index URL — empty string when the feature is unconfigured;
+    // the dashboard template hides the "Browse public album list" card in that
+    // case so we never show a broken link.
+    publicSpreadsheetUrl: getPublicSpreadsheetUrl(),
   });
 }
 

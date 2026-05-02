@@ -550,6 +550,86 @@ export function notifyEventCreated(
   });
 }
 
+/**
+ * Reminder sent to the super-admin (album owner) when a new Google Photos
+ * album is created. The Library-API "share" call was deprecated in 2024, so
+ * the only way to make an album viewable to members with just a link is for
+ * the owner to open it in the Photos UI and flip the share toggle by hand.
+ *
+ * This email is a one-shot prompt: open the album → click the share menu →
+ * "Anyone with the link → Viewer". Once that's done, the URL we already
+ * stored in albumUrl works for everyone the public spreadsheet links to.
+ *
+ * Recipient list:
+ *   - The album owner is always the script's executing identity, which under
+ *     this deployment is the super-admin (admin@mmrunners.org). We send TO
+ *     every entry in getSuperAdmins(); they can ignore if not the owner.
+ *
+ * Idempotency:
+ *   - The caller (ensureEventAlbum / ensureClubTagAlbum) only fires this on
+ *     a freshly-created album, never on an idempotent re-ensure of an
+ *     existing one — so no duplicate reminders for already-shared albums.
+ */
+export function notifyAlbumNeedsShare(
+  albumTitle: string,
+  albumUrl:   string,
+  scope:      'event' | 'club',
+  context:    { eventName: string; eventDate: string; clubDisplayName?: string; tag?: string },
+  superAdmins: ReadonlyArray<string>,
+): ServiceResult<{ to: string[]; cc: string[] }> {
+  if (!albumUrl) {
+    // Without a URL there's nothing actionable for the admin to click on.
+    return {
+      status:  ResultStatus.SUCCESS,
+      message: 'No albumUrl — skipped reminder email',
+      data:    { to: [], cc: [] },
+    };
+  }
+
+  const ctxRows = [
+    `<tr><td style="padding:4px 12px 4px 0;color:#666;">Event</td>
+         <td style="padding:4px 0;">${esc(context.eventName)}</td></tr>`,
+    `<tr><td style="padding:4px 12px 4px 0;color:#666;">Date</td>
+         <td style="padding:4px 0;font-family:monospace;">${esc(context.eventDate)}</td></tr>`,
+    scope === 'club'
+      ? `<tr><td style="padding:4px 12px 4px 0;color:#666;">Club / tag</td>
+             <td style="padding:4px 0;">${esc(context.clubDisplayName ?? '')}${context.tag ? ' / ' + esc(context.tag) : ''}</td></tr>`
+      : '',
+  ].join('');
+
+  const html = wrapHtml(
+    'New album — please make it shareable',
+    `<p>A new Google Photos album was just created by the system, but the
+        Photos API can no longer toggle "Anyone with the link → Viewer" for
+        us. As the album owner, please open it once and flip the share
+        toggle so members can view via the public album list.</p>
+     <table style="border-collapse:collapse;margin:12px 0;font-size:14px;">
+       <tr><td style="padding:4px 12px 4px 0;color:#666;">Album</td>
+           <td style="padding:4px 0;font-weight:500;">${esc(albumTitle)}</td></tr>
+       ${ctxRows}
+     </table>
+     <p style="font-size:14px;margin:18px 0 8px;"><b>Steps</b> (takes ~10 s):</p>
+     <ol style="font-size:14px;line-height:1.7;margin:0 0 16px 18px;padding:0;">
+       <li>Click <b>Open album in Google Photos</b> below.</li>
+       <li>Tap the <b>Share</b> icon (top-right).</li>
+       <li>Choose <b>"Get link"</b> → confirm <b>"Anyone with the link can view"</b>.</li>
+     </ol>
+     <p style="font-size:13px;color:#666;">You only have to do this once per
+        album. The system tracks album visibility and won't pester you again
+        for albums that have already been shared.</p>`,
+    'Open album in Google Photos',
+    albumUrl,
+  );
+
+  return send({
+    to:         Array.from(superAdmins),
+    subject:    `[${PRODUCT_NAME_EN}] Album needs sharing: ${albumTitle}`,
+    html,
+    type:       EmailType.ALBUM_NEEDS_SHARE,
+    resourceId: albumTitle,
+  });
+}
+
 // ─── Scheduled digests ───────────────────────────────────────────────────────
 
 /**

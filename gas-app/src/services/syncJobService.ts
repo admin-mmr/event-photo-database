@@ -46,6 +46,43 @@ export type SyncJobStatus =
   | 'cancelled'; // admin clicked Cancel and worker stopped
 
 /**
+ * Discrete pipeline stage the worker is currently in. Used to drive the
+ * left-to-right stage strip in the admin progress card so the admin can see
+ * at a glance whether work is stuck on Drive enumeration vs Photos uploads.
+ *
+ * Order matters — UI renders chips in this order and highlights the current
+ * one. `idle` is the pre-start state, `done` is the terminal one.
+ */
+export type SyncJobStage =
+  | 'idle'             // pending / not yet started
+  | 'scanning'         // walking Drive to count work
+  | 'creating-albums'  // ensure event + (club, tag) album records exist
+  | 'uploading'        // pushing photos through batchAddMediaItems
+  | 'finalizing'       // updating Photo_Albums sync stats, audit log, public sheet
+  | 'done';            // terminal — completed/cancelled/failed
+
+/**
+ * One row in the per-album progress checklist that the UI renders below the
+ * overall progress bar. Updated incrementally as the worker walks each
+ * (club, tag) bucket so the admin sees a satisfying tick when each album
+ * reaches expected/expected.
+ */
+export interface AlbumProgressEntry {
+  /** Normalized club name; "" for the event-level master album. */
+  clubName: string;
+  /** Tag/photographer label; "" for event-level. */
+  tag: string;
+  /** What the UI should show as a heading, e.g. "Misty Mountain / finish_line". */
+  label: string;
+  /** Pre-walked photo count. 0 if we couldn't enumerate (treat as unknown). */
+  expected: number;
+  /** Photos pushed so far for this album in the current job. */
+  synced: number;
+  /** True once expected ≤ synced or the worker explicitly marks complete. */
+  complete: boolean;
+}
+
+/**
  * The persisted shape of a sync job. All fields are optional on the wire so
  * old records written by older code still deserialise; defaults are applied
  * in `getJob()`.
@@ -60,6 +97,9 @@ export interface SyncJob {
 
   /** Human-readable current step, e.g. "Syncing 'Misty Mountain' → batch 2/4". */
   currentStep:      string;
+
+  /** Pipeline stage — drives the stage strip in the UI. */
+  stage:            SyncJobStage;
 
   /** Total photos the worker plans to process (0 if unknown upfront). */
   totalPhotos:      number;
@@ -80,8 +120,23 @@ export interface SyncJob {
   eventsProcessed:  number;
   eventsTotal:      number;
 
-  /** Error messages collected so far (non-fatal). */
+  /**
+   * Soft warnings — recoverable issues the admin should still see (e.g.
+   * "Skipped batch folder X — no tag bucket"). Distinct from errors so the
+   * UI can show them in a yellow style without flagging the whole run as
+   * failed.
+   */
+  warnings:         string[];
+
+  /** Hard errors — operation-failing exceptions, surfaced in red. */
   errors:           string[];
+
+  /**
+   * Per-album progress checklist. Populated up front during the scanning
+   * stage (with expected counts pre-walked from Drive) and bumped as each
+   * batch finishes uploading.
+   */
+  albumProgress:    AlbumProgressEntry[];
 
   /** Set to true by `requestCancel`; polled by the worker. */
   cancelRequested:  boolean;
@@ -120,6 +175,7 @@ function emptyJob(jobId: string, jobType: SyncJobType, eventId: string): SyncJob
     status:             'pending',
     eventId,
     currentStep:        'Initializing…',
+    stage:              'idle',
     totalPhotos:        0,
     photosSynced:       0,
     photosSkipped:      0,
@@ -127,7 +183,9 @@ function emptyJob(jobId: string, jobType: SyncJobType, eventId: string): SyncJob
     albumsCreated:      0,
     eventsProcessed:    0,
     eventsTotal:        0,
+    warnings:           [],
     errors:             [],
+    albumProgress:      [],
     cancelRequested:    false,
     finalMessage:       '',
     startedAt:          now,
@@ -178,6 +236,12 @@ export function getJob(jobId: string): SyncJob | null {
  * Applies a partial update to a job atomically (read → merge → write).
  * Always transitions status from 'pending' to 'running' on first update
  * unless the caller explicitly passes a terminal status.
+ *
+ * Special merge rules:
+ *   - `errors`   — appended (caller passes new entries to add)
+ *   - `warnings` — appended (caller passes new entries to add)
+ *   - `albumProgress` — fully replaced (treat as authoritative snapshot from
+ *     the worker; for incremental updates use `bumpAlbumProgress`)
  */
 export function updateJob(jobId: string, patch: Partial<SyncJob>): SyncJob | null {
   const existing = getJob(jobId);
@@ -193,11 +257,44 @@ export function updateJob(jobId: string, patch: Partial<SyncJob>): SyncJob | nul
     ...patch,
     status: nextStatus,
     // Preserve the errors array: concat if caller sent new errors, else keep
-    errors: patch.errors ? [...existing.errors, ...patch.errors] : existing.errors,
+    errors:   patch.errors   ? [...existing.errors,   ...patch.errors]   : existing.errors,
+    warnings: patch.warnings ? [...existing.warnings, ...patch.warnings] : existing.warnings,
   };
 
   writeJob(merged);
   return merged;
+}
+
+/**
+ * Increments `synced` for the album entry matching (clubName, tag).
+ * Marks the entry `complete` when synced ≥ expected (and expected > 0).
+ *
+ * Used by the per-batch sync loop so the per-album checklist in the UI
+ * fills in row-by-row instead of waiting for the whole event to finish.
+ *
+ * Pass clubName="" and tag="" to bump the event-level row.
+ */
+export function bumpAlbumProgress(
+  jobId:    string,
+  clubName: string,
+  tag:      string,
+  delta:    number
+): SyncJob | null {
+  const existing = getJob(jobId);
+  if (!existing) return null;
+  if (delta <= 0) return existing;
+
+  const albumProgress = existing.albumProgress.map((entry) => {
+    if (entry.clubName !== clubName || entry.tag !== tag) return entry;
+    const synced = entry.synced + delta;
+    return {
+      ...entry,
+      synced,
+      complete: entry.expected > 0 ? synced >= entry.expected : entry.complete,
+    };
+  });
+
+  return updateJob(jobId, { albumProgress });
 }
 
 /**

@@ -227,6 +227,15 @@ export enum EmailType {
   DAILY_REPORT      = 'daily_report',        // Scheduled digest, once per day
   WEEKLY_REPORT     = 'weekly_report',       // Scheduled digest, once per week
   UPLOAD_ERROR      = 'upload_error',        // Sent TO admins when client-side Drive upload fails
+  /**
+   * Sent TO the super-admin (album owner) when a new Google Photos album is
+   * created. The Photos Library API can no longer programmatically share
+   * albums — only the album owner can flip the "Anyone with the link" toggle
+   * — so this is a reminder to do it by hand. Without that step, members
+   * who click the album link from the public spreadsheet will hit a
+   * permission-denied page.
+   */
+  ALBUM_NEEDS_SHARE = 'album_needs_share',
 }
 
 /**

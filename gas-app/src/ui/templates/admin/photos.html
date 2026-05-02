@@ -341,7 +341,22 @@
     #progress-error-list {
       margin: 10px 0 0 0;
       padding: 8px 12px;
-      background: #fff3e0;
+      background: #ffebee;
+      border-radius: 4px;
+      font-size: .78rem;
+      color: #b71c1c;
+      max-height: 120px;
+      overflow-y: auto;
+      list-style: disc inside;
+      display: none;
+    }
+    #progress-error-list.visible { display: block; }
+
+    /* ── Warning list (skipped, recoverable) ── */
+    #progress-warning-list {
+      margin: 8px 0 0 0;
+      padding: 8px 12px;
+      background: #fff8e1;
       border-radius: 4px;
       font-size: .78rem;
       color: #6d4c41;
@@ -350,7 +365,80 @@
       list-style: disc inside;
       display: none;
     }
-    #progress-error-list.visible { display: block; }
+    #progress-warning-list.visible { display: block; }
+
+    /* ── Stage strip ── */
+    .stage-strip {
+      display: flex;
+      gap: 4px;
+      margin: 8px 0 12px;
+      flex-wrap: wrap;
+    }
+    .stage-chip {
+      flex: 1 1 120px;
+      min-width: 100px;
+      padding: 6px 10px;
+      background: #f5f5f5;
+      color: #999;
+      border-radius: 4px;
+      font-size: .78rem;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: background .25s ease, color .25s ease;
+    }
+    .stage-chip .material-icons { font-size: 16px; }
+    .stage-chip.done {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+    .stage-chip.current {
+      background: #e8eaf6;
+      color: #3f51b5;
+      box-shadow: 0 1px 4px rgba(63,81,181,.2);
+    }
+    #progress-card.state-completed .stage-chip.current {
+      background: #e8f5e9; color: #2e7d32;
+    }
+    #progress-card.state-failed .stage-chip.current {
+      background: #ffebee; color: #c62828;
+    }
+    #progress-card.state-cancelled .stage-chip.current {
+      background: #fff3e0; color: #ef6c00;
+    }
+
+    /* ── Per-album progress checklist ── */
+    #progress-album-list {
+      margin: 10px 0 0 0;
+      padding: 0;
+      list-style: none;
+      max-height: 200px;
+      overflow-y: auto;
+      border-top: 1px solid #f0f0f0;
+      display: none;
+    }
+    #progress-album-list.visible { display: block; }
+    .album-progress-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 2px;
+      border-bottom: 1px solid #fafafa;
+      font-size: .82rem;
+    }
+    .album-progress-row:last-child { border-bottom: none; }
+    .album-progress-row .ap-icon { font-size: 18px; flex-shrink: 0; }
+    .album-progress-row.pending  .ap-icon { color: #bbb; }
+    .album-progress-row.active   .ap-icon { color: #3f51b5; animation: spin 1.4s linear infinite; }
+    .album-progress-row.complete .ap-icon { color: #2e7d32; }
+    .album-progress-row .ap-label { flex: 1; color: #444; }
+    .album-progress-row .ap-counts {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: .78rem;
+      color: #777;
+    }
+    .album-progress-row.complete .ap-counts { color: #2e7d32; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -484,6 +572,9 @@
               </button>
             </div>
           </div>
+          <!-- Stage strip — populated by renderStageStrip() -->
+          <div class="stage-strip" id="progress-stage-strip"></div>
+
           <div class="progress-step" id="progress-step">Initializing…</div>
           <div class="progress-bar-wrap">
             <div class="progress-bar-fill indeterminate" id="progress-bar-fill"></div>
@@ -491,7 +582,19 @@
           <div class="progress-counters" id="progress-counters">
             <!-- Populated dynamically -->
           </div>
-          <ul id="progress-error-list"></ul>
+
+          <!-- Per-album checklist — fills in as the worker walks each (club, tag) -->
+          <ul id="progress-album-list"></ul>
+
+          <!--
+            Two distinct lists:
+              warnings (yellow) — skipped folders, recoverable issues
+              errors   (red)    — actual failures
+            Showing them apart so admins don't conflate "1 stray batch
+            ignored" with "1 album failed to create."
+          -->
+          <ul id="progress-warning-list" aria-label="Warnings (skipped)"></ul>
+          <ul id="progress-error-list"   aria-label="Errors (failed)"></ul>
         </div>
 
         <!-- Backfill all albums -->
@@ -523,6 +626,34 @@
             <i class="material-icons" style="vertical-align:middle;margin-right:4px;">rule</i>
             Reconcile
           </button>
+        </div>
+
+        <!--
+          Rebuild public album index — clears + rewrites the public-facing
+          spreadsheet from the authoritative Photo_Albums data. Use this to
+          recover from stale rows or after changing PUBLIC_ALBUM_INDEX_SHEET_ID.
+        -->
+        <div class="reconcile-card" style="background:#ede7f6;">
+          <p style="color:#4527a0;">
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;color:#4527a0;">public</i>
+            <strong>Rebuild Public Album Sheet</strong> — refreshes the read-only public
+            spreadsheet shared with members. Safe to run any time; clears stale rows.
+          </p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button id="btn-rebuild-public"
+                    class="mdl-button mdl-js-button mdl-button--raised"
+                    style="background:#5e35b1;color:#fff;"
+                    onclick="handleRebuildPublicSheet(this)">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">refresh</i>
+              Rebuild Now
+            </button>
+            <a id="btn-open-public" href="#" target="_blank" rel="noopener"
+               class="mdl-button mdl-js-button mdl-button--raised"
+               style="background:#ede7f6;color:#4527a0;display:none;">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">open_in_new</i>
+              Open Public Sheet
+            </a>
+          </div>
         </div>
 
         <!-- Reconciliation results (hidden until run) -->
@@ -1100,6 +1231,11 @@
       toggleDismissButton(false);
       document.getElementById('progress-error-list').classList.remove('visible');
       document.getElementById('progress-error-list').innerHTML = '';
+      document.getElementById('progress-warning-list').classList.remove('visible');
+      document.getElementById('progress-warning-list').innerHTML = '';
+      document.getElementById('progress-album-list').classList.remove('visible');
+      document.getElementById('progress-album-list').innerHTML = '';
+      document.getElementById('progress-stage-strip').innerHTML = '';
       document.getElementById('progress-card').className = 'state-running';
     }
 
@@ -1117,13 +1253,65 @@
       document.getElementById('progress-step').textContent = job.currentStep || 'Initializing…';
       document.getElementById('progress-bar-fill').className = 'progress-bar-fill indeterminate';
       document.getElementById('progress-counters').innerHTML = '';
+      document.getElementById('progress-stage-strip').innerHTML = '';
+      document.getElementById('progress-album-list').classList.remove('visible');
+      document.getElementById('progress-album-list').innerHTML = '';
+      document.getElementById('progress-warning-list').classList.remove('visible');
+      document.getElementById('progress-warning-list').innerHTML = '';
       document.getElementById('progress-error-list').classList.remove('visible');
       document.getElementById('progress-error-list').innerHTML = '';
+
+      // Render the stage strip up front so the admin sees the pipeline overview
+      // even before the first poll comes back.
+      renderStageStrip(jobType, job.stage || 'idle', job.status || 'pending');
 
       toggleCancelButton(true);
       toggleDismissButton(false);
       // Scroll so the admin can see the card even if they're below the fold.
       card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    /**
+     * Stage strip — renders a chip per pipeline stage so the admin can see at
+     * a glance whether work is stuck on Drive enumeration vs Photos uploads.
+     *
+     * Backfill jobs don't pre-walk Drive (the per-event syncs do, individually),
+     * so we hide the "Scanning" chip there to keep the strip honest.
+     *
+     * Stages reflect the SyncJobStage union in syncJobService.ts:
+     *   idle → scanning → creating-albums → uploading → finalizing → done
+     */
+    function renderStageStrip(jobType, currentStage, status) {
+      var stages = jobType === 'backfill-all'
+        ? [
+            { id: 'creating-albums', label: 'Creating albums', icon: 'add_photo_alternate' },
+            { id: 'uploading',       label: 'Uploading',       icon: 'cloud_upload' },
+            { id: 'finalizing',      label: 'Finalizing',      icon: 'task_alt' },
+          ]
+        : [
+            { id: 'scanning',        label: 'Scanning Drive',  icon: 'search' },
+            { id: 'creating-albums', label: 'Creating albums', icon: 'add_photo_alternate' },
+            { id: 'uploading',       label: 'Uploading',       icon: 'cloud_upload' },
+            { id: 'finalizing',      label: 'Finalizing',      icon: 'task_alt' },
+          ];
+      var order = stages.map(function(s) { return s.id; });
+      var idx = order.indexOf(currentStage);
+      // Treat 'done' or any terminal status as "all stages complete" — handy
+      // for the post-finish summary view where we want every chip green.
+      var allDone = currentStage === 'done' || isTerminal(status || '');
+
+      var html = stages.map(function(s, i) {
+        var cls = 'stage-chip';
+        if (allDone)               cls += ' done';
+        else if (idx < 0)          { /* not started — leave default */ }
+        else if (i < idx)          cls += ' done';
+        else if (i === idx)        cls += ' current';
+        return '<div class="' + cls + '">' +
+          '<i class="material-icons">' + s.icon + '</i>' +
+          '<span>' + s.label + '</span>' +
+          '</div>';
+      }).join('');
+      document.getElementById('progress-stage-strip').innerHTML = html;
     }
 
     /**
@@ -1139,17 +1327,26 @@
 
       document.getElementById('progress-step').textContent = job.currentStep || '…';
 
+      // Stage strip — repaint on every poll so transitions show up promptly.
+      renderStageStrip(job.jobType, job.stage || 'idle', job.status);
+
       // Progress bar:
-      //   - For backfill-all we know eventsTotal up front, so show a
-      //     deterministic bar based on eventsProcessed / eventsTotal.
-      //   - For per-event sync the total photo count isn't known ahead of
-      //     time (we'd have to walk Drive twice), so keep the indeterminate
-      //     striped animation until we reach terminal state.
+      //   - For per-event sync we now pre-walk Drive, so totalPhotos > 0 and
+      //     we can show a deterministic bar based on synced/total.
+      //   - For backfill-all we know eventsTotal up front.
+      //   - Fallback: indeterminate striped animation while we don't have
+      //     enough data, e.g. during the Scanning stage before pre-walk
+      //     finishes.
       var fill = document.getElementById('progress-bar-fill');
       if (job.jobType === 'backfill-all' && job.eventsTotal > 0) {
         var pct = Math.min(100, Math.round((job.eventsProcessed / job.eventsTotal) * 100));
         fill.className = 'progress-bar-fill';
         fill.style.width = pct + '%';
+      } else if (job.totalPhotos > 0 && (job.photosSynced + (job.photosDeduplicated || 0)) >= 0) {
+        var done = (job.photosSynced || 0) + (job.photosDeduplicated || 0);
+        var pctP = Math.min(100, Math.round((done / job.totalPhotos) * 100));
+        fill.className = 'progress-bar-fill';
+        fill.style.width = pctP + '%';
       } else if (isTerminal(job.status)) {
         fill.className = 'progress-bar-fill';
         fill.style.width = '100%';
@@ -1163,16 +1360,22 @@
       if (job.jobType === 'backfill-all' && job.eventsTotal > 0) {
         counters.push(counter('Events', job.eventsProcessed + ' / ' + job.eventsTotal));
       }
+      // For per-event sync, surface the total-photos plan once scanning has
+      // completed so the admin can sanity-check the work before it's done.
+      if (job.jobType === 'sync-event' && job.totalPhotos > 0) {
+        counters.push(counter('Photos', (job.photosSynced || 0) + ' / ' + job.totalPhotos));
+      }
       if (job.albumsCreated > 0)    counters.push(counter('Albums created', job.albumsCreated));
       if (job.photosSynced > 0)     counters.push(counter('Photos uploaded', job.photosSynced, 'ok'));
       if (job.photosDeduplicated > 0) counters.push(counter('Already synced', job.photosDeduplicated));
       if (job.photosSkipped > 0)    counters.push(counter('Skipped (non-photo)', job.photosSkipped));
+      // Warnings (skipped folders) and errors (failures) are now distinct.
+      if (job.warnings && job.warnings.length > 0) {
+        counters.push(counter('Warnings', job.warnings.length, 'warn'));
+      }
       if (job.errors && job.errors.length > 0) counters.push(counter('Errors', job.errors.length, 'warn'));
 
       // Throughput + ETA — derived from elapsed wall time and the running counters.
-      // For backfill-all we have eventsTotal, so we can show a real ETA.
-      // For per-event sync we don't know the total photo count up front, so we
-      // only show photos/sec (no ETA).
       var elapsedSec = currentJob.startedAt
         ? Math.max(1, Math.floor((Date.now() - currentJob.startedAt) / 1000))
         : 0;
@@ -1181,6 +1384,11 @@
         if (work > 0) {
           var rate = work / elapsedSec; // items/sec (photos uploaded + dedup'd)
           counters.push(counter('Photos / sec', rate.toFixed(rate >= 1 ? 1 : 2)));
+          // Per-event sync now also has a real ETA thanks to totalPhotos.
+          if (job.totalPhotos > work) {
+            var remainingP = job.totalPhotos - work;
+            counters.push(counter('ETA', formatSeconds(Math.round(remainingP / rate))));
+          }
         }
         if (job.jobType === 'backfill-all'
             && job.eventsTotal > 0
@@ -1195,16 +1403,79 @@
 
       document.getElementById('progress-counters').innerHTML = counters.join('');
 
-      // Error list — collapsed by default, reveals when errors accumulate.
+      // Per-album checklist — only meaningful for per-event sync, populated
+      // during the Scanning stage and incremented as each batch lands.
+      renderAlbumProgress(job);
+
+      // Warnings (yellow, recoverable).
+      if (job.warnings && job.warnings.length > 0) {
+        var wlist = document.getElementById('progress-warning-list');
+        var wrecent = job.warnings.slice(-20);
+        wlist.innerHTML = wrecent.map(function(w) {
+          return '<li>' + escHtml(w) + '</li>';
+        }).join('');
+        wlist.classList.add('visible');
+      } else {
+        document.getElementById('progress-warning-list').classList.remove('visible');
+      }
+
+      // Errors (red, hard failures). Collapsed by default; revealed when items accumulate.
       if (job.errors && job.errors.length > 0) {
         var list = document.getElementById('progress-error-list');
-        // Only render the last 20 to keep the card readable.
         var recent = job.errors.slice(-20);
         list.innerHTML = recent.map(function(e) {
           return '<li>' + escHtml(e) + '</li>';
         }).join('');
         list.classList.add('visible');
+      } else {
+        document.getElementById('progress-error-list').classList.remove('visible');
       }
+    }
+
+    /**
+     * Renders the per-album progress checklist below the global progress bar.
+     *
+     * Each entry is one of:
+     *   - the event-level "all photos" row (clubName: '', tag: '')
+     *   - one (club, tag) bucket
+     *
+     * State per row:
+     *   complete → green check, "synced/expected"
+     *   active   → spinning sync icon (currently uploading)
+     *   pending  → grey clock (haven't reached this bucket yet)
+     *
+     * Heuristic for "active": the row that's been touched (synced > 0) but
+     * not yet complete. With multiple buckets in flight this can highlight
+     * more than one — that's fine, the overall progress bar gives the
+     * cumulative readout.
+     */
+    function renderAlbumProgress(job) {
+      var ul = document.getElementById('progress-album-list');
+      var rows = (job.albumProgress || []).slice();
+      if (rows.length === 0) {
+        ul.classList.remove('visible');
+        ul.innerHTML = '';
+        return;
+      }
+      ul.classList.add('visible');
+      ul.innerHTML = rows.map(function(r) {
+        var state, icon;
+        if (r.complete) {
+          state = 'complete'; icon = 'check_circle';
+        } else if (r.synced > 0) {
+          state = 'active';   icon = 'sync';
+        } else {
+          state = 'pending';  icon = 'schedule';
+        }
+        var counts = r.expected > 0
+          ? r.synced + ' / ' + r.expected
+          : (r.synced > 0 ? String(r.synced) : '—');
+        return '<li class="album-progress-row ' + state + '">' +
+          '<i class="material-icons ap-icon">' + icon + '</i>' +
+          '<span class="ap-label">' + escHtml(r.label || '(unnamed)') + '</span>' +
+          '<span class="ap-counts">' + counts + '</span>' +
+          '</li>';
+      }).join('');
     }
 
     function counter(label, value, cls) {
@@ -1374,6 +1645,49 @@
 
       startSyncJob('backfill-all', {}, btn,
         '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">hourglass_empty</i>Running…');
+    }
+
+    /**
+     * Rebuilds the public album-index spreadsheet from Photo_Albums.
+     *
+     * Why this exists: the spreadsheet is normally kept up to date by hot-path
+     * callers (album creation, batch sync), but if rows ever drift — stale
+     * data, a manual edit to Photo_Albums, or a change to
+     * PUBLIC_ALBUM_INDEX_SHEET_ID — this button rewrites the whole "Albums"
+     * tab in one shot. The server clears existing content first, so it's safe
+     * to run repeatedly.
+     */
+    function handleRebuildPublicSheet(btn) {
+      var originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">hourglass_empty</i>Rebuilding…';
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          if (!result || result.status !== 'success' || !result.data) {
+            showErrorBanner((result && result.message) || 'Rebuild failed');
+            return;
+          }
+          showToast(
+            'Public sheet rebuilt — ' + result.data.rowCount + ' row(s) written.',
+            'success', 5000
+          );
+          // Surface the link to the freshly-rebuilt sheet so the admin can
+          // verify the contents in one click.
+          var openBtn = document.getElementById('btn-open-public');
+          if (openBtn && result.data.url) {
+            openBtn.href = result.data.url;
+            openBtn.style.display = '';
+          }
+        })
+        .withFailureHandler(function(err) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          showErrorBanner('Rebuild RPC failed: ' + String(err));
+        })
+        .serverRebuildPublicAlbumIndex({ sessionToken: window.SESSION_TOKEN || '' });
     }
   </script>
 </body>

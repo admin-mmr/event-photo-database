@@ -20,6 +20,10 @@ import {
   reconcileAllPhotos,
   EventInfo,
 } from '../services/photosService';
+import {
+  rebuildPublicAlbumIndex,
+  getPublicSpreadsheetUrl,
+} from '../services/publicSpreadsheetService';
 import { photosListAlbumMediaItems } from '../services/photosApiClient';
 import {
   createJob,
@@ -311,6 +315,53 @@ export function serverGetAlbumStats(
   } catch (err) {
     Logger.log(`serverGetAlbumStats error: ${String(err)}`);
     return { status: 'error', message: `Internal error reading album stats: ${String(err)}` };
+  }
+}
+
+/**
+ * Manually re-materializes the public album-index spreadsheet from the
+ * authoritative Photo_Albums data. The hot-path callers (album creation,
+ * batch sync) already keep the public sheet up to date, so this is intended
+ * for recovery — e.g. when an admin has just fixed bad data in Photo_Albums
+ * and wants the public view to catch up immediately, or when the public sheet
+ * was created/reconfigured after the last sync.
+ *
+ * Admin-only (requireAdminOrFail). Returns the row count plus the public
+ * spreadsheet URL so the UI can offer a "View public sheet" link.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function serverRebuildPublicAlbumIndex(payload: WithSession): ServerResponse {
+  try {
+    const auth = requireAdminOrFail(payload?.sessionToken);
+    if (!auth.ok) return auth.response;
+
+    const url = getPublicSpreadsheetUrl();
+    if (!url) {
+      return {
+        status: 'error',
+        message: 'Public album index is not configured. Set the PUBLIC_ALBUM_INDEX_SHEET_ID Script Property to a Google Sheets file ID first.',
+      };
+    }
+
+    const rowCount = rebuildPublicAlbumIndex();
+    appendAuditLog({
+      actorEmail:   auth.adminEmail,
+      action:       AuditAction.ALBUM_BACKFILLED,
+      resourceType: 'report',
+      resourceId:   'public_album_index',
+      details:      { operation: 'rebuild_public_album_index', rowCount },
+    });
+    return {
+      status: 'success',
+      message: `Public album index rebuilt — ${rowCount} row(s) written.`,
+      data: { rowCount, url },
+    };
+  } catch (err) {
+    Logger.log(`serverRebuildPublicAlbumIndex error: ${String(err)}`);
+    return {
+      status: 'error',
+      message: `Internal error rebuilding public album index: ${String(err)}`,
+    };
   }
 }
 

@@ -128,7 +128,14 @@ export interface PhotosAlbumRecord {
   readonly tag:             string;            // Tag/photographer label; empty for event-type albums
   readonly albumTitle:      string;            // Human-readable title shown in Google Photos
   readonly albumUrl:        string;            // Direct product URL for viewing in Google Photos
-  readonly shareableUrl:    string;            // Public shareable link (post-share call)
+  /**
+   * Vestigial — kept in the schema for backward compat with rows written by
+   * older code. Library-API sharing was deprecated in 2024, so we can no
+   * longer set a distinct shareable URL programmatically: createGoogleAlbum()
+   * now writes albumUrl into both fields. New consumers should read
+   * `albumUrl` exclusively; this column will be dropped in a future migration.
+   */
+  readonly shareableUrl:    string;
   readonly createdAt:       string;            // ISO 8601 timestamp
   readonly lastSyncAt:      string;            // ISO 8601 timestamp; empty until first sync
   readonly syncedFileCount: number;            // Cumulative photos pushed to this album

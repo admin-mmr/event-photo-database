@@ -118,6 +118,45 @@
           </div>
         </div>
 
+        <!--
+          Public album-index banner — only rendered when PUBLIC_ALBUM_INDEX_SHEET_ID
+          is configured (server passes '' otherwise so this whole block is skipped).
+          The linked spreadsheet is intended to be shared "Anyone with the link →
+          Viewer" so even non-members can browse Google Photos albums by event.
+        -->
+        <? if (typeof publicSpreadsheetUrl !== 'undefined' && publicSpreadsheetUrl) { ?>
+        <a class="card public-album-banner"
+           href="<?= publicSpreadsheetUrl ?>"
+           target="_blank"
+           rel="noopener"
+           style="display:block;text-decoration:none;color:inherit;
+                  background:linear-gradient(135deg,#00897b,#26a69a);color:#fff;
+                  padding:22px 24px;margin-bottom:4px;
+                  border-radius:8px;box-shadow:0 2px 8px rgba(0,137,123,.18);
+                  transition:transform .15s ease, box-shadow .15s ease;">
+          <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+            <i class="material-icons" style="font-size:36px;flex-shrink:0;">public</i>
+            <div style="flex:1;min-width:200px;">
+              <div style="font-size:18px;font-weight:600;line-height:1.3;">
+                Browse all event albums &middot; 查看所有活动相册
+              </div>
+              <div style="font-size:13.5px;opacity:.92;margin-top:4px;line-height:1.55;">
+                A read-only spreadsheet listing every event's Google Photos albums.
+                Anyone with the link can view — share it freely with members.<br>
+                只读公共表格，列出每场活动的 Google Photos 相册链接，可任意分享。
+              </div>
+            </div>
+            <span style="display:inline-flex;align-items:center;gap:6px;
+                          background:rgba(255,255,255,0.18);border-radius:20px;
+                          padding:8px 16px;font-size:14px;font-weight:600;
+                          flex-shrink:0;">
+              Open
+              <i class="material-icons" style="font-size:18px;">open_in_new</i>
+            </span>
+          </div>
+        </a>
+        <? } ?>
+
         <!-- Quick-action tiles -->
         <div class="tile-grid">
 

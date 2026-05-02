@@ -30,6 +30,8 @@ import {
   incrementJobCounters,
   isCancelRequested,
   updateJob,
+  bumpAlbumProgress,
+  AlbumProgressEntry,
 } from './syncJobService';
 
 // ── Sub-module imports ────────────────────────────────────────────────────────
@@ -51,6 +53,8 @@ import {
   updateAlbumSyncStats,
 } from './photoAlbumsRepo';
 import { tryRebuildPublicAlbumIndex } from './publicSpreadsheetService';
+import { notifyAlbumNeedsShare } from './emailService';
+import { getSuperAdmins } from '../config/superAdmins';
 
 // ── Re-exports (keep existing import paths working) ───────────────────────────
 export {
@@ -183,6 +187,21 @@ export function ensureEventAlbum(
   // never fail album creation if the public sheet is misconfigured or down).
   tryRebuildPublicAlbumIndex();
 
+  // Remind the album owner to flip the "Anyone with the link" toggle —
+  // Library API sharing is deprecated, so this is the only way to make the
+  // album viewable for non-members. Best-effort; never fail album creation.
+  try {
+    notifyAlbumNeedsShare(
+      title,
+      record.albumUrl,
+      'event',
+      { eventName, eventDate },
+      getSuperAdmins(),
+    );
+  } catch (err) {
+    Logger.log(`[PhotosService] notifyAlbumNeedsShare (event) failed (non-fatal): ${String(err)}`);
+  }
+
   return {
     status: ResultStatus.SUCCESS,
     message: `Event album created: "${title}"`,
@@ -259,6 +278,19 @@ export function ensureClubTagAlbum(
 
   // Refresh the public, view-only album index spreadsheet (best-effort).
   tryRebuildPublicAlbumIndex();
+
+  // Remind the album owner to flip "Anyone with the link" — see ensureEventAlbum.
+  try {
+    notifyAlbumNeedsShare(
+      title,
+      record.albumUrl,
+      'club',
+      { eventName, eventDate, clubDisplayName, tag },
+      getSuperAdmins(),
+    );
+  } catch (err) {
+    Logger.log(`[PhotosService] notifyAlbumNeedsShare (club) failed (non-fatal): ${String(err)}`);
+  }
 
   return {
     status: ResultStatus.SUCCESS,
@@ -948,35 +980,137 @@ export function syncEventToAlbums(
   jobId?: string
 ): ServiceResult<SyncEventResult> {
   const errors: string[] = [];
+  const warnings: string[] = [];
   const clubTagsSynced: ClubTagSyncSummary[] = [];
   let totalSynced = 0;
 
-  // Ensure event-level album
+  // ─── Stage 1: Scanning ─────────────────────────────────────────────────────
+  // Walk the Drive hierarchy once to enumerate every (club, tag) we'll touch
+  // and pre-count photos under each. Two payoffs:
+  //   1. The UI gets a determinate progress bar (totalPhotos) instead of an
+  //      indeterminate striped animation.
+  //   2. The per-album checklist can render up front with expected counts so
+  //      the admin sees the full plan as soon as scanning finishes.
+  // Cost: one extra walk of the event folder tree. Drive folder iteration in
+  // GAS is O(children) per call, so a typical event with ~50 (club, tag)
+  // buckets resolves in ~1–2s.
   if (jobId) {
-    updateJob(jobId, { currentStep: `Creating event album for "${event.eventName}"…` });
+    updateJob(jobId, {
+      stage:       'scanning',
+      currentStep: `Scanning Drive folder for "${event.eventName}"…`,
+    });
+  }
+
+  let eventFolder: GoogleAppsScript.Drive.Folder;
+  try {
+    eventFolder = DriveApp.getFolderById(event.driveFolderId);
+  } catch (err) {
+    if (jobId) updateJob(jobId, { stage: 'done' });
+    return {
+      status: ResultStatus.ERROR,
+      message: `Cannot access Drive folder for event "${event.eventName}": ${String(err)}`,
+    };
+  }
+
+  interface PlannedClubTag {
+    clubName:       string;
+    clubDisplayName: string;
+    tag:            string;
+    expectedPhotos: number;
+    tagFolder:      GoogleAppsScript.Drive.Folder;
+  }
+  const planned: PlannedClubTag[] = [];
+  let plannedTotalPhotos = 0;
+
+  {
+    const clubIter = eventFolder.getFolders();
+    while (clubIter.hasNext()) {
+      if (jobId && isCancelRequested(jobId)) break;
+      const clubFolder = clubIter.next();
+      const clubName = clubFolder.getName();
+      const clubDisplayName =
+        clubDisplayNames?.[clubName] ?? clubName.replace(/_/g, ' ');
+      const tagIter = clubFolder.getFolders();
+      while (tagIter.hasNext()) {
+        const tagFolder = tagIter.next();
+        const tagName = tagFolder.getName();
+        if (BATCH_FOLDER_RE.test(tagName)) {
+          // Stray batch folder directly under a club (no tag bucket).
+          // Recorded as a warning rather than an error: it's a legitimate
+          // skip, not a failure of this run.
+          const msg = `Skipping batch folder "${tagName}" directly under club "${clubName}" — no tag bucket; every upload should go through a tag folder.`;
+          Logger.log(`[PhotosService] ${msg}`);
+          warnings.push(msg);
+          if (jobId) updateJob(jobId, { warnings: [msg] });
+          continue;
+        }
+        // Pre-count photos in every batch under this tag. We only count files
+        // matching PHOTO_MIME_TYPES so the total matches what the upload
+        // pipeline will actually push.
+        let tagPhotoCount = 0;
+        const batchIter = tagFolder.getFolders();
+        while (batchIter.hasNext()) {
+          tagPhotoCount += countPhotoFiles(batchIter.next());
+        }
+        plannedTotalPhotos += tagPhotoCount;
+        planned.push({
+          clubName,
+          clubDisplayName,
+          tag: tagName,
+          expectedPhotos: tagPhotoCount,
+          tagFolder,
+        });
+      }
+    }
+  }
+
+  // Build the per-album progress checklist. The event-level album is the
+  // first entry so the UI can show "All photos for this event" at the top,
+  // followed by one entry per (club, tag) bucket.
+  if (jobId) {
+    const albumProgress: AlbumProgressEntry[] = [
+      {
+        clubName: '',
+        tag:      '',
+        label:    `${event.eventName} — All photos`,
+        expected: plannedTotalPhotos,
+        synced:   0,
+        complete: false,
+      },
+      ...planned.map((p) => ({
+        clubName: p.clubName,
+        tag:      p.tag,
+        label:    `${p.clubDisplayName} / ${p.tag}`,
+        expected: p.expectedPhotos,
+        synced:   0,
+        complete: false,
+      })),
+    ];
+    updateJob(jobId, {
+      totalPhotos:  plannedTotalPhotos,
+      albumProgress,
+      currentStep: `Found ${plannedTotalPhotos} photo(s) across ${planned.length} (club, tag) bucket(s).`,
+    });
+  }
+
+  // ─── Stage 2: Creating albums ──────────────────────────────────────────────
+  if (jobId) {
+    updateJob(jobId, {
+      stage:       'creating-albums',
+      currentStep: `Ensuring event album for "${event.eventName}"…`,
+    });
   }
   const eventAlbumResult = ensureEventAlbum(event.eventId, event.eventName, event.eventDate);
   if (eventAlbumResult.status !== ResultStatus.SUCCESS || !eventAlbumResult.data) {
+    if (jobId) updateJob(jobId, { stage: 'done' });
     return {
       status: ResultStatus.ERROR,
       message: `Cannot ensure event album for "${event.eventName}": ${eventAlbumResult.message}`,
     };
   }
   const eventAlbumRecord = eventAlbumResult.data;
-  // If the album was just created in this call its lastSyncAt will be empty.
   if (jobId && !eventAlbumRecord.lastSyncAt && eventAlbumRecord.syncedFileCount === 0) {
     incrementJobCounters(jobId, { albumsCreated: 1 });
-  }
-
-  // Open the Layer-1 event folder in Drive
-  let eventFolder: GoogleAppsScript.Drive.Folder;
-  try {
-    eventFolder = DriveApp.getFolderById(event.driveFolderId);
-  } catch (err) {
-    return {
-      status: ResultStatus.ERROR,
-      message: `Cannot access Drive folder for event "${event.eventName}": ${String(err)}`,
-    };
   }
 
   // Build dedup key set once for the entire event sync to avoid re-reading the
@@ -984,99 +1118,102 @@ export function syncEventToAlbums(
   const allFileRecords = loadFileRecords();
   const syncedKeys = new Set(allFileRecords.map((r) => `${r.driveFileId}|${r.albumId}`));
 
-  // Walk Layer-2 club folders
-  const clubIter = eventFolder.getFolders();
-  while (clubIter.hasNext()) {
-    // Honour cancellation between clubs too — catches the "pressed Cancel
-    // during a quiet moment between batches" case.
+  // ─── Stage 3: Uploading ────────────────────────────────────────────────────
+  if (jobId) {
+    updateJob(jobId, {
+      stage:       'uploading',
+      currentStep: 'Starting uploads…',
+    });
+  }
+
+  for (const plan of planned) {
     if (jobId && isCancelRequested(jobId)) break;
 
-    const clubFolder = clubIter.next();
-    const clubName = clubFolder.getName();
-    const clubDisplayName =
-      clubDisplayNames?.[clubName] ?? clubName.replace(/_/g, ' ');
-
-    // Walk Layer-3 children. Every child must be a tag folder. A stray batch
-    // folder under a club (matching BATCH_FOLDER_RE) means an upload bypassed
-    // the tag pipeline — we log it and skip rather than guess a tag.
-    const tagIter = clubFolder.getFolders();
-    while (tagIter.hasNext()) {
-      if (jobId && isCancelRequested(jobId)) break;
-      const tagFolder = tagIter.next();
-      const tagName   = tagFolder.getName();
-
-      if (BATCH_FOLDER_RE.test(tagName)) {
-        const msg = `Skipping batch folder "${tagName}" directly under club "${clubName}" — no tag bucket; every upload should go through a tag folder.`;
-        Logger.log(`[PhotosService] ${msg}`);
-        errors.push(msg);
-        if (jobId) updateJob(jobId, { errors: [msg] });
-        continue;
-      }
-
-      const tag = tagName;
-
-      // Ensure (club, tag) album
-      if (jobId) {
-        updateJob(jobId, { currentStep: `Creating album for "${clubDisplayName}" / "${tag}"…` });
-      }
-      const clubTagAlbumResult = ensureClubTagAlbum(
-        event.eventId, event.eventName, event.eventDate,
-        clubName, clubDisplayName, tag
-      );
-      if (clubTagAlbumResult.status !== ResultStatus.SUCCESS || !clubTagAlbumResult.data) {
-        const msg = `Club "${clubName}" / tag "${tag}": ${clubTagAlbumResult.message}`;
-        errors.push(msg);
-        if (jobId) updateJob(jobId, { errors: [msg] });
-        continue;
-      }
-      const clubTagAlbumRecord = clubTagAlbumResult.data;
-      if (jobId && !clubTagAlbumRecord.lastSyncAt && clubTagAlbumRecord.syncedFileCount === 0) {
-        incrementJobCounters(jobId, { albumsCreated: 1 });
-      }
-      let clubTagSynced = 0;
-
-      // Walk batch folders under this tag
-      const batchIter = tagFolder.getFolders();
-      while (batchIter.hasNext()) {
-        if (jobId && isCancelRequested(jobId)) break;
-        const batchFolder   = batchIter.next();
-        const batchFolderId = batchFolder.getId();
-        const batchName     = batchFolder.getName();
-        const breadcrumb    = `${tag} / ${batchName}`;
-
-        // Single batched pass — upload each file's bytes once, then attach
-        // the resulting mediaItem to both albums via batchAddMediaItems.
-        const twoResult = syncBatchFolderToTwoAlbums(
-          eventAlbumRecord.albumId, clubTagAlbumRecord.albumId,
-          event.eventId, clubName, tag, batchFolderId, syncedKeys,
-          jobId, `"${clubDisplayName}" / ${breadcrumb}`
-        );
-        const batchSynced = twoResult.data?.synced ?? 0;
-        totalSynced += batchSynced;
-        clubTagSynced += batchSynced;
-        if (twoResult.data?.errors.length) {
-          errors.push(
-            ...twoResult.data.errors.map((e) => `[${clubName}/${breadcrumb}] ${e}`)
-          );
-        }
-      }
-
-      clubTagsSynced.push({
-        clubName,
-        tag,
-        clubTagAlbumId: clubTagAlbumRecord.albumId,
-        synced:         clubTagSynced,
+    if (jobId) {
+      updateJob(jobId, {
+        currentStep: `Ensuring album for "${plan.clubDisplayName}" / "${plan.tag}"…`,
       });
     }
+    const clubTagAlbumResult = ensureClubTagAlbum(
+      event.eventId, event.eventName, event.eventDate,
+      plan.clubName, plan.clubDisplayName, plan.tag
+    );
+    if (clubTagAlbumResult.status !== ResultStatus.SUCCESS || !clubTagAlbumResult.data) {
+      const msg = `Club "${plan.clubName}" / tag "${plan.tag}": ${clubTagAlbumResult.message}`;
+      errors.push(msg);
+      if (jobId) updateJob(jobId, { errors: [msg] });
+      continue;
+    }
+    const clubTagAlbumRecord = clubTagAlbumResult.data;
+    if (jobId && !clubTagAlbumRecord.lastSyncAt && clubTagAlbumRecord.syncedFileCount === 0) {
+      incrementJobCounters(jobId, { albumsCreated: 1 });
+    }
+    let clubTagSynced = 0;
+
+    // Walk batch folders under this tag
+    const batchIter = plan.tagFolder.getFolders();
+    while (batchIter.hasNext()) {
+      if (jobId && isCancelRequested(jobId)) break;
+      const batchFolder   = batchIter.next();
+      const batchFolderId = batchFolder.getId();
+      const batchName     = batchFolder.getName();
+      const breadcrumb    = `${plan.tag} / ${batchName}`;
+
+      // Single batched pass — upload each file's bytes once, then attach
+      // the resulting mediaItem to both albums via batchAddMediaItems.
+      const twoResult = syncBatchFolderToTwoAlbums(
+        eventAlbumRecord.albumId, clubTagAlbumRecord.albumId,
+        event.eventId, plan.clubName, plan.tag, batchFolderId, syncedKeys,
+        jobId, `"${plan.clubDisplayName}" / ${breadcrumb}`
+      );
+      const batchSynced = twoResult.data?.synced ?? 0;
+      totalSynced += batchSynced;
+      clubTagSynced += batchSynced;
+      // Bump the per-album checklist for both this (club, tag) bucket and the
+      // event-level "all photos" row. UI re-renders the checklist on its next
+      // poll tick.
+      if (jobId && batchSynced > 0) {
+        bumpAlbumProgress(jobId, plan.clubName, plan.tag, batchSynced);
+        bumpAlbumProgress(jobId, '', '', batchSynced);
+      }
+      if (twoResult.data?.errors.length) {
+        errors.push(
+          ...twoResult.data.errors.map((e) => `[${plan.clubName}/${breadcrumb}] ${e}`)
+        );
+      }
+    }
+
+    clubTagsSynced.push({
+      clubName:       plan.clubName,
+      tag:            plan.tag,
+      clubTagAlbumId: clubTagAlbumRecord.albumId,
+      synced:         clubTagSynced,
+    });
+  }
+
+  // ─── Stage 4: Finalizing ───────────────────────────────────────────────────
+  if (jobId) {
+    updateJob(jobId, {
+      stage:       'finalizing',
+      currentStep: 'Updating sync stats and refreshing the public album sheet…',
+    });
   }
 
   // Persist sync stats for the event album
   const now = nowIsoTimestamp();
   updateAlbumSyncStats(eventAlbumRecord.albumId, now, totalSynced);
 
+  if (jobId) {
+    updateJob(jobId, {
+      stage:       'done',
+      currentStep: `Done — ${totalSynced} photo(s) synced.`,
+    });
+  }
+
   Logger.log(
     `[PhotosService] syncEventToAlbums: event="${event.eventName}", ` +
-    `clubTags=${clubTagsSynced.length}, totalSynced=${totalSynced}, errors=${errors.length}`
+    `clubTags=${clubTagsSynced.length}, totalSynced=${totalSynced}, ` +
+    `warnings=${warnings.length}, errors=${errors.length}`
   );
 
   return {
@@ -1089,7 +1226,10 @@ export function syncEventToAlbums(
       eventAlbumId:   eventAlbumRecord.albumId,
       clubTagsSynced,
       totalSynced,
-      errors,
+      // Warnings (skipped folders, etc.) are surfaced to the caller so the
+      // admin sees both signals; the legacy `errors` field is preserved for
+      // backwards compat but now contains only hard failures.
+      errors:         [...warnings, ...errors],
     },
   };
 }
