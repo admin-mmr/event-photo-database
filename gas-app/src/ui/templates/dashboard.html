@@ -23,37 +23,37 @@
           <nav class="mdl-navigation">
             <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=dashboard">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">home</i>
-              Home
+              Home&nbsp;/&nbsp;首页
             </a>
             <? if (isAdmin) { ?>
-            <a class="mdl-navigation__link" href="?action=admin_users">
-              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>
-              Users
-            </a>
             <a class="mdl-navigation__link" href="?action=admin_events">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
-              Events
+              Events&nbsp;/&nbsp;活动
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_links">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">link</i>
+              Upload Links&nbsp;/&nbsp;上传链接
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_photos">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">photo_library</i>
+              Media &amp; Albums&nbsp;/&nbsp;媒体与相册
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_users">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">manage_accounts</i>
+              Users&nbsp;/&nbsp;用户
             </a>
             <a class="mdl-navigation__link" href="?action=admin_clubs">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>
-              Clubs
-            </a>            <a class="mdl-navigation__link" href="?action=admin_links">
-              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">link</i>
-              Links
-            </a>
-
-            <a class="mdl-navigation__link" href="?action=admin_photos">
-              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">photo_library</i>
-              Photos
+              Clubs&nbsp;/&nbsp;跑团
             </a>
             <a class="mdl-navigation__link" href="?action=admin_audit">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">history</i>
-              Audit Log
+              Audit Log&nbsp;/&nbsp;操作日志
             </a>
             <? } ?>
             <a class="mdl-navigation__link" href="?action=drive_tree">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">account_tree</i>
-              File System
+              File System&nbsp;/&nbsp;文件系统
             </a>
           </nav>
         </div>
@@ -161,35 +161,19 @@
         <div class="tile-grid">
 
           <? if (isAdmin) { ?>
-          <!-- Admin tiles -->
-          <a class="tile" href="?action=admin_users">
-            <i class="material-icons tile-icon">manage_accounts</i>
-            <div>
-              <div class="tile-label">User Management</div>
-              <div class="tile-sub">Add, edit, or deactivate users</div>
-            </div>
-          </a>
-
+          <!-- Admin tiles — ordered by priority -->
           <a class="tile" href="?action=admin_events">
             <i class="material-icons tile-icon">event</i>
             <div>
-              <div class="tile-label">Events</div>
-              <div class="tile-sub">Create and manage event folders</div>
-            </div>
-          </a>
-
-          <a class="tile" href="?action=admin_clubs">
-            <i class="material-icons tile-icon">groups</i>
-            <div>
-              <div class="tile-label">Clubs</div>
-              <div class="tile-sub">Add or deactivate running clubs</div>
+              <div class="tile-label">Events / 活动</div>
+              <div class="tile-sub">Create and manage event folders / 创建并管理活动文件夹</div>
             </div>
           </a>
 
           <a class="tile" href="?action=admin_links">
             <i class="material-icons tile-icon">link</i>
             <div>
-              <div class="tile-label">Upload Links</div>
+              <div class="tile-label">Upload Links / 上传链接</div>
               <div class="tile-sub">Generate &amp; manage upload links for photographers / 生成并管理上传链接</div>
             </div>
           </a>
@@ -197,26 +181,42 @@
           <a class="tile" href="?action=admin_photos">
             <i class="material-icons tile-icon">photo_library</i>
             <div>
-              <div class="tile-label">Photos Overview</div>
-              <div class="tile-sub">Upload stats & Google Photos albums</div>
+              <div class="tile-label">Media &amp; Albums / 媒体与相册</div>
+              <div class="tile-sub">Upload stats, Google Photos albums &amp; folder index / 上传统计、相册与文件夹索引</div>
+            </div>
+          </a>
+
+          <a class="tile" href="?action=admin_users">
+            <i class="material-icons tile-icon">manage_accounts</i>
+            <div>
+              <div class="tile-label">Users / 用户</div>
+              <div class="tile-sub">Add, edit, or deactivate users / 添加、编辑或停用用户</div>
+            </div>
+          </a>
+
+          <a class="tile" href="?action=admin_clubs">
+            <i class="material-icons tile-icon">groups</i>
+            <div>
+              <div class="tile-label">Clubs / 跑团</div>
+              <div class="tile-sub">Add or deactivate running clubs / 添加或停用跑团</div>
             </div>
           </a>
 
           <a class="tile" href="?action=admin_audit">
             <i class="material-icons tile-icon">history</i>
             <div>
-              <div class="tile-label">Audit Log</div>
-              <div class="tile-sub">Review all admin actions</div>
+              <div class="tile-label">Audit Log / 操作日志</div>
+              <div class="tile-sub">Review all admin actions / 查看所有管理员操作记录</div>
             </div>
           </a>
           <? } ?>
 
-          <!-- Tiles for all users -->
+          <!-- Tile for all users -->
           <a class="tile" href="?action=drive_tree">
             <i class="material-icons tile-icon">account_tree</i>
             <div>
-              <div class="tile-label">File System</div>
-              <div class="tile-sub">Browse events, clubs &amp; upload batches</div>
+              <div class="tile-label">File System / 文件系统</div>
+              <div class="tile-sub">Browse events, clubs &amp; upload batches / 浏览活动、跑团与上传批次</div>
             </div>
           </a>
 
