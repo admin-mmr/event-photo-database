@@ -52,7 +52,8 @@ import {
   saveFileRecord,
   updateAlbumSyncStats,
 } from './photoAlbumsRepo';
-import { tryRebuildPublicAlbumIndex } from './publicSpreadsheetService';
+import { tryRebuildPublicAlbumIndex, tryRebuildPublicFoldersIndex } from './publicSpreadsheetService';
+import { tryRebuildSpecialFoldersForBatch } from './specialFoldersService';
 import { notifyAlbumNeedsShare } from './emailService';
 import { getSuperAdmins } from '../config/superAdmins';
 
@@ -901,6 +902,17 @@ export function syncBatchToAlbums(
   // Refresh the public, view-only album index so the syncedFileCount column
   // reflects this batch. Best-effort — see tryRebuildPublicAlbumIndex docs.
   if (synced > 0) tryRebuildPublicAlbumIndex();
+
+  // Refresh the consolidated Photos_NNN buckets and the (event, club, tag)
+  // Videos folder of Drive shortcuts. We always run this after sync — even if
+  // synced=0 — because the source files were uploaded to Drive directly,
+  // independent of the Photos sync, and may need to be linked even when the
+  // Photos pipeline reported no new media items (e.g. all photos already
+  // dedup'd against Photo_Files). Best-effort — never fails the sync.
+  tryRebuildSpecialFoldersForBatch(eventId, clubName, tag);
+  // Then refresh the public Folders tab so it reflects the new shortcut
+  // counts. Independent of the Albums tab refresh above.
+  tryRebuildPublicFoldersIndex();
 
   return {
     status: ResultStatus.SUCCESS,

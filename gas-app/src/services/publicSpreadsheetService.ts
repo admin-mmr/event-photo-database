@@ -41,15 +41,26 @@
  */
 
 import { listPublicAlbumIndex, PublicAlbumIndexEntry } from './publicAlbumIndexService';
-import { PhotosAlbumRecord } from '../types/models';
+import { PhotosAlbumRecord, EventRecord, SpecialFolderRecord, ClubRecord } from '../types/models';
 import { nowIsoTimestamp } from '../utils/dateFormatter';
 import { getGoogleAlbumDetails, AlbumDetails } from './photosApiClient';
 import { loadAlbumOverrides, AlbumOverride } from './albumOverridesService';
+import { listAllSpecialFolders } from './specialFoldersService';
+import { listAll as listAllEvents } from './eventService';
+import { listActive as listActiveClubs } from './clubService';
 
 /* global PropertiesService, SpreadsheetApp, Logger, Utilities */
 
 /** Tab name inside the public spreadsheet. */
 const PUBLIC_ALBUM_TAB = 'Albums';
+
+/**
+ * Tab name for the new index of consolidated photo folders + per-scope video
+ * folders that specialFoldersService maintains in Drive. Sits alongside the
+ * Albums tab; the column layout is independent so admins can rearrange one
+ * without affecting the other.
+ */
+const PUBLIC_FOLDERS_TAB = 'Folders';
 
 /** Script Property key holding the public spreadsheet's file ID. */
 const PROP_KEY = 'PUBLIC_ALBUM_INDEX_SHEET_ID';
@@ -512,6 +523,207 @@ export function tryRebuildPublicAlbumIndex(): void {
   } catch (err) {
     Logger.log(
       `[publicSpreadsheetService] Non-fatal: failed to refresh public album index: ${String(err)}`
+    );
+  }
+}
+
+// ─── Folders tab (consolidated photos + per-scope videos) ────────────────────
+
+/**
+ * Header row written at the top of the Folders tab.
+ *
+ * Column order is part of the public contract — anyone who has bookmarked
+ * the published-to-web view will see this layout. Add new columns at the
+ * end rather than reordering.
+ *
+ * Scope semantics:
+ *   - "Photos" → one of the per-event Photos_NNN buckets (each up to
+ *     MAX_SHORTCUTS_PER_PHOTOS_FOLDER shortcuts). Club/Tag are blank.
+ *   - "Videos" → the per-(event, club, tag) Videos folder. Club + Tag
+ *     are populated.
+ *
+ * "Folder Index" is the 1-based ordinal (1..N for photo buckets; always 1
+ * for video folders), so admins sorting by (Event, Scope, Folder Index) get
+ * the natural reading order.
+ */
+const FOLDERS_HEADERS: ReadonlyArray<string> = [
+  'Event Date',     // YYYY-MM-DD
+  'Event Name',
+  'Scope',          // "Photos" or "Videos"
+  'Club',           // empty for Photos rows
+  'Tag',            // empty for Photos rows
+  'Folder Name',    // e.g. "Photos_001", "Videos"
+  'Folder Index',   // 1..N for photos; 1 for videos
+  'File Count',     // shortcut count at last refresh
+  'Folder Link',    // https://drive.google.com/drive/folders/<id>
+  'Last Refreshed', // ISO timestamp of the most recent rebuild
+];
+
+/** Display labels keep the public tab readable; they don't affect storage. */
+function scopeLabel(scope: 'photos' | 'videos'): string {
+  return scope === 'photos' ? 'Photos' : 'Videos';
+}
+
+/**
+ * Sorts Special_Folders rows for the public tab.
+ *
+ * Primary:   event date descending (newest first), to match the Albums tab.
+ * Secondary: event id ascending so events on the same date are grouped.
+ * Tertiary:  Photos before Videos within an event.
+ * Within Photos: bucket ordinal ascending (Photos_001, Photos_002, …).
+ * Within Videos: club name ascending, then tag ascending.
+ */
+function compareFolderRows(
+  a: { eventDate: string; eventId: string; record: SpecialFolderRecord },
+  b: { eventDate: string; eventId: string; record: SpecialFolderRecord }
+): number {
+  if (a.eventDate !== b.eventDate) return b.eventDate.localeCompare(a.eventDate);
+  if (a.eventId !== b.eventId) return a.eventId.localeCompare(b.eventId);
+  if (a.record.scope !== b.record.scope) {
+    return a.record.scope === 'photos' ? -1 : 1;
+  }
+  if (a.record.scope === 'photos') {
+    return a.record.folderIndex - b.record.folderIndex;
+  }
+  // Both videos
+  const clubCmp = a.record.clubName.localeCompare(b.record.clubName);
+  if (clubCmp !== 0) return clubCmp;
+  return a.record.tag.localeCompare(b.record.tag);
+}
+
+/**
+ * Flattens Special_Folders records into the 2D row layout used by the
+ * Folders tab. Pure function — exported for unit testing.
+ *
+ * Rows whose eventId is unknown to the Events sheet are dropped (the event
+ * was deleted or migrated away). Rows whose clubName is unknown are still
+ * shown using the raw normalizedName so admins can see and clean them up.
+ */
+export function buildFolderRows(
+  records: ReadonlyArray<SpecialFolderRecord>,
+  events: ReadonlyArray<EventRecord>,
+  clubs: ReadonlyArray<ClubRecord>
+): unknown[][] {
+  const eventById = new Map<string, EventRecord>();
+  for (const ev of events) eventById.set(ev.eventId, ev);
+
+  const clubDisplayByNorm = new Map<string, string>();
+  for (const c of clubs) clubDisplayByNorm.set(c.normalizedName, c.displayName);
+
+  const enriched: Array<{
+    eventDate: string;
+    eventId: string;
+    record: SpecialFolderRecord;
+    eventName: string;
+  }> = [];
+
+  for (const r of records) {
+    const ev = eventById.get(r.eventId);
+    if (!ev) continue; // event deleted / unknown — drop
+    enriched.push({
+      eventDate: ev.eventDate,
+      eventId: ev.eventId,
+      eventName: ev.eventName,
+      record: r,
+    });
+  }
+
+  enriched.sort(compareFolderRows);
+
+  return enriched.map((e) => {
+    const r = e.record;
+    const clubLabel =
+      r.scope === 'photos'
+        ? ''
+        : clubDisplayByNorm.get(r.clubName) ?? r.clubName;
+    return [
+      e.eventDate,
+      e.eventName,
+      scopeLabel(r.scope),
+      clubLabel,
+      r.scope === 'photos' ? '' : r.tag,
+      r.folderName,
+      r.folderIndex,
+      r.fileCount,
+      r.folderUrl,
+      r.lastRefreshedAt,
+    ];
+  });
+}
+
+/**
+ * Rebuilds the Folders tab from scratch.
+ *
+ * Mirrors rebuildPublicAlbumIndex() in shape: open the configured public
+ * spreadsheet, ensure the tab exists, clear contents, write headers + rows,
+ * stamp a "last refreshed" note one column past the headers.
+ *
+ * Returns the number of data rows written. Returns 0 with a log when the
+ * Script Property is unset (feature disabled).
+ *
+ * Throws on Sheets API errors so manual admin runs see the failure. Hot-path
+ * callers should use tryRebuildPublicFoldersIndex().
+ */
+export function rebuildPublicFoldersIndex(): number {
+  const fileId = getPublicSheetId();
+  if (!fileId) {
+    Logger.log(
+      `[publicSpreadsheetService] ${PROP_KEY} not set — public folders index is disabled`
+    );
+    return 0;
+  }
+
+  const ss = SpreadsheetApp.openById(fileId);
+  let sheet = ss.getSheetByName(PUBLIC_FOLDERS_TAB);
+  if (!sheet) sheet = ss.insertSheet(PUBLIC_FOLDERS_TAB);
+
+  // Pull the source data once. listAllEvents uses a generous pageSize so
+  // tens of thousands of events fit; for systems past that, paginate.
+  const records = listAllSpecialFolders();
+  const events = listAllEvents(1, 10000, 'desc').items;
+  const clubs = listActiveClubs();
+
+  const dataRows = buildFolderRows(records, events, clubs);
+
+  sheet.clearContents();
+
+  sheet
+    .getRange(1, 1, 1, FOLDERS_HEADERS.length)
+    .setValues([FOLDERS_HEADERS as unknown[]])
+    .setFontWeight('bold');
+  sheet.setFrozenRows(1);
+
+  sheet
+    .getRange(1, FOLDERS_HEADERS.length + 1)
+    .setValue(`Last refreshed: ${nowIsoTimestamp()}`)
+    .setFontStyle('italic');
+
+  if (dataRows.length > 0) {
+    sheet
+      .getRange(2, 1, dataRows.length, FOLDERS_HEADERS.length)
+      .setValues(dataRows);
+  }
+
+  SpreadsheetApp.flush();
+
+  Logger.log(
+    `[publicSpreadsheetService] Rewrote ${PUBLIC_FOLDERS_TAB} tab: ` +
+    `${dataRows.length} row(s) across ${records.length} folder(s)`
+  );
+  return dataRows.length;
+}
+
+/**
+ * Best-effort wrapper for hot paths (post-batch-sync hook in photosService).
+ * Swallows every error and logs it — the Folders tab is a downstream
+ * convenience like the Albums tab; failing here must never fail an upload.
+ */
+export function tryRebuildPublicFoldersIndex(): void {
+  try {
+    rebuildPublicFoldersIndex();
+  } catch (err) {
+    Logger.log(
+      `[publicSpreadsheetService] Non-fatal: failed to refresh public folders index: ${String(err)}`
     );
   }
 }

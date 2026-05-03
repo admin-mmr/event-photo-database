@@ -1,5 +1,5 @@
 import { UserRole, UserStatus, UploadSource, AuditAction, SyncQueueStatus, DeletedFileStatus } from '../types/enums';
-import { UserRecord, EventRecord, UploadLogRecord, UploadLinkRecord, ClubRecord, AuditLogRecord, PhotosAlbumRecord, PhotosFileRecord, EmailPreferenceRecord, SyncQueueRecord, DeletedFileRecord } from '../types/models';
+import { UserRecord, EventRecord, UploadLogRecord, UploadLinkRecord, ClubRecord, AuditLogRecord, PhotosAlbumRecord, PhotosFileRecord, EmailPreferenceRecord, SyncQueueRecord, DeletedFileRecord, SpecialFolderRecord, SpecialFolderScope } from '../types/models';
 import { COLUMNS } from '../config/constants';
 
 /**
@@ -601,6 +601,65 @@ export function fromEmailPreferenceRecord(record: EmailPreferenceRecord): unknow
     record.dailyReport,
     record.weeklyReport,
     record.updatedAt,
+  ];
+}
+
+// ─── Special Folders ──────────────────────────────────────────────────────────
+
+const SPECIAL_FOLDER_SCOPES: ReadonlySet<SpecialFolderScope> = new Set([
+  'photos',
+  'videos',
+]);
+
+/**
+ * Coerces a raw Sheets row into a SpecialFolderRecord.
+ * Returns null when the row's primary key is missing or the scope is not one
+ * of the known SpecialFolderScope values.
+ */
+export function toSpecialFolderRecord(row: unknown[]): SpecialFolderRecord | null {
+  const COL = COLUMNS.SPECIAL_FOLDERS;
+  if (row.length <= COL.LAST_REFRESHED_AT) return null;
+
+  const folderId = String(row[COL.FOLDER_ID] ?? '').trim();
+  const eventId  = String(row[COL.EVENT_ID]  ?? '').trim();
+  const scope    = String(row[COL.SCOPE]      ?? '').trim();
+
+  if (!folderId || !eventId) return null;
+  if (!SPECIAL_FOLDER_SCOPES.has(scope as SpecialFolderScope)) return null;
+
+  const folderIndex = Number(row[COL.FOLDER_INDEX]);
+  const fileCount   = Number(row[COL.FILE_COUNT]);
+
+  return {
+    folderId,
+    eventId,
+    scope:           scope as SpecialFolderScope,
+    clubName:        String(row[COL.CLUB_NAME]   ?? '').trim(),
+    tag:             String(row[COL.TAG]         ?? '').trim(),
+    folderName:      String(row[COL.FOLDER_NAME] ?? '').trim(),
+    folderIndex:     isFinite(folderIndex) && folderIndex > 0 ? folderIndex : 1,
+    folderUrl:       String(row[COL.FOLDER_URL]  ?? '').trim(),
+    fileCount:       isFinite(fileCount) && fileCount >= 0 ? fileCount : 0,
+    lastRefreshedAt: String(row[COL.LAST_REFRESHED_AT] ?? '').trim(),
+  };
+}
+
+/**
+ * Converts a SpecialFolderRecord back to a Sheets row.
+ * Column order must match COLUMNS.SPECIAL_FOLDERS exactly.
+ */
+export function fromSpecialFolderRecord(record: SpecialFolderRecord): unknown[] {
+  return [
+    record.folderId,
+    record.eventId,
+    record.scope,
+    record.clubName,
+    record.tag,
+    record.folderName,
+    record.folderIndex,
+    record.folderUrl,
+    record.fileCount,
+    record.lastRefreshedAt,
   ];
 }
 

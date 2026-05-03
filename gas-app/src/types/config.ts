@@ -28,6 +28,13 @@ export interface SheetNames {
   readonly EMAIL_PREFERENCES: string;
   readonly SYNC_QUEUE: string;
   readonly DELETED_FILES: string;
+  /**
+   * Special_Folders sheet — tracks the per-event "Photos_NNN" consolidated
+   * shortcut folders and the per-(event, club, tag) "Videos" folders the
+   * specialFoldersService creates inside the Drive hierarchy. Row-level
+   * source of truth for the public Folders index tab.
+   */
+  readonly SPECIAL_FOLDERS: string;
 }
 
 /**
@@ -48,6 +55,7 @@ export interface SheetColumnMap {
   readonly EMAIL_PREFERENCES: EmailPreferencesSheetColumns;
   readonly SYNC_QUEUE: SyncQueueSheetColumns;
   readonly DELETED_FILES: DeletedFilesSheetColumns;
+  readonly SPECIAL_FOLDERS: SpecialFoldersSheetColumns;
 }
 
 export interface EmailPreferencesSheetColumns {
@@ -203,6 +211,34 @@ export interface SyncQueueSheetColumns {
   readonly LAST_ATTEMPT_AT:   9;  // ISO 8601 timestamp of most recent attempt; empty initially
   readonly ERROR_MSG:         10; // Last error message; empty if no error
   readonly COMPLETED_AT:      11; // ISO 8601 timestamp when status became 'done'; empty otherwise
+}
+
+/**
+ * Special_Folders sheet columns.
+ *
+ * One row per special folder created by specialFoldersService:
+ *   - scope = 'photos': consolidated per-event Photos_NNN folders that hold
+ *     up to MAX_SHORTCUTS_PER_PHOTOS_FOLDER Drive shortcuts to every photo
+ *     under the event. clubName / tag are empty for these rows; folderIndex
+ *     is the 1-based ordinal of the folder in the indexed series.
+ *   - scope = 'videos': per-(event, club, tag) Videos folder containing
+ *     Drive shortcuts to every video under that scope. clubName + tag are
+ *     populated; folderIndex is always 1 (one folder per scope).
+ *
+ * folderId is the Drive folder ID and serves as the primary key. Rows are
+ * append-only on first creation and updated in place by subsequent rebuilds.
+ */
+export interface SpecialFoldersSheetColumns {
+  readonly FOLDER_ID:        0;  // Drive folder ID (primary key)
+  readonly EVENT_ID:         1;  // FK → Events.eventId
+  readonly SCOPE:            2;  // 'photos' | 'videos'
+  readonly CLUB_NAME:        3;  // Normalized club name; empty for scope='photos'
+  readonly TAG:              4;  // Tag/photographer label; empty for scope='photos'
+  readonly FOLDER_NAME:      5;  // e.g. "Photos_001", "Videos"
+  readonly FOLDER_INDEX:     6;  // 1-based ordinal (1 for videos; 1..N for photos)
+  readonly FOLDER_URL:       7;  // Drive folder web URL
+  readonly FILE_COUNT:       8;  // Number of shortcuts inside the folder at last rebuild
+  readonly LAST_REFRESHED_AT: 9; // ISO 8601 timestamp of the last rebuild that touched the folder
 }
 
 /**

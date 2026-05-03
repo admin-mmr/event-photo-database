@@ -255,6 +255,48 @@ export interface ClubRecord {
  * and purgeDeletedFiles(). A row is never hard-deleted from the sheet — the
  * full lifecycle (deleted → restored or purged) is preserved for the audit trail.
  */
+/**
+ * Scope tag for a row in the Special_Folders sheet.
+ *
+ * 'photos' rows describe the per-event "Photos_NNN" indexed shortcut folders
+ * that consolidate every photo under an event into flat shortcut buckets of
+ * up to MAX_SHORTCUTS_PER_PHOTOS_FOLDER files each.
+ *
+ * 'videos' rows describe the per-(event, club, tag) "Videos" folder that
+ * holds shortcuts to every video uploaded under that scope.
+ */
+export type SpecialFolderScope = 'photos' | 'videos';
+
+/**
+ * A row in the "Special_Folders" sheet.
+ *
+ * Tracks Drive folders that specialFoldersService creates and refreshes after
+ * each batch sync. Authoritative state for what shortcut folders currently
+ * exist; the public Folders index tab is rebuilt directly from these rows.
+ */
+export interface SpecialFolderRecord {
+  /** Drive folder ID — primary key. */
+  readonly folderId: string;
+  /** FK → EventRecord.eventId. */
+  readonly eventId: string;
+  /** 'photos' = consolidated event-level Photos_NNN; 'videos' = (event, club, tag) Videos. */
+  readonly scope: SpecialFolderScope;
+  /** Normalized club name. Empty for scope='photos'. */
+  readonly clubName: string;
+  /** Tag/photographer label. Empty for scope='photos'. */
+  readonly tag: string;
+  /** Folder name on Drive, e.g. "Photos_001" or "Videos". */
+  readonly folderName: string;
+  /** 1-based ordinal: 1..N for photos; always 1 for videos. */
+  readonly folderIndex: number;
+  /** Drive folder web URL (https://drive.google.com/drive/folders/<id>). */
+  readonly folderUrl: string;
+  /** Number of shortcut files inside the folder at the last rebuild. */
+  readonly fileCount: number;
+  /** ISO 8601 timestamp of the most recent rebuild that touched this folder. */
+  readonly lastRefreshedAt: string;
+}
+
 export interface DeletedFileRecord {
   readonly deleteId:        string;  // UUID v4 (primary key)
   readonly driveFileId:     string;  // Google Drive file ID

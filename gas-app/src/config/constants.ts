@@ -239,6 +239,18 @@ export const COLUMNS: SheetColumnMap = {
     PURGED_AT:         12,
     STATUS:            13,
   },
+  SPECIAL_FOLDERS: {
+    FOLDER_ID:         0,
+    EVENT_ID:          1,
+    SCOPE:             2,
+    CLUB_NAME:         3,
+    TAG:               4,
+    FOLDER_NAME:       5,
+    FOLDER_INDEX:      6,
+    FOLDER_URL:        7,
+    FILE_COUNT:        8,
+    LAST_REFRESHED_AT: 9,
+  },
 };
 
 /**
@@ -345,6 +357,59 @@ export const DELETED_FILES_HEADERS: ReadonlyArray<string> = [
 /** How long a soft-deleted file sits in trash before it is permanently purged. */
 export const SOFT_DELETE_RETENTION_DAYS = 30;
 
+// ─── Special folders (consolidated photos + per-scope videos) ────────────────
+
+/**
+ * Folder name prefix for the consolidated photo shortcut folders that
+ * specialFoldersService creates directly under each event folder.
+ *
+ *   <Event>/Photos_001/      ← shortcuts to up to MAX_SHORTCUTS_PER_PHOTOS_FOLDER photos
+ *   <Event>/Photos_002/      ← overflow when the previous folder fills up
+ *   ...
+ *
+ * Three-digit zero-padded ordinals support up to 999 folders × 800 files =
+ * 799,200 photos per event before we'd need to widen the suffix — well past
+ * any realistic event size.
+ */
+export const PHOTOS_FOLDER_PREFIX = 'Photos_';
+
+/**
+ * Cap on the number of Drive shortcut files inside a single Photos_NNN folder.
+ *
+ * Drive itself doesn't enforce 800 — the cap is a UX choice: folders with
+ * more than ~1,000 children become slow to browse in the Drive UI and slow
+ * to enumerate via DriveApp.getFiles(). 800 leaves headroom for the
+ * "shortcut to <name>" rendering Drive sometimes appends without spilling
+ * over the soft scroll limit.
+ */
+export const MAX_SHORTCUTS_PER_PHOTOS_FOLDER = 800;
+
+/**
+ * Folder name for the per-(event, club, tag) Videos folder created by
+ * specialFoldersService. Lives as a sibling of the batch folders inside the
+ * tag folder (or directly under the club folder for legacy tag-less rows).
+ *
+ *   <Event>/<Club>/<Tag>/Videos/    ← shortcuts to every video under (event, club, tag)
+ */
+export const VIDEOS_FOLDER_NAME = 'Videos';
+
+/**
+ * Expected header row for the Special_Folders sheet.
+ * Column order must match COLUMNS.SPECIAL_FOLDERS exactly.
+ */
+export const SPECIAL_FOLDERS_HEADERS: ReadonlyArray<string> = [
+  'FOLDER_ID',
+  'EVENT_ID',
+  'SCOPE',
+  'CLUB_NAME',
+  'TAG',
+  'FOLDER_NAME',
+  'FOLDER_INDEX',
+  'FOLDER_URL',
+  'FILE_COUNT',
+  'LAST_REFRESHED_AT',
+];
+
 /**
  * Volunteer upload pipeline: accepted MIME types.
  * Includes all photo types (JPEG, PNG, HEIC, WEBP) and video (MP4, MOV).
@@ -435,6 +500,7 @@ export function getConfig(): AppConfig {
       EMAIL_PREFERENCES: 'Email_Preferences',
       SYNC_QUEUE:        'Sync_Queue',
       DELETED_FILES:     'Deleted_Files',
+      SPECIAL_FOLDERS:   'Special_Folders',
     },
     PHOTO_MIME_TYPES: [PhotoMimeType.JPEG, PhotoMimeType.PNG, PhotoMimeType.HEIC],
     MAX_FILE_SIZE_MB: 50,   // GAS hard limit per UrlFetch payload
