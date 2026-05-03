@@ -44,6 +44,7 @@ import { listPublicAlbumIndex, PublicAlbumIndexEntry } from './publicAlbumIndexS
 import { PhotosAlbumRecord } from '../types/models';
 import { nowIsoTimestamp } from '../utils/dateFormatter';
 import { getGoogleAlbumDetails, AlbumDetails } from './photosApiClient';
+import { loadAlbumOverrides, AlbumOverride } from './albumOverridesService';
 
 /* global PropertiesService, SpreadsheetApp, Logger, Utilities */
 
@@ -69,15 +70,27 @@ const REBUILD_INTER_CALL_DELAY_MS = 150;
  * end rather than reordering.
  *
  * "Permission" reflects the live share status read from Google Photos at
- * rebuild time:
- *   - "Public"  → album has shareInfo (Anyone with the link can view)
- *   - "Private" → album exists but is unshared
- *   - "Missing" → album was not found in Google Photos (likely deleted)
- *   - "Unknown" → API call failed or feature disabled
+ * rebuild time, or an admin-provided override when the API can't see the
+ * album:
+ *   - "Public"       → album has shareInfo (Anyone with the link can view)
+ *   - "Private"      → album exists but is unshared
+ *   - "Inaccessible" → API returned 403/404. With our scopes this most
+ *                      often means the album was created outside this OAuth
+ *                      client, NOT that it was deleted. Set an entry in the
+ *                      ALBUM_OVERRIDES Script Property to pin the label.
+ *   - "Unknown"      → API hit a 5xx / network error during rebuild
  *
  * "Photos" is also refreshed live from `mediaItemsCount` on each rebuild,
  * so albums that were populated outside the sync pipeline (e.g. backfills
- * done manually in photos.google.com) no longer show 0.
+ * done manually in photos.google.com) no longer show 0. When neither the
+ * API nor the sheet has a positive count, the cell is left blank rather
+ * than displaying a misleading "0".
+ *
+ * "Album Link" prefers, in order:
+ *   1. shareInfo.shareableUrl from the live API (canonical public URL)
+ *   2. override.shareableUrl from ALBUM_OVERRIDES Script Property
+ *   3. The sheet's stored albumUrl (productUrl — owner-only, may 500
+ *      for anonymous viewers; last-resort fallback only)
  */
 const HEADERS: ReadonlyArray<string> = [
   'Event Date',     // YYYY-MM-DD
@@ -194,27 +207,82 @@ function normalizeAlbumDisplay(
 }
 
 /**
- * Maps live album-details into the user-facing permission label.
- * `null` (missing entry in the cache) means we never asked the API — fall
- * back to "Unknown" so the column never goes blank.
+ * Maps live album-details + admin override into the user-facing permission
+ * label. The admin override always wins, since it represents
+ * ground-truth that the admin has manually verified.
+ *
+ * Label semantics:
+ *   - 'Public'       → API confirms shareInfo (or override pins it)
+ *   - 'Private'      → API confirms no shareInfo (or override pins it)
+ *   - 'Inaccessible' → API returned 403/404; album exists but our OAuth
+ *                      client cannot read it. Most common reason an admin
+ *                      who *just* shared an album still sees the wrong
+ *                      label.
+ *   - 'Unknown'      → 5xx, network error, or the rebuild never asked
+ *
+ * Note we deliberately do NOT use 'Missing'. With Google's deny-by-default
+ * 404 behaviour for cross-client reads, we cannot tell deleted albums
+ * apart from inaccessible ones. The reconciliation report (a separate
+ * trigger) catches the truly-deleted case.
  */
-function permissionLabel(details: AlbumDetails | null): string {
+function permissionLabel(
+  details: AlbumDetails | null,
+  override: AlbumOverride | undefined
+): string {
+  if (override?.permission) return override.permission;
   if (!details) return 'Unknown';
-  if (!details.found) return 'Missing';
+  if (details.accessibility === 'denied') return 'Inaccessible';
+  if (!details.found) return 'Unknown';
   return details.isShared ? 'Public' : 'Private';
 }
 
 /**
- * Picks the photo count to display: prefer the live mediaItemsCount from
- * Google Photos when available, otherwise fall back to the cached
- * syncedFileCount on the sheet row. Resolves the "Photos always 0" pattern
- * for albums that were populated out-of-band.
+ * Picks the URL to render in the "Album Link" column.
+ *
+ * Priority:
+ *   1. live shareInfo.shareableUrl  — public, sharded "Anyone with the link"
+ *      URL. Works for unauthenticated viewers.
+ *   2. override.shareableUrl        — admin-pinned share URL, used when
+ *      the API can't see the album but the admin has manually shared it.
+ *   3. normalized sheet URL         — historical productUrl. Owner-only;
+ *      anonymous viewers will see a Google 500 page when clicking. We
+ *      keep this as a last resort so existing rows aren't blanked out.
+ *
+ * Returning '' (empty string) is intentionally avoided unless we truly
+ * have nothing — the sheet renders that as a blank cell, and admins
+ * usually prefer a dead link they can debug over no link at all.
  */
-function photoCount(album: PhotosAlbumRecord, details: AlbumDetails | null): number {
+function albumLink(
+  normalizedUrl: string,
+  details: AlbumDetails | null,
+  override: AlbumOverride | undefined
+): string {
+  if (details?.shareableUrl) return details.shareableUrl;
+  if (override?.shareableUrl) return override.shareableUrl;
+  return normalizedUrl;
+}
+
+/**
+ * Picks the photo count to display.
+ *
+ *   - Prefer the live mediaItemsCount from Google Photos when available.
+ *   - Fall back to the sheet's cached syncedFileCount.
+ *   - When BOTH are zero AND we have no live data, render '' (empty)
+ *     rather than "0", which would imply we know the album is empty.
+ *     For albums the API can't see, "0" is almost certainly wrong.
+ *
+ * Returns either a number (positive count) or '' for "we don't know".
+ */
+function photoCount(
+  album: PhotosAlbumRecord,
+  details: AlbumDetails | null
+): number | string {
   if (details && details.found && typeof details.mediaItemsCount === 'number') {
     return details.mediaItemsCount;
   }
-  return album.syncedFileCount;
+  if (album.syncedFileCount > 0) return album.syncedFileCount;
+  // Last resort: API didn't tell us, sheet says 0. Don't pretend to know.
+  return '';
 }
 
 /**
@@ -229,7 +297,8 @@ function photoCount(album: PhotosAlbumRecord, details: AlbumDetails | null): num
  */
 function buildRows(
   entries: ReadonlyArray<PublicAlbumIndexEntry>,
-  liveDetails: Map<string, AlbumDetails>
+  liveDetails: Map<string, AlbumDetails>,
+  overrides: Map<string, AlbumOverride>
 ): unknown[][] {
   const rows: unknown[][] = [];
 
@@ -239,6 +308,7 @@ function buildRows(
       const fallback = `${entry.eventDate} ${entry.eventName}`;
       const norm = normalizeAlbumDisplay(a, fallback);
       const details = liveDetails.get(a.albumId) ?? null;
+      const override = overrides.get(a.albumId);
       rows.push([
         entry.eventDate,
         entry.eventName,
@@ -247,9 +317,9 @@ function buildRows(
         '',
         norm.title,
         photoCount(a, details),
-        norm.url,
+        albumLink(norm.url, details, override),
         norm.lastSyncAt,
-        permissionLabel(details),
+        permissionLabel(details, override),
       ]);
     }
     for (const c of entry.clubAlbums) {
@@ -258,6 +328,7 @@ function buildRows(
         (a.tag ? ` – ${a.tag}` : '');
       const norm = normalizeAlbumDisplay(a, fallback);
       const details = liveDetails.get(a.albumId) ?? null;
+      const override = overrides.get(a.albumId);
       rows.push([
         entry.eventDate,
         entry.eventName,
@@ -266,9 +337,9 @@ function buildRows(
         a.tag,
         norm.title,
         photoCount(a, details),
-        norm.url,
+        albumLink(norm.url, details, override),
         norm.lastSyncAt,
-        permissionLabel(details),
+        permissionLabel(details, override),
       ]);
     }
   }
@@ -287,32 +358,65 @@ function buildRows(
 function fetchLiveAlbumDetails(
   entries: ReadonlyArray<PublicAlbumIndexEntry>
 ): Map<string, AlbumDetails> {
+  // Collect (albumId, albumTitle) once per unique id so the diagnostic
+  // log lines are human-readable. The title makes it 100x easier to
+  // figure out which album an "API denied" entry refers to.
   const seen = new Set<string>();
-  const ids: string[] = [];
+  const queue: { id: string; title: string }[] = [];
   for (const entry of entries) {
-    if (entry.eventAlbum?.albumId && !seen.has(entry.eventAlbum.albumId)) {
-      seen.add(entry.eventAlbum.albumId);
-      ids.push(entry.eventAlbum.albumId);
+    const ev = entry.eventAlbum;
+    if (ev?.albumId && !seen.has(ev.albumId)) {
+      seen.add(ev.albumId);
+      queue.push({ id: ev.albumId, title: ev.albumTitle });
     }
     for (const c of entry.clubAlbums) {
-      if (c.album.albumId && !seen.has(c.album.albumId)) {
-        seen.add(c.album.albumId);
-        ids.push(c.album.albumId);
+      const a = c.album;
+      if (a.albumId && !seen.has(a.albumId)) {
+        seen.add(a.albumId);
+        queue.push({ id: a.albumId, title: a.albumTitle });
       }
     }
   }
 
   const out = new Map<string, AlbumDetails>();
-  for (let i = 0; i < ids.length; i++) {
+  let denied = 0;
+  let serverError = 0;
+  let networkError = 0;
+
+  for (let i = 0; i < queue.length; i++) {
     if (i > 0) Utilities.sleep(REBUILD_INTER_CALL_DELAY_MS);
+    const { id, title } = queue[i];
     try {
-      out.set(ids[i], getGoogleAlbumDetails(ids[i]));
+      const details = getGoogleAlbumDetails(id);
+      out.set(id, details);
+
+      if (!details.found) {
+        // Per-row log so admins can see exactly which albums the API
+        // can't see and why. Truncate title — Logger lines are limited.
+        const titleShort = title.length > 60 ? title.slice(0, 57) + '…' : title;
+        Logger.log(
+          `[publicSpreadsheetService] albums.get HTTP ${details.httpStatus} ` +
+          `(${details.accessibility}) for "${titleShort}" (${id})`
+        );
+        if (details.accessibility === 'denied')       denied++;
+        else if (details.accessibility === 'server_error') serverError++;
+        else if (details.accessibility === 'network')      networkError++;
+      }
     } catch (err) {
       Logger.log(
-        `[publicSpreadsheetService] albums.get failed for ${ids[i]}: ${String(err)}`
+        `[publicSpreadsheetService] albums.get threw for "${title}" (${id}): ${String(err)}`
       );
       // Leave it out of the map — caller will render "Unknown".
     }
+  }
+
+  if (denied + serverError + networkError > 0) {
+    Logger.log(
+      `[publicSpreadsheetService] Live album fetch summary: ` +
+      `total=${queue.length}, denied=${denied}, ` +
+      `server_error=${serverError}, network=${networkError}. ` +
+      `Set ALBUM_OVERRIDES Script Property to pin Permission/URL for denied albums.`
+    );
   }
   return out;
 }
@@ -351,7 +455,15 @@ export function rebuildPublicAlbumIndex(): number {
   // come from the same albums.get response, so we pay one HTTP round-trip
   // per album and learn everything we need.
   const liveDetails = fetchLiveAlbumDetails(entries);
-  const dataRows = buildRows(entries, liveDetails);
+  // Admin-pinned values for albums the API can't see (403/404). Read from
+  // the ALBUM_OVERRIDES Script Property; safe to call even when unset.
+  const overrides = loadAlbumOverrides();
+  if (overrides.size > 0) {
+    Logger.log(
+      `[publicSpreadsheetService] Applying ${overrides.size} entry(ies) from ALBUM_OVERRIDES`
+    );
+  }
+  const dataRows = buildRows(entries, liveDetails, overrides);
 
   // Clear and rewrite. clearContents() leaves formatting (frozen rows, column
   // widths) intact, which keeps any layout the admin set up by hand.

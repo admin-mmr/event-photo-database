@@ -36,11 +36,14 @@ export function getAuthToken(): string {
 /**
  * Makes a POST request to the Photos Library API with a JSON body.
  * Returns parsed JSON data on 2xx, or an error description on failure.
+ *
+ * `status` mirrors photosGet — populated when an HTTP response was actually
+ * received, 0 when the fetch itself threw.
  */
 export function photosPost(
   endpoint: string,
   body: object
-): { ok: boolean; data?: unknown; error?: string } {
+): { ok: boolean; data?: unknown; error?: string; status: number } {
   try {
     const response = UrlFetchApp.fetch(`${PHOTOS_API_BASE}${endpoint}`, {
       method: 'post',
@@ -56,11 +59,11 @@ export function photosPost(
     const text = response.getContentText();
 
     if (code < 200 || code >= 300) {
-      return { ok: false, error: `HTTP ${code}: ${text.slice(0, 300)}` };
+      return { ok: false, error: `HTTP ${code}: ${text.slice(0, 300)}`, status: code };
     }
-    return { ok: true, data: JSON.parse(text) };
+    return { ok: true, data: JSON.parse(text), status: code };
   } catch (err) {
-    return { ok: false, error: String(err) };
+    return { ok: false, error: String(err), status: 0 };
   }
 }
 
@@ -364,10 +367,15 @@ export function createGoogleAlbum(
 /**
  * Makes a GET request to the Photos Library API.
  * Returns parsed JSON data on 2xx, or an error description on failure.
+ *
+ * The HTTP status code is always populated when the request actually
+ * round-tripped (status > 0); callers use it to distinguish 403/404
+ * "not visible to this app" from 5xx "transient backend error". A status
+ * of 0 means the fetch threw before we got a response.
  */
 export function photosGet(
   endpoint: string
-): { ok: boolean; data?: unknown; error?: string } {
+): { ok: boolean; data?: unknown; error?: string; status: number } {
   try {
     const response = UrlFetchApp.fetch(`${PHOTOS_API_BASE}${endpoint}`, {
       method: 'get',
@@ -381,11 +389,11 @@ export function photosGet(
     const text = response.getContentText();
 
     if (code < 200 || code >= 300) {
-      return { ok: false, error: `HTTP ${code}: ${text.slice(0, 300)}` };
+      return { ok: false, error: `HTTP ${code}: ${text.slice(0, 300)}`, status: code };
     }
-    return { ok: true, data: JSON.parse(text) };
+    return { ok: true, data: JSON.parse(text), status: code };
   } catch (err) {
-    return { ok: false, error: String(err) };
+    return { ok: false, error: String(err), status: 0 };
   }
 }
 
@@ -397,14 +405,41 @@ export interface AlbumShareInfo {
 }
 
 /**
+ * Coarse-grained outcome bucket for `albums.get`. Distinguishes the cases
+ * the public-sheet rebuild and the reconciliation report care about:
+ *
+ *   'ok'           — 2xx; album exists and is visible to this app.
+ *   'denied'       — 403/404. With our scopes (appendonly +
+ *                    edit.appcreateddata) Google returns 403/404 not just
+ *                    for deleted albums but also for albums the app didn't
+ *                    create (legacy albums, manually-created albums,
+ *                    albums migrated from a different OAuth client).
+ *                    Callers should NOT label these as "Missing"; the
+ *                    album probably still exists, we just can't see it.
+ *   'server_error' — 5xx; usually transient. Retry next rebuild.
+ *   'network'      — fetch threw, no HTTP response at all.
+ *   'other'        — any other non-2xx status we didn't categorize.
+ */
+export type AlbumAccessibility =
+  | 'ok'
+  | 'denied'
+  | 'server_error'
+  | 'network'
+  | 'other';
+
+/**
  * Richer view of an album returned by `albums.get`. Includes everything
  * AlbumShareInfo carries plus the live media-item count and whether the
  * album was actually found (used by reconciliation to detect dangling
  * sheet rows whose albumId no longer exists in Google Photos).
  */
 export interface AlbumDetails extends AlbumShareInfo {
-  /** False if the API returned 404 or any other error for this albumId. */
+  /** True when the API returned 200 — i.e. accessibility === 'ok'. */
   found: boolean;
+  /** Why we couldn't see the album, if found is false. See AlbumAccessibility. */
+  accessibility: AlbumAccessibility;
+  /** Last HTTP status returned (or 0 for network errors). */
+  httpStatus: number;
   /** Live count from mediaMetadata (server-side), or null on error. */
   mediaItemsCount: number | null;
   /** Title as currently stored in Google Photos; empty on error. */
@@ -450,6 +485,8 @@ export function getGoogleAlbumDetails(
       isShared: false,
       shareableUrl: '',
       found: false,
+      accessibility: classifyAccessibility(result.status),
+      httpStatus: result.status,
       mediaItemsCount: null,
       title: '',
       productUrl: '',
@@ -477,10 +514,26 @@ export function getGoogleAlbumDetails(
     isShared:        Boolean(album.shareInfo),
     shareableUrl:    album.shareInfo?.shareableUrl ?? '',
     found:           true,
+    accessibility:   'ok',
+    httpStatus:      result.status,
     mediaItemsCount,
     title:           album.title    ?? '',
     productUrl:      album.productUrl ?? '',
   };
+}
+
+/**
+ * Maps an HTTP status code into the AlbumAccessibility bucket. 403/404 both
+ * collapse into 'denied' because Google deliberately conflates "not found"
+ * with "you don't have permission" for security reasons — we can't reliably
+ * tell whether an album was deleted or just isn't visible to this OAuth
+ * client.
+ */
+function classifyAccessibility(status: number): AlbumAccessibility {
+  if (status === 403 || status === 404) return 'denied';
+  if (status >= 500 && status < 600) return 'server_error';
+  if (status === 0) return 'network';
+  return 'other';
 }
 
 // ─── Owner-album listing (reconciliation) ────────────────────────────────────
