@@ -91,7 +91,10 @@ export function createDriveShortcut(
   targetFileId: string,
   shortcutName: string
 ): CreateShortcutResult {
-  const url = `${DRIVE_API_BASE}/files?fields=id`;
+  // supportsAllDrives=true is required when the target file or destination
+  // folder lives in a Shared Drive. Without it the REST API returns 404
+  // even though DriveApp (used by walkMediaFiles) found the file fine.
+  const url = `${DRIVE_API_BASE}/files?fields=id&supportsAllDrives=true`;
   const body = {
     name: shortcutName,
     mimeType: DRIVE_SHORTCUT_MIME,
