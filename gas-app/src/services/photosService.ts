@@ -469,8 +469,29 @@ export function syncBatchFolderToAlbum(
       };
     }
 
-    const file     = iter.next();
-    const mimeType = file.getMimeType();
+    const file = iter.next();
+    let mimeType = file.getMimeType();
+
+    // When Drive stores a file as application/octet-stream (happens when the
+    // upload client sends no Content-Type or an empty one — common on mobile
+    // for .jpeg/.heic files), fall back to the extension so we don't skip
+    // genuine photos that were just mis-typed at upload time.
+    if (mimeType === 'application/octet-stream') {
+      const ext = file.getName().split('.').pop()?.toLowerCase() ?? '';
+      const EXT_MIME: Record<string, string> = {
+        jpg: 'image/jpeg', jpeg: 'image/jpeg',
+        png: 'image/png',
+        heic: 'image/heic', heif: 'image/heic',
+        webp: 'image/webp',
+      };
+      if (EXT_MIME[ext]) {
+        Logger.log(
+          `[PhotosService] MIME fallback: "${file.getName()}" stored as octet-stream, ` +
+          `using ${EXT_MIME[ext]} from extension .${ext}`
+        );
+        mimeType = EXT_MIME[ext];
+      }
+    }
 
     // Skip non-photo files
     if (!PHOTO_MIME_TYPES.has(mimeType)) {
@@ -607,10 +628,28 @@ export function syncBatchFolderToTwoAlbums(
   };
   const pending: Pending[] = [];
 
+  const EXT_MIME_MAP: Record<string, string> = {
+    jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    png: 'image/png',
+    heic: 'image/heic', heif: 'image/heic',
+    webp: 'image/webp',
+  };
+
   const iter = folder.getFiles();
   while (iter.hasNext()) {
-    const file     = iter.next();
-    const mimeType = file.getMimeType();
+    const file = iter.next();
+    let mimeType = file.getMimeType();
+    // Fallback: files uploaded with no/wrong Content-Type end up as octet-stream.
+    if (mimeType === 'application/octet-stream') {
+      const ext = file.getName().split('.').pop()?.toLowerCase() ?? '';
+      if (EXT_MIME_MAP[ext]) {
+        Logger.log(
+          `[PhotosService] MIME fallback: "${file.getName()}" stored as octet-stream, ` +
+          `using ${EXT_MIME_MAP[ext]} from extension .${ext}`
+        );
+        mimeType = EXT_MIME_MAP[ext];
+      }
+    }
     if (!PHOTO_MIME_TYPES.has(mimeType)) {
       skipped++;
       if (jobId) incrementJobCounters(jobId, { photosSkipped: 1 });

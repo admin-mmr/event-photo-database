@@ -791,9 +791,25 @@
       return out.buffer;
     }
 
+    /**
+     * Infers MIME type from the file extension when the browser doesn't supply
+     * one (common on mobile for .jpeg/.heic files where file.type is empty).
+     */
+    function mimeFromExtension(filename) {
+      var ext = filename.split('.').pop().toLowerCase();
+      var map = {
+        jpg: 'image/jpeg', jpeg: 'image/jpeg',
+        png: 'image/png',
+        heic: 'image/heic', heif: 'image/heic',
+        webp: 'image/webp',
+        mp4: 'video/mp4', mov: 'video/quicktime',
+      };
+      return map[ext] || null;
+    }
+
     function uploadToDrive(file, accessToken, folderId) {
       return new Promise(function(resolve, reject) {
-        var mimeType = file.type || 'application/octet-stream';
+        var mimeType = file.type || mimeFromExtension(file.name) || 'application/octet-stream';
         var metadata = JSON.stringify({ name: file.name, parents: [folderId] });
         // Use a unique boundary per upload to avoid collisions across parallel calls.
         var boundary = 'mmr_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2);
