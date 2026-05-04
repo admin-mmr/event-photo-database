@@ -890,8 +890,8 @@
           ? chipLink('exists', 'check', 'Event Album', albumData.event.albumUrl || albumData.event.shareableUrl)
           : chip('missing', 'error_outline', 'No Album');
 
-        var btnLabel = hasEvent ? 'Sync Albums' : 'Create Albums';
-        var btnIcon  = hasEvent ? 'sync' : 'add_photo_alternate';
+        var btnLabel       = hasEvent ? 'Sync Albums' : 'Create Albums';
+        var btnIcon        = hasEvent ? 'sync' : 'add_photo_alternate';
 
         // Group (club, tag) albums by club so the UI shows:
         //   ClubName
@@ -962,6 +962,13 @@
                   'onclick="handleSyncEvent(\'' + ev.eventId + '\', this)">' +
           '      <i class="material-icons" style="vertical-align:middle;margin-right:4px;">' + btnIcon + '</i>' +
                   btnLabel +
+          '    </button>' +
+          '    <button class="mdl-button mdl-js-button mdl-button--raised"' +
+          '            style="background:#f3e5f5;color:#6a1b9a;"' +
+          '            title="Rebuild Photos_NNN and Videos shortcut folders in Drive"' +
+          '            onclick="handleRebuildFolders(\'' + ev.eventId + '\', this)">' +
+          '      <i class="material-icons" style="vertical-align:middle;margin-right:4px;">folder_special</i>' +
+          '      Rebuild Folders' +
           '    </button>' +
           '  </div>' +
           '</div>' +
@@ -1641,6 +1648,47 @@
 
       startSyncJob('backfill-all', {}, btn,
         '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">hourglass_empty</i>Running…');
+    }
+
+    /**
+     * Manually rebuilds Photos_NNN and Videos shortcut folders for one event.
+     * Calls serverRebuildSpecialFolders, then shows a toast with the result.
+     * Idempotent — safe to run multiple times.
+     */
+    function handleRebuildFolders(eventId, btn) {
+      btn.disabled = true;
+      var originalHtml = btn.innerHTML;
+      btn.innerHTML =
+        '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">hourglass_empty</i>Rebuilding…';
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          if (!result || result.status !== 'success') {
+            showErrorBanner((result && result.message) || 'Rebuild failed');
+            return;
+          }
+          var d = result.data || {};
+          var detail =
+            'Photos: ' + (d.photosCreated || 0) + ' new, ' + (d.photosExisting || 0) + ' existing' +
+            (d.photosFoldersTouched > 0 ? ' (' + d.photosFoldersTouched + ' folder(s))' : '') +
+            '. Videos: ' + (d.videosCreated || 0) + ' new, ' + (d.videosExisting || 0) + ' existing' +
+            (d.videoScopes > 0 ? ' across ' + d.videoScopes + ' scope(s)' : '') + '.';
+          showToast(detail, 'success', 7000);
+          if (d.warnings && d.warnings.length > 0) {
+            d.warnings.forEach(function(w) { showErrorBanner('Rebuild warning: ' + w); });
+          }
+        })
+        .withFailureHandler(function(err) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          showErrorBanner('Rebuild Folders error: ' + String(err));
+        })
+        .serverRebuildSpecialFolders({
+          eventId:      eventId,
+          sessionToken: window.SESSION_TOKEN || '',
+        });
     }
 
     /**

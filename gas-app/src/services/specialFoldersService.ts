@@ -616,6 +616,103 @@ export function rebuildClubVideoFolder(
   };
 }
 
+// ─── Per-event full rebuild ───────────────────────────────────────────────────
+
+/** Aggregate result returned by rebuildAllSpecialFoldersForEvent. */
+export interface RebuildAllResult {
+  photos: ServiceResult<RebuildResult>;
+  videoResults: Array<{
+    clubName: string;
+    tag: string;
+    result: ServiceResult<RebuildResult>;
+  }>;
+}
+
+/**
+ * Rebuilds Photos_NNN AND all Videos folders for one event.
+ *
+ * Photos: delegates to rebuildEventPhotoFolders — walks every photo under the
+ * event subtree and partitions them into Photos_001, Photos_002, … buckets.
+ *
+ * Videos: enumerates every first-level club subfolder under the event, then
+ * every second-level tag subfolder under each club. For each (club, '') scope
+ * AND each (club, tag) scope it calls rebuildClubVideoFolder, which creates
+ * (or updates) a sibling Videos/ folder containing shortcuts to every video
+ * in that scope.
+ *
+ * Returns a structured result so the caller can surface per-scope outcomes.
+ * Errors inside individual scopes are captured, not thrown, so a single
+ * failing club folder never aborts the rest of the rebuild.
+ */
+export function rebuildAllSpecialFoldersForEvent(eventId: string): RebuildAllResult {
+  const photos = rebuildEventPhotoFolders(eventId);
+
+  const event = findEventById(eventId);
+  const videoResults: RebuildAllResult['videoResults'] = [];
+
+  if (!event) return { photos, videoResults };
+
+  const eventFolderResult = getFolderById(event.driveFolderId);
+  if (
+    eventFolderResult.status !== ResultStatus.SUCCESS ||
+    !eventFolderResult.data
+  ) {
+    return { photos, videoResults };
+  }
+
+  const eventFolder = eventFolderResult.data;
+  const clubIter = eventFolder.getFolders();
+
+  while (clubIter.hasNext()) {
+    const clubFolder = clubIter.next();
+    const clubName = clubFolder.getName();
+
+    // Skip the managed Photos_NNN and any Videos folders at the event level.
+    if (
+      clubName.startsWith(PHOTOS_FOLDER_PREFIX) ||
+      clubName === VIDEOS_FOLDER_NAME
+    ) {
+      continue;
+    }
+
+    // Rebuild for (club, '') — videos living directly inside the club folder.
+    try {
+      videoResults.push({
+        clubName,
+        tag: '',
+        result: rebuildClubVideoFolder(eventId, clubName, ''),
+      });
+    } catch (err) {
+      Logger.log(
+        `[specialFoldersService.rebuildAllSpecialFoldersForEvent] event=${eventId} ` +
+        `club=${clubName} tag="" threw: ${String(err)}`
+      );
+    }
+
+    // Rebuild for each tag subfolder inside the club folder.
+    const tagIter = clubFolder.getFolders();
+    while (tagIter.hasNext()) {
+      const tagFolder = tagIter.next();
+      const tag = tagFolder.getName();
+      if (tag === VIDEOS_FOLDER_NAME) continue; // skip any stray Videos folder
+      try {
+        videoResults.push({
+          clubName,
+          tag,
+          result: rebuildClubVideoFolder(eventId, clubName, tag),
+        });
+      } catch (err) {
+        Logger.log(
+          `[specialFoldersService.rebuildAllSpecialFoldersForEvent] event=${eventId} ` +
+          `club=${clubName} tag="${tag}" threw: ${String(err)}`
+        );
+      }
+    }
+  }
+
+  return { photos, videoResults };
+}
+
 /**
  * Best-effort wrapper called by the post-batch-sync hot path. Refreshes both
  * the per-event Photos_NNN folders and the (event, club, tag) Videos folder

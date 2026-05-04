@@ -20,6 +20,7 @@ import {
   reconcileAllPhotos,
   EventInfo,
 } from '../services/photosService';
+import { rebuildAllSpecialFoldersForEvent } from '../services/specialFoldersService';
 import {
   rebuildPublicAlbumIndex,
   getPublicSpreadsheetUrl,
@@ -361,6 +362,74 @@ export function serverRebuildPublicAlbumIndex(payload: WithSession): ServerRespo
     return {
       status: 'error',
       message: `Internal error rebuilding public album index: ${String(err)}`,
+    };
+  }
+}
+
+/**
+ * Manually rebuilds the Photos_NNN shortcut folders and all Videos/ shortcut
+ * folders for one event. Available to both club_admin and super_admin.
+ *
+ * This is the on-demand counterpart to the automatic tryRebuildSpecialFolders-
+ * ForBatch() call that runs after each uploaded batch. Use it when:
+ *   - Photos_001 / Videos folders are missing after a recent upload
+ *   - A Drive API hiccup caused the automatic rebuild to be silently skipped
+ *   - New photos were added directly to Drive (bypassing the upload UI)
+ *
+ * The operation is idempotent — existing shortcuts are deduped by targetId,
+ * so running it multiple times never produces duplicates.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function serverRebuildSpecialFolders(
+  payload: WithSession<{ eventId: string }>
+): ServerResponse {
+  try {
+    const auth = requireAdminOrFail(payload?.sessionToken);
+    if (!auth.ok) return auth.response;
+    if (!payload.eventId) return { status: 'error', message: 'eventId is required' };
+
+    const { photos, videoResults } = rebuildAllSpecialFoldersForEvent(payload.eventId);
+
+    const photosCreated  = photos.data?.shortcutsCreated  ?? 0;
+    const photosExisting = photos.data?.shortcutsExisting ?? 0;
+    const videosCreated  = videoResults.reduce(
+      (sum, r) => sum + (r.result.data?.shortcutsCreated ?? 0), 0
+    );
+    const videosExisting = videoResults.reduce(
+      (sum, r) => sum + (r.result.data?.shortcutsExisting ?? 0), 0
+    );
+    const warnings = [
+      ...(photos.data?.warnings ?? []),
+      ...videoResults.flatMap((r) => r.result.data?.warnings ?? []),
+    ];
+
+    const msg =
+      `Photos: ${photosCreated} new shortcut(s), ${photosExisting} already linked. ` +
+      `Videos: ${videosCreated} new shortcut(s), ${videosExisting} already linked.` +
+      (warnings.length > 0 ? ` ${warnings.length} warning(s).` : '');
+
+    Logger.log(
+      `[serverRebuildSpecialFolders] actor=${auth.adminEmail} event=${payload.eventId} — ${msg}`
+    );
+
+    return {
+      status: 'success',
+      message: msg,
+      data: {
+        photosCreated,
+        photosExisting,
+        photosFoldersTouched: photos.data?.foldersTouched ?? 0,
+        videosCreated,
+        videosExisting,
+        videoScopes: videoResults.length,
+        warnings,
+      },
+    };
+  } catch (err) {
+    Logger.log(`serverRebuildSpecialFolders error: ${String(err)}`);
+    return {
+      status: 'error',
+      message: `Internal error rebuilding special folders: ${String(err)}`,
     };
   }
 }
