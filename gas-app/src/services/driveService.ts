@@ -886,6 +886,95 @@ export function trashBatchFolder(
   }
 }
 
+// ─── Tag / club folder deletion ──────────────────────────────────────────────
+
+/** Managed folder name prefixes that are not user content and exempt from the empty-check. */
+function isManagedFolder(name: string): boolean {
+  return name === 'Videos' || name.startsWith('Photos_');
+}
+
+/**
+ * Moves a tag (Layer-2.5) or club (Layer-2) folder to Drive trash.
+ *
+ * Safety checks before trashing:
+ *   1. Folder exists and is accessible.
+ *   2. No user-content subfolders remain inside it — managed folders (Videos/,
+ *      Photos_NNN/) are exempt. If any real subfolder is still present the call
+ *      is rejected so admins must clean up children first.
+ *   3. Parent-chain walk confirms the folder belongs to `claimedClubName`.
+ *
+ * @param folderId        Drive ID of the tag or club folder to trash
+ * @param folderType      'tag' | 'club' — for log messages and ownership check
+ * @param claimedClubName Normalized club name the caller asserts this folder belongs to
+ */
+export function trashScopeFolder(
+  folderId: string,
+  folderType: 'tag' | 'club',
+  claimedClubName: string
+): ServiceResult<{ folderName: string }> {
+  try {
+    const folderResult = getFolderById(folderId);
+    if (folderResult.status !== ResultStatus.SUCCESS || !folderResult.data) {
+      return { status: ResultStatus.ERROR, message: folderResult.message };
+    }
+    const folder     = folderResult.data;
+    const folderName = folder.getName();
+
+    // Check no user-content subfolders remain.
+    const subIter = folder.getFolders();
+    while (subIter.hasNext()) {
+      const sub = subIter.next();
+      if (!isManagedFolder(sub.getName())) {
+        return {
+          status: ResultStatus.ERROR,
+          message:
+            `"${folderName}" still contains subfolder "${sub.getName()}". ` +
+            'Delete all inner folders first.',
+        };
+      }
+    }
+
+    // Verify club ownership.
+    // Club folder: the folder itself is named after the club.
+    // Tag folder:  immediate parent is the club folder.
+    let resolvedClubName: string;
+    if (folderType === 'club') {
+      resolvedClubName = folderName;
+    } else {
+      const parentIter = folder.getParents();
+      if (!parentIter.hasNext()) {
+        return { status: ResultStatus.ERROR, message: 'Tag folder has no parent — cannot verify club ownership.' };
+      }
+      resolvedClubName = parentIter.next().getName();
+    }
+
+    if (resolvedClubName !== claimedClubName) {
+      return {
+        status: ResultStatus.ERROR,
+        message: `Ownership check failed: folder belongs to club "${resolvedClubName}", not "${claimedClubName}".`,
+      };
+    }
+
+    folder.setTrashed(true);
+
+    Logger.log(
+      `[driveService.trashScopeFolder] ${folderType}="${folderName}" (${folderId}) ` +
+      `trashed — club="${claimedClubName}"`
+    );
+
+    return {
+      status: ResultStatus.SUCCESS,
+      message: `${folderType === 'club' ? 'Club' : 'Tag'} folder "${folderName}" moved to Drive trash.`,
+      data: { folderName },
+    };
+  } catch (err) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Failed to trash ${folderType} folder: ${String(err)}`,
+    };
+  }
+}
+
 // ─── Contract test helpers ────────────────────────────────────────────────────
 
 /**
@@ -909,3 +998,4 @@ export function verifyRootFolderAccess(): ServiceResult<{ name: string; id: stri
     };
   }
 }
+

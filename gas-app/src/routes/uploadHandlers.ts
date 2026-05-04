@@ -18,6 +18,7 @@ import {
   getEventDriveTree,
   invalidateEventDriveTreeCache,
   trashBatchFolder,
+  trashScopeFolder,
 } from '../services/driveService';
 import { appendAuditLog, appendAuditFailure } from '../services/auditLogService';
 import { appendUploadLog } from '../services/uploadLogService';
@@ -420,5 +421,101 @@ export function serverDeleteBatchFolder(payload: WithSession): ServerResponse {
       attemptedPayload: payload as unknown as Record<string, unknown>,
     });
     return { status: 'error', message: `Internal error deleting batch folder: ${String(err)}` };
+  }
+}
+
+/**
+ * Moves a tag (Layer-2.5) or club (Layer-2) folder to Drive trash.
+ *
+ * Safety: the server rejects the call if any user-content subfolder still
+ * exists inside the target folder — admins must delete inner folders first.
+ * Club admins may only delete folders belonging to their own club.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function serverDeleteScopeFolder(payload: WithSession): ServerResponse {
+  Logger.log(
+    `[serverDeleteScopeFolder] entry — payload keys=[${
+      payload && typeof payload === 'object'
+        ? Object.keys(payload as Record<string, unknown>).join(',')
+        : '(empty)'
+    }]`
+  );
+  try {
+    const authResult = authenticateRequest(payload?.sessionToken);
+    if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
+      appendAuditFailure({
+        actorEmail:       '',
+        action:           AuditAction.ADMIN_AUTH_REJECTED,
+        resourceType:     'folder',
+        stage:            'auth',
+        message:          authResult.message,
+        attemptedPayload: payload as unknown as Record<string, unknown>,
+      });
+      return { status: 'error', message: 'Authentication required' };
+    }
+    const user = authResult.data;
+
+    const folderId   = String((payload as Record<string, unknown>).folderId   ?? '').trim();
+    const folderType = String((payload as Record<string, unknown>).folderType ?? '').trim() as 'tag' | 'club';
+    const clubName   = String((payload as Record<string, unknown>).clubName   ?? '').trim();
+    const eventId    = String((payload as Record<string, unknown>).eventId    ?? '').trim();
+
+    if (!folderId || !folderType || !clubName || !eventId) {
+      return { status: 'error', message: 'folderId, folderType, clubName, and eventId are required' };
+    }
+    if (folderType !== 'tag' && folderType !== 'club') {
+      return { status: 'error', message: 'folderType must be "tag" or "club"' };
+    }
+
+    // Club admins may only act on their own club.
+    if (user.role === UserRole.CLUB_ADMIN && user.clubId !== clubName) {
+      appendAuditFailure({
+        actorEmail:       user.email,
+        action:           AuditAction.FOLDER_DELETE_FAILED,
+        resourceType:     'folder',
+        resourceId:       folderId,
+        stage:            'authorization',
+        message:          `Cross-club access denied (actorClub=${user.clubId}, requestedClub=${clubName})`,
+        attemptedPayload: payload as unknown as Record<string, unknown>,
+      });
+      return {
+        status: 'error',
+        message: `You administer "${user.clubId}" and cannot delete folders for "${clubName}".`,
+      };
+    }
+
+    const result = trashScopeFolder(folderId, folderType, clubName);
+    if (result.status !== ResultStatus.SUCCESS || !result.data) {
+      appendAuditFailure({
+        actorEmail:       user.email,
+        action:           AuditAction.FOLDER_DELETE_FAILED,
+        resourceType:     'folder',
+        resourceId:       folderId,
+        stage:            'service_layer',
+        message:          result.message,
+        attemptedPayload: payload as unknown as Record<string, unknown>,
+      });
+      return { status: 'error', message: result.message };
+    }
+
+    invalidateEventDriveTreeCache(eventId);
+
+    appendAuditLog({
+      actorEmail:   user.email,
+      action:       AuditAction.FOLDER_DELETED,
+      resourceType: 'folder',
+      resourceId:   folderId,
+      details:      { folderName: result.data.folderName, folderType, clubName, eventId },
+    });
+
+    Logger.log(
+      `[serverDeleteScopeFolder] success — ${folderType}="${result.data.folderName}" ` +
+      `(${folderId}) trashed by ${user.email} — event=${eventId} club=${clubName}`
+    );
+
+    return { status: 'success', message: result.message, data: result.data };
+  } catch (err) {
+    Logger.log(`[serverDeleteScopeFolder] unhandled exception: ${String(err)}`);
+    return { status: 'error', message: `Internal error deleting folder: ${String(err)}` };
   }
 }

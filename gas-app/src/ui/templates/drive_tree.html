@@ -580,6 +580,23 @@
         header.setAttribute('aria-expanded', String(open));
       });
 
+      // Delete club folder button — shown only when club has no content left.
+      var clubIsEmpty = !hasContent;
+      var canDeleteClub = IS_ADMIN && (IS_SUPER_ADMIN || USER_CLUB_ID === club.name);
+      if (canDeleteClub && clubIsEmpty) {
+        var clubDelBtn = document.createElement('button');
+        clubDelBtn.type = 'button';
+        clubDelBtn.className = 'batch-delete-btn';
+        clubDelBtn.title = 'Move empty club folder to trash';
+        clubDelBtn.setAttribute('aria-label', 'Delete club folder "' + escHtml(club.name) + '"');
+        clubDelBtn.innerHTML = '<i class="material-icons" style="font-size:16px;">delete</i>';
+        clubDelBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          openScopeDeleteModal(club.id, 'club', club.name, club.name, eventId, li);
+        });
+        header.appendChild(clubDelBtn);
+      }
+
       li.appendChild(header);
       li.appendChild(body);
       return li;
@@ -604,7 +621,8 @@
       var body = document.createElement('div');
       body.className = 'tag-body';
 
-      if (!tagFolder.batches || tagFolder.batches.length === 0) {
+      var tagIsEmpty = !tagFolder.batches || tagFolder.batches.length === 0;
+      if (tagIsEmpty) {
         body.innerHTML =
           '<div class="empty-event" style="padding-left:56px;">' +
           '<i class="material-icons" style="font-size:16px;color:#bdbdbd;">inbox</i>' +
@@ -622,6 +640,22 @@
         var open = header.classList.toggle('open');
         header.setAttribute('aria-expanded', String(open));
       });
+
+      // Delete tag folder button — shown only when all batches inside are gone.
+      var canDeleteTag = IS_ADMIN && (IS_SUPER_ADMIN || USER_CLUB_ID === clubName);
+      if (canDeleteTag && tagIsEmpty) {
+        var tagDelBtn = document.createElement('button');
+        tagDelBtn.type = 'button';
+        tagDelBtn.className = 'batch-delete-btn';
+        tagDelBtn.title = 'Move empty tag folder to trash';
+        tagDelBtn.setAttribute('aria-label', 'Delete tag folder "' + escHtml(tagFolder.name) + '"');
+        tagDelBtn.innerHTML = '<i class="material-icons" style="font-size:16px;">delete</i>';
+        tagDelBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          openScopeDeleteModal(tagFolder.id, 'tag', tagFolder.name, clubName, eventId, li);
+        });
+        header.appendChild(tagDelBtn);
+      }
 
       li.appendChild(header);
       li.appendChild(body);
@@ -709,7 +743,8 @@
     }
 
     // ── Delete-folder modal ───────────────────────────────────────────────────
-    var pendingDelete = null; // { batchFolderId, clubName, eventId, batchName, fileCount, li }
+    // pendingDelete.kind = 'batch' | 'tag' | 'club'
+    var pendingDelete = null;
     var elDeleteModal   = document.getElementById('deleteFolderModal');
     var elDeleteBody    = document.getElementById('deleteFolderModalBody');
     var elDeleteCancel  = document.getElementById('deleteFolderCancel');
@@ -717,19 +752,38 @@
 
     function openDeleteModal (batch, clubName, eventId, li) {
       pendingDelete = {
+        kind:          'batch',
         batchFolderId: batch.id,
         clubName:      clubName,
         eventId:       eventId,
-        batchName:     batch.name,
+        folderName:    batch.name,
         fileCount:     batch.fileCount,
         li:            li,
       };
-      var countTxt = batch.fileCount === 0
-        ? 'empty folder'
-        : photoLabel(batch.fileCount);
+      var countTxt = batch.fileCount === 0 ? 'empty folder' : photoLabel(batch.fileCount);
       elDeleteBody.textContent =
         'Move "' + batch.name + '" (' + countTxt + ') to Drive trash? ' +
         'You can recover it from Drive within 30 days.';
+      elDeleteConfirm.disabled = false;
+      elDeleteModal.style.display = 'flex';
+      elDeleteCancel.focus();
+    }
+
+    // Opens modal for tag or club folder deletion.
+    function openScopeDeleteModal (folderId, folderType, folderName, clubName, eventId, li) {
+      pendingDelete = {
+        kind:       folderType,  // 'tag' | 'club'
+        folderId:   folderId,
+        folderType: folderType,
+        folderName: folderName,
+        clubName:   clubName,
+        eventId:    eventId,
+        li:         li,
+      };
+      var typeLabel = folderType === 'club' ? 'club' : 'tag';
+      elDeleteBody.textContent =
+        'Move ' + typeLabel + ' folder "' + folderName + '" to Drive trash? ' +
+        'The folder must be empty. You can recover it from Drive within 30 days.';
       elDeleteConfirm.disabled = false;
       elDeleteModal.style.display = 'flex';
       elDeleteCancel.focus();
@@ -760,36 +814,47 @@
       elDeleteConfirm.disabled = true;
       elDeleteConfirm.textContent = 'Moving…';
 
-      google.script.run
-        .withSuccessHandler(function (resp) {
-          elDeleteConfirm.disabled = false;
-          elDeleteConfirm.textContent = 'Move to trash';
-          elDeleteModal.style.display = 'none';
+      var onSuccess = function (resp) {
+        elDeleteConfirm.disabled = false;
+        elDeleteConfirm.textContent = 'Move to trash';
+        elDeleteModal.style.display = 'none';
+        if (resp && resp.status === 'success') {
+          if (d.li && d.li.parentNode) d.li.parentNode.removeChild(d.li);
+          delete treeCache[d.eventId];
+          showToast('"' + d.folderName + '" moved to Drive trash.', 'success');
+        } else {
+          showToast((resp && resp.message) || 'Delete failed.', 'error');
+        }
+      };
+      var onError = function (err) {
+        elDeleteConfirm.disabled = false;
+        elDeleteConfirm.textContent = 'Move to trash';
+        elDeleteModal.style.display = 'none';
+        showToast('Delete failed: ' + String(err), 'error');
+      };
 
-          if (resp && resp.status === 'success') {
-            // Remove the row from the DOM
-            if (d.li && d.li.parentNode) {
-              d.li.parentNode.removeChild(d.li);
-            }
-            // Bust the cache so the next expand re-fetches fresh counts
-            delete treeCache[d.eventId];
-            showToast('"' + d.batchName + '" moved to Drive trash.', 'success');
-          } else {
-            showToast((resp && resp.message) || 'Delete failed.', 'error');
-          }
-        })
-        .withFailureHandler(function (err) {
-          elDeleteConfirm.disabled = false;
-          elDeleteConfirm.textContent = 'Move to trash';
-          elDeleteModal.style.display = 'none';
-          showToast('Delete failed: ' + String(err), 'error');
-        })
-        .serverDeleteBatchFolder({
-          batchFolderId: d.batchFolderId,
-          clubName:      d.clubName,
-          eventId:       d.eventId,
-          sessionToken:  window.SESSION_TOKEN,
-        });
+      if (d.kind === 'batch') {
+        google.script.run
+          .withSuccessHandler(onSuccess)
+          .withFailureHandler(onError)
+          .serverDeleteBatchFolder({
+            batchFolderId: d.batchFolderId,
+            clubName:      d.clubName,
+            eventId:       d.eventId,
+            sessionToken:  window.SESSION_TOKEN,
+          });
+      } else {
+        google.script.run
+          .withSuccessHandler(onSuccess)
+          .withFailureHandler(onError)
+          .serverDeleteScopeFolder({
+            folderId:     d.folderId,
+            folderType:   d.folderType,
+            clubName:     d.clubName,
+            eventId:      d.eventId,
+            sessionToken: window.SESSION_TOKEN,
+          });
+      }
     });
 
     // CSS keyframe for loading spinner
