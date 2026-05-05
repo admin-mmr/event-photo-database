@@ -541,20 +541,54 @@ function handleOAuthCallback(code: string): GoogleAppsScript.HTML.HtmlOutput {
   const safeEmail  = email.replace(/[<>&"']/g, '');
   const safeDash   = dashUrl.replace(/'/g, '%27');
   const html = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Signed in</title>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Signed in</title>
 <style>
-  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:#f5f5f5;
-         display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
-  .card { background:#fff; padding:32px 40px; border-radius:8px;
-          box-shadow:0 2px 12px rgba(0,0,0,.12); text-align:center; max-width:360px; }
-  h3  { margin:0 0 8px; color:#333; }
-  p   { color:#666; margin:0 0 20px; font-size:14px; }
-  a.btn { display:inline-block; background:#3f51b5; color:#fff; text-decoration:none;
-          padding:12px 28px; border-radius:4px; font-size:15px; font-weight:500; }
-  a.btn:hover { background:#303f9f; }
-</style></head>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: linear-gradient(135deg, #e8eaf6 0%, #f5f5f5 100%);
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; margin: 0; padding: 24px;
+  }
+  .card {
+    background: #fff; padding: 40px 32px 36px;
+    border-radius: 16px; box-shadow: 0 8px 32px rgba(0,0,0,.13);
+    text-align: center; width: 100%; max-width: 420px;
+  }
+  .check-circle {
+    width: 64px; height: 64px; border-radius: 50%;
+    background: linear-gradient(135deg, #43a047, #66bb6a);
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 20px;
+    box-shadow: 0 4px 14px rgba(67,160,71,.35);
+  }
+  .check-circle svg { width: 34px; height: 34px; }
+  h3 { margin: 0 0 8px; color: #1a1a2e; font-size: 22px; font-weight: 700; }
+  p  { color: #666; margin: 0 0 28px; font-size: 15px; word-break: break-all; }
+  a.btn {
+    display: block; width: 100%;
+    background: linear-gradient(135deg, #3f51b5, #5c6bc0);
+    color: #fff; text-decoration: none;
+    padding: 18px 24px; border-radius: 12px;
+    font-size: 18px; font-weight: 700; letter-spacing: 0.2px;
+    box-shadow: 0 4px 16px rgba(63,81,181,.4);
+    transition: transform .12s, box-shadow .12s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  a.btn:hover  { background: linear-gradient(135deg, #303f9f, #3f51b5); }
+  a.btn:active { transform: scale(.97); box-shadow: 0 2px 8px rgba(63,81,181,.3); }
+</style>
+</head>
 <body>
   <div class="card">
+    <div class="check-circle">
+      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M5 13l4 4L19 7" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
     <h3>Signed in</h3>
     <p>Welcome, ${safeEmail}</p>
     <a class="btn" href="${safeDash}" target="_top">Continue to Dashboard</a>
