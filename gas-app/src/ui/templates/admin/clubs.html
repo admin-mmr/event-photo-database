@@ -249,6 +249,8 @@
           showToast(result.message, 'error');
           if (result.errors) showFieldErrors(result.errors, 'create-club-form');
         }
+      }).catch(function(err) {
+        showToast('Unexpected error: ' + String(err), 'error');
       });
     }
 
@@ -329,6 +331,8 @@
           } else {
             showToast(result.message, 'error');
           }
+        }).catch(function(err) {
+          showToast('Unexpected error: ' + String(err), 'error');
         });
     }
 
@@ -348,6 +352,8 @@
           } else {
             showToast(result.message, 'error');
           }
+        }).catch(function(err) {
+          showToast('Unexpected error: ' + String(err), 'error');
         });
     }
 
@@ -365,6 +371,8 @@
           } else {
             showToast(result.message, 'error');
           }
+        }).catch(function(err) {
+          showToast('Unexpected error: ' + String(err), 'error');
         });
     }
   </script>

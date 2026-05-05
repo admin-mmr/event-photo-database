@@ -284,6 +284,8 @@
             showToast(result.message, 'error');
             if (result.errors) showFieldErrors(result.errors, 'create-event-form');
           }
+        }).catch(function(err) {
+          showToast('Unexpected error: ' + String(err), 'error');
         });
     }
 
@@ -369,6 +371,8 @@
           } else {
             showToast(result.message, 'error');
           }
+        }).catch(function(err) {
+          showToast('Unexpected error: ' + String(err), 'error');
         });
     }
 

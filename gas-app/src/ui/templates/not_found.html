@@ -16,6 +16,21 @@
     }
     .error-page .material-icons { font-size: 64px; color: #9e9e9e; margin-bottom: 16px; }
     .error-page h4 { margin: 0 0 8px; color: #333; }
+    @media (max-width: 600px) {
+      .error-page {
+        min-height: unset;
+        padding: 48px 20px 32px;
+        justify-content: flex-start;
+      }
+      .error-page .material-icons { font-size: 96px; margin-bottom: 20px; }
+      .error-page h4 { font-size: 24px; }
+      .error-page p { font-size: 15px; line-height: 1.6; }
+      .error-page .mdl-button {
+        height: 48px; line-height: 48px;
+        font-size: 15px; padding: 0 28px;
+        margin-top: 8px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -31,14 +46,23 @@
           <i class="material-icons">search_off</i>
           <h4>Page Not Found</h4>
           <p>Unknown action: <code><?= action ?></code></p>
-          <a href="?action=dashboard"
+          <button onclick="navigate('dashboard')"
              class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored">
             Go to Dashboard
-          </a>
+          </button>
         </div>
       </div>
     </main>
   </div>
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.min.js"></script>
+  <script>
+    // APP_URL is injected by renderTemplate via scriptUrl so window.top navigation
+    // resolves to script.google.com instead of the inner googleusercontent.com iframe.
+    window.APP_URL = '<?= scriptUrl ?>';
+    function navigate(action) {
+      var base = (window.APP_URL || window.location.href).split('?')[0];
+      window.top.location.href = base + '?action=' + action;
+    }
+  </script>
 </body>
 </html>
