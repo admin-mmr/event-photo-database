@@ -94,54 +94,69 @@
     /* In-app browser warning (WeChat / DingTalk / QQ / Weibo / Feishu) */
     .inapp-warning {
       display: none; /* unhidden by JS only when an in-app browser is detected */
-      background: #fff8e1;
-      border: 1px solid #ffe082;
-      border-left: 4px solid #ffa000;
-      border-radius: 4px;
-      padding: 12px 14px;
+      background: #fff3e0;
+      border: 2px solid #ff6d00;
+      border-left: 6px solid #e53935;
+      border-radius: 6px;
+      padding: 16px 18px;
       margin-bottom: 20px;
       text-align: left;
-      font-size: 13px;
-      color: #5d4037;
-      line-height: 1.55;
+      font-size: 16px;
+      font-weight: 700;
+      color: #b71c1c;
+      line-height: 1.65;
     }
     .inapp-warning .inapp-title {
       display: flex;
       align-items: center;
-      gap: 6px;
-      font-weight: 600;
-      color: #e65100;
-      margin-bottom: 6px;
+      gap: 8px;
+      font-weight: 900;
+      font-size: 18px;
+      color: #c62828;
+      margin-bottom: 10px;
+      letter-spacing: 0.2px;
+    }
+    .inapp-warning p {
+      font-size: 15px;
+      font-weight: 700;
+      color: #b71c1c;
     }
     .inapp-warning ol {
-      margin: 6px 0 6px 20px;
+      margin: 8px 0 8px 22px;
       padding: 0;
     }
-    .inapp-warning ol li { margin: 2px 0; }
+    .inapp-warning ol li {
+      margin: 5px 0;
+      font-size: 15px;
+      font-weight: 700;
+      color: #b71c1c;
+    }
     .inapp-warning .inapp-divider {
       border: 0;
-      border-top: 1px dashed #ffcc80;
-      margin: 10px 0;
+      border-top: 2px dashed #ff6d00;
+      margin: 12px 0;
     }
     .inapp-warning .copy-link-row {
       display: flex;
       gap: 8px;
       align-items: center;
-      margin-top: 8px;
+      margin-top: 10px;
     }
     .inapp-warning .copy-link-btn {
-      background: #ffa000;
+      background: #e53935;
       color: #fff;
       border: none;
-      border-radius: 3px;
-      padding: 6px 12px;
-      font-size: 12px;
+      border-radius: 4px;
+      padding: 10px 18px;
+      font-size: 15px;
       cursor: pointer;
-      font-weight: 500;
+      font-weight: 800;
+      letter-spacing: 0.3px;
     }
-    .inapp-warning .copy-link-btn:hover { background: #ff8f00; }
+    .inapp-warning .copy-link-btn:hover { background: #b71c1c; }
     .inapp-warning .copy-status {
-      font-size: 12px;
+      font-size: 14px;
+      font-weight: 700;
       color: #2e7d32;
     }
   </style>
@@ -172,7 +187,7 @@
       -->
       <div id="inapp-warning" class="inapp-warning" role="alert">
         <div class="inapp-title">
-          <i class="material-icons" style="font-size:18px;">warning_amber</i>
+          <i class="material-icons" style="font-size:24px;">warning_amber</i>
           <span>无法在当前浏览器登录 / Sign-in not available here</span>
         </div>
         <p style="margin:0 0 6px;">

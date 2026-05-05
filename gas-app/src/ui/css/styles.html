@@ -191,35 +191,69 @@
 
   .tile {
     background: #fff;
-    border-radius: 4px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.12);
-    padding: 20px;
+    border-radius: 8px;
+    border: 1.5px solid #e0e0e0;
+    border-left: 4px solid #3f51b5;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+    padding: 18px 16px;
     text-decoration: none;
     color: inherit;
-    transition: box-shadow 0.2s;
+    transition: box-shadow 0.18s, border-color 0.18s, transform 0.12s;
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 14px;
+    cursor: pointer;
+    position: relative;
   }
 
-  .tile:hover {
-    box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+  .tile:hover,
+  .tile:focus {
+    box-shadow: 0 6px 18px rgba(63,81,181,0.18);
+    border-color: #3f51b5;
+    transform: translateY(-2px);
+    outline: none;
+  }
+
+  .tile:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 6px rgba(0,0,0,0.12);
   }
 
   .tile-icon {
-    font-size: 36px;
+    font-size: 34px;
     color: #3f51b5;
+    flex-shrink: 0;
+  }
+
+  .tile-body {
+    flex: 1;
+    min-width: 0;
   }
 
   .tile-label {
     font-size: 15px;
-    font-weight: 500;
+    font-weight: 600;
+    color: #1a237e;
   }
 
   .tile-sub {
     font-size: 13px;
     color: #777;
-    margin-top: 2px;
+    margin-top: 3px;
+    line-height: 1.4;
+  }
+
+  .tile-chevron {
+    font-size: 22px !important;
+    color: #9fa8da;
+    flex-shrink: 0;
+    transition: transform 0.15s, color 0.15s;
+  }
+
+  .tile:hover .tile-chevron,
+  .tile:focus .tile-chevron {
+    color: #3f51b5;
+    transform: translateX(3px);
   }
 
   /* ── Header nav toggle (hamburger) ───────────────────────────────────────── */
