@@ -1,6 +1,6 @@
 import { ResultStatus } from '../types/enums';
 import { ServiceResult, FolderViolation } from '../types/responses';
-import { getConfig } from '../config/constants';
+import { getConfig, isSpecialLayer2Folder } from '../config/constants';
 import { listAll as listAllClubs } from './clubService';
 import { validateFolderName } from '../utils/folderNameValidator';
 import { nowIsoTimestamp } from '../utils/dateFormatter';
@@ -375,6 +375,14 @@ export function scanLayer2Violations(
     while (iter.hasNext()) {
       const folder = iter.next();
       const name = folder.getName();
+
+      // System-managed consolidated photo folders (Photos_NNN) sit as siblings
+      // of the club folders. They are created by specialFoldersService and are
+      // not subject to club-name validation — skip them entirely so they don't
+      // surface as false-positive naming violations.
+      if (isSpecialLayer2Folder(name)) {
+        continue;
+      }
 
       const nameValid = validateFolderName({ folderName: name, layer: 2 });
       const isApproved = approvedNames.includes(name);

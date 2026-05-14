@@ -619,6 +619,41 @@ describe('driveService', () => {
       expect(result.data![0].violationType).toContain('Layer 2');
     });
 
+    it('skips system-managed Photos_NNN consolidated folders', () => {
+      // Photos_001, Photos_002 are created by specialFoldersService as
+      // siblings of club folders and must NOT be flagged as naming
+      // violations or as "not in approved clubs list".
+      const photos1 = makeMockFolder('Photos_001', 'photos-1-id');
+      const photos2 = makeMockFolder('Photos_042', 'photos-2-id');
+      const bee     = makeMockFolder('New_Bee', 'club-id-1');
+
+      const eventFolder = makeMockFolder('2025-11-03_NYC_Marathon', 'evt-id');
+      eventFolder.getFolders.mockReturnValue(makeIterator([photos1, bee, photos2]));
+      mockDriveApp.getFolderById.mockReturnValue(eventFolder);
+
+      const result = scanLayer2Violations('evt-id');
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toHaveLength(0);
+    });
+
+    it('still flags lookalike folders that do not match the Photos_NNN pattern', () => {
+      // Three-digit suffix is required: Photos_1 and Photos_abc must not be
+      // treated as system folders, so they should fall through to the normal
+      // club-name validation and surface as violations.
+      const bad1 = makeMockFolder('Photos_1', 'bad-1-id');
+      const bad2 = makeMockFolder('Photos_abc', 'bad-2-id');
+
+      const eventFolder = makeMockFolder('2025-11-03_NYC_Marathon', 'evt-id');
+      eventFolder.getFolders.mockReturnValue(makeIterator([bad1, bad2]));
+      mockDriveApp.getFolderById.mockReturnValue(eventFolder);
+
+      const result = scanLayer2Violations('evt-id');
+
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data).toHaveLength(2);
+    });
+
     it('returns SUCCESS with empty array when event folder has no club subfolders', () => {
       const eventFolder = makeMockFolder('2025-11-03_NYC_Marathon', 'evt-id');
       eventFolder.getFolders.mockReturnValue(makeIterator([]));

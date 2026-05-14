@@ -374,6 +374,32 @@ export const SOFT_DELETE_RETENTION_DAYS = 30;
 export const PHOTOS_FOLDER_PREFIX = 'Photos_';
 
 /**
+ * Regex matching the system-managed consolidated photo folders that
+ * specialFoldersService creates as siblings of the club folders.
+ *
+ * Used by Layer 2 scanners to recognise these folders as system folders
+ * (not user-created club folders) and exempt them from the club-name
+ * validation rules — they intentionally don't start each underscore-
+ * separated segment with a letter, and they are never present in the
+ * approved Clubs list.
+ *
+ * Matches exactly: Photos_NNN where NNN is three decimal digits.
+ *   "Photos_001" ✓   "Photos_999" ✓
+ *   "Photos_1"   ✗   "Photos_01"  ✗   "Photos_abc" ✗
+ */
+export const PHOTOS_FOLDER_NAME_REGEX = /^Photos_\d{3}$/;
+
+/**
+ * Returns true when `name` is a system-managed special folder that lives at
+ * Layer 2 (directly under an event folder) and should be excluded from the
+ * club-name validation scanners. Today this covers the consolidated
+ * Photos_NNN buckets created by specialFoldersService.
+ */
+export function isSpecialLayer2Folder(name: string): boolean {
+  return PHOTOS_FOLDER_NAME_REGEX.test(name);
+}
+
+/**
  * Cap on the number of Drive shortcut files inside a single Photos_NNN folder.
  *
  * Drive itself doesn't enforce 800 — the cap is a UX choice: folders with
