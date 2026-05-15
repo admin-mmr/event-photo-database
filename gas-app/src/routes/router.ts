@@ -56,7 +56,7 @@ import {
   handleForbidden,
 } from './apiRoutes';
 
-/* global Logger, ContentService */
+/* global Logger, ContentService, Utilities */
 
 /**
  * Router — central dispatcher for doGet and doPost.
@@ -155,12 +155,32 @@ export function handleGet(
     }
 
     // ── Volunteer OAuth callback ───────────────────────────────────────────────
-    // Google redirects here with ?code=XXX&state=volunteer:TOKEN after the
-    // volunteer approves sign-in on the confirm page.
+    // Google redirects here with ?code=XXX&state=volunteer:TOKEN(:NAME_B64URL)?
+    // after the volunteer approves sign-in on the confirm page.
+    //
+    // The state may carry an optional third segment: base64url-encoded
+    // photographer name (typed on the confirm page). When present, it is
+    // threaded through to the volunteer session so every file the volunteer
+    // uploads is renamed to <Club>_<Name>_<original>. Decoding failures
+    // (truncated state, malformed base64) degrade gracefully to "no name" —
+    // the rename then falls back to the email local-part.
     if (params['code'] && params['state']?.startsWith('volunteer:')) {
-      const linkToken = params['state'].substring('volunteer:'.length);
-      Logger.log(`[Router.handleGet] Volunteer OAuth callback — exchanging code`);
-      return handleVolunteerOAuthCallback(params['code'], linkToken);
+      const rest = params['state'].substring('volunteer:'.length);
+      const colon = rest.indexOf(':');
+      const linkToken = colon < 0 ? rest : rest.substring(0, colon);
+      let photographerName = '';
+      if (colon >= 0) {
+        try {
+          const b64 = rest.substring(colon + 1).replace(/-/g, '+').replace(/_/g, '/');
+          const bytes = Utilities.base64Decode(b64);
+          photographerName = Utilities.newBlob(bytes).getDataAsString('UTF-8');
+        } catch (decErr) {
+          Logger.log(`[Router.handleGet] Could not decode photographer name from state: ${String(decErr)}`);
+        }
+      }
+      Logger.log(`[Router.handleGet] Volunteer OAuth callback — exchanging code` +
+        (photographerName ? ` (photographer="${photographerName}")` : ''));
+      return handleVolunteerOAuthCallback(params['code'], linkToken, photographerName);
     }
 
     // ── Volunteer upload page — post-auth, vsession-gated ────────────────────

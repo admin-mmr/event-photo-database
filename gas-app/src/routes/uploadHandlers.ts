@@ -23,9 +23,10 @@ import {
 import { appendAuditLog, appendAuditFailure } from '../services/auditLogService';
 import { appendUploadLog } from '../services/uploadLogService';
 import { enqueueBatchSync } from '../services/syncQueueService';
-import { ADMIN_CLUB_ID } from '../config/constants';
+import { ADMIN_CLUB_ID, isCreditRenameEnabled } from '../config/constants';
 import { buildLayer3FolderName } from '../utils/folderNameValidator';
 import { toBatchTimestamp } from '../utils/dateFormatter';
+import { buildCreditedFileName } from '../utils/creditedFileName';
 
 /* global Logger, DriveApp, Utilities */
 
@@ -138,29 +139,61 @@ export function serverStartUploadSession(payload: WithSession<{
   }
 }
 
+/**
+ * Re-applies the photographer-credit rename on the server as a defence-in-depth
+ * step. The client already renames before sending, but we never trust the
+ * browser to be the only place sanitisation happens — a malicious script
+ * could send the original filename to bypass the credit line.
+ *
+ * Returns the original input unchanged when the feature flag is off, or when
+ * the caller did not provide credit metadata (volunteer flow still does its
+ * own rename client-side because bytes never touch GAS).
+ */
+function applyServerSideRename(
+  fileName: string,
+  clubShortName: string | undefined,
+  photographerName: string | undefined,
+  fallbackEmail: string,
+): string {
+  if (!isCreditRenameEnabled()) return fileName;
+  if (!clubShortName) return fileName;
+  return buildCreditedFileName({
+    clubShortName,
+    photographerName: photographerName ?? '',
+    originalFileName: fileName,
+    fallbackName: (fallbackEmail || '').split('@')[0],
+  });
+}
+
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function serverUploadFile(payload: WithSession<{
-  batchFolderId: string;
-  fileName:      string;
-  mimeType:      string;
-  base64Data:    string;
+  batchFolderId:    string;
+  fileName:         string;
+  mimeType:         string;
+  base64Data:       string;
+  clubShortName?:   string;
+  photographerName?: string;
 }>): ServerResponse {
   try {
     const authResult = authenticateRequest(payload?.sessionToken);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       return { status: 'error', message: 'Authentication required' };
     }
-    const { batchFolderId, fileName, mimeType, base64Data } = payload;
+    const { batchFolderId, fileName, mimeType, base64Data,
+            clubShortName, photographerName } = payload;
     if (!batchFolderId || !fileName || !base64Data) {
       return { status: 'error', message: 'batchFolderId, fileName, and base64Data are required' };
     }
+    const finalName = applyServerSideRename(
+      fileName, clubShortName, photographerName, authResult.data.email,
+    );
     const bytes  = Utilities.base64Decode(base64Data);
-    const blob   = Utilities.newBlob(bytes, mimeType || 'application/octet-stream', fileName);
+    const blob   = Utilities.newBlob(bytes, mimeType || 'application/octet-stream', finalName);
     const folder = DriveApp.getFolderById(batchFolderId);
     const file   = folder.createFile(blob);
     return {
       status: 'success',
-      message: `File "${fileName}" uploaded`,
+      message: `File "${finalName}" uploaded`,
       data: { fileId: file.getId(), fileName: file.getName(), sizeBytes: file.getSize() },
     };
   } catch (err) {
@@ -171,28 +204,42 @@ export function serverUploadFile(payload: WithSession<{
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function serverUploadFiles(payload: WithSession<{
-  batchFolderId: string;
+  batchFolderId:    string;
   files: Array<{ fileName: string; mimeType: string; base64Data: string }>;
+  /** Photographer-credit metadata. When set (and the feature flag is on),
+   *  each file's name is re-derived server-side via buildCreditedFileName. */
+  clubShortName?:    string;
+  photographerName?: string;
 }>): ServerResponse {
   try {
     const authResult = authenticateRequest(payload?.sessionToken);
     if (authResult.status !== ResultStatus.SUCCESS || !authResult.data) {
       return { status: 'error', message: 'Authentication required' };
     }
-    const { batchFolderId, files } = payload;
+    const { batchFolderId, files, clubShortName, photographerName } = payload;
     if (!batchFolderId || !files || !files.length) {
       return { status: 'error', message: 'batchFolderId and files are required' };
     }
     const folder  = DriveApp.getFolderById(batchFolderId);
+    const callerEmail = authResult.data.email;
     const results = files.map((f) => {
       try {
+        const finalName = applyServerSideRename(
+          f.fileName, clubShortName, photographerName, callerEmail,
+        );
         const bytes = Utilities.base64Decode(f.base64Data);
-        const blob  = Utilities.newBlob(bytes, f.mimeType || 'application/octet-stream', f.fileName);
+        const blob  = Utilities.newBlob(bytes, f.mimeType || 'application/octet-stream', finalName);
         const saved = folder.createFile(blob);
-        return { fileName: f.fileName, success: true, fileId: saved.getId(), sizeBytes: saved.getSize() };
+        return {
+          fileName: saved.getName(),
+          originalFileName: f.fileName,
+          success: true,
+          fileId: saved.getId(),
+          sizeBytes: saved.getSize(),
+        };
       } catch (e) {
         Logger.log(`serverUploadFiles: failed to save "${f.fileName}": ${String(e)}`);
-        return { fileName: f.fileName, success: false, error: String(e) };
+        return { fileName: f.fileName, originalFileName: f.fileName, success: false, error: String(e) };
       }
     });
     const successCount = results.filter((r) => r.success).length;

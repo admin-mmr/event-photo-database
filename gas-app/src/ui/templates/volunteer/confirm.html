@@ -289,6 +289,28 @@
 
       <hr class="divider" />
 
+      <!-- ── Photographer name (Your name) ──────────────────────────────────
+           Shown on every photo this volunteer uploads as the credit line.
+           Required, 60 char max. Pattern allows Unicode letters / digits,
+           spaces, dots, dashes, underscores — anything else is rejected.
+           Drive-illegal characters are stripped server-side regardless. -->
+      <div style="margin-bottom: 18px;">
+        <label for="photographerName"
+               style="display:block;font-size:13px;font-weight:600;color:#333;margin-bottom:6px;">
+          Your name &nbsp;<span style="color:#888;font-weight:400;">(shown on every photo you upload)</span>
+          <br/><span style="color:#888;font-weight:400;font-size:12px;">您的姓名 — 将出现在您上传的每张照片上</span>
+        </label>
+        <input type="text" id="photographerName" maxlength="60" required
+               autocomplete="name"
+               placeholder="e.g. Jane Doe  /  例如 小王"
+               style="width:100%;padding:10px 12px;font-size:14px;border:1px solid #cfd8dc;
+                      border-radius:6px;outline:none;transition:border-color .15s;" />
+        <div id="photographerNameError"
+             style="display:none;color:#c62828;font-size:12px;margin-top:4px;">
+          Please use letters, numbers, spaces, dots, dashes or underscores only.
+        </div>
+      </div>
+
       <div class="consent-box">
         <p>Before uploading, please read and agree to the following:</p>
         <div class="consent-check">
@@ -327,23 +349,68 @@
     var SCRIPT_URL = '<?= scriptUrl ?>';
     var LINK_TOKEN = '<?= linkToken ?>';
 
-    // Enable the sign-in button only after consent is checked
-    document.getElementById('consent').addEventListener('change', function() {
-      document.getElementById('signinBtn').disabled = !this.checked;
-    });
+    // Photographer-name validation:
+    //   - Unicode letters / digits (\p{L} \p{N})
+    //   - Spaces, dots, dashes, underscores
+    //   - 1–60 characters trimmed
+    var NAME_PATTERN = /^[\p{L}\p{N} ._-]{1,60}$/u;
+
+    var consentEl   = document.getElementById('consent');
+    var nameEl      = document.getElementById('photographerName');
+    var nameErrorEl = document.getElementById('photographerNameError');
+    var signinEl    = document.getElementById('signinBtn');
+
+    function isNameValid() {
+      var v = (nameEl.value || '').trim();
+      return v.length > 0 && NAME_PATTERN.test(v);
+    }
+
+    function refreshSigninState() {
+      var nameOk = isNameValid();
+      var consentOk = consentEl.checked;
+      signinEl.disabled = !(nameOk && consentOk);
+      // Only show the validation error after the user has typed something
+      // (so the form does not yell at them on first paint).
+      if ((nameEl.value || '').length > 0 && !nameOk) {
+        nameErrorEl.style.display = '';
+        nameEl.style.borderColor = '#c62828';
+      } else {
+        nameErrorEl.style.display = 'none';
+        nameEl.style.borderColor = '#cfd8dc';
+      }
+    }
+
+    consentEl.addEventListener('change', refreshSigninState);
+    nameEl.addEventListener('input',   refreshSigninState);
+
+    // base64url-encode a UTF-8 string. Used to thread the photographer's name
+    // through the OAuth `state` parameter without breaking on special chars.
+    function b64urlEncode(str) {
+      // UTF-8 → bytes → base64 → URL-safe variant
+      var b64 = btoa(unescape(encodeURIComponent(str)));
+      return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
 
     function startSignIn() {
-      if (!document.getElementById('consent').checked) return;
+      if (signinEl.disabled) return;
+      if (!isNameValid()) return;
 
-      // Build the OAuth URL. The state encodes the link token so it survives
-      // the OAuth round-trip and the server knows which link to re-validate.
+      var photographerName = nameEl.value.trim();
+
+      // Build the OAuth URL. The `state` carries:
+      //   • the link token (so the server re-validates the right link), and
+      //   • the photographer's name (base64url-encoded, so it survives URL
+      //     encoding and any non-ASCII characters round-trip cleanly).
+      // Format: volunteer:<TOKEN>:<NAME_B64URL>
+      var state = 'volunteer:' + LINK_TOKEN + ':' + b64urlEncode(photographerName);
+
       var params = new URLSearchParams({
         client_id:     CLIENT_ID,
         redirect_uri:  SCRIPT_URL,
         response_type: 'code',
         scope:         'openid email profile',
         access_type:   'online',
-        state:         'volunteer:' + LINK_TOKEN,
+        state:         state,
         prompt:        'select_account',
       });
 

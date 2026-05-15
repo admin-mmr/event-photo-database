@@ -30,6 +30,7 @@
  */
 
 import { ResultStatus } from '../types/enums';
+import { isCreditRenameEnabled } from '../config/constants';
 import { validateLink } from '../services/uploadLinkService';
 import { findById as findEventById } from '../services/eventService';
 import { lookupSession, createSession, deleteSession } from '../services/sessionService';
@@ -87,23 +88,36 @@ function renderVolunteerTemplate(
  * Creates a short-lived volunteer session that encodes the link token in the
  * role field. The vsession token is passed back to the client and used for
  * all subsequent server calls within this upload session.
+ *
+ * @param photographerName  Optional display name typed on the confirm page.
+ *                          Carried through to every upload as the credit line.
  */
-export function createVolunteerSession(email: string, linkToken: string): string {
-  return createSession(email, VOLUNTEER_ROLE_PREFIX + linkToken);
+export function createVolunteerSession(
+  email: string,
+  linkToken: string,
+  photographerName = '',
+): string {
+  return createSession(email, VOLUNTEER_ROLE_PREFIX + linkToken, photographerName);
 }
 
 /**
- * Validates a volunteer session and returns { email, linkToken } if valid.
+ * Validates a volunteer session and returns { email, linkToken, photographerName }
+ * if valid. photographerName is an empty string when none was captured (legacy
+ * sessions, or volunteers who hit the page before this feature shipped).
  * Returns null if the session is expired or not a volunteer session.
  */
 export function lookupVolunteerSession(
   vsession: string
-): { email: string; linkToken: string } | null {
+): { email: string; linkToken: string; photographerName: string } | null {
   const payload = lookupSession(vsession);
   if (!payload) return null;
   if (!payload.role.startsWith(VOLUNTEER_ROLE_PREFIX)) return null;
   const linkToken = payload.role.slice(VOLUNTEER_ROLE_PREFIX.length);
-  return { email: payload.email, linkToken };
+  return {
+    email: payload.email,
+    linkToken,
+    photographerName: (payload.displayName ?? '').trim(),
+  };
 }
 
 // ─── Step 1: Confirm page (pre-login) ────────────────────────────────────────
@@ -166,7 +180,8 @@ export function volunteerConfirmPage(
  */
 export function handleVolunteerOAuthCallback(
   code: string,
-  linkToken: string
+  linkToken: string,
+  photographerName = '',
 ): GoogleAppsScript.HTML.HtmlOutput {
   const redirectUri = getCanonicalScriptUrl();
 
@@ -192,8 +207,10 @@ export function handleVolunteerOAuthCallback(
     );
   }
 
-  // Create the volunteer session and redirect to upload page
-  const vsession = createVolunteerSession(email, linkToken);
+  // Create the volunteer session and redirect to upload page.
+  // The typed photographer name (if any) is bound to the session so every
+  // uploaded file carries the same credit line.
+  const vsession = createVolunteerSession(email, linkToken, photographerName);
   const uploadUrl = `${redirectUri}?action=volunteer_upload&vsession=${encodeURIComponent(vsession)}`;
 
   Logger.log(`[VolunteerRoutes] Volunteer session created for ${email} — redirecting to upload page`);
@@ -251,7 +268,7 @@ export function volunteerUploadPage(
     );
   }
 
-  const { email, linkToken } = sessionData;
+  const { email, linkToken, photographerName } = sessionData;
 
   // Re-validate the link (final check before serving the upload interface)
   const linkResult = validateLink({ token: linkToken });
@@ -270,15 +287,18 @@ export function volunteerUploadPage(
   const eventName = event ? event.eventName : link.eventId;
   const eventDate = event ? event.eventDate : '';
 
-  Logger.log(`[VolunteerRoutes] Serving upload page for ${email} — event="${eventName}" club="${link.clubName}"`);
+  Logger.log(`[VolunteerRoutes] Serving upload page for ${email} — event="${eventName}" club="${link.clubName}"` +
+    (photographerName ? ` photographer="${photographerName}"` : ''));
 
   return renderVolunteerTemplate('upload', {
     vsession,
     eventName,
     eventDate,
-    clubName:     link.clubName,
-    uploaderEmail: email,
-    consentLine:  VOLUNTEER_CONSENT_LINE,
+    clubName:            link.clubName,
+    uploaderEmail:       email,
+    consentLine:         VOLUNTEER_CONSENT_LINE,
+    photographerName,
+    creditRenameEnabled: isCreditRenameEnabled(),
   });
 }
 

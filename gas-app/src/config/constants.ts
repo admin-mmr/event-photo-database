@@ -37,6 +37,38 @@ export const MAX_EVENT_PAGE_SIZE = 100;
  */
 export const DEFAULT_TAG = 'ALL';
 
+// ─── Photographer-credit rename ──────────────────────────────────────────────
+
+/**
+ * Feature flag — when true, every uploaded file is renamed to
+ *   <ClubShortName>_<PhotographerName>_<originalName>
+ * before it is written to Drive. See utils/creditedFileName.ts for the rules.
+ *
+ * Override at deploy time by setting the `ENABLE_CREDIT_RENAME` Script
+ * Property to "true" or "false". Empty / unset → uses ENABLE_CREDIT_RENAME_DEFAULT.
+ */
+export const ENABLE_CREDIT_RENAME_DEFAULT = true;
+
+/**
+ * Returns whether the photographer-credit filename rewrite is enabled.
+ * Prefers the Script Property override so the flag can be flipped without a
+ * code redeploy when rolling the feature out to a single test club first.
+ */
+export function isCreditRenameEnabled(): boolean {
+  /* global PropertiesService */
+  try {
+    const override = PropertiesService.getScriptProperties()
+      .getProperty('ENABLE_CREDIT_RENAME');
+    if (override !== null && override !== undefined && override.trim()) {
+      return override.trim().toLowerCase() === 'true';
+    }
+  } catch {
+    // PropertiesService unavailable (e.g. during compile-time type-checking);
+    // fall through to the compiled-in default.
+  }
+  return ENABLE_CREDIT_RENAME_DEFAULT;
+}
+
 // ─── Admin club ───────────────────────────────────────────────────────────────
 
 /**

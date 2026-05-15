@@ -12,6 +12,7 @@ import { getPublicSpreadsheetUrl } from '../services/publicSpreadsheetService';
 import { getPreferencesFor } from '../services/emailPreferenceService';
 import { findByClub } from '../services/uploadLinkService';
 import { getCanonicalScriptUrl } from '../utils/scriptUrl';
+import { isCreditRenameEnabled } from '../config/constants';
 import { BUILD_TIME, BUILD_COMMIT } from '../buildInfo';
 /* global HtmlService, PropertiesService */
 
@@ -179,6 +180,15 @@ export function uploadPage(user: UserRecord, sessionToken = ""): GoogleAppsScrip
   // Club admins are bound to their assigned club.
   const runningClub = isSuperAdmin(user.role) ? '' : (user.clubId ?? '');
 
+  // Photographer display name: "First Last" if both are set, else the email
+  // local-part. Used as the second component of the credited filename
+  // (see utils/creditedFileName.ts). The client also receives the email so
+  // it can fall back if the lookup yielded an empty display name.
+  const photographerDisplayName = [user.firstName, user.lastName]
+    .map((p) => (p ?? '').trim())
+    .filter(Boolean)
+    .join(' ');
+
   return renderTemplate('upload', { sessionToken,
     userEmail:     user.email,
     userRole:      user.role,
@@ -188,6 +198,8 @@ export function uploadPage(user: UserRecord, sessionToken = ""): GoogleAppsScrip
     runningClub,
     events:        JSON.stringify(events.items),
     approvedClubs: JSON.stringify(approvedClubs),
+    photographerDisplayName,
+    creditRenameEnabled: isCreditRenameEnabled(),
   });
 }
 

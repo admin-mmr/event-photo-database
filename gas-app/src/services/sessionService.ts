@@ -23,14 +23,23 @@ const CACHE_PREFIX = 'xsd_sess_';
 interface SessionPayload {
   email: string;
   role:  string;
+  /** Optional display name carried alongside the session. For volunteer
+   *  sessions, this is the photographer's typed name from the confirm page
+   *  and is used as the second component of credited filenames. */
+  displayName?: string;
 }
 
 /**
  * Creates a new session for the given email/role and returns the session token.
+ *
+ * @param displayName  Optional human-readable name to carry with the session.
+ *                     Volunteer sessions use this to label every uploaded file
+ *                     with a photographer credit.
  */
-export function createSession(email: string, role: string): string {
+export function createSession(email: string, role: string, displayName?: string): string {
   const token   = Utilities.getUuid();
   const payload: SessionPayload = { email, role };
+  if (displayName && displayName.trim()) payload.displayName = displayName.trim();
   CacheService.getScriptCache().put(
     CACHE_PREFIX + token,
     JSON.stringify(payload),

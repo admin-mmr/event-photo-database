@@ -458,8 +458,71 @@
   <script>
     var VSESSION = '<?= vsession ?>';
     var UPLOADER_EMAIL = '<?= uploaderEmail ?>';
+    // Photographer credit metadata — see utils/creditedFileName.ts. Empty when
+    // the link was used before this feature shipped (legacy session).
+    var CLUB_NAME = '<?= clubName ?>';
+    var PHOTOGRAPHER_NAME = '<?= (typeof photographerName !== "undefined" ? photographerName : "") ?>';
+    var ENABLE_CREDIT_RENAME = <?!= (typeof creditRenameEnabled !== "undefined" && creditRenameEnabled) ? 'true' : 'false' ?>;
     // scriptUrl is injected by renderVolunteerTemplate() (volunteerRoutes.ts line 75)
     var ALBUM_INDEX_URL = '<?= scriptUrl ?>?action=album_index';
+
+    // ── Photographer-credit filename ──────────────────────────────────────────
+    // Mirrors src/utils/creditedFileName.ts. Applied client-side because the
+    // volunteer upload sends bytes directly to Drive (the server only mints
+    // a token), so we cannot rely on a server-side rename here.
+    var CREDIT_PATH_ILLEGAL = /[/\\:*?"<>|]/g;
+    var CREDIT_CONTROL = /[\x00-\x1F\x7F]/g;
+    var CREDIT_MAX_COMPONENT = 40;
+    var CREDIT_DEFAULT_MAX = 240;
+    function creditSanitiseComponent(raw) {
+      if (!raw) return '';
+      return String(raw).normalize('NFC')
+        .replace(CREDIT_CONTROL, '')
+        .replace(CREDIT_PATH_ILLEGAL, '')
+        .replace(/\s+/g, '')
+        .slice(0, CREDIT_MAX_COMPONENT);
+    }
+    function creditStripIllegal(raw) {
+      if (!raw) return '';
+      return String(raw)
+        .replace(CREDIT_CONTROL, '')
+        .replace(CREDIT_PATH_ILLEGAL, '_')
+        .replace(/\s+/g, '_');
+    }
+    function creditTruncate(raw, max) {
+      if (raw.length <= max) return raw;
+      var lastDot = raw.lastIndexOf('.');
+      if (lastDot <= 0 || raw.length - lastDot > 9) return raw.slice(0, max);
+      var ext = raw.slice(lastDot);
+      var budget = max - ext.length;
+      if (budget <= 0) return raw.slice(0, max);
+      return raw.slice(0, budget) + ext;
+    }
+    function buildCreditedFileName(input) {
+      var max = input.maxLength && input.maxLength > 0 ? input.maxLength : CREDIT_DEFAULT_MAX;
+      var club = creditSanitiseComponent(input.clubShortName);
+      var n1 = creditSanitiseComponent(input.photographerName);
+      var n2 = creditSanitiseComponent(input.fallbackName || '');
+      var name = n1 || n2;
+      var prefix = '';
+      if (club && name) prefix = club + '_' + name + '_';
+      else if (club)    prefix = club + '_';
+      else if (name)    prefix = name + '_';
+      var clean = creditStripIllegal(input.originalFileName);
+      if (prefix && clean.indexOf(prefix) === 0) return creditTruncate(clean, max);
+      return creditTruncate(prefix + clean, max);
+    }
+
+    /** Returns the on-Drive name we will use for a given browser File. */
+    function getCreditedNameFor(file) {
+      if (!ENABLE_CREDIT_RENAME) return file.name;
+      return buildCreditedFileName({
+        clubShortName:    CLUB_NAME,
+        photographerName: PHOTOGRAPHER_NAME,
+        originalFileName: file.name,
+        fallbackName:     (UPLOADER_EMAIL || '').split('@')[0],
+      });
+    }
 
     // Accepted MIME types for the upload pipeline
     var ACCEPTED_TYPES = [
@@ -810,7 +873,8 @@
     function uploadToDrive(file, accessToken, folderId) {
       return new Promise(function(resolve, reject) {
         var mimeType = file.type || mimeFromExtension(file.name) || 'application/octet-stream';
-        var metadata = JSON.stringify({ name: file.name, parents: [folderId] });
+        var finalName = getCreditedNameFor(file);
+        var metadata = JSON.stringify({ name: finalName, parents: [folderId] });
         // Use a unique boundary per upload to avoid collisions across parallel calls.
         var boundary = 'mmr_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2);
         var CRLF = '\r\n';
