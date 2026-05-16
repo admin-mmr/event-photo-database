@@ -625,29 +625,86 @@
         </div>
 
         <!--
-          Rebuild public album index — clears + rewrites the public-facing
-          spreadsheet from the authoritative Photo_Albums data. Use this to
-          recover from stale rows or after changing PUBLIC_ALBUM_INDEX_SHEET_ID.
+          ── Action 1: Public album sheet link ────────────────────────────────
+          Always-visible link to the public album spreadsheet.
+          Opens in a new tab immediately — no rebuild required.
+        -->
+        <div class="reconcile-card" style="background:#e8f5e9;">
+          <p style="color:#1b5e20;">
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;color:#2e7d32;">table_chart</i>
+            <strong>Public Album Sheet</strong> — the read-only spreadsheet shared with members.
+            Open it to verify album links are visible and shareable.
+          </p>
+          <a id="btn-open-public-always"
+             href="<?= publicAlbumSheetUrl ?>"
+             target="_blank" rel="noopener"
+             class="mdl-button mdl-js-button mdl-button--raised"
+             style="background:#2e7d32;color:#fff;<?= publicAlbumSheetUrl ? '' : 'display:none;' ?>">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">open_in_new</i>
+            Open Public Sheet
+          </a>
+          <span id="no-public-sheet-msg"
+                style="font-size:.84rem;color:#888;<?= publicAlbumSheetUrl ? 'display:none;' : '' ?>">
+            Not configured — set <code>PUBLIC_ALBUM_INDEX_SHEET_ID</code> in Script Properties.
+          </span>
+        </div>
+
+        <!--
+          ── Action 2: Delete all album records ───────────────────────────────
+          Clears Photo_Albums + orphaned Photo_Files rows so a Backfill All
+          starts from a clean state. Does NOT touch Google Photos itself.
+        -->
+        <div class="reconcile-card" style="background:#fce4ec;">
+          <p style="color:#880e4f;">
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;color:#ad1457;">delete_sweep</i>
+            <strong>Delete All Album Records</strong> — clears the Photo_Albums and Photo_Files
+            tracking sheets. Albums in Google Photos are <em>not</em> deleted.
+            Use this to reset before a full re-sync.
+          </p>
+          <button id="btn-delete-albums"
+                  class="mdl-button mdl-js-button mdl-button--raised"
+                  style="background:#c62828;color:#fff;"
+                  onclick="handleDeleteAllAlbumRecords(this)">
+            <i class="material-icons" style="vertical-align:middle;margin-right:4px;">delete_sweep</i>
+            Delete All Records
+          </button>
+        </div>
+
+        <!--
+          ── Action 3 / Rebuild public sheet ─────────────────────────────────
+          Two buttons side by side:
+            • Rebuild Public Sheet — fast refresh of the spreadsheet only
+            • Sync & Publish      — chained after Backfill All; also rebuilds
+                                    the sheet and emails admin to set sharing
         -->
         <div class="reconcile-card" style="background:#ede7f6;">
           <p style="color:#4527a0;">
             <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;color:#4527a0;">public</i>
-            <strong>Rebuild Public Album Sheet</strong> — refreshes the read-only public
-            spreadsheet shared with members. Safe to run any time; clears stale rows.
+            <strong>Publish to Public Sheet</strong> — refreshes the read-only spreadsheet and
+            emails <strong>admin@mmrunners.org</strong> for each album that still needs its
+            sharing toggle set. Safe to run any time.
           </p>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
             <button id="btn-rebuild-public"
                     class="mdl-button mdl-js-button mdl-button--raised"
                     style="background:#5e35b1;color:#fff;"
                     onclick="handleRebuildPublicSheet(this)">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">refresh</i>
-              Rebuild Now
+              Rebuild Sheet Only
             </button>
+            <button id="btn-sync-publish"
+                    class="mdl-button mdl-js-button mdl-button--raised"
+                    style="background:#4527a0;color:#fff;"
+                    onclick="handleSyncAndPublish(this)">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">send</i>
+              Rebuild Sheet + Email Admin
+            </button>
+            <!-- Legacy hidden link shown after rebuild (kept for compat) -->
             <a id="btn-open-public" href="#" target="_blank" rel="noopener"
                class="mdl-button mdl-js-button mdl-button--raised"
                style="background:#ede7f6;color:#4527a0;display:none;">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">open_in_new</i>
-              Open Public Sheet
+              Open Sheet
             </a>
           </div>
         </div>
@@ -715,6 +772,7 @@
   <script>
     window.APP_URL = '<?= scriptUrl ?>';
     window.SESSION_TOKEN = '<?= (typeof sessionToken !== "undefined" && sessionToken) ? sessionToken : "" ?>';
+    window.PUBLIC_ALBUM_SHEET_URL = '<?= (typeof publicAlbumSheetUrl !== "undefined") ? publicAlbumSheetUrl : "" ?>';
   </script>
   <?!= HtmlService.createHtmlOutputFromFile('ui/js/app').getContent() ?>
 
@@ -1732,6 +1790,85 @@
           showErrorBanner('Rebuild RPC failed: ' + String(err));
         })
         .serverRebuildPublicAlbumIndex({ sessionToken: window.SESSION_TOKEN || '' });
+    }
+
+    // ── Action 2: Delete all album records ───────────────────────────────────
+
+    /**
+     * Asks for confirmation then calls serverDeleteAllAlbumRecords.
+     * This clears Photo_Albums + all Photo_Files rows (orphan = all of them).
+     * Google Photos albums are NOT deleted.
+     */
+    function handleDeleteAllAlbumRecords(btn) {
+      var confirmed = window.confirm(
+        'This will permanently delete ALL rows in Photo_Albums and Photo_Files.\n\n' +
+        'Albums in Google Photos are NOT removed — only the tracking records in\n' +
+        'the spreadsheet are cleared.\n\n' +
+        'Continue?'
+      );
+      if (!confirmed) return;
+
+      var originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">hourglass_empty</i>Deleting…';
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          if (!result || result.status !== 'success') {
+            showErrorBanner((result && result.message) || 'Delete failed');
+            return;
+          }
+          showToast(result.message, 'success', 8000);
+        })
+        .withFailureHandler(function(err) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          showErrorBanner('Delete RPC failed: ' + String(err));
+        })
+        .serverDeleteAllAlbumRecords({ sessionToken: window.SESSION_TOKEN || '' });
+    }
+
+    // ── Action 3: Rebuild sheet + email admin ────────────────────────────────
+
+    /**
+     * Calls serverRebuildAndNotify — rebuilds the public album index sheet
+     * and sends a sharing-reminder email to admin@mmrunners.org for every
+     * album that was created.  Typically invoked after a Backfill All job
+     * completes, but can also be run standalone.
+     */
+    function handleSyncAndPublish(btn) {
+      var originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">hourglass_empty</i>Publishing…';
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          if (!result || result.status !== 'success') {
+            showErrorBanner((result && result.message) || 'Publish failed');
+            return;
+          }
+          showToast(result.message, 'success', 8000);
+          // Update the always-visible sheet link in case the URL just became known.
+          if (result.data && result.data.url) {
+            var alwaysBtn = document.getElementById('btn-open-public-always');
+            var noMsg     = document.getElementById('no-public-sheet-msg');
+            if (alwaysBtn) { alwaysBtn.href = result.data.url; alwaysBtn.style.display = ''; }
+            if (noMsg)     { noMsg.style.display = 'none'; }
+            // Also update the legacy hidden link inside the publish card.
+            var legacyBtn = document.getElementById('btn-open-public');
+            if (legacyBtn) { legacyBtn.href = result.data.url; legacyBtn.style.display = ''; }
+          }
+        })
+        .withFailureHandler(function(err) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          showErrorBanner('Publish RPC failed: ' + String(err));
+        })
+        .serverRebuildAndNotify({ sessionToken: window.SESSION_TOKEN || '' });
     }
   </script>
 </body>

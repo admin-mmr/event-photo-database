@@ -10,7 +10,7 @@
 
 import { PhotosAlbumRecord, PhotosFileRecord } from '../types/models';
 import { getConfig } from '../config/constants';
-import { getAllRows, appendRow, updateRow } from './sheetService';
+import { getAllRows, appendRow, updateRow, clearDataRows } from './sheetService';
 import {
   toPhotosAlbumRecord,
   fromPhotosAlbumRecord,
@@ -153,4 +153,51 @@ export function saveFileRecord(record: PhotosFileRecord): void {
  */
 export function listAllFileRecords(): PhotosFileRecord[] {
   return loadFileRecords();
+}
+
+// ─── Destructive helpers (reset operations) ──────────────────────────────────
+
+/**
+ * Deletes every data row from Photo_Albums (header preserved).
+ * Returns the count of rows removed.
+ *
+ * WARNING: This is irreversible. The caller must ensure the admin has
+ * confirmed the action before invoking this function.
+ */
+export function clearAllAlbumRows(): number {
+  const config = getConfig();
+  return clearDataRows(config.SHEET_NAMES.PHOTO_ALBUMS);
+}
+
+/**
+ * Deletes Photo_Files rows whose albumId is NOT in `remainingAlbumIds`.
+ * After a full album purge, pass an empty Set to remove every file record.
+ * Returns the count of rows removed.
+ *
+ * Implementation: reads all rows first, finds orphan indices, then rewrites
+ * the sheet without those rows (Sheets API has no single-row delete in batch,
+ * so we clear the whole data range and re-append keepers).
+ */
+export function clearOrphanFileRows(remainingAlbumIds: ReadonlySet<string>): number {
+  const config = getConfig();
+  const sheetName = config.SHEET_NAMES.PHOTO_FILES;
+  const rows = getAllRows(sheetName);
+  if (rows.length === 0) return 0;
+
+  const keepers = rows.filter((row) => {
+    const albumId = String(row[1] ?? '').trim(); // column B = albumId
+    return remainingAlbumIds.has(albumId);
+  });
+
+  const removed = rows.length - keepers.length;
+  if (removed === 0) return 0;
+
+  // Clear all data rows then re-append the keepers one by one.
+  // In practice, after a full album purge keepers will be empty, so
+  // this loop almost never runs.
+  clearDataRows(sheetName);
+  for (const row of keepers) {
+    appendRow(sheetName, row as unknown[]);
+  }
+  return removed;
 }

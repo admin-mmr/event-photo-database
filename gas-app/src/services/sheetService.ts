@@ -205,6 +205,20 @@ export function batchUpdateRows(
 }
 
 /**
+ * Deletes all data rows below the header row, leaving the header intact.
+ * Returns the number of rows removed.
+ */
+export function clearDataRows(sheetName: string): number {
+  const sheet = getSheet(sheetName);
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return 0;          // header only (or empty)
+  const count = lastRow - 1;           // rows 2 … lastRow
+  sheet.deleteRows(2, count);
+  SpreadsheetApp.flush();
+  return count;
+}
+
+/**
  * Returns the number of data rows in a sheet (excluding header).
  */
 export function getRowCount(sheetName: string): number {

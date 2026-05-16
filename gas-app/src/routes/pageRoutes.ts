@@ -259,12 +259,13 @@ export function adminPhotosPage(user: UserRecord, sessionToken = ""): GoogleApps
   const albums = listAllAlbums();
 
   return renderTemplate('admin/photos', { sessionToken,
-    userEmail:   user.email,
-    userRole:    user.role,
-    isAdmin:     isAdmin(user.role),
-    events:      JSON.stringify(events.items),
-    totalEvents: events.total,
-    albums:      JSON.stringify(albums),
+    userEmail:          user.email,
+    userRole:           user.role,
+    isAdmin:            isAdmin(user.role),
+    events:             JSON.stringify(events.items),
+    totalEvents:        events.total,
+    albums:             JSON.stringify(albums),
+    publicAlbumSheetUrl: getPublicSpreadsheetUrl() ?? '',
   });
 }
 

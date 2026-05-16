@@ -44,9 +44,16 @@ import {
 import { batchUpdateRows } from '../services/sheetService';
 import { fromSyncQueueRecord } from '../utils/sheetMapper';
 import { listActive as listActiveClubs } from '../services/clubService';
-import { findById as findEventById } from '../services/eventService';
+import { findById as findEventById, listAll as listAllEvents } from '../services/eventService';
 import { appendAuditLog } from '../services/auditLogService';
 import { AuditAction } from '../types/enums';
+import {
+  listAllAlbums,
+  clearAllAlbumRows,
+  clearOrphanFileRows,
+} from '../services/photoAlbumsRepo';
+import { notifyAlbumNeedsShare } from '../services/emailService';
+import { SUPER_ADMINS } from '../config/superAdmins';
 
 /* global Logger, ScriptApp */
 
@@ -430,6 +437,154 @@ export function serverRebuildSpecialFolders(
     return {
       status: 'error',
       message: `Internal error rebuilding special folders: ${String(err)}`,
+    };
+  }
+}
+
+// ─── Action 2: Delete all album records + orphan file cleanup ────────────────
+
+/**
+ * Clears all rows from Photo_Albums and then removes every Photo_Files row
+ * whose albumId is no longer referenced by any remaining album (i.e. all of
+ * them after a full purge).
+ *
+ * This does NOT delete anything from Google Photos itself — the albums and
+ * media items remain in photos.google.com.  It purely resets the tracking
+ * sheets so the admin can re-run Backfill All for a clean state.
+ *
+ * Admin-only. The client MUST show a confirmation dialog before calling this.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function serverDeleteAllAlbumRecords(payload: WithSession): ServerResponse {
+  try {
+    const auth = requireAdminOrFail(payload?.sessionToken);
+    if (!auth.ok) return auth.response;
+
+    // Capture what will be removed before clearing.
+    const albumsBefore = listAllAlbums();
+    const albumCount   = albumsBefore.length;
+
+    // Clear Photo_Albums, then remove every Photo_Files row whose albumId is
+    // now gone (i.e. all of them — the remaining set is empty).
+    clearAllAlbumRows();
+    const fileRowsRemoved = clearOrphanFileRows(new Set<string>());
+
+    appendAuditLog({
+      actorEmail:   auth.adminEmail,
+      action:       AuditAction.ALBUM_ERROR,   // closest available action
+      resourceType: 'report',
+      resourceId:   'delete_all_album_records',
+      details: {
+        operation:        'delete_all_album_records',
+        albumRowsCleared: albumCount,
+        fileRowsCleared:  fileRowsRemoved,
+      },
+    });
+
+    Logger.log(
+      `[serverDeleteAllAlbumRecords] actor=${auth.adminEmail} ` +
+      `albums=${albumCount} fileRows=${fileRowsRemoved}`
+    );
+
+    return {
+      status:  'success',
+      message: `Cleared ${albumCount} album record(s) and ${fileRowsRemoved} file record(s). ` +
+               `Run "Backfill All" to recreate albums from Drive.`,
+      data: { albumRowsCleared: albumCount, fileRowsCleared: fileRowsRemoved },
+    };
+  } catch (err) {
+    Logger.log(`serverDeleteAllAlbumRecords error: ${String(err)}`);
+    return {
+      status:  'error',
+      message: `Internal error during album record deletion: ${String(err)}`,
+    };
+  }
+}
+
+// ─── Action 3: Rebuild public sheet + notify admin about sharing ──────────────
+
+/**
+ * Rebuilds the public album-index spreadsheet and fires a sharing-reminder
+ * email to every super-admin for each album that has no shareable URL set.
+ *
+ * Intended to be called by the client immediately after a Backfill All job
+ * completes, wiring the "Sync & Publish" flow together:
+ *   1. Backfill All (existing job / polling flow in the client)
+ *   2. serverRebuildAndNotify (called in the job-complete callback)
+ *
+ * The function is also safe to call standalone from the "Rebuild Public Sheet"
+ * card — it replaces serverRebuildPublicAlbumIndex there if the admin also
+ * wants the email nudge.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function serverRebuildAndNotify(payload: WithSession): ServerResponse {
+  try {
+    const auth = requireAdminOrFail(payload?.sessionToken);
+    if (!auth.ok) return auth.response;
+
+    // 1. Validate public sheet is configured.
+    const url = getPublicSpreadsheetUrl();
+    if (!url) {
+      return {
+        status:  'error',
+        message: 'Public album index is not configured — set PUBLIC_ALBUM_INDEX_SHEET_ID first.',
+      };
+    }
+
+    // 2. Rebuild the public sheet.
+    const rowCount = rebuildPublicAlbumIndex();
+    appendAuditLog({
+      actorEmail:   auth.adminEmail,
+      action:       AuditAction.ALBUM_BACKFILLED,
+      resourceType: 'report',
+      resourceId:   'public_album_index',
+      details:      { operation: 'rebuild_and_notify', rowCount },
+    });
+
+    // 3. Send a sharing-reminder email for every album that still needs it.
+    //    We re-read the albums after the rebuild to get the freshest URLs.
+    const albums     = listAllAlbums();
+    const events     = listAllEvents(1, 1000, 'desc').items;
+    const eventById  = new Map(events.map((e) => [e.eventId, e]));
+    const superAdmins = Array.from(SUPER_ADMINS);
+
+    let emailsSent = 0;
+    let emailsSkipped = 0;
+    for (const album of albums) {
+      const albumUrl = album.albumUrl || album.shareableUrl || '';
+      const ev       = eventById.get(album.eventId);
+      notifyAlbumNeedsShare(
+        album.albumTitle,
+        albumUrl,
+        album.albumType === 'event' ? 'event' : 'club',
+        {
+          eventName:       ev?.eventName ?? album.eventId,
+          eventDate:       ev?.eventDate ?? '',
+          clubDisplayName: album.clubName?.replace(/_/g, ' ') ?? undefined,
+          tag:             album.tag ?? undefined,
+        },
+        superAdmins,
+      );
+      if (albumUrl) { emailsSent++; } else { emailsSkipped++; }
+    }
+
+    Logger.log(
+      `[serverRebuildAndNotify] actor=${auth.adminEmail} ` +
+      `rows=${rowCount} emailsSent=${emailsSent} emailsSkipped=${emailsSkipped}`
+    );
+
+    return {
+      status:  'success',
+      message: `Public sheet rebuilt (${rowCount} row(s)). ` +
+               `Sharing-reminder sent for ${emailsSent} album(s); ` +
+               `${emailsSkipped} skipped (no URL yet).`,
+      data: { rowCount, url, emailsSent, emailsSkipped },
+    };
+  } catch (err) {
+    Logger.log(`serverRebuildAndNotify error: ${String(err)}`);
+    return {
+      status:  'error',
+      message: `Internal error in rebuild-and-notify: ${String(err)}`,
     };
   }
 }
