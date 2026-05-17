@@ -1801,9 +1801,16 @@
      */
     function handleDeleteAllAlbumRecords(btn) {
       var confirmed = window.confirm(
-        'This will permanently delete ALL rows in Photo_Albums and Photo_Files.\n\n' +
-        'Albums in Google Photos are NOT removed — only the tracking records in\n' +
-        'the spreadsheet are cleared.\n\n' +
+        'This will:\n' +
+        '  1. Remove every tracked photo from every app-owned album in\n' +
+        '     Google Photos (best-effort — items become detached from the\n' +
+        '     albums; underlying media items remain in the owner’s library,\n' +
+        '     and Google auto-purges unlinked items after 60 days).\n' +
+        '  2. Clear ALL rows in Photo_Albums and Photo_Files.\n' +
+        '  3. Rebuild the public Albums sheet (it will be empty after this).\n\n' +
+        'The Google Photos Library API has no endpoint to delete an album\n' +
+        'or a media item outright, so albums themselves remain in\n' +
+        'photos.google.com and must be deleted there manually if desired.\n\n' +
         'Continue?'
       );
       if (!confirmed) return;

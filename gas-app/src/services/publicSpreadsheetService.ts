@@ -242,9 +242,33 @@ function permissionLabel(
 ): string {
   if (override?.permission) return override.permission;
   if (!details) return 'Unknown';
+  // Denied + no admin override => treat as deleted in Photos. Blank cells in
+  // the public sheet so visitors aren't shown stale permission info for an
+  // album that no longer exists. See looksDeleted() for the shared predicate.
+  if (looksDeleted(details, override)) return '';
   if (details.accessibility === 'denied') return 'Inaccessible';
   if (!details.found) return 'Unknown';
   return details.isShared ? 'Public' : 'Private';
+}
+
+/**
+ * Treat an album as "deleted in Google Photos" when albums.get returned
+ * 403/404 (`accessibility === 'denied'`) AND the admin hasn't pinned
+ * anything for it in ALBUM_OVERRIDES. With Google's deny-by-default 404 for
+ * cross-client reads we can't be 100% sure the album was deleted — but for
+ * albums the app itself created (the only kind that ever land in
+ * Photo_Albums), a denied response is the strongest deletion signal the
+ * Library API gives us post-March-2025. The override map is the escape
+ * hatch for the rare false positive: admins set permission or shareableUrl
+ * there and the row is rendered normally again.
+ */
+function looksDeleted(
+  details: AlbumDetails | null,
+  override: AlbumOverride | undefined
+): boolean {
+  if (!details) return false;
+  if (override?.permission || override?.shareableUrl) return false;
+  return details.accessibility === 'denied';
 }
 
 /**
@@ -270,6 +294,10 @@ function albumLink(
 ): string {
   if (details?.shareableUrl) return details.shareableUrl;
   if (override?.shareableUrl) return override.shareableUrl;
+  // Deleted-in-Photos albums: drop the stale sheet URL so visitors don't
+  // click into a dead link. permissionLabel() and the call site clear Last
+  // Sync the same way.
+  if (looksDeleted(details, override)) return '';
   return normalizedUrl;
 }
 
@@ -320,6 +348,7 @@ function buildRows(
       const norm = normalizeAlbumDisplay(a, fallback);
       const details = liveDetails.get(a.albumId) ?? null;
       const override = overrides.get(a.albumId);
+      const deleted = looksDeleted(details, override);
       rows.push([
         entry.eventDate,
         entry.eventName,
@@ -329,7 +358,7 @@ function buildRows(
         norm.title,
         photoCount(a, details),
         albumLink(norm.url, details, override),
-        norm.lastSyncAt,
+        deleted ? '' : norm.lastSyncAt,
         permissionLabel(details, override),
       ]);
     }
@@ -340,6 +369,7 @@ function buildRows(
       const norm = normalizeAlbumDisplay(a, fallback);
       const details = liveDetails.get(a.albumId) ?? null;
       const override = overrides.get(a.albumId);
+      const deleted = looksDeleted(details, override);
       rows.push([
         entry.eventDate,
         entry.eventName,
@@ -349,7 +379,7 @@ function buildRows(
         norm.title,
         photoCount(a, details),
         albumLink(norm.url, details, override),
-        norm.lastSyncAt,
+        deleted ? '' : norm.lastSyncAt,
         permissionLabel(details, override),
       ]);
     }

@@ -18,11 +18,13 @@ import {
   backfillAllAlbums,
   findAlbumsByEvent,
   reconcileAllPhotos,
+  emptyAllAppOwnedAlbums,
   EventInfo,
 } from '../services/photosService';
 import { rebuildAllSpecialFoldersForEvent } from '../services/specialFoldersService';
 import {
   rebuildPublicAlbumIndex,
+  tryRebuildPublicAlbumIndex,
   getPublicSpreadsheetUrl,
 } from '../services/publicSpreadsheetService';
 import { photosListAlbumMediaItems } from '../services/photosApiClient';
@@ -150,6 +152,17 @@ export function serverReconcilePhotos(payload: WithSession): ServerResponse {
     const auth = requireAdminOrFail(payload?.sessionToken);
     if (!auth.ok) return auth.response;
     const result = reconcileAllPhotos();
+
+    // After reconcile, refresh the public Albums tab. The rebuild calls
+    // albums.get for every album, which (a) re-checks share status so albums
+    // shared manually in photos.google.com flip from Private → Public, and
+    // (b) flags 403/404 responses as deletion signals so the row's Album
+    // Link / Last Sync / Permission cells are blanked (see looksDeleted()
+    // in publicSpreadsheetService). Best-effort: a Sheets API hiccup here
+    // must not fail the reconcile report — the admin can re-run "Rebuild
+    // Public Sheet" to recover.
+    tryRebuildPublicAlbumIndex();
+
     return { status: result.status, message: result.message, data: result.data };
   } catch (err) {
     Logger.log(`serverReconcilePhotos error: ${String(err)}`);
@@ -464,10 +477,26 @@ export function serverDeleteAllAlbumRecords(payload: WithSession): ServerRespons
     const albumsBefore = listAllAlbums();
     const albumCount   = albumsBefore.length;
 
-    // Clear Photo_Albums, then remove every Photo_Files row whose albumId is
-    // now gone (i.e. all of them — the remaining set is empty).
+    // Step 1 — best-effort empty every app-owned album in Google Photos via
+    // :removeMediaItems. The API has no albums.delete / mediaItems.delete, so
+    // this is the closest we can get to "delete media items uploaded to
+    // photos.google.com". Per-chunk failures are collected, not thrown — the
+    // tracking-row cleanup below still runs so the spreadsheet ends up
+    // consistent with what visitors see in Photos.
+    const emptyResult = emptyAllAppOwnedAlbums();
+
+    // Step 2 — clear Photo_Albums, then remove every Photo_Files row whose
+    // albumId is now gone (i.e. all of them — the remaining set is empty).
     clearAllAlbumRows();
     const fileRowsRemoved = clearOrphanFileRows(new Set<string>());
+
+    // Step 3 — refresh the public Albums tab so it reflects the now-empty
+    // internal tables. Without this, the public sheet keeps its last snapshot
+    // and visitors still see stale album rows. Best-effort: a Sheets API
+    // hiccup here must not fail the delete itself — the internal rows are
+    // already gone, and the admin can re-run "Rebuild Public Sheet" to
+    // recover.
+    tryRebuildPublicAlbumIndex();
 
     appendAuditLog({
       actorEmail:   auth.adminEmail,
@@ -475,22 +504,40 @@ export function serverDeleteAllAlbumRecords(payload: WithSession): ServerRespons
       resourceType: 'report',
       resourceId:   'delete_all_album_records',
       details: {
-        operation:        'delete_all_album_records',
-        albumRowsCleared: albumCount,
-        fileRowsCleared:  fileRowsRemoved,
+        operation:         'delete_all_album_records',
+        albumRowsCleared:  albumCount,
+        fileRowsCleared:   fileRowsRemoved,
+        albumsTouched:     emptyResult.albumsTouched,
+        mediaItemsRemoved: emptyResult.mediaItemsRemoved,
+        photosErrorCount:  emptyResult.errors.length,
       },
     });
 
     Logger.log(
       `[serverDeleteAllAlbumRecords] actor=${auth.adminEmail} ` +
-      `albums=${albumCount} fileRows=${fileRowsRemoved}`
+      `albums=${albumCount} fileRows=${fileRowsRemoved} ` +
+      `mediaItemsRemoved=${emptyResult.mediaItemsRemoved} ` +
+      `photosErrors=${emptyResult.errors.length}`
     );
+
+    const photoErrSuffix = emptyResult.errors.length > 0
+      ? ` (${emptyResult.errors.length} Photos API error(s) — see logs)`
+      : '';
 
     return {
       status:  'success',
-      message: `Cleared ${albumCount} album record(s) and ${fileRowsRemoved} file record(s). ` +
-               `Run "Backfill All" to recreate albums from Drive.`,
-      data: { albumRowsCleared: albumCount, fileRowsCleared: fileRowsRemoved },
+      message:
+        `Removed ${emptyResult.mediaItemsRemoved} photo(s) from ` +
+        `${emptyResult.albumsTouched} album(s) in Google Photos${photoErrSuffix}. ` +
+        `Cleared ${albumCount} album record(s) and ${fileRowsRemoved} file record(s). ` +
+        `Run "Backfill All" to recreate albums from Drive.`,
+      data: {
+        albumRowsCleared:  albumCount,
+        fileRowsCleared:   fileRowsRemoved,
+        albumsTouched:     emptyResult.albumsTouched,
+        mediaItemsRemoved: emptyResult.mediaItemsRemoved,
+        photosErrors:      emptyResult.errors,
+      },
     };
   } catch (err) {
     Logger.log(`serverDeleteAllAlbumRecords error: ${String(err)}`);

@@ -1739,3 +1739,84 @@ export function clearSyncRecordsForFile(
     return { status: ResultStatus.ERROR, message: msg };
   }
 }
+
+// ─── Bulk album-empty (Delete All Records) ────────────────────────────────────
+
+/** Aggregate result of emptyAllAppOwnedAlbums. */
+export interface EmptyAllAlbumsResult {
+  /** Distinct albums we attempted to empty (at least one media item tracked). */
+  albumsTouched:     number;
+  /** Count of media items the API confirmed it removed from their albums. */
+  mediaItemsRemoved: number;
+  /** Per-chunk error messages (one entry per failed batch call). */
+  errors:            string[];
+}
+
+/**
+ * Removes every tracked media item from every app-owned album, in batches.
+ *
+ * What this does and does NOT do (Photos API limits, post-March-2025):
+ *   - Google Photos Library API exposes no `albums.delete` or
+ *     `mediaItems.delete` endpoint. We can't truly delete the album or the
+ *     media items via API.
+ *   - `albums.batchRemoveMediaItems` (the `:removeMediaItems` action below) DOES
+ *     detach items from the album, which is the user-visible effect they want:
+ *     the album empties out in photos.google.com and any shared link shows
+ *     "no photos". The underlying media items remain in the owner's library.
+ *   - For items uploaded by an app with `appendonly` + `edit.appcreateddata`
+ *     scopes after 2025-03-31, Google purges items that aren't attached to any
+ *     album after 60 days, so they ultimately disappear from the owner's
+ *     library too — but only after that grace period.
+ *
+ * Chunking: the API documents a 50-id cap per call; we honour it.
+ *
+ * Non-fatal per chunk: individual failures are collected in `errors` and the
+ * loop continues. This is intended to be called from
+ * serverDeleteAllAlbumRecords right before we wipe Photo_Albums / Photo_Files,
+ * so a partial failure here still leaves the spreadsheet consistent with what
+ * Photos shows on the next rebuild.
+ */
+export function emptyAllAppOwnedAlbums(): EmptyAllAlbumsResult {
+  const fileRecords = loadFileRecords();
+
+  // Group mediaItemIds by albumId. Rows missing either id are unusable here.
+  const byAlbum = new Map<string, string[]>();
+  for (const r of fileRecords) {
+    if (!r.albumId || !r.mediaItemId) continue;
+    const list = byAlbum.get(r.albumId) ?? [];
+    list.push(r.mediaItemId);
+    byAlbum.set(r.albumId, list);
+  }
+
+  const errors: string[] = [];
+  let albumsTouched     = 0;
+  let mediaItemsRemoved = 0;
+  const BATCH_SIZE = 50;
+
+  for (const [albumId, ids] of byAlbum) {
+    albumsTouched++;
+    for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+      const chunk = ids.slice(i, i + BATCH_SIZE);
+      const result = photosPost(
+        `/albums/${encodeURIComponent(albumId)}:removeMediaItems`,
+        { mediaItemIds: chunk },
+      );
+      if (result.ok) {
+        mediaItemsRemoved += chunk.length;
+      } else {
+        const msg =
+          `albumId=${albumId} chunk=${Math.floor(i / BATCH_SIZE) + 1} ` +
+          `size=${chunk.length}: ${result.error}`;
+        errors.push(msg);
+        Logger.log(`[PhotosService.emptyAllAppOwnedAlbums] ${msg}`);
+      }
+    }
+  }
+
+  Logger.log(
+    `[PhotosService.emptyAllAppOwnedAlbums] albumsTouched=${albumsTouched} ` +
+    `mediaItemsRemoved=${mediaItemsRemoved} errors=${errors.length}`
+  );
+
+  return { albumsTouched, mediaItemsRemoved, errors };
+}
