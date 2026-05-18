@@ -72,7 +72,11 @@ export function listAllAdminEmails(): string[] {
  *   - CLUB_ADMIN must have a non-empty clubId
  *   - SUPER_ADMIN must have an empty clubId
  *   - No duplicate email already in the sheet
- *   - A club cannot have two different club admins (one-club-per-admin)
+ *
+ * NOTE: Multiple active club_admins are allowed for the same club. Caller-side
+ * authorization (which club an admin may add users to) is enforced by the route
+ * handler, not here — this service trusts that the input has already been
+ * scoped appropriately.
  */
 export function createUser(
   input: CreateUserInput,
@@ -92,24 +96,6 @@ export function createUser(
   }
 
   const clubId = (input.clubId ?? '').trim();
-
-  // Enforce one-club-per-club-admin
-  if (input.role === UserRole.CLUB_ADMIN && clubId) {
-    const conflict = loadAllUsers().find(
-      (u) =>
-        u.role === UserRole.CLUB_ADMIN &&
-        u.clubId === clubId &&
-        u.status === UserStatus.ACTIVE
-    );
-    if (conflict) {
-      return {
-        status: ResultStatus.ERROR,
-        message:
-          `Club "${clubId}" already has an active club admin (${conflict.email}). ` +
-          'Deactivate the existing admin first, or promote this person to super admin.',
-      };
-    }
-  }
 
   const record: UserRecord = {
     email:       normalizedEmail,
@@ -158,24 +144,8 @@ export function updateUser(
   const newRole  = input.role   ?? existing.role;
   const newClubId = input.clubId !== undefined ? input.clubId.trim() : existing.clubId;
 
-  // Enforce one-club-per-club-admin when club is being set/changed
-  if (newRole === UserRole.CLUB_ADMIN && newClubId && newClubId !== existing.clubId) {
-    const conflict = loadAllUsers().find(
-      (u) =>
-        u.email  !== existing.email &&
-        u.role   === UserRole.CLUB_ADMIN &&
-        u.clubId === newClubId &&
-        u.status === UserStatus.ACTIVE
-    );
-    if (conflict) {
-      return {
-        status: ResultStatus.ERROR,
-        message:
-          `Club "${newClubId}" already has an active club admin (${conflict.email}). ` +
-          'A person cannot be club admin for more than one club.',
-      };
-    }
-  }
+  // Multiple active club_admins per club are allowed — no conflict check here.
+  // Cross-club authorization is enforced by the route handler before this is called.
 
   const updated: UserRecord = {
     email:       existing.email,
