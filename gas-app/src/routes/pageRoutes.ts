@@ -54,7 +54,15 @@ function renderTemplate(
     // the outer wrapper page is on script.google.com (different origins).
     // DEFAULT sets X-Frame-Options: SAMEORIGIN which blocks GAS's own iframe
     // architecture and produces a blank "refused to connect" page.
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+    // Apply viewport meta tag on the OUTER script.google.com wrapper page so
+    // mobile browsers render at device width instead of the default ~980px
+    // desktop fallback. The <meta name="viewport"> in our own templates only
+    // affects the inner googleusercontent.com iframe — without this call the
+    // outer page stays at desktop width and the inner iframe gets squeezed,
+    // forcing users to pinch-zoom to read the login card. This is the canonical
+    // Apps Script mobile fix and has no effect outside of mobile viewports.
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
 // ─── Page handlers ────────────────────────────────────────────────────────────

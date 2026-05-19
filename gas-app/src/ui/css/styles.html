@@ -182,6 +182,13 @@
   }
 
   /* ── Dashboard tiles ─────────────────────────────────────────────────────── */
+  /*
+   * Tiles are <a> elements with role implicit from the anchor. The visual goal
+   * is "obviously a button-like link" — on desktop hover/focus lift the card and
+   * intensify the chevron; on touch (no hover), the icon tint, the darker
+   * chevron, the explicit "Open" pill, and the active-state press-down all act
+   * as static affordances so users don't need to hover to recognize tappability.
+   */
   .tile-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -191,38 +198,70 @@
 
   .tile {
     background: #fff;
-    border-radius: 8px;
-    border: 1.5px solid #e0e0e0;
-    border-left: 4px solid #3f51b5;
+    border-radius: 10px;
+    /* Slightly heavier border + accent stripe than before so the card reads
+     * as a "button" at first glance, not as a passive info panel. */
+    border: 1.5px solid #c5cae9;
+    border-left: 5px solid #3f51b5;
     box-shadow: 0 2px 6px rgba(0,0,0,0.08);
-    padding: 18px 16px;
+    padding: 18px 18px 18px 16px;
     text-decoration: none;
     color: inherit;
-    transition: box-shadow 0.18s, border-color 0.18s, transform 0.12s;
+    transition: box-shadow 0.18s, border-color 0.18s, transform 0.12s, background 0.18s;
     display: flex;
     align-items: center;
     gap: 14px;
     cursor: pointer;
     position: relative;
+    /* Suppress the iOS tap-highlight blue rectangle — we provide our own
+     * :active state below, which gives cleaner feedback. */
+    -webkit-tap-highlight-color: transparent;
   }
 
   .tile:hover,
   .tile:focus {
-    box-shadow: 0 6px 18px rgba(63,81,181,0.18);
+    box-shadow: 0 8px 20px rgba(63,81,181,0.22);
     border-color: #3f51b5;
+    background: #fafbff;
     transform: translateY(-2px);
     outline: none;
   }
 
+  /* :active fires on touch too — gives mobile users the same "I just tapped
+   * something" feedback that desktop users get from :hover. */
   .tile:active {
     transform: translateY(0);
-    box-shadow: 0 2px 6px rgba(0,0,0,0.12);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.14);
+    background: #eef0ff;
+  }
+
+  /* Keyboard focus ring — visible only when tabbing, not on mouse click. */
+  .tile:focus-visible {
+    outline: 2px solid #3f51b5;
+    outline-offset: 2px;
   }
 
   .tile-icon {
     font-size: 34px;
     color: #3f51b5;
     flex-shrink: 0;
+    /* Soft circular background behind the icon — gives the tile the same
+     * "iconified action button" look as Material You / modern Drive UI, and
+     * makes the affordance read as a button even on a still screenshot. */
+    background: #e8eaf6;
+    border-radius: 50%;
+    width: 52px;
+    height: 52px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.18s, color 0.18s;
+  }
+
+  .tile:hover .tile-icon,
+  .tile:focus .tile-icon {
+    background: #3f51b5;
+    color: #fff;
   }
 
   .tile-body {
@@ -243,17 +282,62 @@
     line-height: 1.4;
   }
 
+  /* The chevron used to be #9fa8da (very light indigo) which read as decorative
+   * rather than as an action cue. Default state is now the same indigo as the
+   * accent stripe so users see the "→" without having to hover. */
   .tile-chevron {
-    font-size: 22px !important;
-    color: #9fa8da;
+    font-size: 24px !important;
+    color: #3f51b5;
     flex-shrink: 0;
     transition: transform 0.15s, color 0.15s;
   }
 
   .tile:hover .tile-chevron,
   .tile:focus .tile-chevron {
-    color: #3f51b5;
-    transform: translateX(3px);
+    color: #1a237e;
+    transform: translateX(4px);
+  }
+
+  /* Optional "Open" pill — added by templates that want an even louder
+   * clickable cue (e.g. dashboard quick-action tiles). Renders as a filled
+   * indigo capsule on the right of the tile, matching the public-album
+   * banner style. Hidden by default unless the markup includes <span class="tile-open-pill">. */
+  .tile-open-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #3f51b5;
+    color: #fff;
+    border-radius: 999px;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    flex-shrink: 0;
+    transition: background 0.18s;
+  }
+
+  .tile:hover .tile-open-pill,
+  .tile:focus .tile-open-pill {
+    background: #1a237e;
+  }
+
+  .tile-open-pill .material-icons {
+    font-size: 14px !important;
+  }
+
+  /* Mobile: stack-friendly tap targets — increase min height so each tile is
+   * at least the recommended 44pt tappable area even on small viewports. */
+  @media (max-width: 480px) {
+    .tile {
+      min-height: 72px;
+      padding: 16px 14px;
+    }
+    .tile-icon {
+      width: 44px;
+      height: 44px;
+      font-size: 28px;
+    }
   }
 
   /* ── Header nav toggle (hamburger) ───────────────────────────────────────── */

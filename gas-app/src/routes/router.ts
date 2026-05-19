@@ -622,7 +622,8 @@ function handleOAuthCallback(code: string): GoogleAppsScript.HTML.HtmlOutput {
 
   return HtmlService
     .createHtmlOutput(html)
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
 // ─── Healthcheck page ─────────────────────────────────────────────────────────
@@ -700,7 +701,8 @@ function healthcheckPage(
 
   return HtmlService.createHtmlOutput(html)
     .setTitle('Healthcheck')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
 // ─── Internal JSON helper ─────────────────────────────────────────────────────

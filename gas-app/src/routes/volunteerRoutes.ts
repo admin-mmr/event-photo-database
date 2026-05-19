@@ -79,7 +79,11 @@ function renderVolunteerTemplate(
   return template
     .evaluate()
     .setTitle('Photo Upload')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+    // Force device-width viewport on the outer script.google.com wrapper — without
+    // this the iframe renders at desktop width on mobile, forcing volunteers to
+    // pinch-zoom the upload page. See renderTemplate() in pageRoutes.ts.
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
 // ─── Session helpers ──────────────────────────────────────────────────────────
@@ -244,7 +248,8 @@ export function handleVolunteerOAuthCallback(
 
   return HtmlService
     .createHtmlOutput(html)
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
 // ─── Step 3: Upload page (post-auth) ─────────────────────────────────────────
