@@ -43,8 +43,7 @@ export interface UpdateUserInput {
   readonly status?: UserStatus;
   /**
    * May only be set when role === CLUB_ADMIN. Pass empty string to clear.
-   * Multiple club_admins for the same club are allowed; cross-club access is
-   * enforced at the route-handler layer based on the caller's own clubId.
+   * Changing clubId is validated against the one-club-per-admin rule.
    */
   readonly clubId?: string;
 }

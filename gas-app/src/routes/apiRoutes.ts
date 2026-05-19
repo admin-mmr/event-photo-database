@@ -1,7 +1,6 @@
 import { ResultStatus, UserRole } from '../types/enums';
 import { ADMIN_CLUB_ID } from '../config/constants';
 import { UserRecord } from '../types/models';
-import { findByEmail as findUserByEmail } from '../services/userService';
 import {
   validateCreateUserPayload,
   validateUpdateUserPayload,
@@ -91,20 +90,7 @@ export function handleCreateUser(
     return jsonError('Validation failed', 400, validation.errors);
   }
 
-  const input = validation.data;
-
-  // Authorization: club_admin may only add club_admin users scoped to their own club.
-  // super_admin may add any role to any club.
-  if (adminUser.role === UserRole.CLUB_ADMIN) {
-    const targetClubId = (input.clubId ?? '').trim();
-    if (input.role !== UserRole.CLUB_ADMIN || targetClubId !== adminUser.clubId) {
-      return jsonForbidden(
-        `You are the admin for "${adminUser.clubId}" and can only add club admins for that club.`
-      );
-    }
-  }
-
-  const result = createUser(input, adminUser.email);
+  const result = createUser(validation.data, adminUser.email);
   if (result.status !== ResultStatus.SUCCESS) {
     return jsonError(result.message, 409, result.errors);
   }
@@ -126,30 +112,7 @@ export function handleUpdateUser(
     return jsonError('Validation failed', 400, validation.errors);
   }
 
-  const input = validation.data;
-
-  // Authorization: club_admin may only update club_admin users in their own club,
-  // and may not promote them to super_admin or move them to another club.
-  // super_admin may update any user.
-  if (adminUser.role === UserRole.CLUB_ADMIN) {
-    const existing = findUserByEmail(input.email);
-    const existingClub = existing?.clubId ?? '';
-    const existingRole = existing?.role;
-    const targetRole   = input.role   ?? existingRole;
-    const targetClubId = input.clubId !== undefined ? input.clubId.trim() : existingClub;
-    const crossClub =
-      existingRole !== UserRole.CLUB_ADMIN ||
-      existingClub !== adminUser.clubId ||
-      targetRole   !== UserRole.CLUB_ADMIN ||
-      targetClubId !== adminUser.clubId;
-    if (crossClub) {
-      return jsonForbidden(
-        `You are the admin for "${adminUser.clubId}" and can only update club admins for that club.`
-      );
-    }
-  }
-
-  const result = updateUser(input, adminUser.email);
+  const result = updateUser(validation.data, adminUser.email);
   if (result.status !== ResultStatus.SUCCESS) {
     const code = result.message.includes('not found') ? 404 : 400;
     return jsonError(result.message, code, result.errors);

@@ -5,7 +5,7 @@
  *         serverDeactivateUser, serverReactivateUser, serverLogout.
  */
 
-import { ResultStatus, UserRole } from '../types/enums';
+import { ResultStatus } from '../types/enums';
 import { ServerResponse, WithSession } from '../types/responses';
 import { requireAdminOrFail, resolveUser } from '../middleware/authMiddleware';
 import {
@@ -146,32 +146,6 @@ export function serverCreateUser(
     }
     const input = validation.data;
 
-    // Authorization: club_admin may only add users scoped to their own club.
-    // super_admin may add a user to any club (or create another super_admin).
-    if (auth.adminRole === UserRole.CLUB_ADMIN) {
-      const targetClubId = (input.clubId ?? '').trim();
-      const crossClub = input.role !== UserRole.CLUB_ADMIN || targetClubId !== auth.adminClubId;
-      if (crossClub) {
-        Logger.log(
-          `[serverCreateUser] authorization rejected — actor=${auth.adminEmail} ` +
-          `actorClub=${auth.adminClubId} targetRole=${input.role} targetClub=${targetClubId}`
-        );
-        appendAuditFailure({
-          actorEmail:   auth.adminEmail,
-          action:       AuditAction.USER_CREATE_FAILED,
-          resourceType: 'user',
-          resourceId:   input.email,
-          stage:        'authorization',
-          message:      `Cross-club access denied (actorClub=${auth.adminClubId}, targetRole=${input.role}, targetClub=${targetClubId})`,
-          attemptedPayload: raw,
-        });
-        return {
-          status: 'error',
-          message: `You are the admin for "${auth.adminClubId}" and can only add club admins for that club.`,
-        };
-      }
-    }
-
     const result = createUser(input, auth.adminEmail);
     if (result.status !== ResultStatus.SUCCESS || !result.data) {
       Logger.log(`[serverCreateUser] service failed — actor=${auth.adminEmail} email=${input.email} message="${result.message}"`);
@@ -260,42 +234,6 @@ export function serverUpdateUser(payload: WithSession): ServerResponse {
     const input = validation.data;
 
     const previous = findUserByEmail(input.email);
-
-    // Authorization: club_admin may only update users that already belong to
-    // their own club, and may not change role/club to a value outside their club.
-    // super_admin can update any user.
-    if (auth.adminRole === UserRole.CLUB_ADMIN) {
-      const existingClub = previous?.clubId ?? '';
-      const existingRole = previous?.role;
-      const targetRole   = input.role   ?? existingRole;
-      const targetClubId = input.clubId !== undefined ? input.clubId.trim() : existingClub;
-      const crossClub =
-        existingRole !== UserRole.CLUB_ADMIN ||
-        existingClub !== auth.adminClubId ||
-        targetRole   !== UserRole.CLUB_ADMIN ||
-        targetClubId !== auth.adminClubId;
-      if (crossClub) {
-        Logger.log(
-          `[serverUpdateUser] authorization rejected — actor=${auth.adminEmail} ` +
-          `actorClub=${auth.adminClubId} existingClub=${existingClub} ` +
-          `targetRole=${targetRole} targetClub=${targetClubId}`
-        );
-        appendAuditFailure({
-          actorEmail:   auth.adminEmail,
-          action:       AuditAction.USER_UPDATE_FAILED,
-          resourceType: 'user',
-          resourceId:   input.email,
-          stage:        'authorization',
-          message:      `Cross-club access denied (actorClub=${auth.adminClubId}, existingClub=${existingClub}, targetRole=${targetRole}, targetClub=${targetClubId})`,
-          attemptedPayload: raw,
-        });
-        return {
-          status: 'error',
-          message: `You are the admin for "${auth.adminClubId}" and can only update club admins for that club.`,
-        };
-      }
-    }
-
     const result = updateUser(input, auth.adminEmail);
     if (result.status !== ResultStatus.SUCCESS || !result.data) {
       Logger.log(`[serverUpdateUser] service failed — actor=${auth.adminEmail} email=${input.email} message="${result.message}"`);

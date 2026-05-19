@@ -216,18 +216,14 @@ describe('userService', () => {
       expect(result.data!.addedDate).toBe(today);
     });
 
-    it('allows multiple active club_admins for the same club', () => {
-      // TEST_USER_EMAIL is already club_admin for New_Bee. Adding another
-      // club_admin to the same club must now succeed — cross-club authorization
-      // is enforced at the route-handler layer, not in the service.
+    it('enforces one-club-per-club-admin: returns ERROR if club already has an active admin', () => {
+      // TEST_USER_EMAIL is already club_admin for New_Bee
       const result = createUser(
         { email: 'another@x.com', firstName: 'Another', lastName: 'Admin', role: UserRole.CLUB_ADMIN, clubId: 'New_Bee' },
         TEST_ADMIN_EMAIL
       );
-      expect(result.status).toBe(ResultStatus.SUCCESS);
-      expect(result.data!.email).toBe('another@x.com');
-      expect(result.data!.clubId).toBe('New_Bee');
-      expect(result.data!.role).toBe(UserRole.CLUB_ADMIN);
+      expect(result.status).toBe(ResultStatus.ERROR);
+      expect(result.message).toContain('already has an active club admin');
     });
   });
 
