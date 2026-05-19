@@ -69,15 +69,34 @@ function renderTemplate(
 
 /**
  * Login / welcome page shown to unauthenticated users.
+ *
+ * Build stamp: the commit hash + build timestamp are NOT exposed to
+ * unauthenticated visitors by default. Admins can opt in by setting the
+ * SHOW_LOGIN_BUILD_STAMP Script Property to 'true' when actively verifying
+ * a deployment from the public login URL; otherwise we leak nothing
+ * useful (and the same info is always available to admins via the
+ * ?action=healthcheck page and via the build-stamp-header badge on every
+ * authenticated page).
  */
 export function loginPage(errorMessage = ''): GoogleAppsScript.HTML.HtmlOutput {
   let clientId = '';
-  try { clientId = PropertiesService.getScriptProperties().getProperty('GOOGLE_CLIENT_ID') ?? ''; } catch { clientId = ''; }
+  let showBuildStamp = false;
+  try {
+    const props = PropertiesService.getScriptProperties();
+    clientId = props.getProperty('GOOGLE_CLIENT_ID') ?? '';
+    showBuildStamp = (props.getProperty('SHOW_LOGIN_BUILD_STAMP') ?? '').toLowerCase() === 'true';
+  } catch {
+    clientId = '';
+    showBuildStamp = false;
+  }
   return renderTemplate('login', {
     errorMessage,
     clientId,
-    buildTime:   BUILD_TIME,
-    buildCommit: BUILD_COMMIT,
+    // Only forwarded when the opt-in Script Property is set. The login.html
+    // template already guards on `typeof buildTime !== 'undefined' && buildTime`,
+    // so an empty string here naturally hides the stamp block.
+    buildTime:   showBuildStamp ? BUILD_TIME   : '',
+    buildCommit: showBuildStamp ? BUILD_COMMIT : '',
     // Public album index — when configured, the login page links straight to
     // the published spreadsheet so visitors can browse without signing in.
     publicSpreadsheetUrl: getPublicSpreadsheetUrl(),

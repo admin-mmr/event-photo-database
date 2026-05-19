@@ -181,6 +181,36 @@
     color: #555;
   }
 
+  /* ── Welcome banner (dashboard greeting card) ────────────────────────────── */
+  /*
+   * Indigo gradient card shown at the top of the dashboard. Extracted from the
+   * inline style on dashboard.html so the brand colors live in one place and
+   * the banner can be themed (e.g. holiday variants, A/B tests) without
+   * touching template markup. The role-chip inside still uses its own class.
+   */
+  .welcome-banner {
+    background: linear-gradient(135deg, #3f51b5, #5c6bc0);
+    color: #fff;
+    padding: 28px 24px;
+  }
+
+  .welcome-banner h4 {
+    margin: 0 0 6px;
+    font-size: 22px;
+    color: #fff;
+  }
+
+  .welcome-banner p {
+    margin: 0;
+    opacity: 0.88;
+    font-size: 15px;
+  }
+
+  .welcome-banner .material-icons {
+    vertical-align: middle;
+    margin-right: 8px;
+  }
+
   /* ── Dashboard tiles ─────────────────────────────────────────────────────── */
   /*
    * Tiles are <a> elements with role implicit from the anchor. The visual goal
@@ -640,6 +670,109 @@
    * mid-word, so we rely on a smaller font size instead). */
   .mdl-layout__header-row.nav-collapsed .mdl-layout-title {
     font-size: 16px;
+  }
+
+  /* ── CSS-only mobile fallback for the nav collapse ───────────────────────── */
+  /*
+   * Below 768px, apply the collapsed appearance unconditionally — without
+   * waiting for the ResizeObserver in app.html to run.
+   *
+   * Why: on slower Android phones the first paint happens before
+   * DOMContentLoaded → requestAnimationFrame → measure, leaving a 200–500ms
+   * window where the inline nav links spill out of the header before the JS
+   * adds .nav-collapsed and the layout snaps into hamburger mode. Users see
+   * a visible flash of broken layout.
+   *
+   * These rules duplicate the .nav-collapsed styles above with the class
+   * dropped from the selector. On wide screens they don't fire. On mobile
+   * they apply immediately. When the JS observer later adds .nav-collapsed,
+   * the resulting computed styles are identical, so the two systems cooperate
+   * cleanly with no visual jump.
+   *
+   * The 768px breakpoint matches the existing .page-content responsive rule
+   * and is wide enough that even admin pages with 7+ nav links comfortably
+   * fit on a tablet in landscape. The JS observer still owns the precise
+   * "this row would overflow" decision on widths > 768px (e.g. a side-by-side
+   * window on a laptop where admin nav happens to overflow at 900px).
+   */
+  @media (max-width: 768px) {
+    .mdl-layout__header-row {
+      padding: 0 12px;
+      position: relative;
+    }
+
+    .mdl-layout__header-row .nav-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .mdl-layout__header-row .nav-panel {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      flex-direction: column;
+      align-items: stretch;
+      background: #3f51b5;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.25);
+      padding: 4px 0;
+      z-index: 1200;
+      max-height: calc(100vh - 64px);
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .mdl-layout__header-row.nav-open .nav-panel {
+      display: flex;
+    }
+
+    .mdl-layout__header-row .nav-panel .mdl-navigation {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      margin: 0;
+      padding: 0;
+      height: auto;
+      align-items: stretch;
+    }
+
+    .mdl-layout__header-row .nav-panel .mdl-navigation__link {
+      padding: 14px 20px;
+      line-height: 1.2;
+      height: auto;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      width: 100%;
+      box-sizing: border-box;
+      text-align: left;
+      color: #fff !important;
+      opacity: 1;
+    }
+
+    .mdl-layout__header-row .nav-panel .mdl-navigation__link:hover,
+    .mdl-layout__header-row .nav-panel .mdl-navigation__link:focus {
+      background: rgba(255, 255, 255, 0.08);
+      outline: none;
+    }
+
+    .mdl-layout__header-row .nav-panel .mdl-navigation__link--current {
+      background: rgba(255, 255, 255, 0.18);
+      font-weight: 500;
+    }
+
+    .mdl-layout__header-row .user-email-inline,
+    .mdl-layout__header-row .user-menu-caret {
+      display: none;
+    }
+
+    .mdl-layout__header-row .user-menu {
+      margin-left: 4px;
+    }
+
+    .mdl-layout__header-row .mdl-layout-title {
+      font-size: 16px;
+    }
   }
 
   /* ── Build stamp badge (flex sibling after .mdl-layout-title) ────────────── */

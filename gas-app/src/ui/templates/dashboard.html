@@ -85,13 +85,13 @@
     <main class="mdl-layout__content">
       <div class="page-content">
 
-        <!-- Welcome banner -->
-        <div class="card" style="background:linear-gradient(135deg,#3f51b5,#5c6bc0);color:#fff;padding:28px 24px;">
-          <h4 style="margin:0 0 6px;font-size:22px;">
-            <i class="material-icons" style="vertical-align:middle;margin-right:8px;">waving_hand</i>
+        <!-- Welcome banner — styles in styles.html .welcome-banner -->
+        <div class="card welcome-banner">
+          <h4>
+            <i class="material-icons">waving_hand</i>
             Welcome back!
           </h4>
-          <p style="margin:0;opacity:0.88;font-size:15px;">
+          <p>
             <?= userEmail ?> &nbsp;·&nbsp;
             <span class="role-chip <?= userRole ?>"><?= userRole ?></span>
             <? if (runningClub) { ?>
