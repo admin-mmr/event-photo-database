@@ -297,6 +297,7 @@ const mockContentService = {
 const mockHtmlOutput = {
   setTitle: jest.fn().mockReturnThis(),
   setXFrameOptionsMode: jest.fn().mockReturnThis(),
+  addMetaTag: jest.fn().mockReturnThis(),
 };
 
 export const mockHtmlTemplate = {

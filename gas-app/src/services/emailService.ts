@@ -203,6 +203,8 @@ export function notifyUserCreated(
      <p>You've been added to ${esc(PRODUCT_NAME_EN)}
         (${esc(PRODUCT_NAME)}) by <b>${esc(createdByAdminEmail)}</b>.</p>
      <table style="border-collapse:collapse;margin:12px 0;font-size:14px;">
+       <tr><td style="padding:4px 12px 4px 0;color:#666;">Email</td>
+           <td style="padding:4px 0;font-family:monospace;">${esc(newUser.email)}</td></tr>
        <tr><td style="padding:4px 12px 4px 0;color:#666;">Role</td>
            <td style="padding:4px 0;font-family:monospace;">${esc(newUser.role)}</td></tr>
        <tr><td style="padding:4px 12px 4px 0;color:#666;">Club</td>

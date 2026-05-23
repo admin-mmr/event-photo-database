@@ -99,9 +99,8 @@ describe('emailService', () => {
       expect(call.htmlBody).toContain('newuser@example.com');
     });
 
-    it('CC includes every active admin, not just opted-in ones', () => {
-      // Even though we have only one admin in the prefs sheet, this tests
-      // the logic that listAllAdminEmails() is called
+    it('CC includes super_admins and same-club admins (not all admins)', () => {
+      // TEST_ADMIN_EMAIL is super_admin — must always be CC'd regardless of club.
       const result = notifyUserCreated(testUser, TEST_ADMIN_EMAIL);
       expect(result.status).toBe(ResultStatus.SUCCESS);
       const call = mockMailApp.sendEmail.mock.calls[0][0] as Record<string, unknown>;
