@@ -1,7 +1,7 @@
-import { ResultStatus, EmailType, AuditAction, UserStatus } from '../types/enums';
+import { ResultStatus, EmailType, AuditAction, UserStatus, UserRole } from '../types/enums';
 import { UserRecord } from '../types/models';
 import { ServiceResult, ValidationError } from '../types/responses';
-import { listRecipientsForType, listAllAdminEmails } from './emailPreferenceService';
+import { listRecipientsForType } from './emailPreferenceService';
 import { appendAuditLog } from './auditLogService';
 import { generateSummary, SystemSummary } from './summaryService';
 import { getAllUploadLogs } from './uploadLogService';
@@ -178,18 +178,28 @@ export function notifyUserCreated(
   newUser: UserRecord,
   createdByAdminEmail: string,
 ): ServiceResult<{ to: string[]; cc: string[] }> {
-  // Admins who opted IN (or inherited the default opt-in) for user-created alerts.
-  const optedInAdmins = listRecipientsForType(EmailType.USER_CREATED);
-  // Always CC every admin for user creation per product requirement.
-  const allAdmins = listAllAdminEmails();
+  // CC only super_admins and club_admins of the same club as the new user,
+  // plus the admin who created them. This avoids spamming every admin across
+  // all clubs when a new user is added to just one club.
+  const allUsers = listAllUsers(1, 500).items;
+  const relevantAdmins = allUsers
+    .filter((u) => {
+      if (u.status !== UserStatus.ACTIVE) return false;
+      if (u.role === UserRole.SUPER_ADMIN) return true;
+      if (u.role === UserRole.CLUB_ADMIN && u.clubId === newUser.clubId) return true;
+      return false;
+    })
+    .map((u) => u.email);
   // Exclude the new user themselves from the CC list.
-  const ccList = Array.from(new Set([...optedInAdmins, ...allAdmins, createdByAdminEmail]))
+  const ccList = Array.from(new Set([...relevantAdmins, createdByAdminEmail]))
     .filter((e) => e.toLowerCase() !== newUser.email.toLowerCase());
 
   const dashUrl = mainPageUrl('dashboard');
+  const firstName = (newUser.firstName ?? '').trim();
+  const greeting = firstName || newUser.email;
   const html = wrapHtml(
     `Welcome to ${PRODUCT_NAME_EN}`,
-    `<p>Hi ${esc(newUser.email)},</p>
+    `<p>Hi ${esc(greeting)},</p>
      <p>You've been added to ${esc(PRODUCT_NAME_EN)}
         (${esc(PRODUCT_NAME)}) by <b>${esc(createdByAdminEmail)}</b>.</p>
      <table style="border-collapse:collapse;margin:12px 0;font-size:14px;">

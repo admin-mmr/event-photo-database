@@ -80,23 +80,19 @@ function renderTemplate(
  */
 export function loginPage(errorMessage = ''): GoogleAppsScript.HTML.HtmlOutput {
   let clientId = '';
-  let showBuildStamp = false;
   try {
     const props = PropertiesService.getScriptProperties();
     clientId = props.getProperty('GOOGLE_CLIENT_ID') ?? '';
-    showBuildStamp = (props.getProperty('SHOW_LOGIN_BUILD_STAMP') ?? '').toLowerCase() === 'true';
   } catch {
     clientId = '';
-    showBuildStamp = false;
   }
   return renderTemplate('login', {
     errorMessage,
     clientId,
-    // Only forwarded when the opt-in Script Property is set. The login.html
-    // template already guards on `typeof buildTime !== 'undefined' && buildTime`,
-    // so an empty string here naturally hides the stamp block.
-    buildTime:   showBuildStamp ? BUILD_TIME   : '',
-    buildCommit: showBuildStamp ? BUILD_COMMIT : '',
+    // Always show the build stamp on the login card so admins can verify
+    // which deployment version is live without needing to sign in.
+    buildTime:   BUILD_TIME,
+    buildCommit: BUILD_COMMIT,
     // Public album index — when configured, the login page links straight to
     // the published spreadsheet so visitors can browse without signing in.
     publicSpreadsheetUrl: getPublicSpreadsheetUrl(),
@@ -159,7 +155,10 @@ export function adminUsersPage(user: UserRecord, sessionToken = ""): GoogleAppsS
   const roleOptions = Object.values(UserRole);
 
   return renderTemplate('admin/users', { sessionToken,
-    userEmail: user.email,
+    userEmail:    user.email,
+    userRole:     user.role,
+    userClubId:   user.clubId ?? '',
+    isSuperAdmin: isSuperAdmin(user.role),
     users: result.items,
     total: result.total,
     approvedClubs,
@@ -177,11 +176,12 @@ export function adminEventsPage(user: UserRecord, sessionToken = ""): GoogleApps
   const events = listAllEvents(1, 20, 'desc');
 
   return renderTemplate('admin/events', { sessionToken,
-    userEmail:   user.email,
-    userRole:    user.role,
-    isAdmin:     isAdmin(user.role),
-    events:      JSON.stringify(events.items),
-    totalEvents: events.total,
+    userEmail:    user.email,
+    userRole:     user.role,
+    isAdmin:      isAdmin(user.role),
+    isSuperAdmin: isSuperAdmin(user.role),
+    events:       JSON.stringify(events.items),
+    totalEvents:  events.total,
   });
 }
 
@@ -266,6 +266,7 @@ export function adminSummaryPage(user: UserRecord, sessionToken = ""): GoogleApp
     userEmail:      user.email,
     userRole:       user.role,
     isAdmin:        isAdmin(user.role),
+    isSuperAdmin:   isSuperAdmin(user.role),
     // Pass the initial summary as JSON; null if generation failed
     initialSummary: hasSummary ? JSON.stringify(summaryResult.data) : 'null',
     initialError:   hasSummary ? '' : (summaryResult.message ?? 'Failed to load summary'),
@@ -286,12 +287,13 @@ export function adminPhotosPage(user: UserRecord, sessionToken = ""): GoogleApps
   const albums = listAllAlbums();
 
   return renderTemplate('admin/photos', { sessionToken,
-    userEmail:          user.email,
-    userRole:           user.role,
-    isAdmin:            isAdmin(user.role),
-    events:             JSON.stringify(events.items),
-    totalEvents:        events.total,
-    albums:             JSON.stringify(albums),
+    userEmail:           user.email,
+    userRole:            user.role,
+    isAdmin:             isAdmin(user.role),
+    isSuperAdmin:        isSuperAdmin(user.role),
+    events:              JSON.stringify(events.items),
+    totalEvents:         events.total,
+    albums:              JSON.stringify(albums),
     publicAlbumSheetUrl: getPublicSpreadsheetUrl() ?? '',
   });
 }
@@ -319,6 +321,7 @@ export function adminAlbumsPage(user: UserRecord, sessionToken = ""): GoogleApps
     userEmail:      user.email,
     userRole:       user.role,
     isAdmin:        isAdmin(user.role),
+    isSuperAdmin:   isSuperAdmin(user.role),
     albums:         JSON.stringify(albums),
     eventNameById:  JSON.stringify(eventNameById),
   });
@@ -358,10 +361,11 @@ export function adminEmailPrefsPage(user: UserRecord, sessionToken = ''): Google
   const prefs = getPreferencesFor(user.email);
   return renderTemplate('admin/email_prefs', {
     sessionToken,
-    userEmail: user.email,
-    userRole:  user.role,
-    isAdmin:   isAdmin(user.role),
-    prefs:     JSON.stringify(prefs),
+    userEmail:    user.email,
+    userRole:     user.role,
+    isAdmin:      isAdmin(user.role),
+    isSuperAdmin: isSuperAdmin(user.role),
+    prefs:        JSON.stringify(prefs),
   });
 }
 
@@ -376,6 +380,7 @@ export function adminAuditPage(user: UserRecord, sessionToken = ""): GoogleAppsS
     userEmail:    user.email,
     userRole:     user.role,
     isAdmin:      isAdmin(user.role),
+    isSuperAdmin: isSuperAdmin(user.role),
     initialLogs:  result.data ? JSON.stringify(result.data.items) : '[]',
     initialTotal: result.data ? result.data.total                 : 0,
     initialError: result.data ? '' : (result.message ?? 'Failed to load audit log'),
@@ -399,12 +404,16 @@ export function publicAlbumIndexPage(viewerEmail: string): GoogleAppsScript.HTML
   const entries = listPublicAlbumIndex();
   return renderTemplate('public/album_index', {
     viewerEmail,
-    entries:      JSON.stringify(entries),
-    totalEvents:  entries.length,
-    totalAlbums:  entries.reduce(
+    entries:             JSON.stringify(entries),
+    totalEvents:         entries.length,
+    totalAlbums:         entries.reduce(
       (sum, e) => sum + (e.eventAlbum ? 1 : 0) + e.clubAlbums.length,
       0
     ),
+    // Public spreadsheet URL — when set, shown as the primary way to browse
+    // albums (avoids the Google Photos "Can't access photo" error that occurs
+    // when albums haven't been manually shared by the album owner).
+    publicSpreadsheetUrl: getPublicSpreadsheetUrl() ?? '',
   });
 }
 

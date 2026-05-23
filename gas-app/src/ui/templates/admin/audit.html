@@ -85,10 +85,12 @@
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">manage_accounts</i>
               Users&nbsp;/&nbsp;用户
             </a>
+            <? if (isSuperAdmin) { ?>
             <a class="mdl-navigation__link" href="?action=admin_clubs">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>
-              Clubs&nbsp;/&nbsp;跑团
+              Clubs / 跑团
             </a>
+            <? } ?>
             <a class="mdl-navigation__link mdl-navigation__link--current" href="?action=admin_audit">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">history</i>
               Audit Log&nbsp;/&nbsp;操作日志

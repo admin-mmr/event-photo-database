@@ -41,10 +41,12 @@
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">manage_accounts</i>
               Users&nbsp;/&nbsp;用户
             </a>
+            <? if (isSuperAdmin) { ?>
             <a class="mdl-navigation__link" href="?action=admin_clubs">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>
-              Clubs&nbsp;/&nbsp;跑团
+              Clubs / 跑团
             </a>
+            <? } ?>
             <a class="mdl-navigation__link" href="?action=admin_audit">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">history</i>
               Audit Log&nbsp;/&nbsp;操作日志
@@ -136,6 +138,25 @@
                 <span class="field-error" id="error-lastName" aria-live="polite"></span>
               </div>
 
+              <? if (userRole === 'club_admin') { ?>
+              <!-- club_admin: club is locked to their own club, not selectable -->
+              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label is-dirty">
+                <input type="text" id="new-club-display" class="mdl-textfield__input"
+                       value="<?= userClubId ?>" disabled>
+                <input type="hidden" id="new-club" name="clubId" value="<?= userClubId ?>">
+                <label class="mdl-textfield__label" for="new-club-display">Running Club</label>
+                <span class="field-error" id="error-clubId" aria-live="polite"></span>
+              </div>
+
+              <!-- club_admin: role is locked to club_admin -->
+              <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label is-dirty">
+                <select id="new-role" name="role" class="mdl-textfield__input">
+                  <option value="club_admin" selected>club_admin</option>
+                </select>
+                <label class="mdl-textfield__label" for="new-role">Role</label>
+                <span class="field-error" id="error-role" aria-live="polite"></span>
+              </div>
+              <? } else { ?>
               <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label is-dirty">
                 <select id="new-club" name="clubId" class="mdl-textfield__input" required>
                   <option value="" disabled selected>Select club</option>
@@ -156,6 +177,7 @@
                 <label class="mdl-textfield__label" for="new-role">Role</label>
                 <span class="field-error" id="error-role" aria-live="polite"></span>
               </div>
+              <? } ?>
             </div>
 
             <div class="form-actions">
