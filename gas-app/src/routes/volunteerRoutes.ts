@@ -44,6 +44,7 @@ import { appendUploadLog } from '../services/uploadLogService';
 import { appendAuditLog } from '../services/auditLogService';
 import { notifyUploadClientError } from '../services/emailService';
 import { enqueueBatchSync } from '../services/syncQueueService';
+import { getPublicSpreadsheetUrl } from '../services/publicSpreadsheetService';
 import { getCanonicalScriptUrl } from '../utils/scriptUrl';
 import { buildLayer3FolderName } from '../utils/folderNameValidator';
 import { toBatchTimestamp } from '../utils/dateFormatter';
@@ -304,6 +305,10 @@ export function volunteerUploadPage(
     consentLine:         VOLUNTEER_CONSENT_LINE,
     photographerName,
     creditRenameEnabled: isCreditRenameEnabled(),
+    // URL of the public read-only album/photos sheet — used by the post-upload
+    // confirmation page's "View Public Sheet" button. Empty string when the
+    // PUBLIC_ALBUM_INDEX_SHEET_ID Script Property is unset (feature off).
+    publicSpreadsheetUrl: getPublicSpreadsheetUrl(),
   });
 }
 

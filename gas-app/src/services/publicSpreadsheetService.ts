@@ -41,13 +41,14 @@
  */
 
 import { listPublicAlbumIndex, PublicAlbumIndexEntry } from './publicAlbumIndexService';
-import { PhotosAlbumRecord, EventRecord, SpecialFolderRecord, ClubRecord } from '../types/models';
+import { PhotosAlbumRecord, PhotosFileRecord, EventRecord, SpecialFolderRecord, ClubRecord } from '../types/models';
 import { nowIsoTimestamp } from '../utils/dateFormatter';
 import { getGoogleAlbumDetails, AlbumDetails } from './photosApiClient';
 import { loadAlbumOverrides, AlbumOverride } from './albumOverridesService';
 import { listAllSpecialFolders } from './specialFoldersService';
 import { listAll as listAllEvents } from './eventService';
 import { listActive as listActiveClubs } from './clubService';
+import { listAllFileRecords } from './photoAlbumsRepo';
 
 /* global PropertiesService, SpreadsheetApp, Logger, Utilities */
 
@@ -61,6 +62,26 @@ const PUBLIC_ALBUM_TAB = 'Albums';
  * without affecting the other.
  */
 const PUBLIC_FOLDERS_TAB = 'Folders';
+
+/**
+ * Tab name for the per-file Photos index. One row per synced photo, joining
+ * Photo_Files with Photo_Albums and Events so a public viewer can browse the
+ * full catalogue without logging into the admin sheet.
+ */
+const PUBLIC_PHOTOS_TAB = 'Photos';
+
+/**
+ * How long after creation we trust the stored album URL even when the Photos
+ * API returns 403/404. Post-March-2025 the Library API frequently returns
+ * 'denied' for albums it just created (scope restrictions), which previously
+ * caused us to blank both the Album Link and Photos count on the public sheet.
+ *
+ * For albums younger than this we assume the denied response is a permissions
+ * artefact, NOT a deletion, and keep the cached URL + counts visible.
+ *
+ * Reconciliation still surfaces truly-deleted albums via a separate trigger.
+ */
+const ALBUM_DENIED_GRACE_DAYS = 30;
 
 /** Script Property key holding the public spreadsheet's file ID. */
 const PROP_KEY = 'PUBLIC_ALBUM_INDEX_SHEET_ID';
@@ -237,15 +258,16 @@ function normalizeAlbumDisplay(
  * trigger) catches the truly-deleted case.
  */
 function permissionLabel(
+  album: PhotosAlbumRecord,
   details: AlbumDetails | null,
   override: AlbumOverride | undefined
 ): string {
   if (override?.permission) return override.permission;
   if (!details) return 'Unknown';
-  // Denied + no admin override => treat as deleted in Photos. Blank cells in
-  // the public sheet so visitors aren't shown stale permission info for an
-  // album that no longer exists. See looksDeleted() for the shared predicate.
-  if (looksDeleted(details, override)) return '';
+  // Denied + no admin override + outside grace window => treat as deleted in
+  // Photos. Blank cells in the public sheet so visitors aren't shown stale
+  // permission info for an album that no longer exists. See looksDeleted().
+  if (looksDeleted(album, details, override)) return '';
   if (details.accessibility === 'denied') return 'Inaccessible';
   if (!details.found) return 'Unknown';
   return details.isShared ? 'Public' : 'Private';
@@ -253,22 +275,44 @@ function permissionLabel(
 
 /**
  * Treat an album as "deleted in Google Photos" when albums.get returned
- * 403/404 (`accessibility === 'denied'`) AND the admin hasn't pinned
- * anything for it in ALBUM_OVERRIDES. With Google's deny-by-default 404 for
- * cross-client reads we can't be 100% sure the album was deleted — but for
- * albums the app itself created (the only kind that ever land in
- * Photo_Albums), a denied response is the strongest deletion signal the
- * Library API gives us post-March-2025. The override map is the escape
- * hatch for the rare false positive: admins set permission or shareableUrl
- * there and the row is rendered normally again.
+ * 403/404 (`accessibility === 'denied'`) AND the album is old enough that the
+ * denied response is unlikely to be a transient API/scope artefact AND the
+ * admin hasn't pinned anything for it in ALBUM_OVERRIDES.
+ *
+ * The age guard (ALBUM_DENIED_GRACE_DAYS) exists because the post-March-2025
+ * Library API often returns 403/404 for albums it has *just created* via the
+ * appendonly + edit.appcreateddata scopes. Without this guard, every freshly
+ * created album would land on the public sheet with a blank Album Link and
+ * blank Photos count — which is exactly what we saw in production for the
+ * 2026-05-16 Brooklyn Half rows.
+ *
+ * Inside the grace window we keep the cached URL/count visible. Reconciliation
+ * still flags truly-orphaned rows through a separate channel.
  */
 function looksDeleted(
+  album: PhotosAlbumRecord,
   details: AlbumDetails | null,
   override: AlbumOverride | undefined
 ): boolean {
   if (!details) return false;
   if (override?.permission || override?.shareableUrl) return false;
-  return details.accessibility === 'denied';
+  if (details.accessibility !== 'denied') return false;
+  if (isWithinDeniedGrace(album)) return false;
+  return true;
+}
+
+/**
+ * True when the album's createdAt is within ALBUM_DENIED_GRACE_DAYS of now.
+ * Empty / unparseable createdAt is treated as "within grace" (newly migrated
+ * rows shouldn't be blanked just because they're missing a timestamp).
+ */
+function isWithinDeniedGrace(album: PhotosAlbumRecord): boolean {
+  const raw = (album.createdAt || '').trim();
+  if (!raw) return true;
+  const t = Date.parse(raw);
+  if (!Number.isFinite(t)) return true;
+  const ageMs = Date.now() - t;
+  return ageMs < ALBUM_DENIED_GRACE_DAYS * 24 * 60 * 60 * 1000;
 }
 
 /**
@@ -288,6 +332,7 @@ function looksDeleted(
  * usually prefer a dead link they can debug over no link at all.
  */
 function albumLink(
+  album: PhotosAlbumRecord,
   normalizedUrl: string,
   details: AlbumDetails | null,
   override: AlbumOverride | undefined
@@ -296,8 +341,9 @@ function albumLink(
   if (override?.shareableUrl) return override.shareableUrl;
   // Deleted-in-Photos albums: drop the stale sheet URL so visitors don't
   // click into a dead link. permissionLabel() and the call site clear Last
-  // Sync the same way.
-  if (looksDeleted(details, override)) return '';
+  // Sync the same way. The grace-window check inside looksDeleted means
+  // freshly created albums whose API returns denied still keep their URL.
+  if (looksDeleted(album, details, override)) return '';
   return normalizedUrl;
 }
 
@@ -306,22 +352,32 @@ function albumLink(
  *
  *   - Prefer the live mediaItemsCount from Google Photos when available.
  *   - Fall back to the sheet's cached syncedFileCount.
- *   - When BOTH are zero AND we have no live data, render '' (empty)
- *     rather than "0", which would imply we know the album is empty.
- *     For albums the API can't see, "0" is almost certainly wrong.
+ *   - Fall back further to the count of Photo_Files rows for this album.
+ *     This is robust against drift in syncedFileCount (e.g. a partial sync
+ *     that wrote Photo_Files rows but never updated the album stats).
+ *   - When everything is zero AND the album is within the denied grace
+ *     window we render '' (empty) so the cell reads "unknown" rather than
+ *     misleading "0" for an album the API can't yet see.
  *
- * Returns either a number (positive count) or '' for "we don't know".
+ * Returns either a number (≥ 0) or '' for "we don't know".
  */
 function photoCount(
   album: PhotosAlbumRecord,
-  details: AlbumDetails | null
+  details: AlbumDetails | null,
+  fileCountByAlbumId: Map<string, number>
 ): number | string {
   if (details && details.found && typeof details.mediaItemsCount === 'number') {
     return details.mediaItemsCount;
   }
   if (album.syncedFileCount > 0) return album.syncedFileCount;
-  // Last resort: API didn't tell us, sheet says 0. Don't pretend to know.
-  return '';
+  const fromFiles = fileCountByAlbumId.get(album.albumId) ?? 0;
+  if (fromFiles > 0) return fromFiles;
+  // Nothing positive from any source. If we've seen the album recently (within
+  // the grace window) the API answer is unreliable — show '' so admins know
+  // the count is undetermined rather than promising 0 photos. Otherwise we
+  // emit 0 since that's the most accurate signal we can give.
+  if (details && isWithinDeniedGrace(album)) return '';
+  return 0;
 }
 
 /**
@@ -337,7 +393,8 @@ function photoCount(
 function buildRows(
   entries: ReadonlyArray<PublicAlbumIndexEntry>,
   liveDetails: Map<string, AlbumDetails>,
-  overrides: Map<string, AlbumOverride>
+  overrides: Map<string, AlbumOverride>,
+  fileCountByAlbumId: Map<string, number>
 ): unknown[][] {
   const rows: unknown[][] = [];
 
@@ -348,7 +405,7 @@ function buildRows(
       const norm = normalizeAlbumDisplay(a, fallback);
       const details = liveDetails.get(a.albumId) ?? null;
       const override = overrides.get(a.albumId);
-      const deleted = looksDeleted(details, override);
+      const deleted = looksDeleted(a, details, override);
       rows.push([
         entry.eventDate,
         entry.eventName,
@@ -356,10 +413,10 @@ function buildRows(
         '',
         '',
         norm.title,
-        photoCount(a, details),
-        albumLink(norm.url, details, override),
+        photoCount(a, details, fileCountByAlbumId),
+        albumLink(a, norm.url, details, override),
         deleted ? '' : norm.lastSyncAt,
-        permissionLabel(details, override),
+        permissionLabel(a, details, override),
       ]);
     }
     for (const c of entry.clubAlbums) {
@@ -369,7 +426,7 @@ function buildRows(
       const norm = normalizeAlbumDisplay(a, fallback);
       const details = liveDetails.get(a.albumId) ?? null;
       const override = overrides.get(a.albumId);
-      const deleted = looksDeleted(details, override);
+      const deleted = looksDeleted(a, details, override);
       rows.push([
         entry.eventDate,
         entry.eventName,
@@ -377,15 +434,31 @@ function buildRows(
         c.clubDisplayName,
         a.tag,
         norm.title,
-        photoCount(a, details),
-        albumLink(norm.url, details, override),
+        photoCount(a, details, fileCountByAlbumId),
+        albumLink(a, norm.url, details, override),
         deleted ? '' : norm.lastSyncAt,
-        permissionLabel(details, override),
+        permissionLabel(a, details, override),
       ]);
     }
   }
 
   return rows;
+}
+
+/**
+ * Builds an albumId → row-count map from all Photo_Files rows. Used as a
+ * tertiary fallback for the Photos column when both the live API count and
+ * the cached syncedFileCount are unavailable.
+ */
+function countFilesByAlbumId(
+  fileRecords: ReadonlyArray<PhotosFileRecord>
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const f of fileRecords) {
+    if (!f.albumId) continue;
+    out.set(f.albumId, (out.get(f.albumId) ?? 0) + 1);
+  }
+  return out;
 }
 
 /**
@@ -504,7 +577,12 @@ export function rebuildPublicAlbumIndex(): number {
       `[publicSpreadsheetService] Applying ${overrides.size} entry(ies) from ALBUM_OVERRIDES`
     );
   }
-  const dataRows = buildRows(entries, liveDetails, overrides);
+  // Local fallback count from Photo_Files — used when the live API denies
+  // the album AND syncedFileCount is 0 (common right after a fresh sync of
+  // a brand-new album, where the album stats row hasn't been updated yet).
+  const fileRecords = listAllFileRecords();
+  const fileCountByAlbumId = countFilesByAlbumId(fileRecords);
+  const dataRows = buildRows(entries, liveDetails, overrides, fileCountByAlbumId);
 
   // Clear and rewrite. clearContents() leaves formatting (frozen rows, column
   // widths) intact, which keeps any layout the admin set up by hand.
@@ -754,6 +832,205 @@ export function tryRebuildPublicFoldersIndex(): void {
   } catch (err) {
     Logger.log(
       `[publicSpreadsheetService] Non-fatal: failed to refresh public folders index: ${String(err)}`
+    );
+  }
+}
+
+// ─── Photos tab (per-file index) ─────────────────────────────────────────────
+
+/**
+ * Header row written at the top of the Photos tab.
+ *
+ * One row per Photo_Files entry, joined with the album/event/club metadata
+ * so a public viewer can see every uploaded photo without logging into the
+ * admin spreadsheet. Each Drive file appears twice (once per album it was
+ * synced into — event-level and club/tag-level) so visitors can filter by
+ * either scope.
+ *
+ * Column order is part of the public contract — add new columns at the end
+ * rather than reordering.
+ */
+const PHOTOS_HEADERS: ReadonlyArray<string> = [
+  'Event Date',     // YYYY-MM-DD
+  'Event Name',
+  'Album Scope',    // 'Event' or 'Club'
+  'Club',           // empty for Event-scope rows
+  'Tag',            // empty for Event-scope rows
+  'Album Title',
+  'File Name',
+  'Synced At',      // ISO timestamp from Photo_Files
+  'Drive File',     // Drive URL — clickable
+  'Photo',          // Google Photos URL — clickable when known
+];
+
+const DRIVE_FILE_URL_PREFIX = 'https://drive.google.com/file/d/';
+
+/**
+ * Builds the per-photo rows for the Photos tab.
+ *
+ * Pure function — exported for unit testing. Filters out file records whose
+ * album or event no longer exists in the source sheets (orphans from deleted
+ * albums or events). Sorted newest-first by synced-at, then by file name so
+ * the most recent uploads appear at the top.
+ */
+export function buildPhotosRows(
+  fileRecords: ReadonlyArray<PhotosFileRecord>,
+  albums: ReadonlyArray<PhotosAlbumRecord>,
+  events: ReadonlyArray<EventRecord>,
+  clubs: ReadonlyArray<ClubRecord>
+): unknown[][] {
+  const albumById = new Map<string, PhotosAlbumRecord>();
+  for (const a of albums) albumById.set(a.albumId, a);
+
+  const eventById = new Map<string, EventRecord>();
+  for (const ev of events) eventById.set(ev.eventId, ev);
+
+  const clubDisplayByNorm = new Map<string, string>();
+  for (const c of clubs) clubDisplayByNorm.set(c.normalizedName, c.displayName);
+
+  type Enriched = {
+    eventDate:   string;
+    eventName:   string;
+    albumScope:  'Event' | 'Club';
+    clubLabel:   string;
+    tag:         string;
+    albumTitle:  string;
+    fileName:    string;
+    syncedAt:    string;
+    driveUrl:    string;
+    photoUrl:    string;
+  };
+
+  const enriched: Enriched[] = [];
+
+  for (const f of fileRecords) {
+    if (!f.driveFileId || !f.fileName) continue;
+    const album = albumById.get(f.albumId);
+    if (!album) continue; // album removed; skip orphan
+    const ev = eventById.get(f.eventId);
+    if (!ev) continue; // event removed; skip orphan
+
+    const isClubScope = f.albumType === 'club';
+    const clubLabel = isClubScope
+      ? (clubDisplayByNorm.get(f.clubName) ?? f.clubName)
+      : '';
+
+    // Drive URL is fully predictable from the file id and works without any
+    // additional API calls. Photos URL we don't store today — leave empty
+    // and let the Albums tab handle navigation.
+    enriched.push({
+      eventDate:   ev.eventDate,
+      eventName:   ev.eventName,
+      albumScope:  isClubScope ? 'Club' : 'Event',
+      clubLabel,
+      tag:         isClubScope ? f.tag : '',
+      albumTitle:  album.albumTitle,
+      fileName:    f.fileName,
+      syncedAt:    f.syncedAt,
+      driveUrl:    DRIVE_FILE_URL_PREFIX + encodeURIComponent(f.driveFileId) + '/view',
+      photoUrl:    '',
+    });
+  }
+
+  enriched.sort((a, b) => {
+    if (a.eventDate !== b.eventDate) return b.eventDate.localeCompare(a.eventDate);
+    if (a.syncedAt !== b.syncedAt) return b.syncedAt.localeCompare(a.syncedAt);
+    return a.fileName.localeCompare(b.fileName);
+  });
+
+  return enriched.map((e) => [
+    e.eventDate,
+    e.eventName,
+    e.albumScope,
+    e.clubLabel,
+    e.tag,
+    e.albumTitle,
+    e.fileName,
+    e.syncedAt,
+    e.driveUrl,
+    e.photoUrl,
+  ]);
+}
+
+/**
+ * Rebuilds the Photos tab from scratch.
+ *
+ * Mirrors rebuildPublicAlbumIndex / rebuildPublicFoldersIndex in shape:
+ * open the configured public spreadsheet, ensure the tab exists, clear
+ * contents, write headers + rows, stamp a "last refreshed" note one column
+ * past the headers.
+ *
+ * Returns the number of data rows written. Returns 0 when the Script
+ * Property is unset (feature disabled).
+ *
+ * Throws on Sheets API errors so manual admin runs see the failure. Hot-path
+ * callers should use tryRebuildPublicPhotosIndex().
+ */
+export function rebuildPublicPhotosIndex(): number {
+  const fileId = getPublicSheetId();
+  if (!fileId) {
+    Logger.log(
+      `[publicSpreadsheetService] ${PROP_KEY} not set — public photos index is disabled`
+    );
+    return 0;
+  }
+
+  const ss = SpreadsheetApp.openById(fileId);
+  let sheet = ss.getSheetByName(PUBLIC_PHOTOS_TAB);
+  if (!sheet) sheet = ss.insertSheet(PUBLIC_PHOTOS_TAB);
+
+  const fileRecords = listAllFileRecords();
+  const albums = listPublicAlbumIndex().flatMap((entry) => {
+    const out: PhotosAlbumRecord[] = [];
+    if (entry.eventAlbum) out.push(entry.eventAlbum);
+    for (const c of entry.clubAlbums) out.push(c.album);
+    return out;
+  });
+  const events = listAllEvents(1, 10000, 'desc').items;
+  const clubs = listActiveClubs();
+
+  const dataRows = buildPhotosRows(fileRecords, albums, events, clubs);
+
+  sheet.clearContents();
+
+  sheet
+    .getRange(1, 1, 1, PHOTOS_HEADERS.length)
+    .setValues([PHOTOS_HEADERS as unknown[]])
+    .setFontWeight('bold');
+  sheet.setFrozenRows(1);
+
+  sheet
+    .getRange(1, PHOTOS_HEADERS.length + 1)
+    .setValue(`Last refreshed: ${nowIsoTimestamp()}`)
+    .setFontStyle('italic');
+
+  if (dataRows.length > 0) {
+    sheet
+      .getRange(2, 1, dataRows.length, PHOTOS_HEADERS.length)
+      .setValues(dataRows);
+  }
+
+  SpreadsheetApp.flush();
+
+  Logger.log(
+    `[publicSpreadsheetService] Rewrote ${PUBLIC_PHOTOS_TAB} tab: ` +
+    `${dataRows.length} row(s) across ${fileRecords.length} Photo_Files entry(ies)`
+  );
+  return dataRows.length;
+}
+
+/**
+ * Best-effort wrapper for hot paths (post-batch-sync hook in photosService).
+ * Swallows every error and logs it — the Photos tab is a downstream
+ * convenience like the Albums/Folders tabs; failing here must never fail
+ * an upload.
+ */
+export function tryRebuildPublicPhotosIndex(): void {
+  try {
+    rebuildPublicPhotosIndex();
+  } catch (err) {
+    Logger.log(
+      `[publicSpreadsheetService] Non-fatal: failed to refresh public photos index: ${String(err)}`
     );
   }
 }

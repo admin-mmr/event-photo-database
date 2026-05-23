@@ -52,7 +52,11 @@ import {
   saveFileRecord,
   updateAlbumSyncStats,
 } from './photoAlbumsRepo';
-import { tryRebuildPublicAlbumIndex, tryRebuildPublicFoldersIndex } from './publicSpreadsheetService';
+import {
+  tryRebuildPublicAlbumIndex,
+  tryRebuildPublicFoldersIndex,
+  tryRebuildPublicPhotosIndex,
+} from './publicSpreadsheetService';
 import { tryRebuildSpecialFoldersForBatch } from './specialFoldersService';
 import { notifyAlbumNeedsShare } from './emailService';
 import { getSuperAdmins } from '../config/superAdmins';
@@ -940,7 +944,13 @@ export function syncBatchToAlbums(
 
   // Refresh the public, view-only album index so the syncedFileCount column
   // reflects this batch. Best-effort — see tryRebuildPublicAlbumIndex docs.
-  if (synced > 0) tryRebuildPublicAlbumIndex();
+  if (synced > 0) {
+    tryRebuildPublicAlbumIndex();
+    // Photos tab joins Photo_Files with the album/event metadata, so it also
+    // needs to be refreshed whenever new files are synced. Same best-effort
+    // semantics as the Albums refresh above.
+    tryRebuildPublicPhotosIndex();
+  }
 
   // Refresh the consolidated Photos_NNN buckets and the (event, club, tag)
   // Videos folder of Drive shortcuts. We always run this after sync — even if
@@ -1253,6 +1263,14 @@ export function syncEventToAlbums(
   // Persist sync stats for the event album
   const now = nowIsoTimestamp();
   updateAlbumSyncStats(eventAlbumRecord.albumId, now, totalSynced);
+
+  // Refresh the public-facing tabs so admins running a manual full sync see
+  // the updated Photos and Album rows on the public sheet without having to
+  // wait for the next batch upload to trigger a refresh. Best-effort.
+  if (totalSynced > 0) {
+    tryRebuildPublicAlbumIndex();
+    tryRebuildPublicPhotosIndex();
+  }
 
   if (jobId) {
     updateJob(jobId, {

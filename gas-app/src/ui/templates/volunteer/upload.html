@@ -237,7 +237,178 @@
     .status-msg.success { background: #e8f5e9; color: #1b5e20; }
     .status-msg.error   { background: #ffebee; color: #b71c1c; }
 
-    /* Receipt */
+    /* ── Post-upload confirmation page ─────────────────────────────────────
+       Shown ONLY after a successful batch. The whole upload card is hidden
+       behind this so the volunteer cannot miss the success state and the
+       two follow-up actions ("upload another batch" / "view public sheet"). */
+    .upload-complete {
+      display: none; /* JS flips to flex once the receipt arrives */
+      flex-direction: column;
+      align-items: center;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.1);
+      max-width: 640px;
+      margin: 0 auto 20px;
+      padding: 36px 32px;
+      text-align: center;
+    }
+
+    .upload-complete .big-check {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: #e8f5e9;
+      color: #2e7d32;
+      font-size: 42px;
+      line-height: 72px;
+      margin-bottom: 14px;
+      animation: pop-in .35s ease-out;
+    }
+
+    @keyframes pop-in {
+      from { transform: scale(0.4); opacity: 0; }
+      to   { transform: scale(1);   opacity: 1; }
+    }
+
+    .upload-complete h2 {
+      font-size: 24px;
+      font-weight: 700;
+      color: #1b5e20;
+      margin-bottom: 6px;
+    }
+
+    .upload-complete .subtitle {
+      font-size: 14px;
+      color: #555;
+      margin-bottom: 22px;
+    }
+
+    .upload-complete .subtitle .zh {
+      display: block;
+      color: #888;
+      margin-top: 4px;
+    }
+
+    /* Big "files uploaded to Drive" stat panel. */
+    .complete-stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      width: 100%;
+      max-width: 460px;
+      margin-bottom: 20px;
+    }
+
+    .complete-stat {
+      background: linear-gradient(135deg, #e8f5e9, #f9fbe7);
+      border: 1px solid #c8e6c9;
+      border-radius: 10px;
+      padding: 18px 14px;
+    }
+
+    .complete-stat .value {
+      font-size: 34px;
+      font-weight: 800;
+      color: #1b5e20;
+      line-height: 1;
+    }
+
+    .complete-stat .label {
+      font-size: 12px;
+      color: #555;
+      margin-top: 6px;
+      letter-spacing: .02em;
+    }
+
+    .complete-summary {
+      width: 100%;
+      max-width: 460px;
+      background: #f5f5f5;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 13px;
+      color: #444;
+      text-align: left;
+      line-height: 1.6;
+      margin-bottom: 18px;
+    }
+
+    .complete-summary strong { color: #1b5e20; }
+
+    .complete-skips {
+      font-size: 12px;
+      color: #888;
+      margin-top: 4px;
+    }
+
+    .complete-actions {
+      display: flex;
+      gap: 12px;
+      width: 100%;
+      max-width: 460px;
+      flex-wrap: wrap;
+    }
+
+    .btn-complete {
+      flex: 1 1 200px;
+      padding: 14px 18px;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      text-align: center;
+      border: none;
+      transition: transform .08s, background .15s;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .btn-complete:active { transform: scale(0.98); }
+
+    .btn-complete.primary {
+      background: #2e7d32;
+      color: #fff;
+    }
+    .btn-complete.primary:hover { background: #1b5e20; }
+
+    .btn-complete.secondary {
+      background: #1565c0;
+      color: #fff;
+    }
+    .btn-complete.secondary:hover { background: #0d47a1; }
+
+    .btn-complete.disabled {
+      background: #cccccc;
+      color: #ffffff;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    .complete-footer {
+      margin-top: 20px;
+      font-size: 12px;
+      color: #999;
+    }
+
+    .complete-album-link {
+      margin-top: 16px;
+      font-size: 13px;
+      color: #555;
+    }
+
+    .complete-album-link a {
+      color: #1565c0;
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .complete-album-link a:hover { text-decoration: underline; }
+
+    /* Legacy in-card receipt (kept for backwards-compat with admin styles) */
     .receipt-section {
       display: none;
       padding: 28px 32px;
@@ -455,6 +626,59 @@
     </div>
   </div>
 
+  <!-- ── Dedicated "upload complete" confirmation panel ─────────────────────
+       Replaces the upload card after a successful batch so the volunteer
+       cannot miss the success state and has clear next-step buttons. -->
+  <div class="upload-complete" id="completePanel" role="status" aria-live="polite">
+    <div class="big-check" aria-hidden="true">✓</div>
+    <h2>Upload Complete!</h2>
+    <p class="subtitle">
+      Your batch has been saved to Google Drive.
+      <span class="zh">您的照片已成功上传到 Google Drive。</span>
+    </p>
+
+    <div class="complete-stats">
+      <div class="complete-stat">
+        <div class="value" id="ucFileCount">0</div>
+        <div class="label">FILES ON DRIVE / 照片数</div>
+      </div>
+      <div class="complete-stat">
+        <div class="value" id="ucSize">0 MB</div>
+        <div class="label">TOTAL SIZE / 总大小</div>
+      </div>
+    </div>
+
+    <div class="complete-summary">
+      <div>
+        Uploaded to <strong id="ucEventLabel"></strong>
+      </div>
+      <div style="margin-top:6px;">
+        By <strong id="ucEmail"></strong> · <span id="ucTime"></span>
+      </div>
+      <div class="complete-skips" id="ucSkips" style="display:none;"></div>
+    </div>
+
+    <div class="complete-actions">
+      <button class="btn-complete primary" id="ucUploadMoreBtn" onclick="startAnotherBatch()">
+        ⬆ Upload Another Batch &nbsp;/&nbsp; 上传另一批
+      </button>
+      <a class="btn-complete secondary" id="ucPublicSheetBtn" href="#" target="_blank" rel="noopener">
+        📊 View Public Sheet &nbsp;/&nbsp; 查看公开表格
+      </a>
+    </div>
+
+    <div class="complete-album-link" id="ucAlbumLinkRow">
+      Want to see your photos? &nbsp;
+      <a id="ucAlbumLink" href="#" target="_blank" rel="noopener">Browse Albums →</a>
+      &nbsp;<span style="color:#aaa;font-size:11px;">(may take a few minutes to appear)</span>
+    </div>
+
+    <div class="complete-footer">
+      Files appear on the public sheet once the background sync runs (usually within a few minutes).<br>
+      <span style="color:#bbb;">同步完成后照片将出现在公开表格中（通常几分钟内）。</span>
+    </div>
+  </div>
+
   <script>
     var VSESSION = '<?= vsession ?>';
     var UPLOADER_EMAIL = '<?= uploaderEmail ?>';
@@ -465,6 +689,9 @@
     var ENABLE_CREDIT_RENAME = <?!= (typeof creditRenameEnabled !== "undefined" && creditRenameEnabled) ? 'true' : 'false' ?>;
     // scriptUrl is injected by renderVolunteerTemplate() (volunteerRoutes.ts line 75)
     var ALBUM_INDEX_URL = '<?= scriptUrl ?>?action=album_index';
+    // Public read-only album/photo sheet — empty when the feature flag is off.
+    // Used by the post-upload "View Public Sheet" button.
+    var PUBLIC_SHEET_URL = '<?= (typeof publicSpreadsheetUrl !== "undefined" ? publicSpreadsheetUrl : "") ?>';
 
     // ── Photographer-credit filename ──────────────────────────────────────────
     // Mirrors src/utils/creditedFileName.ts. Applied client-side because the
@@ -800,58 +1027,197 @@
     }
 
     /**
-     * Removes EXIF (APP1) and IPTC (APP13) metadata segments from a JPEG
-     * ArrayBuffer. Returns the original buffer for non-JPEG files or if any
-     * parse error is encountered (so uploads always proceed).
+     * Sanitises a JPEG ArrayBuffer for privacy while preserving the
+     * DateTimeOriginal EXIF tag so Google Photos can display the original
+     * capture time instead of the upload time.
      *
-     * GPS coordinates embedded in phone camera EXIF can dox photo locations,
-     * which is especially sensitive when minors may be present. Stripping is
-     * applied to every JPEG before it leaves the browser.
+     * What this removes:
+     *   • APP1 / EXIF — GPS IFD only. The GPSInfo tag (0x8825) in IFD0 is
+     *     rewritten to an unused tag id and the GPS IFD payload is zeroed.
+     *     All other EXIF tags (DateTimeOriginal, Make, Model, etc.) survive.
+     *   • APP1 / XMP — stripped entirely (XMP often carries GPS coordinates
+     *     in dc:* and exif:GPS* namespaces; safer to drop the whole segment).
+     *   • APP13 / IPTC — stripped entirely (can carry location keywords and
+     *     contact info).
+     *
+     * What this preserves:
+     *   • APP1 / EXIF DateTimeOriginal, DateTime, DateTimeDigitized — these
+     *     drive the "creation time" Photos shows on the media item. Without
+     *     them, Photos falls back to the upload time, which is wrong.
+     *   • All other JPEG segments (DQT, SOF, DHT, SOS, …) — image data is
+     *     never touched.
+     *
+     * Returns the original buffer on any parse error so uploads always proceed.
      *
      * HEIC files are passed through: their metadata is inside an ISOBMFF
      * container that requires a dedicated parser. Google Photos transcodes
      * HEIC to JPEG for display so this is an accepted gap.
      */
-    function stripJpegExif(buffer) {
+    function sanitizeJpegMetadata(buffer) {
       var view = new DataView(buffer);
       // Fast path: not a JPEG (magic bytes FF D8).
       if (view.byteLength < 4 || view.getUint8(0) !== 0xff || view.getUint8(1) !== 0xd8) {
         return buffer;
       }
-      var STRIP = new Set([0xffe1, 0xffed]); // APP1=EXIF/XMP, APP13=IPTC
-      var keepRanges = [[0, 2]]; // always keep SOI
+
+      // Build a list of byte-ranges (or freshly-allocated Uint8Arrays) to
+      // splice together. Mixing Uint8Array sources lets us emit a sanitised
+      // APP1/EXIF segment in place of the original without copying everything
+      // else.
+      var pieces = [new Uint8Array(buffer, 0, 2)]; // SOI
+
       var offset = 2;
       try {
         while (offset < view.byteLength - 1) {
           if (view.getUint8(offset) !== 0xff) return buffer; // lost sync
           var mb = view.getUint8(offset + 1);
           var marker = (0xff00 | mb) >>> 0;
-          // Markers with no length field.
+
+          // Standalone markers (no length field).
           if (mb === 0xd8 || mb === 0xd9 || (mb >= 0xd0 && mb <= 0xd7)) {
-            keepRanges.push([offset, offset + 2]);
+            pieces.push(new Uint8Array(buffer, offset, 2));
             offset += 2;
             continue;
           }
-          // SOS: image data runs to end of file — keep everything from here.
-          if (mb === 0xda) { keepRanges.push([offset, view.byteLength]); break; }
+
+          // SOS: image data runs to end-of-file. Copy the rest as one piece.
+          if (mb === 0xda) {
+            pieces.push(new Uint8Array(buffer, offset, view.byteLength - offset));
+            break;
+          }
+
           if (offset + 3 >= view.byteLength) return buffer;
           var len = view.getUint16(offset + 2, false);
           if (len < 2) return buffer;
           var segEnd = offset + 2 + len;
           if (segEnd > view.byteLength) return buffer;
-          if (!STRIP.has(marker)) keepRanges.push([offset, segEnd]);
+          var segLen = segEnd - offset;
+
+          if (marker === 0xffed) {
+            // APP13 = IPTC — strip entirely.
+          } else if (marker === 0xffe1) {
+            // APP1. Could be EXIF (preserve DateTime, strip GPS) or XMP (drop).
+            var sanitised = _sanitiseApp1(buffer, offset, segEnd);
+            if (sanitised === 'drop') {
+              // XMP or unknown APP1 sub-type — strip.
+            } else if (sanitised) {
+              pieces.push(sanitised);
+            } else {
+              // Parse failed — keep the original so we don't corrupt the file.
+              pieces.push(new Uint8Array(buffer, offset, segLen));
+            }
+          } else {
+            // Any other segment — keep verbatim.
+            pieces.push(new Uint8Array(buffer, offset, segLen));
+          }
           offset = segEnd;
         }
-      } catch (e) { return buffer; }
-      var totalSize = keepRanges.reduce(function(s, r) { return s + (r[1] - r[0]); }, 0);
-      var out = new Uint8Array(totalSize);
-      var writePos = 0;
-      for (var i = 0; i < keepRanges.length; i++) {
-        var r = keepRanges[i];
-        out.set(new Uint8Array(buffer, r[0], r[1] - r[0]), writePos);
-        writePos += r[1] - r[0];
+      } catch (e) {
+        return buffer;
+      }
+
+      var total = 0;
+      for (var i = 0; i < pieces.length; i++) total += pieces[i].byteLength;
+      var out = new Uint8Array(total);
+      var pos = 0;
+      for (var j = 0; j < pieces.length; j++) {
+        out.set(pieces[j], pos);
+        pos += pieces[j].byteLength;
       }
       return out.buffer;
+    }
+
+    /**
+     * Sanitise one APP1 segment.
+     *
+     * Returns:
+     *   Uint8Array      — rewritten EXIF segment with GPS scrubbed.
+     *   'drop'          — segment is XMP (or unrecognised); caller should
+     *                     strip the whole APP1.
+     *   null            — parser hit unexpected bytes; caller should keep
+     *                     the segment as-is rather than risk corrupting it.
+     *
+     * The function never throws — any bounds error returns null so the
+     * upload pipeline degrades gracefully (we keep too much metadata rather
+     * than corrupting the JPEG).
+     */
+    function _sanitiseApp1(buffer, segStart, segEnd) {
+      try {
+        var view = new DataView(buffer);
+        if (segStart + 10 > segEnd) return null;
+
+        // The first 6 bytes of an APP1 payload identify the sub-type.
+        // EXIF segments begin with "Exif\0\0".
+        var isExif =
+          view.getUint8(segStart + 4) === 0x45 && // 'E'
+          view.getUint8(segStart + 5) === 0x78 && // 'x'
+          view.getUint8(segStart + 6) === 0x69 && // 'i'
+          view.getUint8(segStart + 7) === 0x66 && // 'f'
+          view.getUint8(segStart + 8) === 0x00 &&
+          view.getUint8(segStart + 9) === 0x00;
+
+        // XMP segments begin with "http://ns.adobe.com/xap/1.0/\0". Anything
+        // that isn't EXIF we treat as "drop" — XMP is the most common case
+        // and it can carry GPS in exif:GPS* tags.
+        if (!isExif) return 'drop';
+
+        var tiffStart = segStart + 10;
+        if (tiffStart + 8 > segEnd) return null;
+
+        // TIFF header: byte-order marker, magic 0x002A, offset to IFD0.
+        var bo = view.getUint16(tiffStart, false);
+        var le;
+        if (bo === 0x4949) le = true;        // 'II' = little-endian
+        else if (bo === 0x4d4d) le = false;  // 'MM' = big-endian
+        else return null;
+
+        var magic = view.getUint16(tiffStart + 2, le);
+        if (magic !== 0x002a) return null;
+
+        var ifd0Offset = view.getUint32(tiffStart + 4, le);
+        var ifd0Start  = tiffStart + ifd0Offset;
+        if (ifd0Start + 2 > segEnd) return null;
+
+        var numEntries = view.getUint16(ifd0Start, le);
+        if (ifd0Start + 2 + numEntries * 12 > segEnd) return null;
+
+        // Work on a writable copy of just this segment so we can mutate
+        // entry bytes without disturbing anything else.
+        var segLen = segEnd - segStart;
+        var bytes = new Uint8Array(segLen);
+        bytes.set(new Uint8Array(buffer, segStart, segLen));
+        var outView = new DataView(bytes.buffer);
+
+        // Tag 0x8825 is GPSInfo. Its value field is a 4-byte offset (relative
+        // to the TIFF start) pointing at the GPS IFD. We mask the tag id to
+        // an unused value (0xEA1C, "Padding") so EXIF parsers walk past it,
+        // then zero out the GPS IFD payload as defence-in-depth.
+        var gpsIfdOffsetInTiff = 0;
+        for (var i = 0; i < numEntries; i++) {
+          var entryStart = (ifd0Start - segStart) + 2 + i * 12;
+          var tag = outView.getUint16(entryStart, le);
+          if (tag === 0x8825) {
+            gpsIfdOffsetInTiff = outView.getUint32(entryStart + 8, le);
+            outView.setUint16(entryStart, 0xea1c, le); // mask tag id
+            outView.setUint32(entryStart + 8, 0, le);  // zero offset
+            break;
+          }
+        }
+
+        if (gpsIfdOffsetInTiff > 0) {
+          var gpsStart = (tiffStart - segStart) + gpsIfdOffsetInTiff;
+          if (gpsStart + 2 <= segLen) {
+            var gpsCount = outView.getUint16(gpsStart, le);
+            // Each IFD has: 2 byte count + N*12 entry bytes + 4 byte next-offset.
+            var gpsBytes = Math.min(2 + gpsCount * 12 + 4, segLen - gpsStart);
+            for (var k = 0; k < gpsBytes; k++) bytes[gpsStart + k] = 0;
+          }
+        }
+
+        return bytes;
+      } catch (e) {
+        return null;
+      }
     }
 
     /**
@@ -881,9 +1247,11 @@
 
         var reader = new FileReader();
         reader.onload = function(e) {
-          // Strip EXIF (APP1) and IPTC (APP13) segments from JPEG before upload.
-          // GPS coordinates in EXIF can expose photo locations — design §7.
-          var fileBuffer = stripJpegExif(e.target.result);
+          // Sanitise JPEG metadata: scrub GPS coordinates from EXIF + drop
+          // XMP/IPTC entirely, but preserve DateTimeOriginal so Google Photos
+          // can display the original capture time instead of the upload time.
+          // See sanitizeJpegMetadata() for the segment-by-segment policy.
+          var fileBuffer = sanitizeJpegMetadata(e.target.result);
 
           // Build the multipart/related body using Blob so file bytes are sent
           // as binary (not base64). Benefits:
@@ -967,11 +1335,25 @@
     // ── Receipt ───────────────────────────────────────────────────────────────
 
     function showReceipt(data) {
-      document.getElementById('rcFileCount').textContent = data.fileCount || 0;
-      document.getElementById('rcSize').textContent = (data.totalSizeMb || 0).toFixed(1) + ' MB';
-      document.getElementById('rcEmail').textContent = UPLOADER_EMAIL;
+      // ── Populate the dedicated post-upload confirmation panel ─────────────
+      // This panel REPLACES the upload card so the volunteer cannot miss the
+      // success state. We still populate the legacy in-card receipt fields so
+      // anything else hooked into those IDs (admin tools, screenshots) keeps
+      // working, but we hide the upload card to surface the new panel.
+      var fileCount = data.fileCount || 0;
+      var sizeMb    = data.totalSizeMb || 0;
+      var sizeLabel = sizeMb < 1
+        ? (Math.round(sizeMb * 1024)) + ' KB'
+        : sizeMb.toFixed(1) + ' MB';
       var d = data.uploadedAt ? new Date(data.uploadedAt) : new Date();
-      document.getElementById('rcTime').textContent = d.toLocaleString();
+      var when = d.toLocaleString();
+      var albumLabel = escHtml((data.eventName || '') + (data.clubName ? ' — ' + data.clubName : ''));
+
+      // Legacy receipt (kept populated for backward compatibility) -----------
+      document.getElementById('rcFileCount').textContent = fileCount;
+      document.getElementById('rcSize').textContent = sizeLabel;
+      document.getElementById('rcEmail').textContent = UPLOADER_EMAIL;
+      document.getElementById('rcTime').textContent = when;
 
       var skips = [];
       if (data.skippedDuplicates > 0)
@@ -985,12 +1367,85 @@
       if (skips.length > 0) note += ' (' + skips.join(', ') + ')';
       document.getElementById('rcNote').innerHTML = note;
 
-      // Album CTA
-      var albumLabel = escHtml((data.eventName || '') + (data.clubName ? ' — ' + data.clubName : ''));
       document.getElementById('rcAlbumEventLabel').innerHTML = albumLabel;
       document.getElementById('rcAlbumBtn').href = ALBUM_INDEX_URL;
 
-      document.getElementById('receiptSection').style.display = '';
+      // ── New prominent upload-complete panel ───────────────────────────────
+      document.getElementById('ucFileCount').textContent = fileCount;
+      document.getElementById('ucSize').textContent      = sizeLabel;
+      document.getElementById('ucEmail').textContent     = UPLOADER_EMAIL;
+      document.getElementById('ucTime').textContent      = when;
+      document.getElementById('ucEventLabel').innerHTML  = albumLabel;
+
+      if (skips.length > 0) {
+        var skipsEl = document.getElementById('ucSkips');
+        skipsEl.textContent = '(' + skips.join(', ') + ')';
+        skipsEl.style.display = '';
+      }
+
+      // Wire the public-sheet button. The Script Property may be unset (empty
+      // string) on dev/test deployments — in that case disable the button and
+      // point it at the album index instead so the user still has a path.
+      var publicSheetBtn = document.getElementById('ucPublicSheetBtn');
+      if (PUBLIC_SHEET_URL) {
+        publicSheetBtn.href = PUBLIC_SHEET_URL;
+        publicSheetBtn.classList.remove('disabled');
+      } else {
+        publicSheetBtn.href = ALBUM_INDEX_URL;
+        publicSheetBtn.title = 'Public sheet not configured — opening the album index instead.';
+      }
+
+      // Album link in the footer of the confirmation panel.
+      document.getElementById('ucAlbumLink').href = ALBUM_INDEX_URL;
+
+      // Hide the upload card and the do-not-close warning so only the
+      // confirmation panel is visible. Show the new panel as flex.
+      document.getElementById('uploadCard').style.display = 'none';
+      document.getElementById('doNotCloseWarning').style.display = 'none';
+      document.getElementById('completePanel').style.display = 'flex';
+
+      // Scroll the new panel into view in case the volunteer has scrolled
+      // past it on a short device (older Androids especially).
+      try {
+        document.getElementById('completePanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (e) { /* older browsers — ignore */ }
+    }
+
+    /**
+     * Resets the page back to the empty upload form so the volunteer can
+     * upload a second batch without re-doing the OAuth handshake. The
+     * vsession (cookie) is still valid, and the server creates a fresh
+     * batch folder on the next serverGetVolunteerDriveToken() call.
+     */
+    function startAnotherBatch() {
+      // Clear the file selection + progress + status messages.
+      clearFiles();
+      hideStatus();
+      _errorReported = false;          // allow a new error report cycle
+      _etaStartTime  = null;
+      _etaDoneBytes  = 0;
+      _etaTotalBytes = 0;
+
+      // Reset the progress bar visuals.
+      document.getElementById('progressSection').style.display = 'none';
+      document.getElementById('progressBar').style.width = '0%';
+      document.getElementById('progressPct').textContent = '0%';
+      document.getElementById('progressText').textContent = 'Preparing…';
+      document.getElementById('progressBar').classList.remove('error');
+
+      // Restore the upload card UI and hide the confirmation panel.
+      document.getElementById('completePanel').style.display  = 'none';
+      document.getElementById('uploadCard').style.display     = '';
+      document.getElementById('actions').style.display        = '';
+      document.getElementById('receiptSection').style.display = 'none';
+
+      // setUiState('idle') would re-enable the Upload button — but the file
+      // input is empty after clearFiles() so we want it to stay disabled
+      // until the volunteer picks more files. clearFiles() handles that.
+
+      // Scroll back to the top so the drop zone is in view on mobile.
+      try { window.scrollTo({ top: 0, behavior: 'smooth' }); }
+      catch (e) { window.scrollTo(0, 0); }
     }
 
     // ── UI helpers ────────────────────────────────────────────────────────────
