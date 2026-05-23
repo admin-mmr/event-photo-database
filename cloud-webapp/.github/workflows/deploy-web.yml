@@ -1,0 +1,56 @@
+name: Deploy web to Firebase Hosting
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloud-webapp/web/**'
+      - 'cloud-webapp/shared/**'
+      - 'cloud-webapp/infra/firebase.json'
+      - 'cloud-webapp/infra/firestore.rules'
+      - 'cloud-webapp/infra/firestore.indexes.json'
+      - 'cloud-webapp/infra/storage.rules'
+      - '.github/workflows/deploy-web.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloud-webapp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: cloud-webapp/.nvmrc
+          cache: npm
+          cache-dependency-path: cloud-webapp/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run build -w @cloud-webapp/web
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDP }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Install firebase-tools
+        run: npm install -g firebase-tools@latest
+
+      - name: Deploy
+        working-directory: cloud-webapp/infra
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          firebase deploy \
+            --project="$PROJECT_ID" \
+            --only=hosting,firestore:rules,firestore:indexes,storage \
+            --non-interactive
