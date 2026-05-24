@@ -80,6 +80,13 @@ import {
   listShortcutsInFolder,
   driveFolderUrl,
 } from './driveShortcutClient';
+import {
+  tryGrantAnyoneRead,
+  grantAnyoneRead,
+  foldBatchGrantSummary,
+  EMPTY_BATCH_GRANT_SUMMARY,
+  BatchGrantSummary,
+} from './drivePermissionsService';
 import { nowIsoTimestamp } from '../utils/dateFormatter';
 
 /* global Logger */
@@ -406,6 +413,13 @@ export function rebuildEventPhotoFolders(
     const bucketFolder = folderResult.data;
     const bucketFolderId = bucketFolder.getId();
 
+    // Make this Photos_NNN bucket public ("Anyone with link → Viewer") so the
+    // Folder Link rendered on the public spreadsheet works for unauthenticated
+    // viewers. Idempotent — calling on an already-shared folder is a no-op.
+    // Errors here NEVER fail the shortcut rebuild; share state self-heals on
+    // the next sync. See drivePermissionsService.ts for the API contract.
+    tryGrantAnyoneRead(bucketFolderId);
+
     // Slice of photos that belong in this bucket (0-based math, bucket is 1-based).
     const start = (bucket - 1) * MAX_SHORTCUTS_PER_PHOTOS_FOLDER;
     const end = Math.min(
@@ -562,6 +576,10 @@ export function rebuildClubVideoFolder(
   foldersTouched = 1;
   const videosFolder = folderResult.data;
   const videosFolderId = videosFolder.getId();
+
+  // Make the Videos folder public so the Folder Link works for unauthenticated
+  // viewers — same rationale as the Photos_NNN buckets above.
+  tryGrantAnyoneRead(videosFolderId);
 
   const existing = listShortcutsInFolder(videosFolderId);
   const linkedTargetIds = new Set(existing.map((s) => s.targetId));
@@ -754,5 +772,74 @@ export function tryRebuildSpecialFoldersForBatch(
       `club=${clubName} tag="${tag}" videos rebuild threw: ${String(err)}`
     );
   }
+}
+
+// ─── Backfill sharing on every existing special folder ──────────────────────
+
+/**
+ * Walks every row in the Special_Folders sheet and grants
+ * "Anyone with link → Viewer" on each folder.
+ *
+ * Purpose
+ *   New folders created by syncBatchToAlbums after the sharing hook landed
+ *   are public by construction. This one-shot routine retroactively shares
+ *   every Photos_NNN / Videos folder that pre-dates the hook so the public
+ *   spreadsheet's Folder Link column becomes usable immediately for older
+ *   events.
+ *
+ * Idempotent — calling it repeatedly on a fully-shared catalogue is a no-op
+ * (each individual grantAnyoneRead returns outcome='exists'). Safe to
+ * schedule as a periodic trigger if desired, though one-time use is the
+ * intended workflow.
+ *
+ * Performance — one Drive API round-trip per folder, ~150 ms each. With
+ * hundreds of folders the total runtime stays well under the 6-minute GAS
+ * execution cap. If the catalogue ever grows past a few thousand folders,
+ * paginate by event in a time-driven trigger.
+ *
+ * Errors are absorbed (never thrown) so a partial failure leaves the rest
+ * of the catalogue in a healed state. The returned summary tells the
+ * caller exactly how many folders changed state.
+ */
+export function backfillSpecialFoldersSharing(): BatchGrantSummary {
+  let summary: BatchGrantSummary = EMPTY_BATCH_GRANT_SUMMARY;
+
+  let records: ReadonlyArray<SpecialFolderRecord>;
+  try {
+    records = loadAllSpecialFolders().records;
+  } catch (err) {
+    Logger.log(
+      `[specialFoldersService.backfillSpecialFoldersSharing] ` +
+      `Could not load Special_Folders sheet: ${String(err)}`
+    );
+    return summary;
+  }
+
+  if (records.length === 0) {
+    Logger.log(
+      `[specialFoldersService.backfillSpecialFoldersSharing] ` +
+      `Special_Folders sheet is empty — nothing to share.`
+    );
+    return summary;
+  }
+
+  for (const r of records) {
+    if (!r.folderId) continue;
+    // Use the strict (non-try) variant so the summary can distinguish
+    // "exists" from "created" — tryGrantAnyoneRead would log success twice.
+    const result = grantAnyoneRead(r.folderId);
+    summary = foldBatchGrantSummary(
+      summary,
+      result,
+      `${r.scope}/${r.folderName}(${r.folderId})`
+    );
+  }
+
+  Logger.log(
+    `[specialFoldersService.backfillSpecialFoldersSharing] ` +
+    `Done: created=${summary.created} alreadyShared=${summary.alreadyShared} ` +
+    `errors=${summary.errors} (of ${records.length} folder(s))`
+  );
+  return summary;
 }
 

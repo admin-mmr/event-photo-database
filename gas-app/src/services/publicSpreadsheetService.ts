@@ -132,7 +132,12 @@ const HEADERS: ReadonlyArray<string> = [
   'Tag',            // empty for Event-scope rows
   'Album Title',
   'Photos',         // live mediaItemsCount, falls back to syncedFileCount
-  'Album Link',     // shareableUrl (or albumUrl as fallback)
+  'Drive Folder',   // canonical public-browse URL — Drive shortcut folder; works without any
+                    // Photos-side sharing (the Drive folder gets "Anyone with link → Viewer"
+                    // programmatically at creation time, see specialFoldersService.ts)
+  'Album Link',     // shareableUrl (or albumUrl fallback). Often "Inaccessible" because the
+                    // Photos Library API can't read share state for our scopes — use the
+                    // Drive Folder column above as the canonical public link.
   'Last Sync',      // ISO timestamp of last sync; empty if never synced
   'Permission',     // "Public" / "Private" / "Missing" / "Unknown"
 ];
@@ -381,6 +386,37 @@ function photoCount(
 }
 
 /**
+ * Builds an eventId → Drive folder URL lookup for the per-event Photos_NNN
+ * shortcut folders. We always pick the FIRST bucket (Photos_001) for the
+ * Albums tab — it's a single deep link a member can click to start browsing,
+ * even when later overflow buckets exist. Full enumeration of every bucket
+ * lives on the Folders tab.
+ *
+ * Pure function — exported for unit testing. Tag/club scope folders are
+ * excluded; only scope='photos' rows participate. Buckets are picked by
+ * lowest folderIndex so the link is deterministic across rebuilds.
+ */
+export function buildEventPhotosFolderUrlIndex(
+  records: ReadonlyArray<SpecialFolderRecord>
+): Map<string, string> {
+  // Track the bucket with the lowest folderIndex per event so we always
+  // hand the visitor Photos_001 (the natural starting point), even if later
+  // buckets were materialised first in some out-of-order rebuild.
+  const bestByEvent = new Map<string, { index: number; url: string }>();
+  for (const r of records) {
+    if (r.scope !== 'photos') continue;
+    if (!r.eventId || !r.folderUrl) continue;
+    const prev = bestByEvent.get(r.eventId);
+    if (!prev || r.folderIndex < prev.index) {
+      bestByEvent.set(r.eventId, { index: r.folderIndex, url: r.folderUrl });
+    }
+  }
+  const out = new Map<string, string>();
+  for (const [eventId, entry] of bestByEvent) out.set(eventId, entry.url);
+  return out;
+}
+
+/**
  * Flattens the grouped index into a 2D array matching HEADERS column order.
  * Within each event, the event-level album row is emitted first, followed by
  * the per-club rows in display-name order (already sorted upstream).
@@ -389,16 +425,26 @@ function photoCount(
  * win over the cached sheet values (count, share status). When absent, we
  * gracefully fall back to whatever the sheet has and stamp Permission as
  * "Unknown" so callers can tell the live check didn't run for that row.
+ *
+ * `driveFolderUrlByEvent` provides the canonical public-browse URL — the
+ * Photos_001 Drive shortcut folder for each event. The same URL is repeated
+ * on every row within an event (event-scope and per-club rows alike) so the
+ * spreadsheet stays one-click for visitors regardless of which row catches
+ * their eye. The Photos Library API can't reliably surface its own share URL
+ * for our scopes, so the Drive folder is what we promote as primary.
  */
 function buildRows(
   entries: ReadonlyArray<PublicAlbumIndexEntry>,
   liveDetails: Map<string, AlbumDetails>,
   overrides: Map<string, AlbumOverride>,
-  fileCountByAlbumId: Map<string, number>
+  fileCountByAlbumId: Map<string, number>,
+  driveFolderUrlByEvent: Map<string, string>
 ): unknown[][] {
   const rows: unknown[][] = [];
 
   for (const entry of entries) {
+    const driveFolderUrl = driveFolderUrlByEvent.get(entry.eventId) ?? '';
+
     if (entry.eventAlbum) {
       const a = entry.eventAlbum;
       const fallback = `${entry.eventDate} ${entry.eventName}`;
@@ -414,6 +460,7 @@ function buildRows(
         '',
         norm.title,
         photoCount(a, details, fileCountByAlbumId),
+        driveFolderUrl,
         albumLink(a, norm.url, details, override),
         deleted ? '' : norm.lastSyncAt,
         permissionLabel(a, details, override),
@@ -435,6 +482,7 @@ function buildRows(
         a.tag,
         norm.title,
         photoCount(a, details, fileCountByAlbumId),
+        driveFolderUrl,
         albumLink(a, norm.url, details, override),
         deleted ? '' : norm.lastSyncAt,
         permissionLabel(a, details, override),
@@ -582,7 +630,24 @@ export function rebuildPublicAlbumIndex(): number {
   // a brand-new album, where the album stats row hasn't been updated yet).
   const fileRecords = listAllFileRecords();
   const fileCountByAlbumId = countFilesByAlbumId(fileRecords);
-  const dataRows = buildRows(entries, liveDetails, overrides, fileCountByAlbumId);
+
+  // Drive Folder column data: each event maps to its Photos_001 Drive
+  // shortcut folder. This is the canonical PUBLIC-BROWSE URL — sharing on
+  // Drive is fully programmable (see drivePermissionsService.ts), unlike
+  // Google Photos sharing which the Library API can no longer toggle.
+  // Reading the whole Special_Folders sheet here is cheap relative to the
+  // per-album albums.get calls above; with thousands of folders it stays
+  // well under a second.
+  const driveFolderUrlByEvent = buildEventPhotosFolderUrlIndex(
+    listAllSpecialFolders()
+  );
+  const dataRows = buildRows(
+    entries,
+    liveDetails,
+    overrides,
+    fileCountByAlbumId,
+    driveFolderUrlByEvent
+  );
 
   // Clear and rewrite. clearContents() leaves formatting (frozen rows, column
   // widths) intact, which keeps any layout the admin set up by hand.

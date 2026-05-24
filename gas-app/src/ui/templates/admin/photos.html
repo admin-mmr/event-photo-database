@@ -711,6 +711,33 @@
           </div>
         </div>
 
+        <!--
+          ── Action 4: Share Drive shortcut folders publicly ─────────────────
+          Replaces per-album ALBUM_OVERRIDES sharing for the photo/video
+          shortcut folders (Photos_NNN / Videos). New folders are shared
+          automatically at creation time; this button heals the historical
+          catalogue and re-runs cheaply (idempotent).
+        -->
+        <div class="reconcile-card" style="background:#e0f2f1;">
+          <p style="color:#00695c;">
+            <i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;color:#00695c;">share</i>
+            <strong>Share Drive Photo / Video Folders</strong> — grants
+            <em>Anyone with link → Viewer</em> on every <code>Photos_NNN</code>
+            and <code>Videos</code> folder tracked in <strong>Special_Folders</strong>.
+            Use this once after deploy to share folders created before the
+            auto-share hook landed. Safe to re-run any time.
+          </p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <button id="btn-share-drive-folders"
+                    class="mdl-button mdl-js-button mdl-button--raised"
+                    style="background:#00695c;color:#fff;"
+                    onclick="handleShareDriveFolders(this)">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">share</i>
+              Share All Drive Folders
+            </button>
+          </div>
+        </div>
+
         <!-- Reconciliation results (hidden until run) -->
         <div id="reconcile-results">
           <div class="reconcile-summary" id="reconcile-summary"></div>
@@ -1878,6 +1905,40 @@
           showErrorBanner('Publish RPC failed: ' + String(err));
         })
         .serverRebuildAndNotify({ sessionToken: window.SESSION_TOKEN || '' });
+    }
+
+    // ── Action 4: Share Drive shortcut folders ───────────────────────────────
+
+    /**
+     * Calls serverBackfillSpecialFoldersSharing — grants "Anyone with link →
+     * Viewer" on every Drive folder tracked in Special_Folders (Photos_NNN
+     * and Videos). New folders get this automatically at creation time; this
+     * heals the historical catalogue and is the systematic alternative to
+     * per-album ALBUM_OVERRIDES.
+     */
+    function handleShareDriveFolders(btn) {
+      var originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;margin-right:4px;">hourglass_empty</i>Sharing…';
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          if (!result || result.status !== 'success') {
+            showErrorBanner((result && result.message) || 'Share backfill failed');
+            return;
+          }
+          // Show counts in the toast — created + already-shared tells the
+          // admin both what changed and that the operation was idempotent.
+          showToast(result.message, 'success', 10000);
+        })
+        .withFailureHandler(function(err) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          showErrorBanner('Share backfill RPC failed: ' + String(err));
+        })
+        .serverBackfillSpecialFoldersSharing({ sessionToken: window.SESSION_TOKEN || '' });
     }
   </script>
 </body>

@@ -21,7 +21,10 @@ import {
   emptyAllAppOwnedAlbums,
   EventInfo,
 } from '../services/photosService';
-import { rebuildAllSpecialFoldersForEvent } from '../services/specialFoldersService';
+import {
+  rebuildAllSpecialFoldersForEvent,
+  backfillSpecialFoldersSharing,
+} from '../services/specialFoldersService';
 import {
   rebuildPublicAlbumIndex,
   tryRebuildPublicAlbumIndex,
@@ -632,6 +635,86 @@ export function serverRebuildAndNotify(payload: WithSession): ServerResponse {
     return {
       status:  'error',
       message: `Internal error in rebuild-and-notify: ${String(err)}`,
+    };
+  }
+}
+
+// ─── Action 4: Backfill Drive-folder sharing on every special folder ─────────
+
+/**
+ * Walks every row of the Special_Folders sheet and grants
+ * "Anyone with link → Viewer" on each folder.
+ *
+ * This is the systematic alternative to per-album ALBUM_OVERRIDES: rather
+ * than capturing share URLs from Google Photos (which the deprecated Library
+ * API no longer supports), the Drive shortcut folders we maintain in parallel
+ * become the canonical public-browse surface. Sharing them is fully
+ * programmable.
+ *
+ * New folders are shared automatically at creation time
+ * (specialFoldersService.rebuildEventPhotoFolders / rebuildClubVideoFolder);
+ * this handler is for retroactively healing the historical catalogue and for
+ * recovery if a share is ever revoked outside the app.
+ *
+ * Admin-only. Best-effort — individual failures are reported in the summary
+ * but never short-circuit the rest of the batch.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function serverBackfillSpecialFoldersSharing(payload: WithSession): ServerResponse {
+  try {
+    const auth = requireAdminOrFail(payload?.sessionToken);
+    if (!auth.ok) return auth.response;
+
+    const summary = backfillSpecialFoldersSharing();
+
+    appendAuditLog({
+      actorEmail:   auth.adminEmail,
+      action:       AuditAction.ALBUM_BACKFILLED,
+      resourceType: 'report',
+      resourceId:   'special_folders_sharing',
+      details:      {
+        operation:     'backfill_special_folders_sharing',
+        created:       summary.created,
+        alreadyShared: summary.alreadyShared,
+        errors:        summary.errors,
+      },
+    });
+
+    if (summary.errors > 0) {
+      appendAuditLog({
+        actorEmail:   auth.adminEmail,
+        action:       AuditAction.ALBUM_ERROR,
+        resourceType: 'report',
+        resourceId:   'special_folders_sharing',
+        details:      {
+          operation:    'backfill_special_folders_sharing',
+          errorSample:  summary.errorSample,
+        },
+      });
+    }
+
+    return {
+      status:  'success',
+      message:
+        `Drive-folder sharing backfill complete. ` +
+        `Newly shared: ${summary.created}; ` +
+        `already shared: ${summary.alreadyShared}; ` +
+        `errors: ${summary.errors}.` +
+        (summary.errorSample.length > 0
+          ? ` First error(s): ${summary.errorSample.slice(0, 3).join(' | ')}`
+          : ''),
+      data: {
+        created:       summary.created,
+        alreadyShared: summary.alreadyShared,
+        errors:        summary.errors,
+        errorSample:   summary.errorSample,
+      },
+    };
+  } catch (err) {
+    Logger.log(`serverBackfillSpecialFoldersSharing error: ${String(err)}`);
+    return {
+      status:  'error',
+      message: `Internal error during Drive-folder sharing backfill: ${String(err)}`,
     };
   }
 }

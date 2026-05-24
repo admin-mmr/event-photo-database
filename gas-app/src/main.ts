@@ -34,6 +34,7 @@ import { handleGet, handlePost } from './routes/router';
 import { purgeDeletedFiles as _purgeDeletedFiles } from './services/deleteService';
 import { migrateFromLegacy } from './services/migrationService';
 import { rebuildPublicAlbumIndex as _rebuildPublicAlbumIndex } from './services/publicSpreadsheetService';
+import { backfillSpecialFoldersSharing as _backfillSpecialFoldersSharing } from './services/specialFoldersService';
 import { getSuperAdmins } from './config/superAdmins';
 import { getAlbumAdminEmail, getConfig } from './config/constants';
 import { auditUnsharedAlbums } from './services/albumShareAuditService';
@@ -214,6 +215,31 @@ export function rebuildPublicAlbumIndex(): void {
   Logger.log(`[rebuildPublicAlbumIndex] Manual rebuild started by ${callerEmail}`);
   const rowCount = _rebuildPublicAlbumIndex();
   Logger.log(`[rebuildPublicAlbumIndex] Done — ${rowCount} row(s) written`);
+}
+
+/**
+ * One-shot routine to share every Drive shortcut folder
+ * ("Anyone with link → Viewer") tracked in Special_Folders.
+ *
+ * Run this once after the sharing hook is deployed so historical Photos_NNN
+ * and Videos folders become public; new folders created from then on are
+ * shared automatically at creation time by specialFoldersService.
+ *
+ * Idempotent — safe to re-run any time. Super-admin guarded.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function backfillSpecialFoldersSharing(): void {
+  const callerEmail = Session.getActiveUser().getEmail();
+  if (!getSuperAdmins().includes(callerEmail.toLowerCase())) {
+    Logger.log(`[backfillSpecialFoldersSharing] Permission denied for ${callerEmail}`);
+    return;
+  }
+  Logger.log(`[backfillSpecialFoldersSharing] Started by ${callerEmail}`);
+  const summary = _backfillSpecialFoldersSharing();
+  Logger.log(
+    `[backfillSpecialFoldersSharing] Done — created=${summary.created} ` +
+    `alreadyShared=${summary.alreadyShared} errors=${summary.errors}`
+  );
 }
 
 // ─── Album sharing audit ──────────────────────────────────────────────────────
