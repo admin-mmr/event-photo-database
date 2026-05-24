@@ -22,6 +22,7 @@ import {
   adminLinksPage,
   driveTreePage,
   uploadPage,
+  publicSheetPage,
 } from './pageRoutes';
 import {
   volunteerConfirmPage,
@@ -90,6 +91,7 @@ function getGetRoutes(): Readonly<Record<string, RouteConfig>> {
     [RouteAction.ADMIN_LINKS]:   { requiredRole: UserRole.CLUB_ADMIN },
     [RouteAction.DRIVE_TREE]:    { requiredRole: null }, // all authenticated users
     [RouteAction.UPLOAD]:        { requiredRole: null }, // all authenticated users
+    [RouteAction.PUBLIC_SHEET]:  { requiredRole: null }, // all authenticated users
   };
 }
 
@@ -314,6 +316,8 @@ function dispatchGetHandler(
       return driveTreePage(user, sessionToken);
     case RouteAction.UPLOAD:
       return uploadPage(user, sessionToken);
+    case RouteAction.PUBLIC_SHEET:
+      return publicSheetPage(user, sessionToken);
     default:
       return notFoundPage(action);
   }

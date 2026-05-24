@@ -42,12 +42,112 @@ export interface CreateAuditLogInput {
 
 // ─── Query type ───────────────────────────────────────────────────────────────
 
+/**
+ * Action categories used by the audit-log UI's filter chips.
+ *
+ * Each category maps to a set of AuditAction enum values (defined in
+ * AUDIT_CATEGORY_MEMBERS below). The UI sends the *category names* the user
+ * toggled on; the service expands them into the underlying action set so we
+ * never expose the full enum list to the client.
+ *
+ * 'other' is the catch-all for any AuditAction not explicitly enumerated —
+ * keeps the UI usable when a new audit action is introduced before the
+ * category map is updated.
+ */
+export type AuditCategory =
+  | 'user'
+  | 'event'
+  | 'club'
+  | 'link'
+  | 'file'
+  | 'email'
+  | 'upload'
+  | 'security'
+  | 'other';
+
 export interface AuditLogQuery {
   readonly page:        number;
   readonly pageSize:    number;
-  readonly actorEmail?: string;   // filter by actor (substring, case-insensitive)
-  readonly dateFrom?:   string;   // ISO 8601 date "YYYY-MM-DD"
-  readonly dateTo?:     string;   // ISO 8601 date "YYYY-MM-DD"
+  readonly actorEmail?: string;             // filter by actor (substring, case-insensitive)
+  readonly dateFrom?:   string;             // ISO 8601 date "YYYY-MM-DD"
+  readonly dateTo?:     string;             // ISO 8601 date "YYYY-MM-DD"
+  readonly categories?: ReadonlyArray<AuditCategory>;  // empty/undefined = all categories
+}
+
+/**
+ * Static mapping from category → member AuditAction values.
+ *
+ * NOTE: kept in this module (not in enums.ts) because the categories are a
+ * UI concern, not a domain concern. Adding a new AuditAction does not
+ * require updating this table — it falls through to 'other' until someone
+ * categorises it deliberately.
+ */
+const AUDIT_CATEGORY_MEMBERS: Record<AuditCategory, ReadonlyArray<string>> = {
+  user: [
+    AuditAction.USER_CREATED, AuditAction.USER_UPDATED,
+    AuditAction.USER_DEACTIVATED, AuditAction.USER_REACTIVATED,
+    AuditAction.USER_CREATE_FAILED, AuditAction.USER_UPDATE_FAILED,
+    AuditAction.USER_DEACTIVATE_FAILED, AuditAction.USER_REACTIVATE_FAILED,
+  ],
+  event: [
+    AuditAction.EVENT_CREATED, AuditAction.EVENT_UPDATED,
+    AuditAction.EVENT_CREATE_FAILED, AuditAction.EVENT_UPDATE_FAILED,
+  ],
+  club: [
+    AuditAction.CLUB_CREATED, AuditAction.CLUB_UPDATED,
+    AuditAction.CLUB_DEACTIVATED, AuditAction.CLUB_REACTIVATED,
+    AuditAction.CLUB_CREATE_FAILED, AuditAction.CLUB_UPDATE_FAILED,
+    AuditAction.CLUB_DEACTIVATE_FAILED, AuditAction.CLUB_REACTIVATE_FAILED,
+  ],
+  link: [
+    AuditAction.LINK_GENERATED, AuditAction.LINK_REVOKED,
+    AuditAction.LINK_GENERATE_FAILED, AuditAction.LINK_REVOKE_FAILED,
+    AuditAction.LINK_ROTATE_FAILED,
+  ],
+  file: [
+    AuditAction.FILE_DELETED, AuditAction.FILE_RESTORED,
+    AuditAction.FOLDER_DELETED, AuditAction.FILE_DELETE_FAILED,
+    AuditAction.FILE_RESTORE_FAILED, AuditAction.FOLDER_DELETE_FAILED,
+  ],
+  email: [
+    AuditAction.EMAIL_SENT, AuditAction.EMAIL_FAILED,
+    AuditAction.EMAIL_PREFS_UPDATED,
+  ],
+  upload: [
+    AuditAction.UPLOAD_COMPLETED, AuditAction.UPLOAD_CLIENT_ERROR,
+  ],
+  security: [
+    AuditAction.ADMIN_AUTH_REJECTED,
+    AuditAction.SECURITY_EVENT_DETECTED,
+    AuditAction.MASQUERADE_START, AuditAction.MASQUERADE_END,
+  ],
+  other: [],  // populated dynamically per call — any action not in another bucket
+};
+
+/**
+ * Returns the set of AuditAction values that belong to the given categories.
+ * 'other' is computed at call time as "every known AuditAction minus every
+ * action that appears in another category" — so adding a new action without
+ * categorising it still lets the user find it via the 'Other' chip.
+ */
+function expandCategories(categories: ReadonlyArray<AuditCategory>): Set<string> {
+  const allCategorised = new Set<string>();
+  for (const cat of Object.keys(AUDIT_CATEGORY_MEMBERS) as AuditCategory[]) {
+    if (cat === 'other') continue;
+    for (const a of AUDIT_CATEGORY_MEMBERS[cat]) allCategorised.add(a);
+  }
+
+  const allowed = new Set<string>();
+  for (const cat of categories) {
+    if (cat === 'other') {
+      for (const a of Object.values(AuditAction)) {
+        if (!allCategorised.has(a)) allowed.add(a);
+      }
+    } else {
+      for (const a of AUDIT_CATEGORY_MEMBERS[cat] ?? []) allowed.add(a);
+    }
+  }
+  return allowed;
 }
 
 export interface AuditLogPage {
@@ -171,6 +271,17 @@ export function getAuditLogs(query: AuditLogQuery): ServiceResult<AuditLogPage> 
     if (query.dateTo) {
       const to = `${query.dateTo}T23:59:59.999Z`;
       records = records.filter((r) => r.timestamp <= to);
+    }
+    // Categories: a present-but-empty array means "show nothing" (the UI
+    // can use this state when the user toggles every chip off). Undefined
+    // means "no category filter" — show all actions.
+    if (query.categories !== undefined) {
+      if (query.categories.length === 0) {
+        records = [];
+      } else {
+        const allowed = expandCategories(query.categories);
+        records = records.filter((r) => allowed.has(r.action));
+      }
     }
 
     const total = records.length;

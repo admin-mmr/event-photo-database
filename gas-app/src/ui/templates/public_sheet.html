@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Public Sheet — 湘舍动公益文件系统</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.indigo-pink.min.css">
+  <?!= HtmlService.createHtmlOutputFromFile('ui/css/styles').getContent() ?>
+  <style>
+    .action-card {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 10px;
+      padding: 22px 24px;
+      margin-bottom: 16px;
+      display: flex;
+      gap: 18px;
+      align-items: flex-start;
+    }
+    .action-card__icon {
+      flex: 0 0 auto;
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #3f51b5, #5c6bc0);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .action-card.icon-photo .action-card__icon {
+      background: linear-gradient(135deg, #1e88e5, #42a5f5);
+    }
+    .action-card.icon-video .action-card__icon {
+      background: linear-gradient(135deg, #6a1b9a, #ab47bc);
+    }
+    .action-card.icon-sheet .action-card__icon {
+      background: linear-gradient(135deg, #2e7d32, #43a047);
+    }
+    .action-card__icon .material-icons { font-size: 26px; }
+    .action-card__body { flex: 1 1 auto; }
+    .action-card__title {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: #212121;
+      margin: 0 0 4px;
+    }
+    .action-card__desc {
+      color: #555;
+      font-size: .9rem;
+      line-height: 1.55;
+      margin: 0 0 14px;
+    }
+    .action-card__desc .zh { color: #777; }
+
+    .action-card__controls {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .action-card__btn {
+      background: #3f51b5;
+      color: #fff;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      font-size: .92rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background .15s;
+    }
+    .action-card__btn:hover:not(:disabled) { background: #303f9f; }
+    .action-card__btn:disabled {
+      background: #b0bec5;
+      cursor: not-allowed;
+    }
+
+    .action-card__status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: .85rem;
+      color: #888;
+      min-height: 20px;
+    }
+    .action-card__status.success { color: #2e7d32; }
+    .action-card__status.warning { color: #ef6c00; }
+    .action-card__status.error   { color: #c62828; }
+
+    .spinner-inline {
+      width: 14px;
+      height: 14px;
+      border: 2px solid #c5cae9;
+      border-top-color: #3f51b5;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error-detail {
+      margin-top: 10px;
+      padding: 8px 12px;
+      background: #ffebee;
+      border-left: 3px solid #c62828;
+      border-radius: 0 6px 6px 0;
+      font-size: .82rem;
+      color: #b71c1c;
+      max-height: 140px;
+      overflow-y: auto;
+      display: none;
+    }
+    .error-detail.visible { display: block; }
+    .error-detail ul { margin: 0; padding-left: 18px; }
+
+    .info-banner {
+      background: #e8eaf6;
+      border-left: 4px solid #3f51b5;
+      padding: 14px 16px;
+      border-radius: 0 6px 6px 0;
+      margin-bottom: 24px;
+      font-size: .9rem;
+      line-height: 1.6;
+      color: #333;
+    }
+    .info-banner strong { color: #1a237e; }
+    .info-banner .zh { color: #555; }
+
+    .sheet-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #1565c0;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: .88rem;
+    }
+    .sheet-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
+    <header class="mdl-layout__header">
+      <div class="mdl-layout__header-row">
+        <a href="?action=dashboard" class="mdl-layout-title"
+           style="color:inherit;text-decoration:none;">
+          湘舍动公益文件系统
+        </a>
+        <div class="mdl-layout-spacer"></div>
+        <div class="nav-panel">
+          <nav class="mdl-navigation">
+            <a class="mdl-navigation__link" href="?action=dashboard">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">home</i>
+              Home&nbsp;/&nbsp;首页
+            </a>
+            <? if (isAdmin) { ?>
+            <a class="mdl-navigation__link" href="?action=admin_events">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
+              Events&nbsp;/&nbsp;活动
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_links">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">link</i>
+              Upload Links&nbsp;/&nbsp;上传链接
+            </a>
+            <a class="mdl-navigation__link" href="?action=admin_audit">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">history</i>
+              Audit Log&nbsp;/&nbsp;操作日志
+            </a>
+            <? } ?>
+            <a class="mdl-navigation__link" href="?action=drive_tree">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">account_tree</i>
+              File System&nbsp;/&nbsp;文件系统
+            </a>
+            <a class="mdl-navigation__link mdl-navigation__link--current"
+               href="?action=public_sheet">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">public</i>
+              Public Sheet&nbsp;/&nbsp;公开表格
+            </a>
+          </nav>
+        </div>
+      </div>
+    </header>
+
+    <main class="mdl-layout__content">
+      <div class="page-content">
+        <h2 style="margin:8px 0 6px;font-size:1.5rem;color:#1a1a2e;">
+          <i class="material-icons" style="vertical-align:middle;color:#3f51b5;">public</i>
+          Public Sheet&nbsp;/&nbsp;公开表格
+        </h2>
+        <p style="color:#666;margin:0 0 20px;font-size:.92rem;">
+          Refresh the public folder index and rebuild Drive shortcut folders on demand.
+          <span style="color:#888;">手动刷新公开文件夹索引并重建 Drive 快捷方式文件夹。</span>
+        </p>
+
+        <!-- Status / link to the published sheet -->
+        <div class="info-banner">
+          <? if (publicSpreadsheetUrl) { ?>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <i class="material-icons" style="color:#3f51b5;">link</i>
+            <div style="flex:1;min-width:220px;">
+              <strong>Currently published</strong> at:
+              <a class="sheet-link" href="<?= publicSpreadsheetUrl ?>" target="_blank" rel="noopener">
+                Open the public folder index
+                <i class="material-icons" style="font-size:14px;">open_in_new</i>
+              </a>
+              <div class="zh">公开文件夹索引已配置 — 点击上方链接查看实时表格。</div>
+            </div>
+          </div>
+          <? } else { ?>
+          <div style="display:flex;align-items:center;gap:12px;">
+            <i class="material-icons" style="color:#ef6c00;">warning</i>
+            <div>
+              <strong>Not yet configured.</strong>
+              Set <code>PUBLIC_ALBUM_INDEX_SHEET_ID</code> in Apps Script Project Settings → Script Properties
+              to enable the public sheet (the property name is preserved from the previous schema for backward
+              compatibility — semantically this is now the "public folder index" file ID).
+              <div class="zh">尚未配置 — 请先在 Apps Script Script Properties 中设置 <code>PUBLIC_ALBUM_INDEX_SHEET_ID</code>。</div>
+            </div>
+          </div>
+          <? } ?>
+        </div>
+
+        <!-- ─── Refresh public sheet ─────────────────────────────────────── -->
+        <div class="action-card icon-sheet">
+          <div class="action-card__icon"><i class="material-icons">refresh</i></div>
+          <div class="action-card__body">
+            <h3 class="action-card__title">Refresh PUBLIC SHEET&nbsp;/&nbsp;刷新公开表格</h3>
+            <p class="action-card__desc">
+              Re-write the Photo Folders and Video Folders tabs from the current
+              Special_Folders state. Fast (~1–2 s); does not rebuild any Drive folders or shortcuts.
+              <br><span class="zh">从 Special_Folders 当前数据重新生成"照片文件夹"和"视频文件夹"两个表，速度快，不重建 Drive 文件夹。</span>
+            </p>
+            <div class="action-card__controls">
+              <button class="action-card__btn" id="btn-refresh" onclick="runRefreshSheet(this)">
+                <i class="material-icons" style="font-size:18px;">refresh</i>
+                Refresh sheet now
+              </button>
+              <div class="action-card__status" id="status-refresh">Ready</div>
+            </div>
+            <div class="error-detail" id="err-refresh"></div>
+          </div>
+        </div>
+
+        <!-- ─── Rebuild Photo folders ────────────────────────────────────── -->
+        <div class="action-card icon-photo">
+          <div class="action-card__icon"><i class="material-icons">photo</i></div>
+          <div class="action-card__body">
+            <h3 class="action-card__title">Rebuild Photos_NNN folders&nbsp;/&nbsp;重建 Photos_NNN 文件夹</h3>
+            <p class="action-card__desc">
+              For every event, regenerate the flat
+              <code>&lt;Event&gt;/Photos_001/</code>, <code>Photos_002/</code>, … shortcut buckets
+              that consolidate every uploaded photo under the event. Use after manual Drive edits
+              or when an older event is missing its buckets. May take a few minutes per event
+              for large archives — refreshes the public sheet at the end automatically.
+              <br><span class="zh">为每个活动重建 Photos_001/002/… 快捷方式文件夹；可在 Drive 手动调整后补齐。完成后自动刷新公开表格。</span>
+            </p>
+            <div class="action-card__controls">
+              <button class="action-card__btn" id="btn-photos" onclick="runRebuildPhotos(this)">
+                <i class="material-icons" style="font-size:18px;">build</i>
+                Rebuild Photos folders
+              </button>
+              <div class="action-card__status" id="status-photos">Ready</div>
+            </div>
+            <div class="error-detail" id="err-photos"></div>
+          </div>
+        </div>
+
+        <!-- ─── Rebuild Video folders ────────────────────────────────────── -->
+        <div class="action-card icon-video">
+          <div class="action-card__icon"><i class="material-icons">videocam</i></div>
+          <div class="action-card__body">
+            <h3 class="action-card__title">Rebuild Videos folders&nbsp;/&nbsp;重建 Videos 文件夹</h3>
+            <p class="action-card__desc">
+              For every (event, club, tag) upload-link triple, regenerate the
+              <code>&lt;Event&gt;/&lt;Club&gt;/&lt;Tag&gt;/Videos/</code> shortcut folder that
+              indexes every video under that scope. Idempotent — folders that already exist are
+              updated in place. Refreshes the public sheet at the end automatically.
+              <br><span class="zh">为每个（活动、跑团、标签）三元组重建 Videos 快捷方式文件夹，幂等更新。完成后自动刷新公开表格。</span>
+            </p>
+            <div class="action-card__controls">
+              <button class="action-card__btn" id="btn-videos" onclick="runRebuildVideos(this)">
+                <i class="material-icons" style="font-size:18px;">build</i>
+                Rebuild Videos folders
+              </button>
+              <div class="action-card__status" id="status-videos">Ready</div>
+            </div>
+            <div class="error-detail" id="err-videos"></div>
+          </div>
+        </div>
+
+        <!-- Auto-refresh explainer -->
+        <div class="info-banner" style="background:#f1f8e9;border-left-color:#7cb342;margin-top:28px;">
+          <strong>Don't usually need to click these.</strong>
+          The public sheet auto-refreshes after every successful upload, and a scheduled trigger
+          re-runs the refresh every 30 minutes as a safety net. Use these buttons only when you've
+          made a manual change in Drive and want the public view to catch up immediately.
+          <div class="zh">通常无需手动刷新 — 每次上传成功后会自动刷新，并有 30 分钟一次的定时任务兜底。仅在手动修改 Drive 后需要时使用。</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // SESSION_TOKEN is required for google.script.run calls under USER_DEPLOYING.
+    window.SESSION_TOKEN = '<?= (typeof sessionToken !== "undefined" && sessionToken) ? sessionToken : "" ?>';
+
+    function setBusy(btnId, statusId, busy, label) {
+      var btn    = document.getElementById(btnId);
+      var status = document.getElementById(statusId);
+      btn.disabled = busy;
+      status.className = 'action-card__status';
+      if (busy) {
+        status.innerHTML = '<span class="spinner-inline"></span>' + (label || 'Working…');
+      } else {
+        status.textContent = label || 'Ready';
+      }
+    }
+
+    function setResult(statusId, errId, response) {
+      var status = document.getElementById(statusId);
+      var err    = document.getElementById(errId);
+      err.classList.remove('visible');
+      err.innerHTML = '';
+
+      if (!response) {
+        status.className = 'action-card__status error';
+        status.textContent = 'No response from server';
+        return;
+      }
+      if (response.status === 'success') {
+        status.className = 'action-card__status success';
+        status.innerHTML = '<i class="material-icons" style="font-size:16px;">check_circle</i>' +
+                           ' ' + (response.message || 'Done.');
+      } else if (response.status === 'warning') {
+        status.className = 'action-card__status warning';
+        status.innerHTML = '<i class="material-icons" style="font-size:16px;">warning</i>' +
+                           ' ' + (response.message || 'Completed with warnings.');
+        var samples = (response.data && response.data.errorSamples) || [];
+        if (samples.length > 0) {
+          err.classList.add('visible');
+          err.innerHTML = '<strong>Error samples:</strong><ul>' +
+            samples.map(function (s) { return '<li>' + escapeHtml(s) + '</li>'; }).join('') +
+            '</ul>';
+        }
+      } else {
+        status.className = 'action-card__status error';
+        status.innerHTML = '<i class="material-icons" style="font-size:16px;">error</i>' +
+                           ' ' + (response.message || 'Failed.');
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
+
+    function callServer(fnName, btnId, statusId, errId, busyLabel) {
+      setBusy(btnId, statusId, true, busyLabel);
+      google.script.run
+        .withSuccessHandler(function (response) {
+          setBusy(btnId, statusId, false);
+          setResult(statusId, errId, response);
+        })
+        .withFailureHandler(function (err) {
+          setBusy(btnId, statusId, false);
+          setResult(statusId, errId, {
+            status: 'error',
+            message: 'Server error: ' + (err && err.message ? err.message : String(err)),
+          });
+        })
+      [fnName]({ sessionToken: window.SESSION_TOKEN || '' });
+    }
+
+    function runRefreshSheet() {
+      callServer('serverRefreshPublicSheet', 'btn-refresh', 'status-refresh', 'err-refresh',
+                 'Refreshing sheet…');
+    }
+    function runRebuildPhotos() {
+      callServer('serverRebuildPhotoFolders', 'btn-photos', 'status-photos', 'err-photos',
+                 'Rebuilding Photos folders… (may take a few minutes)');
+    }
+    function runRebuildVideos() {
+      callServer('serverRebuildVideoFolders', 'btn-videos', 'status-videos', 'err-videos',
+                 'Rebuilding Videos folders… (may take a few minutes)');
+    }
+  </script>
+</body>
+</html>

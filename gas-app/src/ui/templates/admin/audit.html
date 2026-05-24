@@ -21,10 +21,91 @@
       text-transform: uppercase;
       white-space: nowrap;
     }
-    .audit-action.user    { background: #e3f2fd; color: #1565c0; }
-    .audit-action.event   { background: #e8f5e9; color: #2e7d32; }
-    .audit-action.club    { background: #f3e5f5; color: #6a1b9a; }
-    .audit-action.report  { background: #fff3e0; color: #e65100; }
+    .audit-action.user     { background: #e3f2fd; color: #1565c0; }
+    .audit-action.event    { background: #e8f5e9; color: #2e7d32; }
+    .audit-action.club     { background: #f3e5f5; color: #6a1b9a; }
+    .audit-action.link     { background: #ede7f6; color: #4527a0; }
+    .audit-action.file     { background: #fff3e0; color: #e65100; }
+    .audit-action.email    { background: #e0f7fa; color: #006064; }
+    .audit-action.upload   { background: #f1f8e9; color: #33691e; }
+    .audit-action.security { background: #ffebee; color: #c62828; }
+    .audit-action.other    { background: #eceff1; color: #455a64; }
+
+    /* ── Quick-range chips ─────────────────────────────────────────────── */
+    .quick-ranges {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .quick-ranges__label {
+      font-size: 12px;
+      color: #777;
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      margin-right: 4px;
+    }
+    .range-chip {
+      display: inline-block;
+      padding: 6px 14px;
+      border-radius: 16px;
+      background: #fff;
+      border: 1px solid #cfd8dc;
+      color: #455a64;
+      font-size: 13px;
+      cursor: pointer;
+      user-select: none;
+      transition: background .15s, border-color .15s, color .15s;
+    }
+    .range-chip:hover { background: #eceff1; }
+    .range-chip.active {
+      background: #3f51b5;
+      border-color: #3f51b5;
+      color: #fff;
+    }
+
+    /* ── Category toggle pills ─────────────────────────────────────────── */
+    .category-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+    .category-row__label {
+      font-size: 12px;
+      color: #777;
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      margin-right: 4px;
+    }
+    .cat-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 10px;
+      border-radius: 14px;
+      background: #fff;
+      border: 1px solid #cfd8dc;
+      font-size: 12px;
+      color: #607d8b;
+      cursor: pointer;
+      user-select: none;
+      transition: background .15s, border-color .15s, color .15s;
+    }
+    .cat-pill .material-icons { font-size: 14px; }
+    .cat-pill:hover { background: #eceff1; }
+    .cat-pill.on {
+      background: #e8eaf6;
+      border-color: #5c6bc0;
+      color: #1a237e;
+    }
+    .cat-pill.on .check { display: inline; }
+    .cat-pill .check { display: none; }
+
     .details-cell {
       font-family: monospace;
       font-size: 11px;
@@ -95,6 +176,10 @@
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">account_tree</i>
               File System&nbsp;/&nbsp;文件系统
             </a>
+            <a class="mdl-navigation__link" href="?action=public_sheet">
+              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">public</i>
+              Public Sheet&nbsp;/&nbsp;公开表格
+            </a>
           </nav>
         </div>
         <div class="user-menu">
@@ -146,27 +231,91 @@
         <? } ?>
 
         <!-- Filters card -->
-        <div class="card" style="padding:16px 24px;">
+        <div class="card" style="padding:18px 24px;">
+          <!-- Quick range chips -->
+          <div class="quick-ranges">
+            <span class="quick-ranges__label">Range</span>
+            <span class="range-chip" data-range="today"   onclick="setQuickRange('today')">Today</span>
+            <span class="range-chip active" data-range="7d" onclick="setQuickRange('7d')">Last 7 days</span>
+            <span class="range-chip" data-range="30d"     onclick="setQuickRange('30d')">Last 30 days</span>
+            <span class="range-chip" data-range="all"     onclick="setQuickRange('all')">All time</span>
+          </div>
+
+          <!-- Category toggle pills (all on by default) -->
+          <div class="category-row">
+            <span class="category-row__label">Categories</span>
+            <span class="cat-pill on" data-cat="user"     onclick="toggleCategory(this)">
+              <i class="material-icons check">check</i>
+              <i class="material-icons" style="color:#1565c0;">person</i>User
+            </span>
+            <span class="cat-pill on" data-cat="event"    onclick="toggleCategory(this)">
+              <i class="material-icons check">check</i>
+              <i class="material-icons" style="color:#2e7d32;">event</i>Event
+            </span>
+            <span class="cat-pill on" data-cat="club"     onclick="toggleCategory(this)">
+              <i class="material-icons check">check</i>
+              <i class="material-icons" style="color:#6a1b9a;">groups</i>Club
+            </span>
+            <span class="cat-pill on" data-cat="link"     onclick="toggleCategory(this)">
+              <i class="material-icons check">check</i>
+              <i class="material-icons" style="color:#4527a0;">link</i>Link
+            </span>
+            <span class="cat-pill on" data-cat="file"     onclick="toggleCategory(this)">
+              <i class="material-icons check">check</i>
+              <i class="material-icons" style="color:#e65100;">insert_drive_file</i>File
+            </span>
+            <span class="cat-pill on" data-cat="upload"   onclick="toggleCategory(this)">
+              <i class="material-icons check">check</i>
+              <i class="material-icons" style="color:#33691e;">cloud_upload</i>Upload
+            </span>
+            <span class="cat-pill on" data-cat="email"    onclick="toggleCategory(this)">
+              <i class="material-icons check">check</i>
+              <i class="material-icons" style="color:#006064;">mail</i>Email
+            </span>
+            <span class="cat-pill on" data-cat="security" onclick="toggleCategory(this)">
+              <i class="material-icons check">check</i>
+              <i class="material-icons" style="color:#c62828;">security</i>Security
+            </span>
+            <span class="cat-pill on" data-cat="other"    onclick="toggleCategory(this)">
+              <i class="material-icons check">check</i>
+              <i class="material-icons" style="color:#455a64;">more_horiz</i>Other
+            </span>
+            <span style="flex:1;"></span>
+            <button class="mdl-button mdl-js-button" onclick="categoriesAll(true)"
+                    style="font-size:11px;min-width:0;padding:0 10px;height:28px;line-height:28px;">
+              All
+            </button>
+            <button class="mdl-button mdl-js-button" onclick="categoriesAll(false)"
+                    style="font-size:11px;min-width:0;padding:0 10px;height:28px;line-height:28px;">
+              None
+            </button>
+          </div>
+
+          <!-- Date + actor filters -->
           <div class="filter-row">
             <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
               <input type="text" id="filter-actor" class="mdl-textfield__input"
                      placeholder=" " oninput="scheduleFilter()">
-              <label class="mdl-textfield__label" for="filter-actor">Actor email</label>
+              <label class="mdl-textfield__label" for="filter-actor">Actor email contains</label>
             </div>
             <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
               <input type="date" id="filter-from" class="mdl-textfield__input"
-                     onchange="scheduleFilter()">
+                     value="<?= defaultDateFrom ?>" onchange="onDateChange()">
               <label class="mdl-textfield__label" for="filter-from">From date</label>
             </div>
             <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label">
               <input type="date" id="filter-to" class="mdl-textfield__input"
-                     onchange="scheduleFilter()">
+                     value="<?= defaultDateTo ?>" onchange="onDateChange()">
               <label class="mdl-textfield__label" for="filter-to">To date</label>
             </div>
             <button class="mdl-button mdl-js-button" onclick="clearFilters()">
-              Clear
+              Reset
             </button>
             <div class="mdl-spinner mdl-js-spinner spinner hidden" id="filter-spinner"></div>
+          </div>
+
+          <div id="active-filter-summary" style="margin-top:6px;font-size:12px;color:#888;">
+            Showing the last 7 days — <span id="active-filter-count">…</span>
           </div>
         </div>
 
@@ -226,12 +375,33 @@
     // Initial data from server-side render (no extra round-trip on load)
     var cachedItems  = <?!= initialLogs ?>;
 
+    // Full canonical list of category names — kept in sync with AuditCategory
+    // in auditLogService.ts. UI sends these to the server; the server expands
+    // each into its AuditAction member set.
+    var ALL_CATEGORIES = ['user','event','club','link','file','upload','email','security','other'];
+
+    // Default range used by the "7d" chip and the server's initial render —
+    // keep in sync with adminAuditPage() in pageRoutes.ts.
+    var DEFAULT_RANGE = '7d';
+
     // ── Render ───────────────────────────────────────────────────────────────
+    /**
+     * Map an AuditAction string → category name, mirroring the server-side
+     * AUDIT_CATEGORY_MEMBERS table so the badge colour matches what the user
+     * filtered on. Falls back to 'other' for unknown actions.
+     */
     function actionClass(action) {
-      if (action.startsWith('USER_'))   return 'user';
-      if (action.startsWith('EVENT_'))  return 'event';
-      if (action.startsWith('CLUB_'))   return 'club';
-      return 'report';
+      if (!action) return 'other';
+      if (action.indexOf('USER_')   === 0) return 'user';
+      if (action.indexOf('EVENT_')  === 0) return 'event';
+      if (action.indexOf('CLUB_')   === 0) return 'club';
+      if (action.indexOf('LINK_')   === 0) return 'link';
+      if (action.indexOf('FILE_')   === 0 || action.indexOf('FOLDER_') === 0) return 'file';
+      if (action.indexOf('EMAIL_')  === 0 || action === 'EMAIL_PREFS_UPDATED') return 'email';
+      if (action.indexOf('UPLOAD_') === 0) return 'upload';
+      if (action === 'ADMIN_AUTH_REJECTED' || action === 'SECURITY_EVENT_DETECTED' ||
+          action === 'MASQUERADE_START' || action === 'MASQUERADE_END') return 'security';
+      return 'other';
     }
 
     function fmtTimestamp(ts) {
@@ -297,17 +467,112 @@
       document.getElementById('total-badge').textContent = '(' + total + ' total)';
     }
 
+    // ── Quick-range chips ─────────────────────────────────────────────────────
+    /**
+     * Sets the From/To date inputs to match a named range and highlights
+     * the chosen chip. The server treats undefined dates as "no bound" so
+     * for "all" we clear both inputs.
+     */
+    function setQuickRange(range) {
+      var today = new Date();
+      var iso = function(d) { return d.toISOString().slice(0, 10); };
+      var fromEl = document.getElementById('filter-from');
+      var toEl   = document.getElementById('filter-to');
+
+      if (range === 'today') {
+        fromEl.value = iso(today);
+        toEl.value   = iso(today);
+      } else if (range === '7d') {
+        fromEl.value = iso(new Date(today.getTime() - 7  * 86400000));
+        toEl.value   = iso(today);
+      } else if (range === '30d') {
+        fromEl.value = iso(new Date(today.getTime() - 30 * 86400000));
+        toEl.value   = iso(today);
+      } else if (range === 'all') {
+        fromEl.value = '';
+        toEl.value   = '';
+      }
+
+      // Re-paint the chip highlight
+      var chips = document.querySelectorAll('.range-chip');
+      for (var i = 0; i < chips.length; i++) {
+        chips[i].classList.toggle('active', chips[i].getAttribute('data-range') === range);
+      }
+      applyFilter(1);
+    }
+
+    /**
+     * Called when the user manually edits a date input — clears any active
+     * quick-range highlight so the UI doesn't lie about which preset is on.
+     */
+    function onDateChange() {
+      var chips = document.querySelectorAll('.range-chip');
+      for (var i = 0; i < chips.length; i++) chips[i].classList.remove('active');
+      scheduleFilter();
+    }
+
+    // ── Category pills ────────────────────────────────────────────────────────
+    function toggleCategory(el) {
+      el.classList.toggle('on');
+      scheduleFilter();
+    }
+    function categoriesAll(on) {
+      var pills = document.querySelectorAll('.cat-pill');
+      for (var i = 0; i < pills.length; i++) {
+        pills[i].classList.toggle('on', !!on);
+      }
+      scheduleFilter();
+    }
+    function selectedCategories() {
+      var pills = document.querySelectorAll('.cat-pill.on');
+      var out = [];
+      for (var i = 0; i < pills.length; i++) {
+        out.push(pills[i].getAttribute('data-cat'));
+      }
+      return out;
+    }
+
+    // ── URL state — keep filters shareable / refreshable ──────────────────────
+    function syncUrl(payload) {
+      try {
+        var params = new URLSearchParams();
+        params.set('action', 'admin_audit');
+        if (payload.actorEmail) params.set('actor', payload.actorEmail);
+        if (payload.dateFrom)   params.set('from',  payload.dateFrom);
+        if (payload.dateTo)     params.set('to',    payload.dateTo);
+        if (payload.categories && payload.categories.length !== ALL_CATEGORIES.length) {
+          params.set('cats', payload.categories.join(','));
+        }
+        // GAS won't actually navigate on hash-only changes; we use replaceState
+        // so the back button doesn't fill with intermediate filter states.
+        window.history.replaceState({}, '', '?' + params.toString());
+      } catch (e) { /* older browsers — silently skip */ }
+    }
+
+    function readUrl() {
+      try {
+        var params = new URLSearchParams(window.location.search);
+        return {
+          actor: params.get('actor') || '',
+          from:  params.get('from')  || '',
+          to:    params.get('to')    || '',
+          cats:  params.get('cats')  ? params.get('cats').split(',').filter(Boolean) : null,
+        };
+      } catch (e) {
+        return { actor: '', from: '', to: '', cats: null };
+      }
+    }
+
     // ── Filter + pagination ───────────────────────────────────────────────────
     function scheduleFilter() {
       clearTimeout(filterTimer);
-      filterTimer = setTimeout(function() { applyFilter(1); }, 400);
+      filterTimer = setTimeout(function() { applyFilter(1); }, 350);
     }
 
     function clearFilters() {
       document.getElementById('filter-actor').value = '';
-      document.getElementById('filter-from').value  = '';
-      document.getElementById('filter-to').value    = '';
-      applyFilter(1);
+      categoriesAll(true);
+      setQuickRange(DEFAULT_RANGE);
     }
 
     function goPage(page) {
@@ -318,6 +583,7 @@
       var actor   = document.getElementById('filter-actor').value.trim();
       var from    = document.getElementById('filter-from').value;
       var to      = document.getElementById('filter-to').value;
+      var cats    = selectedCategories();
       var spinner = document.getElementById('filter-spinner');
 
       currentPage = page;
@@ -327,6 +593,15 @@
       if (actor) payload.actorEmail = actor;
       if (from)  payload.dateFrom   = from;
       if (to)    payload.dateTo     = to;
+      // Only include the categories array when it isn't "everything". An empty
+      // selection IS meaningful (show nothing) and must be sent through.
+      if (cats.length !== ALL_CATEGORIES.length) {
+        payload.categories = cats;
+      }
+
+      // Update the address bar so the filter is shareable / refresh-safe.
+      syncUrl(payload);
+      updateFilterSummary(from, to, cats, actor);
 
       callServer('serverGetAuditLog', payload)
         .then(function(result) {
@@ -339,6 +614,8 @@
           currentTotal   = result.data.total;
           renderRows(cachedItems);
           updatePagination(currentTotal);
+          document.getElementById('active-filter-count').textContent =
+            currentTotal + ' record' + (currentTotal === 1 ? '' : 's');
         })
         .catch(function(err) {
           spinner.classList.add('hidden');
@@ -346,10 +623,55 @@
         });
     }
 
-    // ── Initial render (uses server-side pre-loaded data) ─────────────────────
+    function updateFilterSummary(from, to, cats, actor) {
+      var parts = [];
+      if (from && to) parts.push(from + ' → ' + to);
+      else if (from)  parts.push('from ' + from);
+      else if (to)    parts.push('through ' + to);
+      else            parts.push('all time');
+
+      if (cats.length === 0) parts.push('no categories');
+      else if (cats.length < ALL_CATEGORIES.length) parts.push(cats.length + ' categor' + (cats.length === 1 ? 'y' : 'ies'));
+
+      if (actor) parts.push('actor ~ "' + actor + '"');
+
+      document.getElementById('active-filter-summary').innerHTML =
+        'Showing <strong>' + escapeHtml(parts.join(' · ')) + '</strong> — <span id="active-filter-count">' +
+        currentTotal + ' record' + (currentTotal === 1 ? '' : 's') + '</span>';
+    }
+
+    // ── Initial render — pre-populate from URL params if present ──────────────
     document.addEventListener('DOMContentLoaded', function() {
+      var url = readUrl();
+      if (url.actor) document.getElementById('filter-actor').value = url.actor;
+      if (url.from)  document.getElementById('filter-from').value  = url.from;
+      if (url.to)    document.getElementById('filter-to').value    = url.to;
+      if (url.cats) {
+        var pills = document.querySelectorAll('.cat-pill');
+        for (var i = 0; i < pills.length; i++) {
+          pills[i].classList.toggle('on', url.cats.indexOf(pills[i].getAttribute('data-cat')) >= 0);
+        }
+      }
+      // If URL specifies a range different from the server-side default,
+      // clear the chip highlight — the user is on a custom range.
+      if (url.from || url.to) {
+        var chips = document.querySelectorAll('.range-chip');
+        for (var j = 0; j < chips.length; j++) chips[j].classList.remove('active');
+      }
+
       renderRows(cachedItems);
       updatePagination(currentTotal);
+
+      // First-paint summary
+      updateFilterSummary(
+        document.getElementById('filter-from').value,
+        document.getElementById('filter-to').value,
+        selectedCategories(),
+        document.getElementById('filter-actor').value.trim()
+      );
+
+      // If URL had explicit filters we didn't match server-side, refetch.
+      if (url.actor || url.cats) applyFilter(1);
     });
   </script>
 </body>

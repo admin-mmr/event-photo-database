@@ -402,4 +402,120 @@ describe('getAuditLogs()', () => {
     expect(result.status).toBe(ResultStatus.ERROR);
     expect(result.message).toContain('Failed to read audit log');
   });
+
+  // ── Category filter ────────────────────────────────────────────────────────
+  //
+  // The category filter is the backbone of the audit-log UI's toggle pills.
+  // Each AuditCategory expands to a fixed set of AuditAction values; the
+  // 'other' bucket is computed dynamically as "anything not in another
+  // bucket" so new actions remain findable even when the category map hasn't
+  // been updated yet.
+
+  describe('categories filter', () => {
+    function rowsForActions(actions: AuditAction[]): unknown[][] {
+      return actions.map((a, i) => [
+        `id-${i}`,
+        `2026-04-${String(18 - i).padStart(2, '0')}T10:00:00.000Z`,
+        TEST_ADMIN_EMAIL, a, 'res', '', '{}',
+      ]);
+    }
+
+    it('omitting categories returns every action (no filtering applied)', () => {
+      mockSheets.Audit_Log = createMockSheet(rowsForActions([
+        AuditAction.USER_CREATED,
+        AuditAction.EVENT_CREATED,
+        AuditAction.LINK_GENERATED,
+      ]));
+      mockSpreadsheetWith('Audit_Log', mockSheets.Audit_Log);
+
+      const result = getAuditLogs({ page: 1, pageSize: 50 });
+      expect(result.data!.total).toBe(3);
+    });
+
+    it('an empty categories array short-circuits to zero results', () => {
+      mockSheets.Audit_Log = createMockSheet(rowsForActions([
+        AuditAction.USER_CREATED, AuditAction.EVENT_CREATED,
+      ]));
+      mockSpreadsheetWith('Audit_Log', mockSheets.Audit_Log);
+
+      const result = getAuditLogs({ page: 1, pageSize: 50, categories: [] });
+      expect(result.data!.total).toBe(0);
+      expect(result.data!.items).toEqual([]);
+    });
+
+    it('single-category filter keeps only matching actions', () => {
+      mockSheets.Audit_Log = createMockSheet(rowsForActions([
+        AuditAction.USER_CREATED,
+        AuditAction.EVENT_CREATED,
+        AuditAction.LINK_GENERATED,
+      ]));
+      mockSpreadsheetWith('Audit_Log', mockSheets.Audit_Log);
+
+      const result = getAuditLogs({ page: 1, pageSize: 50, categories: ['event'] });
+      expect(result.data!.total).toBe(1);
+      expect(result.data!.items[0].action).toBe(AuditAction.EVENT_CREATED);
+    });
+
+    it('multi-category filter is OR (union of allowed actions)', () => {
+      mockSheets.Audit_Log = createMockSheet(rowsForActions([
+        AuditAction.USER_CREATED,
+        AuditAction.EVENT_CREATED,
+        AuditAction.LINK_GENERATED,
+        AuditAction.CLUB_CREATED,
+      ]));
+      mockSpreadsheetWith('Audit_Log', mockSheets.Audit_Log);
+
+      const result = getAuditLogs({ page: 1, pageSize: 50, categories: ['user', 'link'] });
+      const actions = result.data!.items.map((i) => i.action).sort();
+      expect(actions).toEqual([AuditAction.LINK_GENERATED, AuditAction.USER_CREATED].sort());
+    });
+
+    it('"other" matches actions not enumerated in any explicit category', () => {
+      // EXPORT_CSV and EXCEPTION_EMAIL_SENT live outside the explicit
+      // category map → they should surface under 'other'.
+      mockSheets.Audit_Log = createMockSheet(rowsForActions([
+        AuditAction.USER_CREATED,             // 'user'
+        AuditAction.EXPORT_CSV,               // 'other'
+        AuditAction.EXCEPTION_EMAIL_SENT,     // 'other'
+      ]));
+      mockSpreadsheetWith('Audit_Log', mockSheets.Audit_Log);
+
+      const result = getAuditLogs({ page: 1, pageSize: 50, categories: ['other'] });
+      const actions = result.data!.items.map((i) => i.action).sort();
+      expect(actions).toEqual([AuditAction.EXCEPTION_EMAIL_SENT, AuditAction.EXPORT_CSV].sort());
+    });
+
+    it('unknown category names degrade to zero-match (no crash)', () => {
+      mockSheets.Audit_Log = createMockSheet(rowsForActions([AuditAction.USER_CREATED]));
+      mockSpreadsheetWith('Audit_Log', mockSheets.Audit_Log);
+
+      // Cast to bypass the typed surface — the runtime must still be safe.
+      const result = getAuditLogs({
+        page: 1, pageSize: 50,
+        categories: ['nonsense'] as unknown as ReadonlyArray<'user'>,
+      });
+      expect(result.status).toBe(ResultStatus.SUCCESS);
+      expect(result.data!.total).toBe(0);
+    });
+
+    it('categories compose with the date range filter', () => {
+      mockSheets.Audit_Log = createMockSheet([
+        ['old', '2026-01-01T08:00:00.000Z', TEST_ADMIN_EMAIL,
+         AuditAction.USER_CREATED, 'user', '', '{}'],
+        ['new', '2026-04-18T10:00:00.000Z', TEST_ADMIN_EMAIL,
+         AuditAction.USER_CREATED, 'user', '', '{}'],
+        ['new-evt', '2026-04-18T11:00:00.000Z', TEST_ADMIN_EMAIL,
+         AuditAction.EVENT_CREATED, 'event', '', '{}'],
+      ]);
+      mockSpreadsheetWith('Audit_Log', mockSheets.Audit_Log);
+
+      const result = getAuditLogs({
+        page: 1, pageSize: 50,
+        categories: ['user'],
+        dateFrom: '2026-04-01',
+      });
+      expect(result.data!.total).toBe(1);
+      expect(result.data!.items[0].auditId).toBe('new');
+    });
+  });
 });

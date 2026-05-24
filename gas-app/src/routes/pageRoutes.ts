@@ -272,6 +272,31 @@ export function adminSummaryPage(user: UserRecord, sessionToken = ""): GoogleApp
 }
 
 /**
+ * Public Sheet page — manual refresh + folder-rebuild controls.
+ *
+ * Open to every authenticated user (no role gate at the router level). The
+ * page exposes three buttons, each backed by a server action:
+ *   • Refresh PUBLIC SHEET       → serverRefreshPublicSheet
+ *   • Rebuild Photos_NNN folders → serverRebuildPhotoFolders
+ *   • Rebuild Videos folders     → serverRebuildVideoFolders
+ *
+ * The sheet auto-refreshes after every successful upload (best-effort hook)
+ * and on a 30-minute scheduled trigger; this page is the manual escape hatch
+ * for the (rare) case where both of those fail or where someone wants an
+ * immediate refresh without waiting for the trigger to fire.
+ */
+export function publicSheetPage(user: UserRecord, sessionToken = ''): GoogleAppsScript.HTML.HtmlOutput {
+  return renderTemplate('public_sheet', {
+    sessionToken,
+    userEmail:            user.email,
+    userRole:             user.role,
+    isAdmin:              isAdmin(user.role),
+    isSuperAdmin:         isSuperAdmin(user.role),
+    publicSpreadsheetUrl: getPublicSpreadsheetUrl(),
+  });
+}
+
+/**
  * Drive File System Tree page (all authenticated users).
  *
  * Pre-loads the full event list so the page can render the event list
@@ -315,11 +340,29 @@ export function adminEmailPrefsPage(user: UserRecord, sessionToken = ''): Google
 
 /**
  * Admin — Audit Log page.
- * Pre-loads the 50 most recent audit entries for instant display.
+ *
+ * Pre-loads the last 7 days of audit entries so the page reflects its
+ * default filter from the first paint (no flash of un-filtered content).
+ * The same defaults are passed to the template so the date inputs render
+ * pre-populated and the "7d" quick-range chip starts in the selected state.
+ *
  * Admin-only; role is enforced at the router level before this is called.
  */
 export function adminAuditPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
-  const result = getAuditLogs({ page: 1, pageSize: 50 });
+  // Default range: last 7 days, ending today. Inclusive on both ends —
+  // matches how getAuditLogs() interprets dateFrom/dateTo.
+  const today = new Date();
+  const sevenDaysAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const isoDate = (d: Date): string => d.toISOString().slice(0, 10);
+  const defaultDateFrom = isoDate(sevenDaysAgo);
+  const defaultDateTo   = isoDate(today);
+
+  const result = getAuditLogs({
+    page:     1,
+    pageSize: 50,
+    dateFrom: defaultDateFrom,
+    dateTo:   defaultDateTo,
+  });
   return renderTemplate('admin/audit', { sessionToken,
     userEmail:    user.email,
     userRole:     user.role,
@@ -328,6 +371,8 @@ export function adminAuditPage(user: UserRecord, sessionToken = ""): GoogleAppsS
     initialLogs:  result.data ? JSON.stringify(result.data.items) : '[]',
     initialTotal: result.data ? result.data.total                 : 0,
     initialError: result.data ? '' : (result.message ?? 'Failed to load audit log'),
+    defaultDateFrom,
+    defaultDateTo,
   });
 }
 

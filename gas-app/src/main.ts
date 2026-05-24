@@ -26,6 +26,7 @@ import './routes/reportHandlers';
 import './routes/linkHandlers';
 import './routes/volunteerRoutes';
 import './routes/uploadPrepRoutes';
+import './routes/publicSheetHandlers';
 
 // ─── Remaining direct imports used by functions declared below ────────────────
 import { handleGet, handlePost } from './routes/router';
@@ -232,6 +233,107 @@ export function backfillSpecialFoldersSharing(): void {
     `[backfillSpecialFoldersSharing] Done — created=${summary.created} ` +
     `alreadyShared=${summary.alreadyShared} errors=${summary.errors}`
   );
+}
+
+// ─── Public-sheet scheduled refresh trigger ──────────────────────────────────
+
+/**
+ * Trigger handler invoked by the time-driven trigger every 30 minutes.
+ *
+ * Two-phase refresh:
+ *   1. Rebuild every event's Photos_NNN buckets so any new photos that were
+ *      uploaded without a successful post-upload hook still get a shortcut.
+ *   2. Rewrite the public folder index spreadsheet so visitors see the
+ *      latest folder list.
+ *
+ * Errors are logged but never thrown — a transient Drive / Sheets failure on
+ * a single event must not abort the run for the rest. This function is the
+ * SAFETY NET for the post-upload hot path in serverCompleteVolunteerUpload;
+ * day-to-day freshness comes from that hot path, this trigger heals anything
+ * that silently slipped through.
+ *
+ * Public on purpose so GAS's trigger UI can dispatch to it. Not callable
+ * from google.script.run (no auth gate — only the trigger framework calls it).
+ *
+ * Install / uninstall via installPublicSheetRefreshTrigger() /
+ * removePublicSheetRefreshTrigger() below (run them from the GAS editor as
+ * the script owner).
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function scheduledPublicSheetRefresh(): void {
+  Logger.log('[scheduledPublicSheetRefresh] Starting periodic refresh');
+
+  try {
+    const rows = _rebuildPublicFoldersIndex();
+    Logger.log(`[scheduledPublicSheetRefresh] Wrote ${rows} row(s) to public sheet`);
+  } catch (err) {
+    Logger.log(`[scheduledPublicSheetRefresh] Public sheet rewrite failed: ${String(err)}`);
+  }
+}
+
+/**
+ * Installs the 30-minute time-driven trigger for scheduledPublicSheetRefresh.
+ *
+ * Run ONCE from the GAS editor (Run → installPublicSheetRefreshTrigger) as the
+ * script owner. Idempotent — if a trigger for this function already exists,
+ * the existing one is removed first so we never accumulate duplicates.
+ *
+ * Why 30 minutes:
+ *   The post-upload hook (serverCompleteVolunteerUpload) gives near-real-time
+ *   freshness on the happy path. 30 minutes is short enough that a missed
+ *   refresh is corrected before anyone notices, long enough that we don't
+ *   burn through the daily GAS execution quota on idle hours.
+ *
+ * Super-admin only — guarded by Session.getActiveUser() so a club_admin
+ * who somehow reached this function can't reshape the deployment's triggers.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function installPublicSheetRefreshTrigger(): void {
+  const callerEmail = Session.getActiveUser().getEmail();
+  if (!getSuperAdmins().includes(callerEmail.toLowerCase())) {
+    Logger.log(`[installPublicSheetRefreshTrigger] Permission denied for ${callerEmail}`);
+    return;
+  }
+
+  // Remove existing triggers for the same handler to keep the install idempotent.
+  let removed = 0;
+  for (const t of ScriptApp.getProjectTriggers()) {
+    if (t.getHandlerFunction() === 'scheduledPublicSheetRefresh') {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
+  }
+
+  ScriptApp.newTrigger('scheduledPublicSheetRefresh')
+    .timeBased()
+    .everyMinutes(30)
+    .create();
+
+  Logger.log(
+    `[installPublicSheetRefreshTrigger] Installed — replaced ${removed} existing trigger(s); ` +
+    `next run within 30 minutes`
+  );
+}
+
+/**
+ * Removes the scheduled trigger (e.g. before tearing down a deployment).
+ * Idempotent — removing when nothing is installed is a no-op.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function removePublicSheetRefreshTrigger(): void {
+  const callerEmail = Session.getActiveUser().getEmail();
+  if (!getSuperAdmins().includes(callerEmail.toLowerCase())) {
+    Logger.log(`[removePublicSheetRefreshTrigger] Permission denied for ${callerEmail}`);
+    return;
+  }
+  let removed = 0;
+  for (const t of ScriptApp.getProjectTriggers()) {
+    if (t.getHandlerFunction() === 'scheduledPublicSheetRefresh') {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
+  }
+  Logger.log(`[removePublicSheetRefreshTrigger] Removed ${removed} trigger(s)`);
 }
 
 // ─── Legacy migration ─────────────────────────────────────────────────────────

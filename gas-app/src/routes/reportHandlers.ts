@@ -12,7 +12,7 @@ import { ResultStatus } from '../types/enums';
 import { ServerResponse, WithSession } from '../types/responses';
 import { requireAdminOrFail } from '../middleware/authMiddleware';
 import { generateSummary, summaryToCsv, buildExceptionEmailBody } from '../services/summaryService';
-import { getAuditLogs, appendAuditLog } from '../services/auditLogService';
+import { getAuditLogs, appendAuditLog, AuditCategory } from '../services/auditLogService';
 import { getPreferencesFor, savePreferences } from '../services/emailPreferenceService';
 import {
   sendDailyReport as runDailyReport,
@@ -101,6 +101,8 @@ export function serverGetAuditLog(payload: WithSession<{
   actorEmail?: string;
   dateFrom?:   string;
   dateTo?:     string;
+  /** Category names matching AuditCategory in auditLogService.ts. */
+  categories?: string[];
 }>): ServerResponse {
   try {
     const auth = requireAdminOrFail(payload?.sessionToken);
@@ -111,6 +113,10 @@ export function serverGetAuditLog(payload: WithSession<{
       actorEmail: payload.actorEmail,
       dateFrom:   payload.dateFrom,
       dateTo:     payload.dateTo,
+      // Cast: unknown category strings fall through to an empty allow-set
+      // in expandCategories(), which is the safe (no-results) outcome we
+      // want for malformed input.
+      categories: payload.categories as AuditCategory[] | undefined,
     });
     return { status: result.status, message: result.message, data: result.data };
   } catch (err) {

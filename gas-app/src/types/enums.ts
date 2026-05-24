@@ -105,6 +105,14 @@ export enum RouteAction {
   // Drive file system tree (all authenticated users)
   DRIVE_TREE = 'drive_tree',            // Visual hierarchy browser: Event → Club → Batch
 
+  // Public folder index — manual refresh + per-scope rebuild buttons (all authenticated users)
+  PUBLIC_SHEET = 'public_sheet',
+
+  // API actions for the Public Sheet page (all authenticated users)
+  REFRESH_PUBLIC_SHEET   = 'refresh_public_sheet',
+  REBUILD_PHOTO_FOLDERS  = 'rebuild_photo_folders',
+  REBUILD_VIDEO_FOLDERS  = 'rebuild_video_folders',
+
   // Phase 7 — Email communication preferences (admin only)
   ADMIN_EMAIL_PREFS = 'admin_email_prefs',
 

@@ -43,7 +43,11 @@ import {
 import { appendUploadLog } from '../services/uploadLogService';
 import { appendAuditLog } from '../services/auditLogService';
 import { notifyUploadClientError } from '../services/emailService';
-import { getPublicSpreadsheetUrl } from '../services/publicSpreadsheetService';
+import {
+  getPublicSpreadsheetUrl,
+  tryRebuildPublicFoldersIndex,
+} from '../services/publicSpreadsheetService';
+import { tryRebuildSpecialFoldersForBatch } from '../services/specialFoldersService';
 import { getCanonicalScriptUrl } from '../utils/scriptUrl';
 import { buildLayer3FolderName } from '../utils/folderNameValidator';
 import { toBatchTimestamp } from '../utils/dateFormatter';
@@ -624,6 +628,31 @@ export function serverCompleteVolunteerUpload(
       `[VolunteerRoutes.serverCompleteVolunteerUpload] ` +
       `${fileCount} files recorded for ${email} / ${link.clubName} / event ${link.eventId}`
     );
+
+    // ── Hybrid refresh hook (best-effort) ───────────────────────────────────
+    // Rebuild the (event, club, tag) special folders and the public folder
+    // index so the volunteer's photos / videos appear in the published sheet
+    // within seconds of the upload. Both helpers swallow their own errors —
+    // a transient Drive or Sheets failure here must never roll back an
+    // upload that already succeeded. The 30-minute scheduled trigger
+    // (installPublicSheetRefreshTrigger in main.ts) serves as the safety
+    // net for any rebuild that silently degrades.
+    try {
+      tryRebuildSpecialFoldersForBatch(link.eventId, link.clubName, link.tag);
+    } catch (err) {
+      Logger.log(
+        `[VolunteerRoutes.serverCompleteVolunteerUpload] ` +
+        `tryRebuildSpecialFoldersForBatch threw (non-fatal): ${String(err)}`
+      );
+    }
+    try {
+      tryRebuildPublicFoldersIndex();
+    } catch (err) {
+      Logger.log(
+        `[VolunteerRoutes.serverCompleteVolunteerUpload] ` +
+        `tryRebuildPublicFoldersIndex threw (non-fatal): ${String(err)}`
+      );
+    }
 
     return {
       ok: true,
