@@ -32,7 +32,6 @@ import {
   listActive as listActiveClubs,
 } from '../services/clubService';
 import { scanAllViolations } from '../services/driveService';
-import { ensureEventAlbum } from '../services/photosService';
 import { appendAuditLog, appendAuditFailure } from '../services/auditLogService';
 import { notifyEventCreated } from '../services/emailService';
 import { AuditAction } from '../types/enums';
@@ -126,39 +125,6 @@ export function serverCreateEvent(payload: WithSession): ServerResponse {
     } catch (emailErr) {
       const msg = `Event notification email could not be sent: ${String(emailErr)}`;
       Logger.log(`[serverCreateEvent] notifyEventCreated failed (non-fatal): ${String(emailErr)}`);
-      warnings.push(msg);
-    }
-    try {
-      const albumResult = ensureEventAlbum(
-        eventRecord.eventId,
-        eventRecord.eventName,
-        eventRecord.eventDate
-      );
-      if (albumResult.status === ResultStatus.SUCCESS && albumResult.data) {
-        appendAuditLog({
-          actorEmail: auth.adminEmail, action: AuditAction.ALBUM_CREATED,
-          resourceType: 'event', resourceId: eventRecord.eventId,
-          details: { albumId: albumResult.data.albumId, albumTitle: albumResult.data.albumTitle },
-        });
-        Logger.log(`[serverCreateEvent] Photos album created: ${albumResult.data.albumId}`);
-      } else {
-        const msg = `Google Photos album could not be created: ${albumResult.message}`;
-        Logger.log(`[serverCreateEvent] Photos album creation failed: ${albumResult.message}`);
-        appendAuditLog({
-          actorEmail: auth.adminEmail, action: AuditAction.ALBUM_ERROR,
-          resourceType: 'event', resourceId: eventRecord.eventId,
-          details: { operation: 'ensure_event_album', error: albumResult.message },
-        });
-        warnings.push(msg);
-      }
-    } catch (albumErr) {
-      const msg = `Google Photos album could not be created: ${String(albumErr)}`;
-      Logger.log(`[serverCreateEvent] Photos album error (non-fatal): ${String(albumErr)}`);
-      appendAuditLog({
-        actorEmail: auth.adminEmail, action: AuditAction.ALBUM_ERROR,
-        resourceType: 'event', resourceId: eventRecord.eventId,
-        details: { operation: 'ensure_event_album', error: String(albumErr) },
-      });
       warnings.push(msg);
     }
     return {

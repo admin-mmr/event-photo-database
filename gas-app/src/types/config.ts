@@ -23,10 +23,7 @@ export interface SheetNames {
   readonly RATE_LIMIT: string;
   readonly CLUBS: string;
   readonly AUDIT_LOG: string;
-  readonly PHOTO_ALBUMS: string;
-  readonly PHOTO_FILES: string;
   readonly EMAIL_PREFERENCES: string;
-  readonly SYNC_QUEUE: string;
   readonly DELETED_FILES: string;
   /**
    * Special_Folders sheet — tracks the per-event "Photos_NNN" consolidated
@@ -50,10 +47,7 @@ export interface SheetColumnMap {
   readonly RATE_LIMIT: RateLimitSheetColumns;
   readonly CLUBS: ClubSheetColumns;
   readonly AUDIT_LOG: AuditLogSheetColumns;
-  readonly PHOTO_ALBUMS: PhotosAlbumsSheetColumns;
-  readonly PHOTO_FILES: PhotosFilesSheetColumns;
   readonly EMAIL_PREFERENCES: EmailPreferencesSheetColumns;
-  readonly SYNC_QUEUE: SyncQueueSheetColumns;
   readonly DELETED_FILES: DeletedFilesSheetColumns;
   readonly SPECIAL_FOLDERS: SpecialFoldersSheetColumns;
 }
@@ -166,51 +160,6 @@ export interface ClubSheetColumns {
   readonly STATUS:          2;  // "active" | "inactive"
   readonly ADDED_DATE:      3;  // ISO 8601 date "YYYY-MM-DD"
   readonly ADDED_BY:        4;  // Admin email
-}
-
-export interface PhotosAlbumsSheetColumns {
-  readonly ALBUM_ID:          0;   // Google Photos album ID
-  readonly ALBUM_TYPE:        1;   // "event" | "club"
-  readonly EVENT_ID:          2;   // FK → Events.eventId
-  readonly CLUB_NAME:         3;   // Normalized club name; empty for event-type albums
-  readonly TAG:               4;   // Tag/photographer label; empty for event-type albums, non-empty for club albums
-  readonly ALBUM_TITLE:       5;   // Human-readable album title
-  readonly ALBUM_URL:         6;   // Google Photos product URL
-  readonly SHAREABLE_URL:     7;   // Public shareable link
-  readonly CREATED_AT:        8;   // ISO 8601 timestamp
-  readonly LAST_SYNC_AT:      9;   // ISO 8601 timestamp of most recent sync
-  readonly SYNCED_FILE_COUNT: 10;  // Cumulative number of photos pushed to album
-}
-
-export interface PhotosFilesSheetColumns {
-  readonly DRIVE_FILE_ID: 0;  // Google Drive file ID (composite key part 1)
-  readonly MEDIA_ITEM_ID: 1;  // Google Photos media item ID
-  readonly ALBUM_ID:      2;  // Google Photos album ID (composite key part 2)
-  readonly ALBUM_TYPE:    3;  // "event" | "club"
-  readonly EVENT_ID:      4;  // FK → Events.eventId
-  readonly CLUB_NAME:     5;  // Normalized club name; empty for event-type albums
-  readonly TAG:           6;  // Tag/photographer label; empty for event-type albums, non-empty for club albums
-  readonly FILE_NAME:     7;  // Original filename, e.g. "IMG_0042.jpg"
-  readonly SYNCED_AT:     8;  // ISO 8601 timestamp of when the sync occurred
-}
-
-/**
- * Sync_Queue sheet columns (Phase 4).
- * Each row is one Drive batch folder waiting to be synced to Google Photos.
- */
-export interface SyncQueueSheetColumns {
-  readonly QUEUE_ID:          0;  // UUID v4 (primary key)
-  readonly EVENT_ID:          1;  // FK → Events.eventId
-  readonly CLUB_NAME:         2;  // Normalized club name
-  readonly TAG:               3;  // Tag/photographer label captured from the upload link
-  readonly BATCH_FOLDER_ID:   4;  // Google Drive batch folder ID
-  readonly BATCH_FOLDER_NAME: 5;  // Human-readable batch folder name
-  readonly ENQUEUED_AT:       6;  // ISO 8601 timestamp when row was written
-  readonly STATUS:            7;  // 'pending' | 'in_progress' | 'done' | 'failed'
-  readonly ATTEMPTS:          8;  // Number of drain attempts made so far
-  readonly LAST_ATTEMPT_AT:   9;  // ISO 8601 timestamp of most recent attempt; empty initially
-  readonly ERROR_MSG:         10; // Last error message; empty if no error
-  readonly COMPLETED_AT:      11; // ISO 8601 timestamp when status became 'done'; empty otherwise
 }
 
 /**

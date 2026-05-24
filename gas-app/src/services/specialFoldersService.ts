@@ -3,8 +3,8 @@
  *
  * What this module owns
  * ─────────────────────
- * After every batch of photos finishes syncing to Google Photos, we maintain
- * two extra folder hierarchies inside Drive that admins asked for:
+ * After every batch upload finishes writing photos and videos to Drive, we
+ * maintain two extra folder hierarchies inside Drive that admins asked for:
  *
  *   1. Per-event Photos folders, FLAT and INDEXED:
  *        <Event>/Photos_001/    ← shortcut to up to MAX_SHORTCUTS_PER_PHOTOS_FOLDER photos
@@ -31,8 +31,8 @@
  *
  * Triggering
  * ──────────
- * The hot path lives in photosService.syncBatchToAlbums(): after a
- * successful sync, that function calls tryRebuildSpecialFoldersForBatch().
+ * Callers invoke tryRebuildSpecialFoldersForBatch() (or one of the
+ * rebuild* helpers) after upload completion or admin folder edits.
  * The "try" wrapper swallows any error so a transient Drive API hiccup
  * never fails the upload pipeline.
  *
@@ -781,11 +781,11 @@ export function tryRebuildSpecialFoldersForBatch(
  * "Anyone with link → Viewer" on each folder.
  *
  * Purpose
- *   New folders created by syncBatchToAlbums after the sharing hook landed
- *   are public by construction. This one-shot routine retroactively shares
- *   every Photos_NNN / Videos folder that pre-dates the hook so the public
- *   spreadsheet's Folder Link column becomes usable immediately for older
- *   events.
+ *   New folders created via tryRebuildSpecialFoldersForBatch after the
+ *   sharing hook landed are public by construction. This one-shot routine
+ *   retroactively shares every Photos_NNN / Videos folder that pre-dates
+ *   the hook so the public spreadsheet's Folder Link column becomes usable
+ *   immediately for older events.
  *
  * Idempotent — calling it repeatedly on a fully-shared catalogue is a no-op
  * (each individual grantAnyoneRead returns outcome='exists'). Safe to

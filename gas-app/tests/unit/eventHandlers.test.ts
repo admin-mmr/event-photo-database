@@ -10,7 +10,6 @@ jest.mock('../../src/middleware/inputValidator');
 jest.mock('../../src/services/eventService');
 jest.mock('../../src/services/clubService');
 jest.mock('../../src/services/driveService');
-jest.mock('../../src/services/photosService');
 jest.mock('../../src/services/auditLogService');
 jest.mock('../../src/services/emailService');
 

@@ -6,8 +6,6 @@ import { listAll } from '../services/userService';
 import { listAll as listAllEvents } from '../services/eventService';
 import { listAll as listAllClubs, listActive as listActiveClubs } from '../services/clubService';
 import { generateSummary } from '../services/summaryService';
-import { listAllAlbums } from '../services/photosService';
-import { listPublicAlbumIndex } from '../services/publicAlbumIndexService';
 import { getPublicSpreadsheetUrl } from '../services/publicSpreadsheetService';
 import { getPreferencesFor } from '../services/emailPreferenceService';
 import { findByClub } from '../services/uploadLinkService';
@@ -93,7 +91,7 @@ export function loginPage(errorMessage = ''): GoogleAppsScript.HTML.HtmlOutput {
     // which deployment version is live without needing to sign in.
     buildTime:   BUILD_TIME,
     buildCommit: BUILD_COMMIT,
-    // Public album index — when configured, the login page links straight to
+    // Public folder index — when configured, the login page links straight to
     // the published spreadsheet so visitors can browse without signing in.
     publicSpreadsheetUrl: getPublicSpreadsheetUrl(),
   });
@@ -133,8 +131,8 @@ export function dashboardPage(user: UserRecord, sessionToken = ""): GoogleAppsSc
     isAdmin:      isAdmin(user.role),
     isSuperAdmin: isSuperAdmin(user.role),
     runningClub:  isSuperAdmin(user.role) ? '' : (user.clubId ?? ''),
-    // Public album index URL — empty string when the feature is unconfigured;
-    // the dashboard template hides the "Browse public album list" card in that
+    // Public folder index URL — empty string when the feature is unconfigured;
+    // the dashboard template hides the "Browse public folder list" card in that
     // case so we never show a broken link.
     publicSpreadsheetUrl: getPublicSpreadsheetUrl(),
   });
@@ -274,60 +272,6 @@ export function adminSummaryPage(user: UserRecord, sessionToken = ""): GoogleApp
 }
 
 /**
- * Admin — Photos Overview page (Phase 6).
- *
- * Pre-loads all events and all Photo_Albums records so the page can render
- * the full upload/album matrix immediately without additional round-trips.
- * Admins can trigger a per-event sync or a full backfill from this page.
- *
- * Admin-only; role is enforced at the router level before this is called.
- */
-export function adminPhotosPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
-  const events = listAllEvents(1, 200, 'desc');
-  const albums = listAllAlbums();
-
-  return renderTemplate('admin/photos', { sessionToken,
-    userEmail:           user.email,
-    userRole:            user.role,
-    isAdmin:             isAdmin(user.role),
-    isSuperAdmin:        isSuperAdmin(user.role),
-    events:              JSON.stringify(events.items),
-    totalEvents:         events.total,
-    albums:              JSON.stringify(albums),
-    publicAlbumSheetUrl: getPublicSpreadsheetUrl() ?? '',
-  });
-}
-
-/**
- * Albums admin page — flat list of every Google Photos album the system has
- * created, with album link, type (event vs club+tag), photo count, last sync
- * timestamp, and the latest mediaMetadata.creationTime fetched on demand.
- *
- * The "latest media taken" column is loaded lazily by the client via
- * serverGetAlbumStats so the page renders immediately even when there are
- * many albums; one Photos API call per row when refreshed.
- *
- * Admin-only; role is enforced at the router level before this is called.
- */
-export function adminAlbumsPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
-  const albums = listAllAlbums();
-  const events = listAllEvents(1, 500, 'desc');
-  // Build eventId → eventName lookup so the page can show human-readable
-  // event names alongside the album rows without an extra round trip.
-  const eventNameById: Record<string, string> = {};
-  events.items.forEach((e) => { eventNameById[e.eventId] = e.eventName; });
-
-  return renderTemplate('admin/albums', { sessionToken,
-    userEmail:      user.email,
-    userRole:       user.role,
-    isAdmin:        isAdmin(user.role),
-    isSuperAdmin:   isSuperAdmin(user.role),
-    albums:         JSON.stringify(albums),
-    eventNameById:  JSON.stringify(eventNameById),
-  });
-}
-
-/**
  * Drive File System Tree page (all authenticated users).
  *
  * Pre-loads the full event list so the page can render the event list
@@ -384,36 +328,6 @@ export function adminAuditPage(user: UserRecord, sessionToken = ""): GoogleAppsS
     initialLogs:  result.data ? JSON.stringify(result.data.items) : '[]',
     initialTotal: result.data ? result.data.total                 : 0,
     initialError: result.data ? '' : (result.message ?? 'Failed to load audit log'),
-  });
-}
-
-/**
- * Public — Album Index page (Phase 5, design §6).
- *
- * A Google-login-gated landing page that lists every event with synced Google
- * Photos albums. Unlike admin pages, this handler accepts the viewer's email
- * address directly (not a UserRecord) because visitors do NOT have to be
- * registered admins — any Google account may view. The router enforces the
- * "Google login required" gate before calling this function.
- *
- * All links are rendered as <a target="_blank"> pointing at the shareable
- * Photos URL recorded at album-creation time. No session token is needed on
- * the page — the page does not call back into GAS.
- */
-export function publicAlbumIndexPage(viewerEmail: string): GoogleAppsScript.HTML.HtmlOutput {
-  const entries = listPublicAlbumIndex();
-  return renderTemplate('public/album_index', {
-    viewerEmail,
-    entries:             JSON.stringify(entries),
-    totalEvents:         entries.length,
-    totalAlbums:         entries.reduce(
-      (sum, e) => sum + (e.eventAlbum ? 1 : 0) + e.clubAlbums.length,
-      0
-    ),
-    // Public spreadsheet URL — when set, shown as the primary way to browse
-    // albums (avoids the Google Photos "Can't access photo" error that occurs
-    // when albums haven't been manually shared by the album owner).
-    publicSpreadsheetUrl: getPublicSpreadsheetUrl() ?? '',
   });
 }
 

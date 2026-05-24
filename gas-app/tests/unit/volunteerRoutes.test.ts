@@ -2,7 +2,7 @@
  * Unit tests for src/routes/volunteerRoutes.ts
  *
  * All external service calls (uploadLinkService, eventService, driveService,
- * sessionService, tokenService, uploadLogService, auditLogService, syncJobService)
+ * sessionService, tokenService, uploadLogService, auditLogService)
  * are mocked. HtmlService and ScriptApp come from the global GAS mock.
  *
  * Test coverage:
@@ -61,10 +61,6 @@ jest.mock('../../src/services/auditLogService', () => ({
   appendAuditLog: jest.fn(),
 }));
 
-jest.mock('../../src/services/syncQueueService', () => ({
-  enqueueBatchSync: jest.fn(),
-}));
-
 jest.mock('../../src/utils/scriptUrl', () => ({
   getCanonicalScriptUrl: jest.fn().mockReturnValue('https://script.google.com/macros/s/mock/exec'),
 }));
@@ -77,7 +73,6 @@ import { exchangeOAuthCode } from '../../src/services/tokenService';
 import { getOrCreateClubFolder, createBatchFolder } from '../../src/services/driveService';
 import { appendUploadLog } from '../../src/services/uploadLogService';
 import { appendAuditLog } from '../../src/services/auditLogService';
-import { enqueueBatchSync } from '../../src/services/syncQueueService';
 
 const mockValidateLink     = validateLink     as jest.Mock;
 const mockFindEventById    = findEventById    as jest.Mock;
@@ -86,7 +81,6 @@ const mockGetOrCreateClubFolder = getOrCreateClubFolder as jest.Mock;
 const mockCreateBatchFolder     = createBatchFolder     as jest.Mock;
 const mockAppendUploadLog  = appendUploadLog  as jest.Mock;
 const mockAppendAuditLog   = appendAuditLog   as jest.Mock;
-const mockEnqueueBatchSync = enqueueBatchSync  as jest.Mock;
 
 // ─── Test fixtures ────────────────────────────────────────────────────────────
 
@@ -135,6 +129,7 @@ beforeEach(() => {
   mockHtmlTemplate.evaluate.mockReturnValue({
     setTitle: jest.fn().mockReturnThis(),
     setXFrameOptionsMode: jest.fn().mockReturnThis(),
+    addMetaTag: jest.fn().mockReturnThis(),
   });
 });
 
@@ -174,6 +169,7 @@ describe('volunteerConfirmPage()', () => {
         evaluate: jest.fn().mockReturnValue({
           setTitle: jest.fn().mockReturnThis(),
           setXFrameOptionsMode: jest.fn().mockReturnThis(),
+          addMetaTag: jest.fn().mockReturnThis(),
         }),
       };
       // Object.assign will mutate tpl — capture it
@@ -207,6 +203,7 @@ describe('volunteerConfirmPage()', () => {
         evaluate: jest.fn().mockReturnValue({
           setTitle: jest.fn().mockReturnThis(),
           setXFrameOptionsMode: jest.fn().mockReturnThis(),
+          addMetaTag: jest.fn().mockReturnThis(),
         }),
       };
       return new Proxy(tpl, {
@@ -398,6 +395,7 @@ describe('volunteerUploadPage()', () => {
         evaluate: jest.fn().mockReturnValue({
           setTitle: jest.fn().mockReturnThis(),
           setXFrameOptionsMode: jest.fn().mockReturnThis(),
+          addMetaTag: jest.fn().mockReturnThis(),
         }),
       };
       return new Proxy(tpl, {
@@ -504,7 +502,6 @@ describe('serverCompleteVolunteerUpload()', () => {
     mockFindEventById.mockReturnValue(VALID_EVENT);
     mockAppendUploadLog.mockReturnValue({ status: ResultStatus.SUCCESS });
     mockAppendAuditLog.mockReturnValue(undefined);
-    mockEnqueueBatchSync.mockReturnValue(undefined);
 
     const result = serverCompleteVolunteerUpload({ ...basePayload, vsession });
 
@@ -521,7 +518,6 @@ describe('serverCompleteVolunteerUpload()', () => {
     mockValidateLink.mockReturnValue({ status: ResultStatus.SUCCESS, data: VALID_LINK });
     mockFindEventById.mockReturnValue(VALID_EVENT);
     mockAppendUploadLog.mockReturnValue({ status: ResultStatus.SUCCESS });
-    mockEnqueueBatchSync.mockReturnValue(undefined);
 
     serverCompleteVolunteerUpload({ ...basePayload, vsession });
 
@@ -542,7 +538,6 @@ describe('serverCompleteVolunteerUpload()', () => {
     mockValidateLink.mockReturnValue({ status: ResultStatus.SUCCESS, data: VALID_LINK });
     mockFindEventById.mockReturnValue(VALID_EVENT);
     mockAppendUploadLog.mockReturnValue({ status: ResultStatus.SUCCESS });
-    mockEnqueueBatchSync.mockReturnValue(undefined);
 
     serverCompleteVolunteerUpload({ ...basePayload, vsession, durationMs: 73_500 });
 
@@ -556,7 +551,6 @@ describe('serverCompleteVolunteerUpload()', () => {
     mockValidateLink.mockReturnValue({ status: ResultStatus.SUCCESS, data: VALID_LINK });
     mockFindEventById.mockReturnValue(VALID_EVENT);
     mockAppendUploadLog.mockReturnValue({ status: ResultStatus.SUCCESS });
-    mockEnqueueBatchSync.mockReturnValue(undefined);
 
     serverCompleteVolunteerUpload({ ...basePayload, vsession });
 
@@ -570,25 +564,10 @@ describe('serverCompleteVolunteerUpload()', () => {
     );
   });
 
-  it('enqueues a sync job on success', () => {
-    const vsession = createVolunteerSession('volunteer@example.com', VALID_TOKEN);
-    mockValidateLink.mockReturnValue({ status: ResultStatus.SUCCESS, data: VALID_LINK });
-    mockFindEventById.mockReturnValue(VALID_EVENT);
-    mockAppendUploadLog.mockReturnValue({ status: ResultStatus.SUCCESS });
-    mockEnqueueBatchSync.mockReturnValue(undefined);
-
-    serverCompleteVolunteerUpload({ ...basePayload, vsession });
-
-    expect(mockEnqueueBatchSync).toHaveBeenCalledWith(
-      expect.objectContaining({ eventId: 'evt-uuid-001', clubName: 'New_Bee' })
-    );
-  });
-
   it('returns error when vsession is expired', () => {
     const result = serverCompleteVolunteerUpload({ ...basePayload, vsession: 'bad-session' });
     expect(result['error']).toBeDefined();
     expect(mockAppendUploadLog).not.toHaveBeenCalled();
-    expect(mockEnqueueBatchSync).not.toHaveBeenCalled();
   });
 
   it('returns error when link has been revoked mid-session', () => {

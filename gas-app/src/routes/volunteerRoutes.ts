@@ -43,7 +43,6 @@ import {
 import { appendUploadLog } from '../services/uploadLogService';
 import { appendAuditLog } from '../services/auditLogService';
 import { notifyUploadClientError } from '../services/emailService';
-import { enqueueBatchSync } from '../services/syncQueueService';
 import { getPublicSpreadsheetUrl } from '../services/publicSpreadsheetService';
 import { getCanonicalScriptUrl } from '../utils/scriptUrl';
 import { buildLayer3FolderName } from '../utils/folderNameValidator';
@@ -305,7 +304,7 @@ export function volunteerUploadPage(
     consentLine:         VOLUNTEER_CONSENT_LINE,
     photographerName,
     creditRenameEnabled: isCreditRenameEnabled(),
-    // URL of the public read-only album/photos sheet — used by the post-upload
+    // URL of the public read-only folder-index sheet — used by the post-upload
     // confirmation page's "View Public Sheet" button. Empty string when the
     // PUBLIC_ALBUM_INDEX_SHEET_ID Script Property is unset (feature off).
     publicSpreadsheetUrl: getPublicSpreadsheetUrl(),
@@ -620,24 +619,6 @@ export function serverCompleteVolunteerUpload(
       },
       linkId,
     });
-
-    // Phase 4: enqueue this batch for async Drive → Photos sync.
-    // enqueueBatchSync only writes one Sheets row (fast), so the upload
-    // response is not delayed by Photos API calls.
-    if (fileCount > 0) {
-      try {
-        enqueueBatchSync({
-          eventId:         link.eventId,
-          clubName:        link.clubName,
-          tag:             (link.tag ?? '').trim(),
-          batchFolderId,
-          batchFolderName,
-        });
-      } catch (enqueueErr) {
-        // Non-fatal: upload log already written; admin can manually trigger sync.
-        Logger.log(`[VolunteerRoutes.serverCompleteVolunteerUpload] enqueueBatchSync failed (non-fatal): ${String(enqueueErr)}`);
-      }
-    }
 
     Logger.log(
       `[VolunteerRoutes.serverCompleteVolunteerUpload] ` +

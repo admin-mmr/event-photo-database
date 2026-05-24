@@ -19,12 +19,9 @@ import {
   adminSummaryPage,
   adminAuditPage,
   adminEmailPrefsPage,
-  adminPhotosPage,
-  adminAlbumsPage,
   adminLinksPage,
   driveTreePage,
   uploadPage,
-  publicAlbumIndexPage,
 } from './pageRoutes';
 import {
   volunteerConfirmPage,
@@ -89,8 +86,6 @@ function getGetRoutes(): Readonly<Record<string, RouteConfig>> {
     [RouteAction.ADMIN_CLUBS]:   { requiredRole: UserRole.SUPER_ADMIN },
     [RouteAction.ADMIN_SUMMARY]: { requiredRole: UserRole.CLUB_ADMIN },
     [RouteAction.ADMIN_AUDIT]:   { requiredRole: UserRole.CLUB_ADMIN },
-    [RouteAction.ADMIN_PHOTOS]:  { requiredRole: UserRole.CLUB_ADMIN },
-    [RouteAction.ADMIN_ALBUMS]:  { requiredRole: UserRole.CLUB_ADMIN },
     [RouteAction.ADMIN_EMAIL_PREFS]: { requiredRole: UserRole.CLUB_ADMIN },
     [RouteAction.ADMIN_LINKS]:   { requiredRole: UserRole.CLUB_ADMIN },
     [RouteAction.DRIVE_TREE]:    { requiredRole: null }, // all authenticated users
@@ -231,39 +226,6 @@ export function handleGet(
       return healthcheckPage(e);
     }
 
-    // ── Public album index — Google-login-gated, non-admin (design §6) ────────
-    // This page is intentionally reachable by visitors who are NOT registered
-    // admins. We only require that the viewer has a Google session so we can
-    // log who browsed the catalog (deterring drive-by bots). Admin role is
-    // explicitly NOT required — we skip resolveUser() entirely.
-    //
-    // Under USER_ACCESSING deployment: Session.getActiveUser() returns an
-    // email for any Google account, which is all we need.
-    // Under USER_DEPLOYING deployment: only the deploying account's session
-    // is visible; a dedicated public OAuth flow is a follow-up.
-    if (action === RouteAction.ALBUM_INDEX) {
-      const gasSession = getCurrentUser();
-      const viewerEmail = gasSession.data?.email ?? '';
-      Logger.log(`[Router.handleGet] Album index — viewerEmail="${viewerEmail}"`);
-
-      if (!viewerEmail) {
-        // Fall through to the admin session token path (lets admins who arrive
-        // via ?session= also see it without re-authenticating) before giving up.
-        const sessionToken = (e.parameter['session'] as string | undefined) ?? '';
-        if (sessionToken) {
-          const sessionAuth = authenticateBySession(sessionToken);
-          if (sessionAuth.status === ResultStatus.SUCCESS && sessionAuth.data) {
-            return publicAlbumIndexPage(sessionAuth.data.email);
-          }
-        }
-        return loginPage(
-          'Please sign in with any Google account to view the public album index.'
-        );
-      }
-
-      return publicAlbumIndexPage(viewerEmail);
-    }
-
     // ── Authenticate ─────────────────────────────────────────────────────────
     // Priority 1: GAS native session (getActiveUser — works with USER_ACCESSING)
     // Priority 2: session token from URL ?session=TOKEN (Path A: GIS login)
@@ -344,10 +306,6 @@ function dispatchGetHandler(
       return adminSummaryPage(user, sessionToken);
     case RouteAction.ADMIN_AUDIT:
       return adminAuditPage(user, sessionToken);
-    case RouteAction.ADMIN_PHOTOS:
-      return adminPhotosPage(user, sessionToken);
-    case RouteAction.ADMIN_ALBUMS:
-      return adminAlbumsPage(user, sessionToken);
     case RouteAction.ADMIN_EMAIL_PREFS:
       return adminEmailPrefsPage(user, sessionToken);
     case RouteAction.ADMIN_LINKS:

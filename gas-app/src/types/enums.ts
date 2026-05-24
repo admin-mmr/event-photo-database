@@ -102,20 +102,8 @@ export enum RouteAction {
   // Deployment healthcheck (no auth required)
   HEALTHCHECK = 'healthcheck',
 
-  // Phase 6 — Google Photos Albums
-  SYNC_ALBUM       = 'sync_album',        // Admin: sync all Drive photos for one event → albums
-  BACKFILL_ALBUMS  = 'backfill_albums',   // Admin: create + sync albums for all events
-  GET_EVENT_ALBUMS = 'get_event_albums',  // Any user: get album links for an event
-  ADMIN_PHOTOS     = 'admin_photos',      // Admin: photo upload overview + album management
-  ADMIN_ALBUMS     = 'admin_albums',      // Admin: flat list of every Photos album with stats
-
   // Drive file system tree (all authenticated users)
   DRIVE_TREE = 'drive_tree',            // Visual hierarchy browser: Event → Club → Batch
-
-  // Public album index (Phase 5 — design §6)
-  // Gated by Google login (any Google account), NOT by admin registration.
-  // Lists all events with synced Google Photos albums for public viewing.
-  ALBUM_INDEX = 'album_index',
 
   // Phase 7 — Email communication preferences (admin only)
   ADMIN_EMAIL_PREFS = 'admin_email_prefs',
@@ -193,12 +181,6 @@ export enum AuditAction {
   EXPORT_CSV           = 'EXPORT_CSV',
   EXCEPTION_EMAIL_SENT = 'EXCEPTION_EMAIL_SENT',
 
-  // Phase 6 — Google Photos Albums
-  ALBUM_CREATED    = 'ALBUM_CREATED',    // A new Google Photos album was created
-  ALBUM_SYNCED     = 'ALBUM_SYNCED',     // Photos synced to album for one event
-  ALBUM_BACKFILLED = 'ALBUM_BACKFILLED', // Full backfill of all event albums completed
-  ALBUM_ERROR      = 'ALBUM_ERROR',      // A Google Photos album operation failed
-
   // Phase 7 — Email communication
   EMAIL_SENT              = 'EMAIL_SENT',               // A notification email was dispatched
   EMAIL_FAILED            = 'EMAIL_FAILED',             // MailApp send failed for one recipient
@@ -227,22 +209,6 @@ export enum EmailType {
   DAILY_REPORT      = 'daily_report',        // Scheduled digest, once per day
   WEEKLY_REPORT     = 'weekly_report',       // Scheduled digest, once per week
   UPLOAD_ERROR      = 'upload_error',        // Sent TO admins when client-side Drive upload fails
-  /**
-   * Sent TO the super-admin (album owner) when a new Google Photos album is
-   * created. The Photos Library API can no longer programmatically share
-   * albums — only the album owner can flip the "Anyone with the link" toggle
-   * — so this is a reminder to do it by hand. Without that step, members
-   * who click the album link from the public spreadsheet will hit a
-   * permission-denied page.
-   */
-  ALBUM_NEEDS_SHARE = 'album_needs_share',
-  /**
-   * Sent TO the album-admin mailbox when reconcileAlbums() detects drift
-   * between the Photo_Albums sheet and the actual albums owned by the app
-   * in Google Photos. Body summarizes orphans on each side so the admin
-   * can fix them up by hand.
-   */
-  ALBUM_RECONCILE_REPORT = 'album_reconcile_report',
 }
 
 /**
@@ -267,30 +233,11 @@ export enum ResultStatus {
 export type FolderLayer = 1 | 2 | 3;
 
 /**
- * Status values for rows in the Sync_Queue sheet (Phase 4).
- *
- * pending     — Newly enqueued; not yet attempted.
- * in_progress — A drain run has picked this item up and is processing it.
- *               If the GAS execution is killed mid-run, the item stays in
- *               in_progress; the drain reschedules it as pending after a
- *               configurable staleness threshold.
- * done        — Sync succeeded; Photos API confirmed the upload.
- * failed      — Max retries reached; item is left in the sheet for inspection.
- */
-export enum SyncQueueStatus {
-  PENDING     = 'pending',
-  IN_PROGRESS = 'in_progress',
-  DONE        = 'done',
-  FAILED      = 'failed',
-}
-
-/**
  * Lifecycle states for a soft-deleted file row in the Deleted_Files sheet.
  *
  * deleted   — File is in trash; Drive file is still intact; 30-day clock running.
  * restored  — Admin restored the file before the 30-day window expired.
- * purged    — 30-day window elapsed; Drive file has been permanently deleted and
- *             the Photos album entry has been queued for removal via sync.
+ * purged    — 30-day window elapsed; Drive file has been permanently deleted.
  */
 export enum DeletedFileStatus {
   DELETED  = 'deleted',

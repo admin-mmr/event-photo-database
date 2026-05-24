@@ -3,17 +3,12 @@
  *
  * Why this module exists
  * ──────────────────────
- * Google deprecated the Photos Library API's album-sharing endpoints on
- * March 31, 2025. We can no longer programmatically flip a Google Photos album
- * to "Anyone with the link can view", and the API will not return shareInfo
- * for albums created with our `appendonly` / `edit.appcreateddata` scopes
- * even after the owner shares them manually.
- *
- * Drive sharing, by contrast, is fully programmable. The codebase already
- * maintains a parallel Drive hierarchy of shortcut folders that mirror every
- * uploaded photo and video (see specialFoldersService.ts). Sharing those
- * Drive folders is the systematic alternative to per-album manual sharing in
- * Google Photos.
+ * The public-browse surface for uploaded media is the Drive folder hierarchy
+ * — specifically the consolidated Photos_NNN shortcut folders and per-(event,
+ * club, tag) Videos folders materialised by specialFoldersService.ts. To make
+ * those folders reachable by non-signed-in viewers we need to flip them to
+ * "Anyone with the link → Viewer", and Drive sharing is fully programmable
+ * via the REST API.
  *
  * What this module does
  * ─────────────────────

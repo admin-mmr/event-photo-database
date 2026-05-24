@@ -8,7 +8,6 @@
  *   routes/userHandlers.ts     — auth, user CRUD
  *   routes/eventHandlers.ts    — events, clubs, Drive scan
  *   routes/uploadHandlers.ts   — upload pipeline, Drive tree
- *   routes/photosHandlers.ts   — Photos albums, sync jobs, sync queue
  *   routes/reportHandlers.ts   — summaries, audit log, email prefs, triggers
  *   routes/linkHandlers.ts     — upload link management
  *   routes/volunteerRoutes.ts  — volunteer upload flow
@@ -23,7 +22,6 @@
 import './routes/userHandlers';
 import './routes/eventHandlers';
 import './routes/uploadHandlers';
-import './routes/photosHandlers';
 import './routes/reportHandlers';
 import './routes/linkHandlers';
 import './routes/volunteerRoutes';
@@ -33,20 +31,9 @@ import './routes/uploadPrepRoutes';
 import { handleGet, handlePost } from './routes/router';
 import { purgeDeletedFiles as _purgeDeletedFiles } from './services/deleteService';
 import { migrateFromLegacy } from './services/migrationService';
-import { rebuildPublicAlbumIndex as _rebuildPublicAlbumIndex } from './services/publicSpreadsheetService';
+import { rebuildPublicFoldersIndex as _rebuildPublicFoldersIndex } from './services/publicSpreadsheetService';
 import { backfillSpecialFoldersSharing as _backfillSpecialFoldersSharing } from './services/specialFoldersService';
 import { getSuperAdmins } from './config/superAdmins';
-import { getAlbumAdminEmail, getConfig } from './config/constants';
-import { auditUnsharedAlbums } from './services/albumShareAuditService';
-import {
-  notifyAlbumNeedsShare,
-  notifyAlbumReconciliationReport,
-} from './services/emailService';
-import {
-  buildReconciliationReport,
-  writeReconciliationTab,
-  RECONCILIATION_TAB,
-} from './services/albumReconciliationService';
 import { showUploadPrepSidebar as _showUploadPrepSidebar } from './routes/uploadPrepRoutes';
 import {
   uploadPrep_listEvents as _uploadPrep_listEvents,
@@ -186,35 +173,40 @@ export function purgeDeletedFilesTrigger(): void {
   }
 }
 
-// ─── Public album index spreadsheet ──────────────────────────────────────────
+// ─── Public folder index spreadsheet ─────────────────────────────────────────
 
 /**
- * Rebuilds the public, view-only album index spreadsheet from scratch.
+ * Rebuilds the public, view-only folder index spreadsheet from scratch.
+ *
+ * Writes two tabs:
+ *   - "Photo Folders" — one row per Photos_NNN Drive bucket (event-level).
+ *   - "Video Folders" — one row per (event, club, tag) Videos folder.
  *
  * Use this when:
  *   - Setting up the feature for the first time after configuring
- *     PUBLIC_ALBUM_INDEX_SHEET_ID in Script Properties.
- *   - Recovering from a corrupted public sheet (the function clears + rewrites
- *     the entire "Albums" tab).
- *   - You manually edited Photo_Albums in the database and want the public
+ *     PUBLIC_ALBUM_INDEX_SHEET_ID in Script Properties (the property name is
+ *     kept for backward compatibility; treat it as the public spreadsheet ID).
+ *   - Recovering from a corrupted public sheet — the function clears + rewrites
+ *     both tabs.
+ *   - You manually edited Special_Folders in the database and want the public
  *     view to catch up immediately.
  *
- * Day-to-day refreshes happen automatically when albums are created or batches
- * finish syncing (see publicSpreadsheetService.tryRebuildPublicAlbumIndex
- * call sites in photosService.ts), so this is only for manual / recovery use.
+ * Day-to-day refreshes happen automatically after upload batches and folder
+ * creation (see publicSpreadsheetService.tryRebuildPublicFoldersIndex call
+ * sites), so this is only for manual / recovery use.
  *
  * Super-admin only — guarded by Session.getActiveUser().
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function rebuildPublicAlbumIndex(): void {
+export function rebuildPublicFoldersIndex(): void {
   const callerEmail = Session.getActiveUser().getEmail();
   if (!getSuperAdmins().includes(callerEmail.toLowerCase())) {
-    Logger.log(`[rebuildPublicAlbumIndex] Permission denied for ${callerEmail}`);
+    Logger.log(`[rebuildPublicFoldersIndex] Permission denied for ${callerEmail}`);
     return;
   }
-  Logger.log(`[rebuildPublicAlbumIndex] Manual rebuild started by ${callerEmail}`);
-  const rowCount = _rebuildPublicAlbumIndex();
-  Logger.log(`[rebuildPublicAlbumIndex] Done — ${rowCount} row(s) written`);
+  Logger.log(`[rebuildPublicFoldersIndex] Manual rebuild started by ${callerEmail}`);
+  const rowCount = _rebuildPublicFoldersIndex();
+  Logger.log(`[rebuildPublicFoldersIndex] Done — ${rowCount} row(s) written`);
 }
 
 /**
@@ -240,187 +232,6 @@ export function backfillSpecialFoldersSharing(): void {
     `[backfillSpecialFoldersSharing] Done — created=${summary.created} ` +
     `alreadyShared=${summary.alreadyShared} errors=${summary.errors}`
   );
-}
-
-// ─── Album sharing audit ──────────────────────────────────────────────────────
-
-/**
- * Scans every album in the Photo_Albums sheet and sends a
- * notifyAlbumNeedsShare email to all super-admins for each album that has
- * not yet been shared publicly in Google Photos.
- *
- * Run this:
- *   • Manually from the GAS Script Editor (select function → Run).
- *   • Or set up a time-driven trigger (e.g. weekly) via
- *     Triggers → Add trigger → auditAlbumSharing → Time-driven → Week timer.
- *
- * The function is intentionally non-destructive: it only sends notification
- * emails and never modifies sheet data or album settings.
- *
- * How sharing is detected:
- *   The Photos Library API `albums.get` endpoint returns a `shareInfo` object
- *   only when the album has been shared via "Anyone with the link".  If the
- *   field is absent the album is treated as private.
- *
- * Super-admin only — guarded by Session.getActiveUser().
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function auditAlbumSharing(): void {
-  const callerEmail = Session.getActiveUser().getEmail().toLowerCase();
-  const admins = getSuperAdmins();
-
-  if (!admins.includes(callerEmail)) {
-    Logger.log(`[auditAlbumSharing] Permission denied for ${callerEmail}`);
-    return;
-  }
-
-  Logger.log(`[auditAlbumSharing] Started by ${callerEmail}`);
-
-  const result = auditUnsharedAlbums();
-
-  Logger.log(
-    `[auditAlbumSharing] Audit complete — ` +
-    `checked: ${result.checked}, unshared: ${result.unshared.length}, ` +
-    `skipped: ${result.skipped}`
-  );
-
-  if (result.unshared.length === 0) {
-    Logger.log('[auditAlbumSharing] All albums are already shared — no emails sent.');
-    return;
-  }
-
-  // Reminder emails go to the album-admin mailbox, NOT the super-admin list.
-  // Only the Google account that owns the album can flip the share toggle, and
-  // that's the deploying identity behind admin@mmrunners.org. Other super
-  // admins on different accounts can't act on this even if they're CC'd.
-  const recipients = [getAlbumAdminEmail()];
-  Logger.log(`[auditAlbumSharing] Reminder recipients: ${recipients.join(', ')}`);
-
-  let emailsSent = 0;
-  let emailsFailed = 0;
-
-  for (const entry of result.unshared) {
-    try {
-      const emailResult = notifyAlbumNeedsShare(
-        entry.album.albumTitle,
-        entry.album.albumUrl,
-        entry.scope,
-        {
-          eventName:       entry.eventName,
-          eventDate:       entry.eventDate,
-          clubDisplayName: entry.clubDisplayName || undefined,
-          tag:             entry.album.tag || undefined,
-        },
-        recipients,
-      );
-
-      if (emailResult.status === 'success') {
-        emailsSent++;
-        Logger.log(`[auditAlbumSharing] Email sent for: "${entry.album.albumTitle}"`);
-      } else {
-        emailsFailed++;
-        Logger.log(
-          `[auditAlbumSharing] Email send failed for "${entry.album.albumTitle}": ` +
-          emailResult.message
-        );
-      }
-    } catch (err) {
-      emailsFailed++;
-      Logger.log(
-        `[auditAlbumSharing] Unexpected error sending email for ` +
-        `"${entry.album.albumTitle}": ${String(err)}`
-      );
-    }
-  }
-
-  Logger.log(
-    `[auditAlbumSharing] Done — ${emailsSent} email(s) sent, ${emailsFailed} failed.`
-  );
-}
-
-// ─── Album reconciliation ────────────────────────────────────────────────────
-
-/**
- * Reconciles the Photo_Albums sheet against the live list of albums this app
- * owns in Google Photos. Writes the report to the "Reconciliation" tab in
- * the main spreadsheet AND emails a summary to the album-admin mailbox.
- *
- * Run this:
- *   • Manually from the GAS Script Editor (select function → Run) whenever
- *     the public Albums sheet has rows that look stale or "My albums" in
- *     photos.google.com shows entries that don't appear in the spreadsheet.
- *   • Or set up a weekly time-driven trigger (Triggers → Add trigger →
- *     reconcileAlbums → Time-driven → Week timer).
- *
- * Output channels:
- *   1. The "Reconciliation" tab in the main spreadsheet (rewritten in place).
- *      Visit it from Photo_Albums for a side-by-side comparison.
- *   2. An email summary to getAlbumAdminEmail() (defaults to
- *      admin@mmrunners.org), sent only when drift is detected.
- *
- * Drift categories surfaced:
- *   - Orphan in Sheet — Photo_Albums row exists, but the Photos album is
- *     gone. Usually means an admin deleted the album in photos.google.com.
- *   - Orphan in Photos — Album exists in Photos but no Photo_Albums row.
- *     Often a backfill that bypassed the create-album flow, or a manual
- *     test album.
- *   - Matched (drift) — Both sides exist, but title or count disagrees.
- *     Self-heals on the next sync; flagged for visibility.
- *
- * Super-admin only — guarded by Session.getActiveUser().
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function reconcileAlbums(): void {
-  const callerEmail = Session.getActiveUser().getEmail().toLowerCase();
-  if (!getSuperAdmins().includes(callerEmail)) {
-    Logger.log(`[reconcileAlbums] Permission denied for ${callerEmail}`);
-    return;
-  }
-  Logger.log(`[reconcileAlbums] Started by ${callerEmail}`);
-
-  const report = buildReconciliationReport();
-  Logger.log(
-    `[reconcileAlbums] Sheet=${report.checkedSheet}, Photos=${report.checkedPhotos}, ` +
-    `OrphansSheet=${report.orphansInSheet.length}, ` +
-    `OrphansPhotos=${report.orphansInPhotos.length}, ` +
-    `Drift=${report.matchedDrift.length}` +
-    (report.photosApiError ? `, ApiError=${report.photosApiError}` : '')
-  );
-
-  const rowsWritten = writeReconciliationTab(report);
-  Logger.log(`[reconcileAlbums] ${rowsWritten} row(s) written to ${RECONCILIATION_TAB}`);
-
-  // Build a deep-link to the Reconciliation tab so the email lands the user
-  // exactly where they need to take action. Without a #gid we'd send them
-  // to the first sheet of the workbook.
-  const config = getConfig();
-  const ss = SpreadsheetApp.openById(config.SPREADSHEET_ID);
-  const tab = ss.getSheetByName(RECONCILIATION_TAB);
-  const gid = tab ? tab.getSheetId() : 0;
-  const spreadsheetUrl =
-    `https://docs.google.com/spreadsheets/d/${config.SPREADSHEET_ID}/edit#gid=${gid}`;
-
-  const recipients = [getAlbumAdminEmail()];
-  const emailResult = notifyAlbumReconciliationReport(
-    {
-      orphansInSheet:  report.orphansInSheet.length,
-      orphansInPhotos: report.orphansInPhotos.length,
-      matchedDrift:    report.matchedDrift.length,
-      checkedSheet:    report.checkedSheet,
-      checkedPhotos:   report.checkedPhotos,
-      photosApiError:  report.photosApiError,
-      spreadsheetUrl,
-    },
-    recipients,
-  );
-
-  if (emailResult.status === 'success') {
-    Logger.log(
-      `[reconcileAlbums] Email sent to ${(emailResult.data?.to ?? []).join(', ') || '(no recipients)'}`
-    );
-  } else {
-    Logger.log(`[reconcileAlbums] Email send failed: ${emailResult.message}`);
-  }
 }
 
 // ─── Legacy migration ─────────────────────────────────────────────────────────

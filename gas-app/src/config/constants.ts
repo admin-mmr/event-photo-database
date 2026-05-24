@@ -78,44 +78,6 @@ export function isCreditRenameEnabled(): boolean {
  */
 export const ADMIN_CLUB_ID = '__admin__';
 
-// ─── Operations contact ───────────────────────────────────────────────────────
-
-/**
- * Single mailbox that owns Google Photos album administration for the club.
- *
- * Used by:
- *   • auditAlbumSharing — recipient of "please share this album" reminders.
- *   • runAlbumReconciliation — recipient of the orphan-albums report.
- *
- * Why a hard-coded constant instead of the super-admins list?
- *   The Library API can no longer toggle album sharing on our behalf, so the
- *   action ("open in Photos and flip the share toggle") has to be performed
- *   by the SAME Google account that created the album. Super-admin emails
- *   often belong to a different account; sending the reminder to one of them
- *   doesn't help. Routing every album-admin email to a single shared
- *   mailbox owned by whoever holds that Google identity ensures the
- *   responsible person actually sees the request.
- *
- * If this mailbox ever changes, override at deploy time by setting the
- * `ALBUM_ADMIN_EMAIL` Script Property; constants.getAlbumAdminEmail()
- * reads the property first and falls back to this default.
- */
-export const ALBUM_ADMIN_EMAIL_DEFAULT = 'admin@mmrunners.org';
-
-/**
- * Returns the configured album-admin recipient, preferring the Script
- * Property override when set. Empty/whitespace property values fall back
- * to the compiled-in default so a misconfigured deployment still notifies
- * someone rather than silently dropping the email.
- */
-export function getAlbumAdminEmail(): string {
-  /* global PropertiesService */
-  const override = PropertiesService.getScriptProperties()
-    .getProperty('ALBUM_ADMIN_EMAIL');
-  if (override && override.trim()) return override.trim();
-  return ALBUM_ADMIN_EMAIL_DEFAULT;
-}
-
 /**
  * Column indices (0-based) for every sheet.
  * These match the column order defined in the project plan.
@@ -186,8 +148,8 @@ export const COLUMNS: SheetColumnMap = {
     //
     // Note: clubs do NOT have a fixed Drive folder ID — the hierarchy is
     //   Event / Club /, so each club folder is created on-demand per-event
-    //   by getOrCreateClubFolder(). Any per-club album prefix is likewise
-    //   derived from displayName rather than stored here.
+    //   by getOrCreateClubFolder(). The displayName remains the source of
+    //   truth for any per-club label derived at upload time.
     DISPLAY_NAME:    0,
     NORMALIZED_NAME: 1,
     STATUS:          2,
@@ -206,30 +168,6 @@ export const COLUMNS: SheetColumnMap = {
     IP_ADDRESS:    8,
     REASON:        9,
   },
-  PHOTO_ALBUMS: {
-    ALBUM_ID:          0,
-    ALBUM_TYPE:        1,
-    EVENT_ID:          2,
-    CLUB_NAME:         3,
-    TAG:               4,
-    ALBUM_TITLE:       5,
-    ALBUM_URL:         6,
-    SHAREABLE_URL:     7,
-    CREATED_AT:        8,
-    LAST_SYNC_AT:      9,
-    SYNCED_FILE_COUNT: 10,
-  },
-  PHOTO_FILES: {
-    DRIVE_FILE_ID: 0,
-    MEDIA_ITEM_ID: 1,
-    ALBUM_ID:      2,
-    ALBUM_TYPE:    3,
-    EVENT_ID:      4,
-    CLUB_NAME:     5,
-    TAG:           6,
-    FILE_NAME:     7,
-    SYNCED_AT:     8,
-  },
   EMAIL_PREFERENCES: {
     EMAIL:              0,
     USER_CREATED:       1,
@@ -240,20 +178,6 @@ export const COLUMNS: SheetColumnMap = {
     DAILY_REPORT:       6,
     WEEKLY_REPORT:      7,
     UPDATED_AT:         8,
-  },
-  SYNC_QUEUE: {
-    QUEUE_ID:          0,
-    EVENT_ID:          1,
-    CLUB_NAME:         2,
-    TAG:               3,
-    BATCH_FOLDER_ID:   4,
-    BATCH_FOLDER_NAME: 5,
-    ENQUEUED_AT:       6,
-    STATUS:            7,
-    ATTEMPTS:          8,
-    LAST_ATTEMPT_AT:   9,
-    ERROR_MSG:         10,
-    COMPLETED_AT:      11,
   },
   DELETED_FILES: {
     DELETE_ID:         0,
@@ -345,24 +269,6 @@ export const EMAIL_PREFERENCES_HEADERS: ReadonlyArray<string> = [
   'DAILY_REPORT',
   'WEEKLY_REPORT',
   'UPDATED_AT',
-];
-
-/**
- * Expected header row for the Sync_Queue sheet (Phase 4).
- */
-export const SYNC_QUEUE_HEADERS: ReadonlyArray<string> = [
-  'QUEUE_ID',
-  'EVENT_ID',
-  'CLUB_NAME',
-  'TAG',
-  'BATCH_FOLDER_ID',
-  'BATCH_FOLDER_NAME',
-  'ENQUEUED_AT',
-  'STATUS',
-  'ATTEMPTS',
-  'LAST_ATTEMPT_AT',
-  'ERROR_MSG',
-  'COMPLETED_AT',
 ];
 
 /**
@@ -486,30 +392,6 @@ export const MEDIA_MIME_TYPES: ReadonlyArray<PhotoMimeType | VideoMimeType> = [
 export const MAX_API_REQUESTS_PER_HOUR = 60;
 export const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour in milliseconds
 
-// ─── Phase 4 — Sync Queue configuration ──────────────────────────────────────
-
-/**
- * Maximum number of sync attempts before a queue item is permanently marked
- * 'failed'. After this threshold, the drain skips the item rather than
- * re-attempting it so a consistently broken batch does not block other items.
- */
-export const MAX_SYNC_ATTEMPTS = 3;
-
-/**
- * Minutes after which an 'in_progress' queue item is considered stuck and
- * eligible for retry. GAS executions are killed at 6 minutes, so any item
- * still in_progress after 10 minutes was almost certainly abandoned.
- */
-export const SYNC_STUCK_THRESHOLD_MINUTES = 10;
-
-/**
- * Maximum number of queue items to process in a single drain run.
- * Keeps each trigger execution well under the 6-minute GAS wall-clock limit.
- * Each batch sync can upload dozens of files to the Photos API, so a
- * conservative limit of 5 items per run (~1 min per item worst-case) is safe.
- */
-export const SYNC_DRAIN_BATCH_SIZE = 5;
-
 /**
  * Builds the runtime AppConfig by reading sensitive IDs from GAS Script Properties.
  *
@@ -519,11 +401,15 @@ export const SYNC_DRAIN_BATCH_SIZE = 5;
  *        SPREADSHEET_ID = <your Sheets ID>
  *
  *   Optional: PUBLIC_ALBUM_INDEX_SHEET_ID = <Sheets file ID of the public,
- *     view-only album index>. When set, the app mirrors the album list to that
- *     spreadsheet on every album create / batch sync so anyone with the file's
- *     view link can browse the album hierarchy without signing in. See
+ *     view-only folder index>. When set, the app mirrors the Drive folder
+ *     listing (Photos_NNN buckets + Videos folders) to that spreadsheet on
+ *     every batch upload so anyone with the file's view link can browse the
+ *     folder hierarchy without signing in. See
  *     services/publicSpreadsheetService.ts for setup details. Leave unset to
  *     disable the public mirror.
+ *
+ *     Property name is preserved for backward compatibility with deployments
+ *     that set it before the rename; treat it as "public folder index sheet id".
  *
  * Call getConfig() at the start of any request handler — never at module load time,
  * since PropertiesService is unavailable during clasp type-checking.
@@ -553,10 +439,7 @@ export function getConfig(): AppConfig {
       RATE_LIMIT: 'Rate_Limit',
       CLUBS: 'Clubs',
       AUDIT_LOG: 'Audit_Log',
-      PHOTO_ALBUMS: 'Photo_Albums',
-      PHOTO_FILES:  'Photo_Files',
       EMAIL_PREFERENCES: 'Email_Preferences',
-      SYNC_QUEUE:        'Sync_Queue',
       DELETED_FILES:     'Deleted_Files',
       SPECIAL_FOLDERS:   'Special_Folders',
     },

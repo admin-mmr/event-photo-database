@@ -1,4 +1,4 @@
-import { UserRole, UserStatus, UploadSource, AuditAction, SyncQueueStatus } from './enums';
+import { UserRole, UserStatus, UploadSource, AuditAction } from './enums';
 
 /**
  * A row in the "Users" sheet.
@@ -109,39 +109,6 @@ export interface AuditLogRecord {
 }
 
 /**
- * A row in the "Photo_Albums" sheet.
- * Stores the mapping between events/clubs and their Google Photos album IDs.
- *
- * albumType = 'event' → master album for the whole event (all photos across all clubs/tags).
- *                       clubName and tag are empty.
- * albumType = 'club'  → per (event, club, tag) album. clubName and tag are both
- *                       non-empty — every upload carries an explicit tag, so
- *                       there is no plain per-club album.
- *
- * The composite key for non-event albums is (eventId, clubName, tag).
- */
-export interface PhotosAlbumRecord {
-  readonly albumId:         string;            // Google Photos album ID
-  readonly albumType:       'event' | 'club';  // Scope of the album
-  readonly eventId:         string;            // FK → EventRecord.eventId
-  readonly clubName:        string;            // Normalized club name; empty for event-type albums
-  readonly tag:             string;            // Tag/photographer label; empty for event-type albums
-  readonly albumTitle:      string;            // Human-readable title shown in Google Photos
-  readonly albumUrl:        string;            // Direct product URL for viewing in Google Photos
-  /**
-   * Vestigial — kept in the schema for backward compat with rows written by
-   * older code. Library-API sharing was deprecated in 2024, so we can no
-   * longer set a distinct shareable URL programmatically: createGoogleAlbum()
-   * now writes albumUrl into both fields. New consumers should read
-   * `albumUrl` exclusively; this column will be dropped in a future migration.
-   */
-  readonly shareableUrl:    string;
-  readonly createdAt:       string;            // ISO 8601 timestamp
-  readonly lastSyncAt:      string;            // ISO 8601 timestamp; empty until first sync
-  readonly syncedFileCount: number;            // Cumulative photos pushed to this album
-}
-
-/**
  * An entry in the approved clubs list.
  * `normalizedName` is used for Drive folder naming (underscores, no spaces).
  * `displayName` is shown in the UI.
@@ -149,32 +116,6 @@ export interface PhotosAlbumRecord {
 export interface ClubEntry {
   readonly displayName: string;      // "New Bee"
   readonly normalizedName: string;   // "New_Bee" — used as Drive folder name
-}
-
-/**
- * A row in the "Photo_Files" sheet.
- * Records the mapping between a Google Drive file and the Google Photos media
- * item created when it was synced to an album.
- *
- * Composite key: (driveFileId, albumId) — the same Drive file is synced to
- * both an event album and a club album, producing two rows per photo.
- *
- * This table is the source of truth for:
- *   - Deduplication: before uploading, check whether (driveFileId, albumId)
- *     already exists; skip if so.
- *   - Reconciliation: compare Drive file counts against rows here per event
- *     to detect photos not yet synced to Google Photos.
- */
-export interface PhotosFileRecord {
-  readonly driveFileId: string;           // Google Drive file ID (key col A)
-  readonly mediaItemId: string;           // Google Photos media item ID (col B)
-  readonly albumId:     string;           // Photos album ID (key col C)
-  readonly albumType:   'event' | 'club'; // Scope of the album (col D)
-  readonly eventId:     string;           // FK → Events.eventId (col E)
-  readonly clubName:    string;           // Normalized club name; empty for event albums (col F)
-  readonly tag:         string;           // Tag/photographer label; empty for event albums (col G)
-  readonly fileName:    string;           // Original filename, e.g. "IMG_0042.jpg" (col H)
-  readonly syncedAt:    string;           // ISO 8601 timestamp of sync (col I)
 }
 
 /**
@@ -202,37 +143,6 @@ export interface EmailPreferenceRecord {
   readonly dailyReport: boolean;             // Receive the daily digest
   readonly weeklyReport: boolean;            // Receive the weekly digest
   readonly updatedAt: string;                // ISO 8601 timestamp of last change
-}
-
-/**
- * A row in the "Sync_Queue" sheet (Phase 4).
- *
- * Each row represents one Drive batch folder that must be synced to Google Photos.
- * The queue is written by serverCompleteUpload / serverCompleteVolunteerUpload and
- * drained by the drainSyncQueueTrigger() time-trigger function.
- *
- * Retry strategy:
- *   - A drain run marks the item in_progress, then calls syncBatchToAlbums().
- *   - On success → status = done, completedAt = now.
- *   - On failure → attempts++, status = pending (up to MAX_SYNC_ATTEMPTS),
- *                  then status = failed permanently so it doesn't loop.
- *   - If a GAS execution is killed mid-run (6-min wall-clock limit), the item
- *     stays in_progress. The next drain run treats items stuck in_progress for
- *     longer than SYNC_STUCK_THRESHOLD_MINUTES as pending again.
- */
-export interface SyncQueueRecord {
-  readonly queueId:        string;            // UUID v4 (primary key)
-  readonly eventId:        string;            // FK → Events.eventId
-  readonly clubName:       string;            // Normalized club name
-  readonly tag:            string;            // Tag/photographer label captured from upload link
-  readonly batchFolderId:  string;            // Google Drive folder ID for this batch
-  readonly batchFolderName: string;           // Human-readable batch folder name
-  readonly enqueuedAt:     string;            // ISO 8601 timestamp
-  readonly status:         SyncQueueStatus;   // pending | in_progress | done | failed
-  readonly attempts:       number;            // Number of drain attempts made
-  readonly lastAttemptAt:  string;            // ISO 8601 timestamp; empty until first attempt
-  readonly errorMsg:       string;            // Last error text; empty if no error yet
-  readonly completedAt:    string;            // ISO 8601 timestamp; empty until done
 }
 
 /**

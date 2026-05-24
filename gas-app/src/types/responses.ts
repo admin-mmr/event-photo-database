@@ -4,9 +4,9 @@ import { ResultStatus } from './enums';
 
 /**
  * Composite result returned by all google.script.run server functions.
- * `warnings` carries non-fatal side-effect failures (e.g. email not sent,
- * album creation failed) so the UI can show a non-blocking banner without
- * rolling back the primary operation.
+ * `warnings` carries non-fatal side-effect failures (e.g. email not sent)
+ * so the UI can show a non-blocking banner without rolling back the
+ * primary operation.
  */
 export type ServerResponse = {
   status:    string;

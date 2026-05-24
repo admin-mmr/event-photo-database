@@ -3,22 +3,15 @@
  *
  * Design:
  *   - softDeleteFile()   Moves a Drive file to GAS trash state and writes a
- *                        Deleted_Files row with status='deleted'. Enqueues a
- *                        delete-sync job so the Photos album reflects the removal.
+ *                        Deleted_Files row with status='deleted'.
  *   - restoreFile()      Restores the Drive file from trash and updates the row
- *                        to status='restored'. Enqueues a re-add sync job.
+ *                        to status='restored'.
  *   - listDeleted()      Paginated read of Deleted_Files filtered by club/event.
  *   - purgeDeletedFiles() Scheduled job (daily trigger). Hard-deletes Drive files
  *                        whose 30-day window has elapsed and marks rows 'purged'.
  *
  * Permissions are enforced by the API layer (apiRoutes.ts), not here.
  * This service only receives pre-validated actor emails and resource IDs.
- *
- * Sync note:
- *   Delete and restore operations enqueue a batch-level sync via syncQueueService
- *   using a special single-file batch folder. The sync job will then mirror the
- *   deletion / restoration to the Photos album. Because Photos API only exposes
- *   the albums the app created, manual Photos UI edits will not be affected.
  */
 
 import { DeletedFileStatus, AuditAction, ResultStatus } from '../types/enums';
@@ -39,8 +32,6 @@ import {
 import { toDeletedFileRecord, fromDeletedFileRecord } from '../utils/sheetMapper';
 import { appendAuditLog } from './auditLogService';
 import { generateUuid } from '../utils/uuid';
-import { removeFileFromPhotos, clearSyncRecordsForFile } from './photosService';
-import { enqueueBatchSync } from './syncQueueService';
 
 /* global DriveApp, Logger, Utilities */
 
@@ -141,16 +132,6 @@ export function softDeleteFile(
       `soft-deleted by ${input.actorEmail} — deleteId=${deleteId}`
     );
 
-    // Phase 4: mirror the delete to Google Photos so the file disappears from
-    // public albums immediately. Non-fatal — the file is already trashed in Drive.
-    try {
-      removeFileFromPhotos(input.driveFileId);
-    } catch (photosErr) {
-      Logger.log(
-        `[DeleteService.softDeleteFile] removeFileFromPhotos non-fatal error: ${String(photosErr)}`
-      );
-    }
-
     return { status: ResultStatus.SUCCESS, message: 'File moved to trash.', deleteId };
   } catch (err) {
     const msg = String(err);
@@ -215,55 +196,6 @@ export function restoreFile(
       `[DeleteService.restoreFile] ${record.driveFileId} ("${record.fileName}") ` +
       `restored by ${input.actorEmail}`
     );
-
-    // Phase 4: clear stale Photo_Files records (the media items in Photos were
-    // removed on delete, so their IDs are no longer valid), then re-enqueue a
-    // batch sync so the file reappears in the public album. Non-fatal.
-    try {
-      clearSyncRecordsForFile(record.driveFileId);
-
-      // Derive the batch folder ID from the file's Drive parent.
-      const driveFile     = DriveApp.getFileById(record.driveFileId);
-      const parentIter    = driveFile.getParents();
-      const batchFolderId = parentIter.hasNext() ? parentIter.next().getId() : '';
-
-      if (batchFolderId) {
-        // Derive tag from the batch folder's parent. Drive layout:
-        // Event / Club / Tag / Batch — so batch.parent is the tag folder.
-        // (Empty string when the batch sits directly under the club, which
-        // shouldn't happen under the new schema but is tolerated here.)
-        let tag = '';
-        try {
-          const batchParents = DriveApp.getFolderById(batchFolderId).getParents();
-          if (batchParents.hasNext()) {
-            const parentName = batchParents.next().getName();
-            if (parentName !== record.clubName) tag = parentName;
-          }
-        } catch (tagErr) {
-          Logger.log(`[DeleteService.restoreFile] could not derive tag for batch ${batchFolderId}: ${String(tagErr)}`);
-        }
-        enqueueBatchSync({
-          eventId:         record.eventId,
-          clubName:        record.clubName,
-          tag,
-          batchFolderId,
-          batchFolderName: record.batchFolderName,
-        });
-        Logger.log(
-          `[DeleteService.restoreFile] Enqueued re-sync for ${record.driveFileId} ` +
-          `— club=${record.clubName} tag=${tag} batch=${record.batchFolderName}`
-        );
-      } else {
-        Logger.log(
-          `[DeleteService.restoreFile] Could not determine batchFolderId for ` +
-          `${record.driveFileId} — skipping re-sync enqueue`
-        );
-      }
-    } catch (photosErr) {
-      Logger.log(
-        `[DeleteService.restoreFile] Photos re-sync enqueue non-fatal error: ${String(photosErr)}`
-      );
-    }
 
     return { status: ResultStatus.SUCCESS, message: 'File restored from trash.' };
   } catch (err) {

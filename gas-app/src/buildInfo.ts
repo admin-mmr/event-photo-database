@@ -1,3 +1,3 @@
 // AUTO-GENERATED — do not edit. Rewritten on every `npm run build`.
-export const BUILD_TIME   = '2026-05-24T00:26:26.808Z';
-export const BUILD_COMMIT = '01903b5-dirty';
+export const BUILD_TIME   = '2026-05-24T14:10:20.061Z';
+export const BUILD_COMMIT = 'c871aa8-dirty';
