@@ -1,5 +1,5 @@
 /**
- * Unit tests for reportHandlers — google.script.run handlers for report generation.
+ * Unit tests for reportHandlers — google.script.run handlers for reports and email preferences.
  */
 
 jest.mock('../../src/middleware/authMiddleware');
@@ -7,12 +7,20 @@ jest.mock('../../src/services/summaryService');
 jest.mock('../../src/services/auditLogService');
 
 import {
-  serverGenerateEventReport,
-  serverGenerateClubReport,
-  serverGenerateAuditReport,
-  serverDownloadReport,
+  serverGetSummary,
+  serverExportSummaryCsv,
+  serverSendExceptionEmail,
+  serverGetAuditLog,
+  serverGetMyEmailPrefs,
+  serverUpdateMyEmailPrefs,
+  dailyReportTrigger,
+  weeklyReportTrigger,
+  retryFailedEmailsTrigger,
+  installEmailTriggers,
+  removeEmailTriggers,
 } from '../../src/routes/reportHandlers';
 import { requireAdminOrFail } from '../../src/middleware/authMiddleware';
+import { UserRole } from '../../src/types/enums';
 
 const mockRequireAdminOrFail = requireAdminOrFail as jest.MockedFunction<typeof requireAdminOrFail>;
 
@@ -21,174 +29,220 @@ describe('reportHandlers', () => {
     jest.clearAllMocks();
   });
 
-  // ─── serverGenerateEventReport ─────────────────────────────────────────────
+  // ─── serverGetSummary ─────────────────────────────────────────────────────
 
-  describe('serverGenerateEventReport()', () => {
-    it('returns error when not authenticated as admin', () => {
-      mockRequireAdminOrFail.mockReturnValue({
-        ok: false,
-        response: { status: 'error', message: 'Unauthorized' },
-      });
-
-      const result = serverGenerateEventReport({
-        sessionToken: 'invalid-token',
-        eventId: 'evt-001',
-      });
-
-      expect(result.status).toBe('error');
-      expect(result.message).toBe('Unauthorized');
-    });
-
-    it('requires eventId parameter', () => {
-      mockRequireAdminOrFail.mockReturnValue({
-        ok: true,
-        adminEmail: 'admin@example.com',
-        adminRole: 'super_admin',
-        adminClubId: '',
-      });
-
-      const result = serverGenerateEventReport({
-        sessionToken: 'valid-token',
-        eventId: '',
-      });
-
-      expect(result.status).toBe('error');
-      expect(result.message).toContain('required');
-    });
-
-    it('generates report when authenticated and eventId provided', () => {
-      mockRequireAdminOrFail.mockReturnValue({
-        ok: true,
-        adminEmail: 'admin@example.com',
-        adminRole: 'super_admin',
-        adminClubId: '',
-      });
-
-      const result = serverGenerateEventReport({
-        sessionToken: 'valid-token',
-        eventId: 'evt-001',
-      });
-
-      expect(result).toBeDefined();
-    });
-  });
-
-  // ─── serverGenerateClubReport ──────────────────────────────────────────────
-
-  describe('serverGenerateClubReport()', () => {
-    it('returns error when not authenticated as admin', () => {
-      mockRequireAdminOrFail.mockReturnValue({
-        ok: false,
-        response: { status: 'error', message: 'Unauthorized' },
-      });
-
-      const result = serverGenerateClubReport({
-        sessionToken: 'invalid-token',
-        clubId: 'club-001',
-      });
-
-      expect(result.status).toBe('error');
-    });
-
-    it('requires clubId parameter', () => {
-      mockRequireAdminOrFail.mockReturnValue({
-        ok: true,
-        adminEmail: 'admin@example.com',
-        adminRole: 'super_admin',
-        adminClubId: '',
-      });
-
-      const result = serverGenerateClubReport({
-        sessionToken: 'valid-token',
-        clubId: '',
-      });
-
-      expect(result.status).toBe('error');
-    });
-
-    it('generates report when authenticated and clubId provided', () => {
-      mockRequireAdminOrFail.mockReturnValue({
-        ok: true,
-        adminEmail: 'admin@example.com',
-        adminRole: 'super_admin',
-        adminClubId: '',
-      });
-
-      const result = serverGenerateClubReport({
-        sessionToken: 'valid-token',
-        clubId: 'club-001',
-      });
-
-      expect(result).toBeDefined();
-    });
-  });
-
-  // ─── serverGenerateAuditReport ────────────────────────────────────────────
-
-  describe('serverGenerateAuditReport()', () => {
-    it('returns error when not authenticated as admin', () => {
-      mockRequireAdminOrFail.mockReturnValue({
-        ok: false,
-        response: { status: 'error', message: 'Unauthorized' },
-      });
-
-      const result = serverGenerateAuditReport({
+  describe('serverGetSummary()', () => {
+    it('requires authentication', () => {
+      const result = serverGetSummary({
         sessionToken: 'invalid-token',
       });
 
       expect(result.status).toBe('error');
-    });
-
-    it('generates audit report when authenticated', () => {
-      mockRequireAdminOrFail.mockReturnValue({
-        ok: true,
-        adminEmail: 'admin@example.com',
-        adminRole: 'super_admin',
-        adminClubId: '',
-      });
-
-      const result = serverGenerateAuditReport({
-        sessionToken: 'valid-token',
-      });
-
-      expect(result).toBeDefined();
     });
 
     it('accepts optional date range filters', () => {
-      mockRequireAdminOrFail.mockReturnValue({
-        ok: true,
-        adminEmail: 'admin@example.com',
-        adminRole: 'super_admin',
-        adminClubId: '',
+      const result = serverGetSummary({
+        sessionToken: 'valid-token',
+        dateFrom: '2025-01-01',
+        dateTo: '2025-12-31',
       });
 
-      const result = serverGenerateAuditReport({
+      expect(result).toBeDefined();
+    });
+
+    it('returns summary data', () => {
+      const result = serverGetSummary({
         sessionToken: 'valid-token',
-        startDate: '2025-01-01',
-        endDate: '2025-12-31',
       });
 
       expect(result).toBeDefined();
     });
   });
 
-  // ─── serverDownloadReport ──────────────────────────────────────────────────
+  // ─── serverExportSummaryCsv ───────────────────────────────────────────────
 
-  describe('serverDownloadReport()', () => {
-    it('requires reportId parameter', () => {
-      mockRequireAdminOrFail.mockReturnValue({
-        ok: true,
-        adminEmail: 'admin@example.com',
-        adminRole: 'super_admin',
-        adminClubId: '',
-      });
-
-      const result = serverDownloadReport({
-        sessionToken: 'valid-token',
-        reportId: '',
+  describe('serverExportSummaryCsv()', () => {
+    it('requires authentication', () => {
+      const result = serverExportSummaryCsv({
+        sessionToken: 'invalid-token',
       });
 
       expect(result.status).toBe('error');
+    });
+
+    it('accepts optional date range filters', () => {
+      const result = serverExportSummaryCsv({
+        sessionToken: 'valid-token',
+        dateFrom: '2025-01-01',
+        dateTo: '2025-12-31',
+      });
+
+      expect(result).toBeDefined();
+    });
+
+    it('returns CSV data', () => {
+      const result = serverExportSummaryCsv({
+        sessionToken: 'valid-token',
+      });
+
+      expect(result).toBeDefined();
+    });
+  });
+
+  // ─── serverSendExceptionEmail ──────────────────────────────────────────────
+
+  describe('serverSendExceptionEmail()', () => {
+    it('requires authentication', () => {
+      const result = serverSendExceptionEmail({
+        sessionToken: 'invalid-token',
+      });
+
+      expect(result.status).toBe('error');
+    });
+
+    it('accepts optional additional recipients', () => {
+      const result = serverSendExceptionEmail({
+        sessionToken: 'valid-token',
+        additionalRecipients: ['admin@example.com'],
+      });
+
+      expect(result).toBeDefined();
+    });
+
+    it('sends exception email', () => {
+      const result = serverSendExceptionEmail({
+        sessionToken: 'valid-token',
+      });
+
+      expect(result).toBeDefined();
+    });
+  });
+
+  // ─── serverGetAuditLog ─────────────────────────────────────────────────────
+
+  describe('serverGetAuditLog()', () => {
+    it('requires admin authentication', () => {
+      mockRequireAdminOrFail.mockReturnValue({
+        ok: false,
+        response: { status: 'error', message: 'Unauthorized' },
+      });
+
+      const result = serverGetAuditLog({
+        sessionToken: 'invalid-token',
+      });
+
+      expect(result.status).toBe('error');
+    });
+
+    it('returns audit log when authenticated', () => {
+      mockRequireAdminOrFail.mockReturnValue({
+        ok: true,
+        adminEmail: 'admin@example.com',
+        adminRole: UserRole.SUPER_ADMIN,
+        adminClubId: '',
+      });
+
+      const result = serverGetAuditLog({
+        sessionToken: 'valid-token',
+      });
+
+      expect(result).toBeDefined();
+    });
+
+    it('accepts optional filters', () => {
+      mockRequireAdminOrFail.mockReturnValue({
+        ok: true,
+        adminEmail: 'admin@example.com',
+        adminRole: UserRole.SUPER_ADMIN,
+        adminClubId: '',
+      });
+
+      const result = serverGetAuditLog({
+        sessionToken: 'valid-token',
+        page: 1,
+        pageSize: 10,
+      });
+
+      expect(result).toBeDefined();
+    });
+  });
+
+  // ─── serverGetMyEmailPrefs ────────────────────────────────────────────────
+
+  describe('serverGetMyEmailPrefs()', () => {
+    it('requires authentication', () => {
+      mockRequireAdminOrFail.mockReturnValue({
+        ok: false,
+        response: { status: 'error', message: 'Unauthorized' },
+      });
+
+      const result = serverGetMyEmailPrefs({
+        sessionToken: 'invalid-token',
+      });
+
+      expect(result.status).toBe('error');
+    });
+
+    it('returns email preferences when authenticated', () => {
+      const result = serverGetMyEmailPrefs({
+        sessionToken: 'valid-token',
+      });
+
+      expect(result).toBeDefined();
+    });
+  });
+
+  // ─── serverUpdateMyEmailPrefs ──────────────────────────────────────────────
+
+  describe('serverUpdateMyEmailPrefs()', () => {
+    it('requires authentication', () => {
+      mockRequireAdminOrFail.mockReturnValue({
+        ok: false,
+        response: { status: 'error', message: 'Unauthorized' },
+      });
+
+      const result = serverUpdateMyEmailPrefs({
+        sessionToken: 'invalid-token',
+      });
+
+      expect(result.status).toBe('error');
+    });
+
+    it('updates email preferences', () => {
+      const result = serverUpdateMyEmailPrefs({
+        sessionToken: 'valid-token',
+        dailyReport: true,
+      });
+
+      expect(result).toBeDefined();
+    });
+  });
+
+  // ─── Report triggers ───────────────────────────────────────────────────────
+
+  describe('Report trigger functions', () => {
+    it('dailyReportTrigger exists', () => {
+      expect(typeof dailyReportTrigger).toBe('function');
+    });
+
+    it('weeklyReportTrigger exists', () => {
+      expect(typeof weeklyReportTrigger).toBe('function');
+    });
+
+    it('retryFailedEmailsTrigger exists', () => {
+      expect(typeof retryFailedEmailsTrigger).toBe('function');
+    });
+  });
+
+  // ─── Trigger management ───────────────────────────────────────────────────
+
+  describe('Trigger management', () => {
+    it('installEmailTriggers exists', () => {
+      expect(typeof installEmailTriggers).toBe('function');
+    });
+
+    it('removeEmailTriggers exists', () => {
+      expect(typeof removeEmailTriggers).toBe('function');
     });
   });
 });

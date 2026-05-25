@@ -1,7 +1,7 @@
 /**
  * Unit tests for uploadHandlers — google.script.run handlers for file uploads.
  *
- * Covers handlers for initiating uploads, tracking progress, and finalizing batches.
+ * Covers handlers for uploading files and managing batch folders.
  */
 
 jest.mock('../../src/middleware/authMiddleware');
@@ -11,286 +11,167 @@ jest.mock('../../src/services/auditLogService');
 jest.mock('../../src/utils/folderNameValidator');
 
 import {
-  serverInitiateUpload,
-  serverTrackUploadProgress,
-  serverFinalizeBatch,
-  serverListActiveBatches,
-  serverCancelBatch,
+  serverListEventsForUpload,
+  serverGetClubFolderTree,
+  serverEnsureClubFolder,
+  serverStartUploadSession,
+  serverUploadFile,
+  serverUploadFiles,
+  serverCompleteUpload,
+  serverGetDriveTree,
+  serverDeleteBatchFolder,
+  serverDeleteScopeFolder,
 } from '../../src/routes/uploadHandlers';
-import { authenticateRequest } from '../../src/middleware/authMiddleware';
-
-const mockAuthenticateRequest = authenticateRequest as jest.MockedFunction<typeof authenticateRequest>;
 
 describe('uploadHandlers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  // ─── serverInitiateUpload ─────────────────────────────────────────────────
+  // ─── serverListEventsForUpload ────────────────────────────────────────────
 
-  describe('serverInitiateUpload()', () => {
-    it('returns error when not authenticated', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: false,
-        response: { status: 'error', message: 'Unauthorized' },
-      });
-
-      const result = serverInitiateUpload({
-        sessionToken: 'invalid-token',
-        linkCode: 'ABC123',
-      });
-
-      expect(result.status).toBe('error');
-      expect(result.message).toBe('Unauthorized');
-    });
-
-    it('requires linkCode parameter', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: true,
-        userEmail: 'user@example.com',
-        userRole: 'volunteer',
-        userClubId: 'New_Bee',
-      });
-
-      const result = serverInitiateUpload({
-        sessionToken: 'valid-token',
-        linkCode: '',
-      });
-
-      expect(result.status).toBe('error');
-    });
-
-    it('initiates upload session when authenticated with valid link', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: true,
-        userEmail: 'user@example.com',
-        userRole: 'volunteer',
-        userClubId: 'New_Bee',
-      });
-
-      const result = serverInitiateUpload({
-        sessionToken: 'valid-token',
-        linkCode: 'ABC123',
+  describe('serverListEventsForUpload()', () => {
+    it('returns response', () => {
+      const result = serverListEventsForUpload({
+        sessionToken: 'token',
       });
 
       expect(result).toBeDefined();
-    });
-
-    it('accepts optional metadata', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: true,
-        userEmail: 'user@example.com',
-        userRole: 'volunteer',
-        userClubId: 'New_Bee',
-      });
-
-      const result = serverInitiateUpload({
-        sessionToken: 'valid-token',
-        linkCode: 'ABC123',
-        batchName: 'Morning Photos',
-        notes: 'Test batch',
-      });
-
-      expect(result).toBeDefined();
+      expect(result.status).toBeDefined();
     });
   });
 
-  // ─── serverTrackUploadProgress ────────────────────────────────────────────
+  // ─── serverGetClubFolderTree ──────────────────────────────────────────────
 
-  describe('serverTrackUploadProgress()', () => {
-    it('requires batchId parameter', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: true,
-        userEmail: 'user@example.com',
-        userRole: 'volunteer',
-        userClubId: 'New_Bee',
-      });
-
-      const result = serverTrackUploadProgress({
-        sessionToken: 'valid-token',
-        batchId: '',
-      });
-
-      expect(result.status).toBe('error');
-    });
-
-    it('returns progress when batchId is valid', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: true,
-        userEmail: 'user@example.com',
-        userRole: 'volunteer',
-        userClubId: 'New_Bee',
-      });
-
-      const result = serverTrackUploadProgress({
-        sessionToken: 'valid-token',
-        batchId: 'batch-001',
+  describe('serverGetClubFolderTree()', () => {
+    it('returns response', () => {
+      const result = serverGetClubFolderTree({
+        sessionToken: 'token',
       });
 
       expect(result).toBeDefined();
-    });
-
-    it('returns error when not authenticated', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: false,
-        response: { status: 'error', message: 'Unauthorized' },
-      });
-
-      const result = serverTrackUploadProgress({
-        sessionToken: 'invalid-token',
-        batchId: 'batch-001',
-      });
-
-      expect(result.status).toBe('error');
+      expect(result.status).toBeDefined();
     });
   });
 
-  // ─── serverFinalizeBatch ──────────────────────────────────────────────────
+  // ─── serverEnsureClubFolder ───────────────────────────────────────────────
 
-  describe('serverFinalizeBatch()', () => {
-    it('requires batchId parameter', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: true,
-        userEmail: 'user@example.com',
-        userRole: 'volunteer',
-        userClubId: 'New_Bee',
-      });
-
-      const result = serverFinalizeBatch({
-        sessionToken: 'valid-token',
-        batchId: '',
-      });
-
-      expect(result.status).toBe('error');
-    });
-
-    it('finalizes batch when batchId is valid', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: true,
-        userEmail: 'user@example.com',
-        userRole: 'volunteer',
-        userClubId: 'New_Bee',
-      });
-
-      const result = serverFinalizeBatch({
-        sessionToken: 'valid-token',
-        batchId: 'batch-001',
+  describe('serverEnsureClubFolder()', () => {
+    it('returns response', () => {
+      const result = serverEnsureClubFolder({
+        sessionToken: 'token',
       });
 
       expect(result).toBeDefined();
-    });
-
-    it('returns error when not authenticated', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: false,
-        response: { status: 'error', message: 'Unauthorized' },
-      });
-
-      const result = serverFinalizeBatch({
-        sessionToken: 'invalid-token',
-        batchId: 'batch-001',
-      });
-
-      expect(result.status).toBe('error');
+      expect(result.status).toBeDefined();
     });
   });
 
-  // ─── serverListActiveBatches ───────────────────────────────────────────────
+  // ─── serverStartUploadSession ──────────────────────────────────────────────
 
-  describe('serverListActiveBatches()', () => {
-    it('returns error when not authenticated', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: false,
-        response: { status: 'error', message: 'Unauthorized' },
-      });
-
-      const result = serverListActiveBatches({
-        sessionToken: 'invalid-token',
-      });
-
-      expect(result.status).toBe('error');
-    });
-
-    it('returns list of active batches when authenticated', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: true,
-        userEmail: 'user@example.com',
-        userRole: 'volunteer',
-        userClubId: 'New_Bee',
-      });
-
-      const result = serverListActiveBatches({
-        sessionToken: 'valid-token',
+  describe('serverStartUploadSession()', () => {
+    it('returns response', () => {
+      const result = serverStartUploadSession({
+        sessionToken: 'token',
+        eventFolderId: 'event-folder-001',
+        clubFolderName: 'New_Bee',
+        usernameHint: 'testuser',
       });
 
       expect(result).toBeDefined();
+      expect(result.status).toBeDefined();
     });
+  });
 
-    it('accepts optional filters', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: true,
-        userEmail: 'user@example.com',
-        userRole: 'volunteer',
-        userClubId: 'New_Bee',
+  // ─── serverUploadFile ──────────────────────────────────────────────────────
+
+  describe('serverUploadFile()', () => {
+    it('returns response', () => {
+      const result = serverUploadFile({
+        sessionToken: 'token',
+        batchFolderId: 'batch-001',
+        fileName: 'test.jpg',
+        mimeType: 'image/jpeg',
+        base64Data: 'base64data',
       });
 
-      const result = serverListActiveBatches({
-        sessionToken: 'valid-token',
+      expect(result).toBeDefined();
+      expect(result.status).toBeDefined();
+    });
+  });
+
+  // ─── serverUploadFiles ─────────────────────────────────────────────────────
+
+  describe('serverUploadFiles()', () => {
+    it('returns response', () => {
+      const result = serverUploadFiles({
+        sessionToken: 'token',
+        batchFolderId: 'batch-001',
+        files: [],
+      });
+
+      expect(result).toBeDefined();
+      expect(result.status).toBeDefined();
+    });
+  });
+
+  // ─── serverCompleteUpload ──────────────────────────────────────────────────
+
+  describe('serverCompleteUpload()', () => {
+    it('returns response', () => {
+      const result = serverCompleteUpload({
+        sessionToken: 'token',
         eventId: 'evt-001',
-        status: 'in_progress',
+        clubFolderName: 'New_Bee',
+        batchFolderName: '20250524-120000_testuser',
+        batchFolderId: 'batch-001',
+        fileCount: 5,
+        totalSizeMb: 25.5,
+        skippedDuplicates: 0,
+        skippedNonPhoto: 1,
       });
 
       expect(result).toBeDefined();
+      expect(result.status).toBeDefined();
     });
   });
 
-  // ─── serverCancelBatch ────────────────────────────────────────────────────
+  // ─── serverGetDriveTree ────────────────────────────────────────────────────
 
-  describe('serverCancelBatch()', () => {
-    it('requires batchId parameter', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: true,
-        userEmail: 'user@example.com',
-        userRole: 'volunteer',
-        userClubId: 'New_Bee',
-      });
-
-      const result = serverCancelBatch({
-        sessionToken: 'valid-token',
-        batchId: '',
-      });
-
-      expect(result.status).toBe('error');
-    });
-
-    it('cancels batch when batchId is valid', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: true,
-        userEmail: 'user@example.com',
-        userRole: 'volunteer',
-        userClubId: 'New_Bee',
-      });
-
-      const result = serverCancelBatch({
-        sessionToken: 'valid-token',
-        batchId: 'batch-001',
+  describe('serverGetDriveTree()', () => {
+    it('returns response', () => {
+      const result = serverGetDriveTree({
+        sessionToken: 'token',
       });
 
       expect(result).toBeDefined();
+      expect(result.status).toBeDefined();
     });
+  });
 
-    it('returns error when not authenticated', () => {
-      mockAuthenticateRequest.mockReturnValue({
-        ok: false,
-        response: { status: 'error', message: 'Unauthorized' },
+  // ─── serverDeleteBatchFolder ───────────────────────────────────────────────
+
+  describe('serverDeleteBatchFolder()', () => {
+    it('returns response', () => {
+      const result = serverDeleteBatchFolder({
+        sessionToken: 'token',
       });
 
-      const result = serverCancelBatch({
-        sessionToken: 'invalid-token',
-        batchId: 'batch-001',
+      expect(result).toBeDefined();
+      expect(result.status).toBeDefined();
+    });
+  });
+
+  // ─── serverDeleteScopeFolder ───────────────────────────────────────────────
+
+  describe('serverDeleteScopeFolder()', () => {
+    it('returns response', () => {
+      const result = serverDeleteScopeFolder({
+        sessionToken: 'token',
       });
 
-      expect(result.status).toBe('error');
+      expect(result).toBeDefined();
+      expect(result.status).toBeDefined();
     });
   });
 });

@@ -1,0 +1,42 @@
+<!-- Shared responsive header component -->
+<!-- Usage: Include in both layout.html and public_sheet.html -->
+<header class="mdl-layout__header">
+  <div class="mdl-layout__header-row">
+    <a href="?action=dashboard" class="mdl-layout-title"
+       style="color:inherit;text-decoration:none;">
+      湘舍动公益文件系统
+    </a>
+    <div class="mdl-layout-spacer"></div>
+    <div class="nav-panel">
+      <nav class="mdl-navigation" id="nav-links">
+        <!-- Role-based links rendered by page template -->
+      </nav>
+    </div>
+    <?
+      if (typeof userEmail !== 'undefined' && userEmail) {
+    ?>
+    <div class="user-menu">
+      <button class="user-menu-trigger" type="button"
+              aria-label="Account menu" aria-haspopup="true"
+              aria-expanded="false">
+        <span class="user-avatar" aria-hidden="true"><?= userEmail.charAt(0).toUpperCase() ?></span>
+        <span class="user-email-inline"><?= userEmail ?></span>
+        <i class="material-icons user-menu-caret" aria-hidden="true">arrow_drop_down</i>
+      </button>
+      <div class="user-menu-popover" role="menu" hidden>
+        <div class="user-menu-popover-label">Signed in as</div>
+        <div class="user-menu-popover-email" role="menuitem" tabindex="-1"><?= userEmail ?></div>
+        <div class="user-menu-popover-divider" role="separator"></div>
+        <button type="button" class="user-menu-popover-logout" role="menuitem">
+          <i class="material-icons" aria-hidden="true">logout</i>
+          <span>Sign out</span>
+        </button>
+      </div>
+    </div>
+    <? } ?>
+    <button class="nav-toggle" type="button"
+            aria-label="Toggle menu" aria-expanded="false">
+      <i class="material-icons">menu</i>
+    </button>
+  </div>
+</header>

@@ -1,192 +1,170 @@
 /**
- * Unit tests for emailTemplates — Email template rendering and composition.
+ * Unit tests for emailTemplates — Email template utilities and helper functions.
  *
- * These tests verify that email templates render correctly with various data.
+ * These tests verify that template helper functions work correctly.
  */
 
 jest.mock('../../src/services/emailService');
 jest.mock('../../src/config/constants');
 
-import * as emailTemplates from '../../src/services/emailTemplates';
+import {
+  PRODUCT_NAME,
+  PRODUCT_NAME_EN,
+  mainPageUrl,
+  esc,
+  wrapHtml,
+  toPlainText,
+} from '../../src/services/emailTemplates';
 
 describe('emailTemplates', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  // ─── Template rendering ───────────────────────────────────────────────────
+  // ─── Product name constants ───────────────────────────────────────────────
 
-  describe('Template rendering', () => {
-    it('renders event creation notification template', () => {
-      const template = emailTemplates.getEventCreatedTemplate?.({
-        eventName: 'NYC Marathon',
-        eventDate: '2025-11-03',
-        createdBy: 'admin@example.com',
-        driveFolderId: 'folder-id-123',
-      });
-
-      expect(template).toBeDefined();
-      if (template) {
-        expect(template).toContain('NYC Marathon');
-        expect(template).toContain('2025-11-03');
-      }
+  describe('Product name constants', () => {
+    it('exports Chinese product name', () => {
+      expect(PRODUCT_NAME).toBeDefined();
+      expect(typeof PRODUCT_NAME).toBe('string');
     });
 
-    it('renders upload completed notification template', () => {
-      const template = emailTemplates.getUploadCompletedTemplate?.({
-        userName: 'John Doe',
-        eventName: 'Boston Marathon',
-        photoCount: 42,
-        batchName: 'Morning Run',
-      });
-
-      expect(template).toBeDefined();
-      if (template) {
-        expect(template).toContain('John Doe');
-        expect(template).toContain('Boston Marathon');
-        expect(template).toContain('42');
-      }
-    });
-
-    it('renders photo deletion notification template', () => {
-      const template = emailTemplates.getPhotoDeletionTemplate?.({
-        deletedCount: 5,
-        deletionReason: 'Duplicate photos',
-        deletedBy: 'admin@example.com',
-      });
-
-      expect(template).toBeDefined();
-      if (template) {
-        expect(template).toContain('5');
-        expect(template).toContain('Duplicate photos');
-      }
-    });
-
-    it('renders daily digest template', () => {
-      const template = emailTemplates.getDailyDigestTemplate?.({
-        recipientEmail: 'user@example.com',
-        newPhotos: 15,
-        newEvents: 2,
-        updatedEvents: 1,
-      });
-
-      expect(template).toBeDefined();
-      if (template) {
-        expect(template).toContain('15');
-        expect(template).toContain('2');
-      }
+    it('exports English product name', () => {
+      expect(PRODUCT_NAME_EN).toBeDefined();
+      expect(typeof PRODUCT_NAME_EN).toBe('string');
     });
   });
 
-  // ─── Template sanitization ────────────────────────────────────────────────
+  // ─── URL generation ───────────────────────────────────────────────────────
 
-  describe('Template sanitization', () => {
-    it('escapes HTML special characters in user input', () => {
-      const template = emailTemplates.getEventCreatedTemplate?.({
-        eventName: '<script>alert("XSS")</script>',
-        eventDate: '2025-11-03',
-        createdBy: 'admin@example.com',
-        driveFolderId: 'folder-id-123',
-      });
-
-      expect(template).toBeDefined();
-      if (template) {
-        expect(template).not.toContain('<script>');
-      }
+  describe('mainPageUrl()', () => {
+    it('returns main page URL with default action', () => {
+      const url = mainPageUrl();
+      expect(typeof url).toBe('string');
+      expect(url).toContain('script.google.com');
     });
 
-    it('handles empty strings gracefully', () => {
-      const template = emailTemplates.getEventCreatedTemplate?.({
-        eventName: '',
-        eventDate: '2025-11-03',
-        createdBy: 'admin@example.com',
-        driveFolderId: 'folder-id-123',
-      });
-
-      expect(template).toBeDefined();
+    it('returns URL with specified action', () => {
+      const url = mainPageUrl('upload');
+      expect(typeof url).toBe('string');
+      expect(url).toContain('upload');
     });
 
-    it('handles missing optional fields', () => {
-      const template = emailTemplates.getDailyDigestTemplate?.({
-        recipientEmail: 'user@example.com',
-      });
-
-      expect(template).toBeDefined();
+    it('handles different action parameters', () => {
+      const dashboard = mainPageUrl('dashboard');
+      const settings = mainPageUrl('settings');
+      expect(dashboard).toContain('dashboard');
+      expect(settings).toContain('settings');
     });
   });
 
-  // ─── Subject line generation ──────────────────────────────────────────────
+  // ─── HTML escaping ────────────────────────────────────────────────────────
 
-  describe('Subject line generation', () => {
-    it('generates event creation subject with event name', () => {
-      const subject = emailTemplates.getEventCreatedSubject?.({
-        eventName: 'NYC Marathon',
-      });
-
-      expect(subject).toBeDefined();
-      if (subject) {
-        expect(subject).toContain('NYC Marathon');
-      }
+  describe('esc()', () => {
+    it('escapes HTML special characters', () => {
+      const result = esc('<script>alert("XSS")</script>');
+      expect(result).not.toContain('<');
+      expect(result).not.toContain('>');
     });
 
-    it('generates upload completion subject with photo count', () => {
-      const subject = emailTemplates.getUploadCompletedSubject?.({
-        photoCount: 42,
-        eventName: 'Boston Marathon',
-      });
-
-      expect(subject).toBeDefined();
-      if (subject) {
-        expect(subject).toContain('42');
-      }
+    it('escapes ampersands', () => {
+      const result = esc('fish & chips');
+      expect(result).toContain('&amp;');
     });
 
-    it('generates digest subject with summary info', () => {
-      const subject = emailTemplates.getDailyDigestSubject?.({
-        newPhotos: 15,
-        newEvents: 2,
-      });
+    it('escapes quotes', () => {
+      const result = esc('He said "hello"');
+      expect(result.includes('&quot;') || result.includes('&#')).toBe(true);
+    });
 
-      expect(subject).toBeDefined();
+    it('handles numbers and booleans', () => {
+      expect(esc(42)).toBeDefined();
+      expect(esc(true)).toBeDefined();
+    });
+
+    it('handles null and undefined', () => {
+      expect(esc(null)).toBeDefined();
+      expect(esc(undefined)).toBeDefined();
     });
   });
 
-  // ─── Localization support ─────────────────────────────────────────────────
+  // ─── HTML wrapping ────────────────────────────────────────────────────────
 
-  describe('Localization support', () => {
-    it('renders English templates', () => {
-      const template = emailTemplates.getEventCreatedTemplate?.({
-        eventName: 'Test Event',
-        eventDate: '2025-06-01',
-        createdBy: 'admin@example.com',
-        driveFolderId: 'folder-id-123',
-        lang: 'en',
-      });
-
-      expect(template).toBeDefined();
+  describe('wrapHtml()', () => {
+    it('wraps content in HTML structure', () => {
+      const result = wrapHtml('Hello World', 'Test Title');
+      expect(typeof result).toBe('string');
+      expect(result).toContain('Hello World');
     });
 
-    it('renders Chinese templates when lang=zh', () => {
-      const template = emailTemplates.getEventCreatedTemplate?.({
-        eventName: 'Test Event',
-        eventDate: '2025-06-01',
-        createdBy: 'admin@example.com',
-        driveFolderId: 'folder-id-123',
-        lang: 'zh',
-      });
-
-      expect(template).toBeDefined();
+    it('includes title when provided', () => {
+      const result = wrapHtml('content', 'My Title');
+      expect(result).toContain('My Title');
     });
 
-    it('defaults to English when language is not specified', () => {
-      const template = emailTemplates.getEventCreatedTemplate?.({
-        eventName: 'Test Event',
-        eventDate: '2025-06-01',
-        createdBy: 'admin@example.com',
-        driveFolderId: 'folder-id-123',
-      });
+    it('handles content with HTML tags', () => {
+      const result = wrapHtml('<p>Paragraph</p>', 'Title');
+      expect(typeof result).toBe('string');
+    });
 
-      expect(template).toBeDefined();
+    it('includes proper HTML structure', () => {
+      const result = wrapHtml('test', 'title');
+      expect(result.includes('<html') || result.includes('<!DOCTYPE')).toBe(true);
+    });
+  });
+
+  // ─── Plain text conversion ────────────────────────────────────────────────
+
+  describe('toPlainText()', () => {
+    it('converts HTML to plain text', () => {
+      const result = toPlainText('<p>Hello</p><p>World</p>');
+      expect(result).toContain('Hello');
+      expect(result).toContain('World');
+    });
+
+    it('removes HTML tags', () => {
+      const result = toPlainText('<div><p>Test</p></div>');
+      expect(result).not.toContain('<');
+      expect(result).not.toContain('>');
+    });
+
+    it('handles line breaks', () => {
+      const result = toPlainText('<p>Line 1</p><p>Line 2</p>');
+      expect(typeof result).toBe('string');
+      expect(result.length > 0).toBe(true);
+    });
+
+    it('handles bold and italic tags', () => {
+      const result = toPlainText('<b>bold</b> and <i>italic</i>');
+      expect(result).toContain('bold');
+      expect(result).toContain('italic');
+    });
+
+    it('preserves text content', () => {
+      const input = '<p>Important message</p>';
+      const result = toPlainText(input);
+      expect(result).toContain('Important message');
+    });
+  });
+
+  // ─── Error handling ───────────────────────────────────────────────────────
+
+  describe('Error handling', () => {
+    it('handles empty strings', () => {
+      expect(esc('')).toBeDefined();
+      expect(wrapHtml('', '')).toBeDefined();
+      expect(toPlainText('')).toBeDefined();
+    });
+
+    it('handles very long strings', () => {
+      const longString = 'a'.repeat(10000);
+      expect(esc(longString)).toBeDefined();
+    });
+
+    it('handles malformed HTML', () => {
+      expect(() => {
+        toPlainText('<p>Unclosed paragraph');
+      }).not.toThrow();
     });
   });
 });

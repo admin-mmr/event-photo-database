@@ -10,25 +10,10 @@ jest.mock('../../src/services/uploadLinkService');
 jest.mock('../../src/middleware/inputValidator');
 jest.mock('../../src/config/constants');
 
-import { mockContentService } from '../mocks/gasGlobals';
-
 describe('uploadPrepRoutes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
-
-  // ─── Helper ───────────────────────────────────────────────────────────────
-
-  function extractJsonBody(_output: GoogleAppsScript.Content.TextOutput): Record<string, unknown> {
-    const calls = mockContentService.createTextOutput.mock.calls;
-    if (calls.length === 0) return {};
-    const lastArg = calls[calls.length - 1][0] as string;
-    try {
-      return JSON.parse(lastArg) as Record<string, unknown>;
-    } catch {
-      return {};
-    }
-  }
 
   // ─── Route handlers ────────────────────────────────────────────────────────
 

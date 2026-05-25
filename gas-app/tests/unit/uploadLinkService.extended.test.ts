@@ -8,8 +8,6 @@ jest.mock('../../src/services/sheetService');
 jest.mock('../../src/services/sessionService');
 jest.mock('../../src/utils/uuid');
 
-import { ResultStatus } from '../../src/types/enums';
-
 describe('uploadLinkService (extended)', () => {
   beforeEach(() => {
     jest.clearAllMocks();

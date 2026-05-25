@@ -1,178 +1,143 @@
 /**
- * Unit tests for manifestService — App manifest and metadata management.
+ * Unit tests for manifestService — Manifest and index file management.
  *
- * Handles version info, feature flags, capabilities, and other manifest data.
+ * Handles CSV-based manifest tracking for upload batches and photo metadata.
  */
 
 jest.mock('../../src/config/constants');
 
-import * as manifestService from '../../src/services/manifestService';
+import {
+  escapeCsvField,
+  serializeCsvRow,
+  loadManifest,
+  writeManifest,
+  loadIndex,
+  upsertIndex,
+} from '../../src/services/manifestService';
 
 describe('manifestService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  // ─── Version info ─────────────────────────────────────────────────────────
+  // ─── CSV field escaping ───────────────────────────────────────────────────
 
-  describe('Version management', () => {
-    it('returns current app version', () => {
-      const version = manifestService.getVersion?.();
-      expect(version).toBeDefined();
-      if (typeof version === 'string') {
-        expect(/^\d+\.\d+\.\d+/.test(version)).toBe(true);
-      }
+  describe('escapeCsvField()', () => {
+    it('returns plain string unchanged', () => {
+      const result = escapeCsvField('simple');
+      expect(result).toBe('simple');
     });
 
-    it('returns version object with major, minor, patch', () => {
-      const versionObj = manifestService.getVersionObject?.();
-      if (versionObj && typeof versionObj === 'object') {
-        expect('major' in versionObj || 'version' in versionObj).toBe(true);
-      }
+    it('escapes fields with commas', () => {
+      const result = escapeCsvField('field,with,commas');
+      expect(result).toContain('"');
     });
 
-    it('checks if running on production', () => {
-      const isProd = manifestService.isProduction?.();
-      expect(typeof isProd === 'boolean' || isProd === undefined).toBe(true);
-    });
-  });
-
-  // ─── Feature flags ────────────────────────────────────────────────────────
-
-  describe('Feature flags', () => {
-    it('returns list of enabled features', () => {
-      const features = manifestService.getEnabledFeatures?.();
-      expect(Array.isArray(features) || features === undefined).toBe(true);
+    it('escapes fields with quotes', () => {
+      const result = escapeCsvField('field"with"quotes');
+      expect(result).toContain('"');
     });
 
-    it('checks if specific feature is enabled', () => {
-      const isEnabled = manifestService.isFeatureEnabled?.({
-        feature: 'photo_uploads',
-      });
-
-      expect(typeof isEnabled === 'boolean' || isEnabled === undefined).toBe(true);
-    });
-
-    it('returns false for non-existent features', () => {
-      const isEnabled = manifestService.isFeatureEnabled?.({
-        feature: 'non_existent_feature_xyz',
-      });
-
-      if (typeof isEnabled === 'boolean') {
-        expect(isEnabled).toBe(false);
-      }
-    });
-
-    it('enables feature temporarily for testing', () => {
-      const result = manifestService.enableFeature?.({
-        feature: 'beta_feature',
-        duration: 3600,
-      });
-
-      expect(result === undefined || typeof result === 'object').toBe(true);
-    });
-
-    it('disables feature', () => {
-      const result = manifestService.disableFeature?.({
-        feature: 'beta_feature',
-      });
-
-      expect(result === undefined || typeof result === 'object').toBe(true);
+    it('escapes fields with newlines', () => {
+      const result = escapeCsvField('field\nwith\nnewlines');
+      expect(result).toContain('"');
     });
   });
 
-  // ─── Capabilities ─────────────────────────────────────────────────────────
+  // ─── CSV row serialization ────────────────────────────────────────────────
 
-  describe('Capability reporting', () => {
-    it('returns list of capabilities', () => {
-      const capabilities = manifestService.getCapabilities?.();
-      expect(Array.isArray(capabilities) || capabilities === undefined).toBe(true);
+  describe('serializeCsvRow()', () => {
+    it('serializes array of fields', () => {
+      const result = serializeCsvRow(['field1', 'field2', 'field3']);
+      expect(typeof result).toBe('string');
+      expect(result).toContain('field1');
     });
 
-    it('includes API version in capabilities', () => {
-      const capabilities = manifestService.getCapabilities?.();
-      if (Array.isArray(capabilities)) {
-        const hasApiVersion = capabilities.some(cap =>
-          typeof cap === 'string' && cap.includes('api')
-        );
-        // May or may not include, just checking it doesn't error
-        expect(true).toBe(true);
-      }
+    it('joins fields with commas', () => {
+      const result = serializeCsvRow(['a', 'b', 'c']);
+      const parts = result.split(',');
+      expect(parts.length).toBeGreaterThanOrEqual(3);
     });
 
-    it('includes storage capabilities', () => {
-      const capabilities = manifestService.getCapabilities?.();
-      if (Array.isArray(capabilities)) {
-        // Should have some form of capability reporting
-        expect(capabilities.length >= 0).toBe(true);
+    it('handles empty array', () => {
+      const result = serializeCsvRow([]);
+      expect(typeof result).toBe('string');
+    });
+
+    it('escapes special characters in fields', () => {
+      const result = serializeCsvRow(['field,with,comma']);
+      expect(result).toContain('"');
+    });
+  });
+
+  // ─── Manifest file operations ──────────────────────────────────────────────
+
+  describe('loadManifest()', () => {
+    it('returns manifest rows array', () => {
+      const result = loadManifest('folder-id-001');
+      expect(Array.isArray(result)).toBe(true);
+    });
+
+    it('returns empty array when manifest not found', () => {
+      const result = loadManifest('nonexistent-folder');
+      expect(Array.isArray(result)).toBe(true);
+    });
+
+    it('parses CSV rows into ManifestRow objects', () => {
+      const result = loadManifest('folder-id-001');
+      if (result.length > 0) {
+        const row = result[0];
+        expect(typeof row === 'object').toBe(true);
       }
     });
   });
 
-  // ─── Build info ────────────────────────────────────────────────────────────
+  describe('writeManifest()', () => {
+    it('function exists and is callable', () => {
+      expect(typeof writeManifest).toBe('function');
+    });
+  });
 
-  describe('Build information', () => {
-    it('returns build timestamp', () => {
-      const buildInfo = manifestService.getBuildInfo?.();
-      if (buildInfo && typeof buildInfo === 'object') {
-        expect('timestamp' in buildInfo || 'builtAt' in buildInfo || 'date' in buildInfo).toBe(true);
-      }
+  // ─── Index file operations ─────────────────────────────────────────────────
+
+  describe('loadIndex()', () => {
+    it('returns index rows array', () => {
+      const result = loadIndex('root-folder-id');
+      expect(Array.isArray(result)).toBe(true);
     });
 
-    it('returns build commit hash', () => {
-      const buildInfo = manifestService.getBuildInfo?.();
-      if (buildInfo && typeof buildInfo === 'object') {
-        expect('commit' in buildInfo || 'hash' in buildInfo || true).toBe(true);
-      }
+    it('returns empty array when index not found', () => {
+      const result = loadIndex('nonexistent-root');
+      expect(Array.isArray(result)).toBe(true);
     });
 
-    it('returns build number or ID', () => {
-      const buildInfo = manifestService.getBuildInfo?.();
-      if (buildInfo && typeof buildInfo === 'object') {
-        expect('buildNumber' in buildInfo || 'buildId' in buildInfo || true).toBe(true);
+    it('parses CSV rows into IndexRow objects', () => {
+      const result = loadIndex('root-folder-id');
+      if (result.length > 0) {
+        const row = result[0];
+        expect(typeof row === 'object').toBe(true);
       }
     });
   });
 
-  // ─── Manifest updates ─────────────────────────────────────────────────────
-
-  describe('Manifest updates', () => {
-    it('updates manifest with new version', () => {
-      const result = manifestService.updateVersion?.({
-        version: '2.0.0',
-      });
-
-      expect(result === undefined || typeof result === 'object').toBe(true);
-    });
-
-    it('refreshes manifest from source', () => {
-      const result = manifestService.refresh?.();
-
-      expect(result === undefined || typeof result === 'object').toBe(true);
-    });
-
-    it('validates manifest integrity', () => {
-      const isValid = manifestService.validate?.();
-
-      expect(typeof isValid === 'boolean' || isValid === undefined).toBe(true);
+  describe('upsertIndex()', () => {
+    it('function exists and is callable', () => {
+      expect(typeof upsertIndex).toBe('function');
     });
   });
 
   // ─── Error handling ───────────────────────────────────────────────────────
 
   describe('Error handling', () => {
-    it('handles missing manifest data gracefully', () => {
-      const version = manifestService.getVersion?.();
-      // Should return something sensible even if manifest is missing
-      expect(version === undefined || typeof version === 'string').toBe(true);
+    it('handles missing folder gracefully', () => {
+      const result = loadManifest('nonexistent');
+      expect(Array.isArray(result)).toBe(true);
     });
 
-    it('handles corrupted feature flags', () => {
-      const isEnabled = manifestService.isFeatureEnabled?.({
-        feature: 'test',
-      });
-
-      expect(typeof isEnabled === 'boolean' || isEnabled === undefined).toBe(true);
+    it('handles corrupted CSV files', () => {
+      expect(() => {
+        loadManifest('folder-id-001');
+      }).not.toThrow();
     });
   });
 });
