@@ -217,6 +217,26 @@ export function listAllSpecialFolders(): SpecialFolderRecord[] {
 }
 
 /**
+ * Returns the ISO 8601 timestamp of the most recently refreshed Special_Folders
+ * record, or null when the sheet is empty.
+ *
+ * Used by the lazy public-sheet refresh trigger: if every Special_Folders row
+ * has a lastRefreshedAt that is >= the latest Upload_Log uploadTimestamp, the
+ * public sheet is already current and the refresh can be skipped.
+ */
+export function getLatestRefreshedAt(): string | null {
+  const records = loadAllSpecialFolders().records;
+  let latest: string | null = null;
+  for (const r of records) {
+    if (!r.lastRefreshedAt) continue;
+    if (latest === null || r.lastRefreshedAt > latest) {
+      latest = r.lastRefreshedAt;
+    }
+  }
+  return latest;
+}
+
+/**
  * Upserts a Special_Folders row keyed by folderId. Appends a new row when
  * folderId isn't yet present, otherwise updates the existing row in place.
  *

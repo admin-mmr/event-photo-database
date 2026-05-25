@@ -33,7 +33,11 @@ import { handleGet, handlePost } from './routes/router';
 import { purgeDeletedFiles as _purgeDeletedFiles } from './services/deleteService';
 import { migrateFromLegacy } from './services/migrationService';
 import { rebuildPublicFoldersIndex as _rebuildPublicFoldersIndex } from './services/publicSpreadsheetService';
-import { backfillSpecialFoldersSharing as _backfillSpecialFoldersSharing } from './services/specialFoldersService';
+import {
+  backfillSpecialFoldersSharing as _backfillSpecialFoldersSharing,
+  getLatestRefreshedAt,
+} from './services/specialFoldersService';
+import { getLatestUploadTimestamp } from './services/uploadLogService';
 import { getSuperAdmins } from './config/superAdmins';
 import { showUploadPrepSidebar as _showUploadPrepSidebar } from './routes/uploadPrepRoutes';
 import {
@@ -272,17 +276,26 @@ export function scheduledPublicSheetRefresh(): void {
 }
 
 /**
- * Installs the 30-minute time-driven trigger for scheduledPublicSheetRefresh.
+ * Installs the 2-hour time-driven trigger for scheduledPublicSheetRefresh
+ * (force update — always rewrites the public sheet unconditionally).
  *
  * Run ONCE from the GAS editor (Run → installPublicSheetRefreshTrigger) as the
  * script owner. Idempotent — if a trigger for this function already exists,
  * the existing one is removed first so we never accumulate duplicates.
  *
- * Why 30 minutes:
- *   The post-upload hook (serverCompleteVolunteerUpload) gives near-real-time
- *   freshness on the happy path. 30 minutes is short enough that a missed
- *   refresh is corrected before anyone notices, long enough that we don't
- *   burn through the daily GAS execution quota on idle hours.
+ * Why 2 hours:
+ *   Day-to-day freshness comes from two sources:
+ *     1. The post-upload hot path (tryRebuildPublicFoldersIndex after each
+ *        successful batch) — near-real-time on the happy path.
+ *     2. The lazy trigger (scheduledPublicSheetRefreshLazy, every 15 min) —
+ *        catches any upload whose hot-path hook misfired.
+ *   This force trigger is the last-resort safety net: it heals edge cases
+ *   the lazy check cannot see (e.g. a super-admin manually edited
+ *   Special_Folders, or an Upload_Log row has a corrupted timestamp). 2 hours
+ *   is more than enough for those rare scenarios without burning quota.
+ *
+ *   Run installPublicSheetRefreshLazyTrigger() as well to get the faster
+ *   lazy check alongside this force rebuild.
  *
  * Super-admin only — guarded by Session.getActiveUser() so a club_admin
  * who somehow reached this function can't reshape the deployment's triggers.
@@ -306,17 +319,17 @@ export function installPublicSheetRefreshTrigger(): void {
 
   ScriptApp.newTrigger('scheduledPublicSheetRefresh')
     .timeBased()
-    .everyMinutes(30)
+    .everyHours(2)
     .create();
 
   Logger.log(
     `[installPublicSheetRefreshTrigger] Installed — replaced ${removed} existing trigger(s); ` +
-    `next run within 30 minutes`
+    `next run within 2 hours`
   );
 }
 
 /**
- * Removes the scheduled trigger (e.g. before tearing down a deployment).
+ * Removes the force-update scheduled trigger (e.g. before tearing down a deployment).
  * Idempotent — removing when nothing is installed is a no-op.
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -334,6 +347,149 @@ export function removePublicSheetRefreshTrigger(): void {
     }
   }
   Logger.log(`[removePublicSheetRefreshTrigger] Removed ${removed} trigger(s)`);
+}
+
+// ─── Lazy public-sheet refresh trigger ──────────────────────────────────────
+
+/**
+ * Lazy variant of scheduledPublicSheetRefresh. Fires every 15 minutes but
+ * skips the actual rebuild when nothing new has arrived since the last
+ * shortcut sync — keeping quota consumption near-zero on days with no uploads.
+ *
+ * Decision rule (all comparisons are ISO 8601 string lexicographic, which is
+ * equivalent to chronological ordering for the timestamps we generate):
+ *
+ *   latestUpload  = max uploadTimestamp across all Upload_Log rows
+ *   latestRefresh = max lastRefreshedAt across all Special_Folders rows
+ *
+ *   if latestUpload is null           → no uploads ever; skip (nothing to publish)
+ *   if latestRefresh is null          → shortcuts not yet built; run rebuild
+ *   if latestUpload > latestRefresh   → new upload arrived after last shortcut
+ *                                       sync; run rebuild
+ *   otherwise                         → public sheet is current; skip
+ *
+ * Why this is sufficient:
+ *   On the happy upload path:
+ *     upload finishes → tryRebuildSpecialFoldersForBatch updates lastRefreshedAt
+ *     → tryRebuildPublicFoldersIndex rewrites the public sheet.
+ *   So normally latestRefresh ≥ latestUpload and this trigger is a pure no-op.
+ *   When the hot-path hook misfires (transient Drive error, GAS timeout),
+ *   latestUpload > latestRefresh and this trigger catches it within 15 min.
+ *
+ * Edge cases handled:
+ *   - Empty Upload_Log (no uploads ever) → safe skip; nothing to publish.
+ *   - Empty Special_Folders (shortcuts never built) → trigger runs so the
+ *     public sheet at least gets an up-to-date (empty) index.
+ *   - Corrupted/null timestamps → conservative: treated as "something may have
+ *     changed", trigger runs.
+ *
+ * Not callable from google.script.run — only the trigger framework invokes it.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function scheduledPublicSheetRefreshLazy(): void {
+  Logger.log('[scheduledPublicSheetRefreshLazy] Checking whether refresh is needed');
+
+  let latestUpload: string | null = null;
+  let latestRefresh: string | null = null;
+
+  try {
+    latestUpload = getLatestUploadTimestamp();
+  } catch (err) {
+    Logger.log(`[scheduledPublicSheetRefreshLazy] Could not read Upload_Log: ${String(err)} — running rebuild to be safe`);
+  }
+
+  try {
+    latestRefresh = getLatestRefreshedAt();
+  } catch (err) {
+    Logger.log(`[scheduledPublicSheetRefreshLazy] Could not read Special_Folders: ${String(err)} — running rebuild to be safe`);
+  }
+
+  // No uploads at all — nothing to publish yet.
+  if (latestUpload === null) {
+    Logger.log('[scheduledPublicSheetRefreshLazy] Upload_Log is empty — skipping (nothing to publish)');
+    return;
+  }
+
+  // latestRefresh being null means shortcuts have never been built yet — run so
+  // the public sheet at least renders an empty (but valid) index.
+  if (latestRefresh !== null && latestUpload <= latestRefresh) {
+    Logger.log(
+      `[scheduledPublicSheetRefreshLazy] Up to date ` +
+      `(latestUpload=${latestUpload} ≤ latestRefresh=${latestRefresh}) — skipping`
+    );
+    return;
+  }
+
+  Logger.log(
+    `[scheduledPublicSheetRefreshLazy] Stale detected ` +
+    `(latestUpload=${latestUpload ?? 'n/a'}, latestRefresh=${latestRefresh ?? 'none'}) — rebuilding`
+  );
+
+  try {
+    const rows = _rebuildPublicFoldersIndex();
+    Logger.log(`[scheduledPublicSheetRefreshLazy] Wrote ${rows} row(s) to public sheet`);
+  } catch (err) {
+    Logger.log(`[scheduledPublicSheetRefreshLazy] Public sheet rewrite failed: ${String(err)}`);
+  }
+}
+
+/**
+ * Installs the 15-minute time-driven trigger for scheduledPublicSheetRefreshLazy.
+ *
+ * Run ONCE from the GAS editor alongside installPublicSheetRefreshTrigger().
+ * Idempotent — removes any pre-existing trigger for the same handler first.
+ *
+ * Why 15 minutes:
+ *   The lazy check is extremely cheap: two sheet reads + a string compare.
+ *   Running every 15 minutes means a missed hot-path refresh is visible to
+ *   public viewers within 15 minutes, without meaningful quota cost on days
+ *   with no activity (the trigger bails in milliseconds when nothing changed).
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function installPublicSheetRefreshLazyTrigger(): void {
+  const callerEmail = Session.getActiveUser().getEmail();
+  if (!getSuperAdmins().includes(callerEmail.toLowerCase())) {
+    Logger.log(`[installPublicSheetRefreshLazyTrigger] Permission denied for ${callerEmail}`);
+    return;
+  }
+
+  let removed = 0;
+  for (const t of ScriptApp.getProjectTriggers()) {
+    if (t.getHandlerFunction() === 'scheduledPublicSheetRefreshLazy') {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
+  }
+
+  ScriptApp.newTrigger('scheduledPublicSheetRefreshLazy')
+    .timeBased()
+    .everyMinutes(15)
+    .create();
+
+  Logger.log(
+    `[installPublicSheetRefreshLazyTrigger] Installed — replaced ${removed} existing trigger(s); ` +
+    `next run within 15 minutes`
+  );
+}
+
+/**
+ * Removes the lazy scheduled trigger. Idempotent.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function removePublicSheetRefreshLazyTrigger(): void {
+  const callerEmail = Session.getActiveUser().getEmail();
+  if (!getSuperAdmins().includes(callerEmail.toLowerCase())) {
+    Logger.log(`[removePublicSheetRefreshLazyTrigger] Permission denied for ${callerEmail}`);
+    return;
+  }
+  let removed = 0;
+  for (const t of ScriptApp.getProjectTriggers()) {
+    if (t.getHandlerFunction() === 'scheduledPublicSheetRefreshLazy') {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
+  }
+  Logger.log(`[removePublicSheetRefreshLazyTrigger] Removed ${removed} trigger(s)`);
 }
 
 // ─── Legacy migration ─────────────────────────────────────────────────────────

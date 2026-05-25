@@ -136,6 +136,34 @@ export function getLogsForEvent(eventId: string): ServiceResult<UploadLogRecord[
 }
 
 /**
+ * Returns the ISO 8601 timestamp of the most recent completed upload across
+ * all events, or null when the Upload_Log sheet is empty.
+ *
+ * Used by the lazy public-sheet refresh trigger to decide whether any new
+ * uploads have arrived since the Special_Folders shortcuts were last built.
+ * Reading only the timestamp column (via getAllRows, which fetches all columns)
+ * is slightly over-fetching, but Upload_Log rows are narrow and the total
+ * sheet is small — the simplicity outweighs a bespoke column-range read.
+ */
+export function getLatestUploadTimestamp(): string | null {
+  try {
+    const config = getConfig();
+    const rows = getAllRows(config.SHEET_NAMES.UPLOAD_LOG);
+    let latest: string | null = null;
+    for (const row of rows) {
+      const r = toUploadLogRecord(row);
+      if (!r || !r.uploadTimestamp) continue;
+      if (latest === null || r.uploadTimestamp > latest) {
+        latest = r.uploadTimestamp;
+      }
+    }
+    return latest;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Returns all upload log records across all events.
  * Used by the Phase 4 system-wide summary dashboard.
  */
