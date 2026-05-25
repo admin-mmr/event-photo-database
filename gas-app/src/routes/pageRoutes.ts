@@ -10,6 +10,7 @@ import { getPublicSpreadsheetUrl } from '../services/publicSpreadsheetService';
 import { getPreferencesFor } from '../services/emailPreferenceService';
 import { findByClub } from '../services/uploadLinkService';
 import { getCanonicalScriptUrl } from '../utils/scriptUrl';
+import { safeJsonForScript } from '../utils/safeJson';
 import { isCreditRenameEnabled } from '../config/constants';
 import { BUILD_TIME, BUILD_COMMIT } from '../buildInfo';
 /* global HtmlService, PropertiesService */
@@ -178,7 +179,7 @@ export function adminEventsPage(user: UserRecord, sessionToken = ""): GoogleApps
     userRole:     user.role,
     isAdmin:      isAdmin(user.role),
     isSuperAdmin: isSuperAdmin(user.role),
-    events:       JSON.stringify(events.items),
+    events:       safeJsonForScript(events.items),
     totalEvents:  events.total,
   });
 }
@@ -221,8 +222,8 @@ export function uploadPage(user: UserRecord, sessionToken = ""): GoogleAppsScrip
     isAdmin:       isAdmin(user.role),
     isSuperAdmin:  isSuperAdmin(user.role),
     runningClub,
-    events:        JSON.stringify(events.items),
-    approvedClubs: JSON.stringify(approvedClubs),
+    events:        safeJsonForScript(events.items),
+    approvedClubs: safeJsonForScript(approvedClubs),
     photographerDisplayName,
     creditRenameEnabled: isCreditRenameEnabled(),
   });
@@ -241,7 +242,7 @@ export function adminClubsPage(user: UserRecord, sessionToken = ""): GoogleAppsS
     userEmail:  user.email,
     userRole:   user.role,
     isAdmin:    isAdmin(user.role),
-    clubs:      JSON.stringify(result.items),
+    clubs:      safeJsonForScript(result.items),
     totalClubs: result.total,
   });
 }
@@ -266,7 +267,7 @@ export function adminSummaryPage(user: UserRecord, sessionToken = ""): GoogleApp
     isAdmin:        isAdmin(user.role),
     isSuperAdmin:   isSuperAdmin(user.role),
     // Pass the initial summary as JSON; null if generation failed
-    initialSummary: hasSummary ? JSON.stringify(summaryResult.data) : 'null',
+    initialSummary: hasSummary ? safeJsonForScript(summaryResult.data) : 'null',
     initialError:   hasSummary ? '' : (summaryResult.message ?? 'Failed to load summary'),
   });
 }
@@ -313,7 +314,7 @@ export function driveTreePage(user: UserRecord, sessionToken = ""): GoogleAppsSc
     clubId:      user.clubId ?? '',
     isAdmin:     isAdmin(user.role),
     isSuperAdmin: isSuperAdmin(user.role),
-    events:      JSON.stringify(events.items),
+    events:      safeJsonForScript(events.items),
   });
 }
 
@@ -334,7 +335,7 @@ export function adminEmailPrefsPage(user: UserRecord, sessionToken = ''): Google
     userRole:     user.role,
     isAdmin:      isAdmin(user.role),
     isSuperAdmin: isSuperAdmin(user.role),
-    prefs:        JSON.stringify(prefs),
+    prefs:        safeJsonForScript(prefs),
   });
 }
 
@@ -368,7 +369,7 @@ export function adminAuditPage(user: UserRecord, sessionToken = ""): GoogleAppsS
     userRole:     user.role,
     isAdmin:      isAdmin(user.role),
     isSuperAdmin: isSuperAdmin(user.role),
-    initialLogs:  result.data ? JSON.stringify(result.data.items) : '[]',
+    initialLogs:  result.data ? safeJsonForScript(result.data.items) : '[]',
     initialTotal: result.data ? result.data.total                 : 0,
     initialError: result.data ? '' : (result.message ?? 'Failed to load audit log'),
     defaultDateFrom,
@@ -405,8 +406,8 @@ export function adminLinksPage(user: UserRecord, sessionToken = ""): GoogleAppsS
     clubId:       user.clubId,
     isAdmin:      isAdmin(user.role),
     isSuperAdmin: isSuperAdmin(user.role),
-    events:       JSON.stringify(events.items),
-    clubs:        JSON.stringify(activeClubs),
-    initialLinks: JSON.stringify(initialLinks),
+    events:       safeJsonForScript(events.items),
+    clubs:        safeJsonForScript(activeClubs),
+    initialLinks: safeJsonForScript(initialLinks),
   });
 }

@@ -391,5 +391,19 @@
                  'Rebuilding Videos folders… (may take a few minutes)');
     }
   </script>
+
+  <!--
+    Inject the canonical script.google.com deployment URL + the per-request
+    session token so app.html's navigate() helper can route the top frame
+    correctly. Without these, clicking the header nav links resolves the
+    href="?action=..." against the inner googleusercontent.com iframe instead
+    of the outer script.google.com page, and the browser URL never updates.
+    Every other page renders this same block before including app.html.
+  -->
+  <script>
+    window.APP_URL = '<?= scriptUrl ?>';
+    window.SESSION_TOKEN = '<?= (typeof sessionToken !== "undefined" && sessionToken) ? sessionToken : "" ?>';
+  </script>
+  <?!= HtmlService.createHtmlOutputFromFile('ui/js/app').getContent() ?>
 </body>
 </html>

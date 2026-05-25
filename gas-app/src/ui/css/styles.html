@@ -115,6 +115,54 @@
     display: none;
   }
 
+  /* ── Full-page loading overlay ─────────────────────────────────────────────
+     Shown by app.html navigate() during top-level navigation between server-
+     rendered pages. The next page render replaces the entire document, so we
+     don't need to hide the overlay manually — the fresh document arrives
+     without it. While visible, the overlay blocks pointer events so a user
+     can't double-click a tile and queue two navigations.
+     The id is "page-loading-overlay" to avoid clashing with the per-card
+     .spinner element used inside action buttons.
+  */
+  #page-loading-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    background: rgba(255, 255, 255, 0.72);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 14px;
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    /* Fade in instead of popping — 80ms is short enough to feel instant
+       but long enough that flicker on a fast cached navigation is hidden. */
+    animation: page-loading-fade-in 80ms ease-out;
+  }
+  #page-loading-overlay[hidden] { display: none; }
+  #page-loading-overlay .page-loading-spinner {
+    width: 44px;
+    height: 44px;
+    border: 4px solid #c5cae9;
+    border-top-color: #3f51b5;
+    border-radius: 50%;
+    animation: page-loading-spin 1s linear infinite;
+  }
+  #page-loading-overlay .page-loading-label {
+    color: #3f51b5;
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: .02em;
+  }
+  @keyframes page-loading-spin {
+    to { transform: rotate(360deg); }
+  }
+  @keyframes page-loading-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
   /* ── Toast notifications ─────────────────────────────────────────────────── */
   #toast-container {
     position: fixed;

@@ -147,6 +147,41 @@
   // the canonical script.google.com deployment URL injected server-side.
 
   /**
+   * Shows a full-page loading overlay so the user knows something is happening
+   * after they click a navigation link or tile. Top-level navigation in GAS
+   * goes through window.top.location.href, which can take a noticeable second
+   * or two as the new page render hits doGet on script.google.com. Without
+   * feedback the click looks like it did nothing.
+   *
+   * The overlay is injected lazily on first use rather than declared in every
+   * template — that keeps the templates clean and means a missed include can't
+   * lose the affordance. CSS lives in styles.html under #page-loading-overlay.
+   *
+   * No matching hide function: the next page render replaces the whole document,
+   * so the overlay disappears with it. If a navigation fails (rare; usually
+   * means a popup blocker or the browser refusing the cross-origin top
+   * navigation), the user can refresh the page — we deliberately don't add a
+   * "click to dismiss" because it would mask the actual rare failure case.
+   */
+  function showPageLoadingOverlay(label) {
+    var existing = document.getElementById('page-loading-overlay');
+    if (existing) {
+      existing.removeAttribute('hidden');
+      return existing;
+    }
+    var overlay = document.createElement('div');
+    overlay.id = 'page-loading-overlay';
+    overlay.setAttribute('role', 'status');
+    overlay.setAttribute('aria-live', 'polite');
+    overlay.setAttribute('aria-label', label || 'Loading');
+    overlay.innerHTML =
+      '<div class="page-loading-spinner" aria-hidden="true"></div>' +
+      '<div class="page-loading-label">' + (label || 'Loading…') + '</div>';
+    document.body.appendChild(overlay);
+    return overlay;
+  }
+
+  /**
    * Navigates the outer (script.google.com) frame to a route action.
    *
    * window.APP_URL is injected server-side by getCanonicalScriptUrl()
@@ -159,12 +194,17 @@
    * We navigate window.top (not window) because the GAS web app renders inside
    * an iframe on googleusercontent.com; only the outer script.google.com frame
    * properly routes query-parameter changes back through doGet.
+   *
+   * Shows a full-page loading overlay during the round-trip so the click
+   * isn't ambiguous to the user. The overlay disappears automatically when
+   * the next page render replaces the document.
    */
   function navigate(action) {
     var base = (window.APP_URL || window.location.href).split('?')[0];
     var token = getSessionToken();
     var url = base + '?action=' + action;
     if (token) url += '&session=' + encodeURIComponent(token);
+    showPageLoadingOverlay('Loading…');
     window.top.location.href = url;
   }
 
@@ -201,6 +241,7 @@
     // Navigate to login. Use APP_URL because relative routes don't resolve
     // back to script.google.com from the googleusercontent.com iframe.
     var base = (window.APP_URL || window.location.href).split('?')[0];
+    showPageLoadingOverlay('Signing out…');
     window.top.location.href = base + '?action=login';
   }
   // Expose for any inline onclick handlers and for ad-hoc console testing.
