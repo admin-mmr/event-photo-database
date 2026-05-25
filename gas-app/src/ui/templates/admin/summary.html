@@ -12,75 +12,9 @@
   <style>
     .stat-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-      gap: 16px;
-      margin-bottom: 24px;
-    }
-    .stat-card {
-      background: #fff;
-      border-radius: 4px;
-      box-shadow: 0 1px 3px rgba(0,0,0,.15);
-      padding: 20px 16px;
-      text-align: center;
-    }
-    .stat-card__value {
-      font-size: 2rem;
-      font-weight: 700;
-      color: #3f51b5;
-      line-height: 1;
-      margin-bottom: 6px;
-    }
-    .stat-card__label {
-      font-size: .78rem;
-      color: #666;
-      text-transform: uppercase;
-      letter-spacing: .5px;
-    }
-    .section-card {
-      background: #fff;
-      border-radius: 4px;
-      box-shadow: 0 1px 3px rgba(0,0,0,.15);
-      padding: 16px;
-      margin-bottom: 24px;
-    }
-    .section-card h5 {
-      margin: 0 0 12px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .badge-count {
-      background: #3f51b5;
-      color: #fff;
-      border-radius: 12px;
-      padding: 2px 8px;
-      font-size: .78rem;
-      font-weight: 600;
-    }
-    .badge-warn {
-      background: #f57c00;
-    }
-    .club-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 6px 0;
-      border-bottom: 1px solid #f0f0f0;
-      font-size: .9rem;
-    }
-    .club-row:last-child { border-bottom: none; }
-    .club-name { font-weight: 500; }
-    .club-meta { color: #666; font-size: .82rem; }
-    .event-block { margin-bottom: 16px; }
-    .event-block-header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-weight: 600;
-      margin-bottom: 6px;
-      cursor: pointer;
-      user-select: none;
-    }
+    <!-- Header nav bar (shared responsive component) -->
+    <?!= HtmlService.createHtmlOutputFromFile('ui/templates/_header').getContent() ?>
+
     .event-block-clubs { padding-left: 8px; }
     .inactive-row {
       display: flex;

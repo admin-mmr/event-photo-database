@@ -12,75 +12,9 @@
   <style>
     .link-url-box {
       background: #e8f5e9;
-      border: 1px solid #a5d6a7;
-      border-radius: 4px;
-      padding: 12px 16px;
-      font-family: monospace;
-      font-size: 13px;
-      word-break: break-all;
-      display: flex;
-      align-items: flex-start;
-      gap: 12px;
-    }
-    .link-url-box .url-text {
-      flex: 1;
-      color: #1b5e20;
-    }
-    .link-status-active  { color: #2e7d32; font-weight: 500; }
-    .link-status-revoked { color: #b71c1c; font-weight: 500; }
-    .link-card {
-      border: 1px solid #e0e0e0;
-      border-radius: 4px;
-      padding: 16px;
-      margin-bottom: 12px;
-      background: #fff;
-    }
-    .link-card.active  { border-left: 4px solid #4caf50; }
-    .link-card.revoked { border-left: 4px solid #ef5350; background: #fafafa; }
-    .link-meta {
-      font-size: 12px;
-      color: #777;
-      margin-top: 6px;
-    }
-    .link-actions {
-      margin-top: 12px;
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-    .section-divider {
-      border: none;
-      border-top: 1px solid #e0e0e0;
-      margin: 24px 0;
-    }
-    .empty-state {
-      text-align: center;
-      padding: 40px 24px;
-      color: #999;
-    }
-    .empty-state .material-icons { font-size: 48px; display: block; margin-bottom: 12px; }
-    .filter-card {
-      padding: 16px;
-      margin-bottom: 20px;
-      display: flex;
-      gap: 16px;
-      align-items: flex-end;
-      flex-wrap: wrap;
-    }
-    .version-badge {
-      display: inline-block;
-      background: #e3f2fd;
-      color: #1565c0;
-      border-radius: 10px;
-      padding: 2px 8px;
-      font-size: 11px;
-      font-weight: 600;
-      margin-left: 6px;
-    }
-    .tag-badge {
-      display: inline-block;
-      background: #fff3e0;
+    <!-- Header nav bar (shared responsive component) -->
+    <?!= HtmlService.createHtmlOutputFromFile('ui/templates/_header').getContent() ?>
+
       color: #e65100;
       border-radius: 10px;
       padding: 2px 8px;

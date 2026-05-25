@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Public Sheet — 湘舍动公益文件系统</title>
+  <title>公开文件索引 — 湘舍动公益文件系统</title>
   <link rel="stylesheet"
     href="https://fonts.googleapis.com/icon?family=Material+Icons">
   <link rel="stylesheet"
@@ -146,52 +146,14 @@
 </head>
 <body>
   <div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
-    <header class="mdl-layout__header">
-      <div class="mdl-layout__header-row">
-        <a href="?action=dashboard" class="mdl-layout-title"
-           style="color:inherit;text-decoration:none;">
-          湘舍动公益文件系统
-        </a>
-        <div class="mdl-layout-spacer"></div>
-        <div class="nav-panel">
-          <nav class="mdl-navigation">
-            <a class="mdl-navigation__link" href="?action=dashboard">
-              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">home</i>
-              Home&nbsp;/&nbsp;首页
-            </a>
-            <? if (isAdmin) { ?>
-            <a class="mdl-navigation__link" href="?action=admin_events">
-              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
-              Events&nbsp;/&nbsp;活动
-            </a>
-            <a class="mdl-navigation__link" href="?action=admin_links">
-              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">link</i>
-              Upload Links&nbsp;/&nbsp;上传链接
-            </a>
-            <a class="mdl-navigation__link" href="?action=admin_audit">
-              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">history</i>
-              Audit Log&nbsp;/&nbsp;操作日志
-            </a>
-            <? } ?>
-            <a class="mdl-navigation__link" href="?action=drive_tree">
-              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">account_tree</i>
-              File System&nbsp;/&nbsp;文件系统
-            </a>
-            <a class="mdl-navigation__link mdl-navigation__link--current"
-               href="?action=public_sheet">
-              <i class="material-icons" style="vertical-align:middle;margin-right:4px;">public</i>
-              Public Sheet&nbsp;/&nbsp;公开表格
-            </a>
-          </nav>
-        </div>
-      </div>
-    </header>
+    <!-- Header nav bar (shared responsive component) -->
+    <?!= HtmlService.createHtmlOutputFromFile('ui/templates/_header').getContent() ?>
 
     <main class="mdl-layout__content">
       <div class="page-content">
         <h2 style="margin:8px 0 6px;font-size:1.5rem;color:#1a1a2e;">
           <i class="material-icons" style="vertical-align:middle;color:#3f51b5;">public</i>
-          Public Sheet&nbsp;/&nbsp;公开表格
+          公开文件索引&nbsp;/&nbsp;Public File Index
         </h2>
         <p style="color:#666;margin:0 0 20px;font-size:.92rem;">
           Refresh the public folder index and rebuild Drive shortcut folders on demand.
@@ -230,7 +192,7 @@
         <div class="action-card icon-sheet">
           <div class="action-card__icon"><i class="material-icons">refresh</i></div>
           <div class="action-card__body">
-            <h3 class="action-card__title">Refresh PUBLIC SHEET&nbsp;/&nbsp;刷新公开表格</h3>
+            <h3 class="action-card__title">刷新公开文件索引&nbsp;/&nbsp;Refresh Public File Index</h3>
             <p class="action-card__desc">
               Re-write the Photo Folders and Video Folders tabs from the current
               Special_Folders state. Fast (~1–2 s); does not rebuild any Drive folders or shortcuts.

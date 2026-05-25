@@ -249,15 +249,28 @@
 
   // Intercept all href="?action=..." links so they go through navigate()
   // instead of trying to load a googleusercontent.com URL directly.
+  // Also mark the current page's nav link with the --current class.
   document.addEventListener('DOMContentLoaded', function () {
+    // Get current action from URL parameter
+    var qs = window.location.search;
+    var currentAction = new URLSearchParams(qs).get('action') || 'dashboard';
+
+    // Mark current nav link and intercept clicks
     document.querySelectorAll('a[href]').forEach(function (link) {
       var href = link.getAttribute('href') || '';
       if (!href.includes('action=')) return;
+
+      // Check if this link matches the current action
+      var linkQs = href.startsWith('?') ? href.slice(1) : (href.split('?')[1] || '');
+      var linkAction = new URLSearchParams(linkQs).get('action');
+      if (linkAction === currentAction) {
+        link.classList.add('mdl-navigation__link--current');
+      }
+
+      // Intercept click
       link.addEventListener('click', function (e) {
         e.preventDefault();
-        var qs = href.startsWith('?') ? href.slice(1) : (href.split('?')[1] || '');
-        var action = new URLSearchParams(qs).get('action');
-        if (action) navigate(action);
+        if (linkAction) navigate(linkAction);
       });
     });
   });

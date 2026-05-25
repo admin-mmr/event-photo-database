@@ -12,75 +12,9 @@
   <style>
     .audit-table td, .audit-table th { font-size: 13px; }
     .audit-action {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 12px;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: .04em;
-      text-transform: uppercase;
-      white-space: nowrap;
-    }
-    .audit-action.user     { background: #e3f2fd; color: #1565c0; }
-    .audit-action.event    { background: #e8f5e9; color: #2e7d32; }
-    .audit-action.club     { background: #f3e5f5; color: #6a1b9a; }
-    .audit-action.link     { background: #ede7f6; color: #4527a0; }
-    .audit-action.file     { background: #fff3e0; color: #e65100; }
-    .audit-action.email    { background: #e0f7fa; color: #006064; }
-    .audit-action.upload   { background: #f1f8e9; color: #33691e; }
-    .audit-action.security { background: #ffebee; color: #c62828; }
-    .audit-action.other    { background: #eceff1; color: #455a64; }
+    <!-- Header nav bar (shared responsive component) -->
+    <?!= HtmlService.createHtmlOutputFromFile('ui/templates/_header').getContent() ?>
 
-    /* ── Quick-range chips ─────────────────────────────────────────────── */
-    .quick-ranges {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      align-items: center;
-      margin-bottom: 12px;
-    }
-    .quick-ranges__label {
-      font-size: 12px;
-      color: #777;
-      font-weight: 600;
-      letter-spacing: .05em;
-      text-transform: uppercase;
-      margin-right: 4px;
-    }
-    .range-chip {
-      display: inline-block;
-      padding: 6px 14px;
-      border-radius: 16px;
-      background: #fff;
-      border: 1px solid #cfd8dc;
-      color: #455a64;
-      font-size: 13px;
-      cursor: pointer;
-      user-select: none;
-      transition: background .15s, border-color .15s, color .15s;
-    }
-    .range-chip:hover { background: #eceff1; }
-    .range-chip.active {
-      background: #3f51b5;
-      border-color: #3f51b5;
-      color: #fff;
-    }
-
-    /* ── Category toggle pills ─────────────────────────────────────────── */
-    .category-row {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-      align-items: center;
-      margin-bottom: 14px;
-    }
-    .category-row__label {
-      font-size: 12px;
-      color: #777;
-      font-weight: 600;
-      letter-spacing: .05em;
-      text-transform: uppercase;
-      margin-right: 4px;
     }
     .cat-pill {
       display: inline-flex;

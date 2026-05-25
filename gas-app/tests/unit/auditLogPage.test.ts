@@ -170,22 +170,12 @@ describe('Audit Log Page — Filter Logic', () => {
       const pill = new MockElement('span');
       pill.classList.add('cat-pill', 'on');
 
-      // Simulate toggle
-      if (pill.classList.has('on')) {
-        pill.classList.delete('on');
-      } else {
-        pill.classList.add('on');
-      }
-
+      // Simulate toggle using the toggle method
+      pill.classList.toggle('on');
       expect(pill.classList.has('on')).toBe(false);
 
       // Toggle again
-      if (pill.classList.has('on')) {
-        pill.classList.delete('on');
-      } else {
-        pill.classList.add('on');
-      }
-
+      pill.classList.toggle('on');
       expect(pill.classList.has('on')).toBe(true);
     });
 
@@ -248,8 +238,8 @@ describe('Audit Log Page — Filter Logic', () => {
       const fromBound = `${dateFrom}T00:00:00.000Z`;
       const toBound = `${dateTo}T23:59:59.999Z`;
 
-      expect(recordTs).toBeGreaterThanOrEqual(fromBound);
-      expect(recordTs).toBeLessThanOrEqual(toBound);
+      expect(recordTs >= fromBound).toBe(true);
+      expect(recordTs <= toBound).toBe(true);
     });
   });
 
