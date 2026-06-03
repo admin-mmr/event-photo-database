@@ -1449,6 +1449,68 @@ function showSummary(s) {
       s.failedFiles.map(function(r) { return escapeHtml(r.file.name); }).join(', ') +
       '</div>';
   }
+
+  // Auto-redirect to the dashboard once the upload is done. We skip the
+  // auto-redirect when some files failed so the user has time to read the
+  // error list and decide whether to retry. A visible countdown plus a
+  // "Stay here" button keeps the redirect from feeling abrupt.
+  if (!(s.failedFiles && s.failedFiles.length)) {
+    startDashboardCountdown();
+  }
+}
+
+// Counts down from REDIRECT_SECONDS and then navigates to the dashboard.
+// Any click on "Stay on this page" cancels it.
+function startDashboardCountdown() {
+  var REDIRECT_SECONDS = 5;
+  var remaining = REDIRECT_SECONDS;
+  var cancelled = false;
+
+  var panel = document.getElementById('summary-panel');
+  if (!panel) return;
+
+  var bar = document.createElement('div');
+  bar.id = 'redirect-bar';
+  bar.style.cssText = 'margin-top:16px;padding:12px 16px;background:#e8f5e9;' +
+    'border-left:4px solid #388e3c;border-radius:4px;display:flex;' +
+    'align-items:center;gap:12px;flex-wrap:wrap;font-size:14px;color:#1b5e20;';
+  bar.innerHTML =
+    '<i class="material-icons" style="color:#388e3c;">home</i>' +
+    '<span id="redirect-text" style="flex:1;">Redirecting to the dashboard in ' +
+      remaining + 's… / ' + remaining + ' 秒后返回主页…</span>' +
+    '<button class="mdl-button mdl-js-button" id="redirect-cancel">' +
+      'Stay on this page / 留在此页</button>';
+  panel.appendChild(bar);
+
+  var cancelBtn = document.getElementById('redirect-cancel');
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', function() {
+      cancelled = true;
+      if (bar && bar.parentNode) bar.parentNode.removeChild(bar);
+    });
+  }
+
+  var timer = setInterval(function() {
+    if (cancelled) { clearInterval(timer); return; }
+    remaining -= 1;
+    var txt = document.getElementById('redirect-text');
+    if (remaining <= 0) {
+      clearInterval(timer);
+      // navigate() is provided by ui/js/app and routes window.top correctly
+      // through the GAS iframe to the dashboard action.
+      if (typeof navigate === 'function') {
+        navigate('dashboard');
+      } else {
+        var base = (window.APP_URL || window.location.href).split('?')[0];
+        window.top.location.href = base + '?action=dashboard';
+      }
+      return;
+    }
+    if (txt) {
+      txt.textContent = 'Redirecting to the dashboard in ' + remaining +
+        's… / ' + remaining + ' 秒后返回主页…';
+    }
+  }, 1000);
 }
 
 function startNewUpload() {

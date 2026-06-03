@@ -30,6 +30,26 @@
           </button>
         </div>
 
+        <!-- Info banner: upload links are required before anyone can upload -->
+        <div class="card" style="background:#e8eaf6;border-left:4px solid #3f51b5;margin-bottom:20px;padding:12px 16px;">
+          <div style="display:flex;gap:10px;align-items:flex-start;">
+            <i class="material-icons" style="color:#3f51b5;flex-shrink:0;">info_outline</i>
+            <div style="font-size:14px;line-height:1.5;">
+              Creating an event only makes the Drive folder. Before anyone can upload photos,
+              you must <strong>create an upload link</strong> for the event — use the
+              <strong>"Create Upload Link"</strong> button on each row below. To view or manage
+              the links that already exist for an event, open the
+              <a href="?action=admin_links">Upload Links</a> page and select the event.
+              <br>
+              <span style="color:#555;">
+                创建活动只会生成 Drive 文件夹。在任何人上传照片之前，您必须为该活动<strong>创建上传链接</strong>——
+                点击下方每行的<strong>「Create Upload Link / 创建上传链接」</strong>按钮。
+                要查看或管理某个活动已有的链接，请打开<a href="?action=admin_links">上传链接</a>页面并选择该活动。
+              </span>
+            </div>
+          </div>
+        </div>
+
         <!-- Create event form (collapsed by default) -->
         <div id="create-event-form" class="card" style="display:none;margin-bottom:24px;">
           <h5 style="margin:0 0 16px;">Create New Event</h5>
@@ -249,6 +269,11 @@
             '<button class="mdl-button mdl-js-button mdl-button--icon" title="Edit"' +
               ' onclick="editEvent(\'' + ev.eventId + '\')">' +
               '<i class="material-icons">edit</i></button>' +
+            '<button class="mdl-button mdl-js-button mdl-button--raised"' +
+              ' style="margin-left:4px;" title="Create an upload link so people can upload photos to this event"' +
+              ' onclick="createUploadLink(\'' + ev.eventId + '\')">' +
+              '<i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;">add_link</i>' +
+              'Create Upload Link</button>' +
           '</td></tr>';
       }).join('');
       document.getElementById('event-count').textContent = list.length + ' event(s)';
@@ -258,6 +283,21 @@
       var d = document.createElement('div');
       d.textContent = String(s);
       return d.innerHTML;
+    }
+
+    // ─── Create upload link ─────────────────────────────────────────────────────
+    // Sends the admin to the Upload Links page with this event pre-selected.
+    // Upload links must exist before anyone can upload photos for an event.
+    function createUploadLink(eventId) {
+      if (typeof navigate === 'function') {
+        // navigate() appends ?action=... — we tack the eventId on so the
+        // Upload Links page can pre-select this event automatically.
+        navigate('admin_links&eventId=' + encodeURIComponent(eventId));
+      } else {
+        var base = (window.APP_URL || window.location.href).split('?')[0];
+        window.top.location.href = base + '?action=admin_links&eventId=' +
+          encodeURIComponent(eventId);
+      }
     }
 
     // ─── Sorting ──────────────────────────────────────────────────────────────

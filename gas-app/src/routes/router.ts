@@ -280,7 +280,7 @@ export function handleGet(
     }
 
     Logger.log(`[Router.handleGet] Dispatching to handler for action="${action}"`);
-    return dispatchGetHandler(action, user, sessionToken);
+    return dispatchGetHandler(action, user, sessionToken, params);
   } catch (err) {
     Logger.log(`[Router.handleGet] Unhandled error: ${String(err)}`);
     return errorPage(`An unexpected error occurred.\n\nDetails: ${String(err)}`);
@@ -293,7 +293,8 @@ export function handleGet(
 function dispatchGetHandler(
   action: RouteAction,
   user: UserRecord,
-  sessionToken: string
+  sessionToken: string,
+  params: Record<string, string> = {}
 ): GoogleAppsScript.HTML.HtmlOutput {
   switch (action) {
     case RouteAction.DASHBOARD:
@@ -311,7 +312,7 @@ function dispatchGetHandler(
     case RouteAction.ADMIN_EMAIL_PREFS:
       return adminEmailPrefsPage(user, sessionToken);
     case RouteAction.ADMIN_LINKS:
-      return adminLinksPage(user, sessionToken);
+      return adminLinksPage(user, sessionToken, params['eventId']);
     case RouteAction.DRIVE_TREE:
       return driveTreePage(user, sessionToken);
     case RouteAction.UPLOAD:

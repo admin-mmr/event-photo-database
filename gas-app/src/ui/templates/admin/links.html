@@ -383,9 +383,25 @@
     var currentLinks     = [];  // Last result from serverListLinks
 
     // ─── Init ─────────────────────────────────────────────────────────────────
+    var PRESELECT_EVENT_ID = '<?= (typeof preselectEventId !== "undefined" && preselectEventId) ? preselectEventId : "" ?>';
+
     document.addEventListener('DOMContentLoaded', function() {
       populateEventSelector();
       if (IS_SUPER) populateClubSelector();
+
+      // When the admin arrives here via the "Create Upload Link" button on the
+      // Events page, an eventId is passed through. Pre-select it and load the
+      // existing links so they immediately see what (if anything) exists.
+      if (PRESELECT_EVENT_ID) {
+        var sel = document.getElementById('sel-event');
+        sel.value = PRESELECT_EVENT_ID;
+        if (sel.value === PRESELECT_EVENT_ID) {
+          onEventChange();
+          // Super admins still need to pick a club before links load; club
+          // admins are locked to their own club, so we can load right away.
+          if (!IS_SUPER) loadLinks();
+        }
+      }
     });
 
     function populateEventSelector() {

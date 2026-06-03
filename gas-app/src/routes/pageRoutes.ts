@@ -389,7 +389,7 @@ export function adminAuditPage(user: UserRecord, sessionToken = ""): GoogleAppsS
  *
  * Admin-only; role is enforced at the router level before this is called.
  */
-export function adminLinksPage(user: UserRecord, sessionToken = ""): GoogleAppsScript.HTML.HtmlOutput {
+export function adminLinksPage(user: UserRecord, sessionToken = "", preselectEventId = ""): GoogleAppsScript.HTML.HtmlOutput {
   const events = listAllEvents(1, 200, 'desc');
   const activeClubs = listActiveClubs();
 
@@ -409,5 +409,6 @@ export function adminLinksPage(user: UserRecord, sessionToken = ""): GoogleAppsS
     events:       safeJsonForScript(events.items),
     clubs:        safeJsonForScript(activeClubs),
     initialLinks: safeJsonForScript(initialLinks),
+    preselectEventId: preselectEventId || '',
   });
 }

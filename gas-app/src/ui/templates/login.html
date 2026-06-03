@@ -219,19 +219,19 @@
           <span>无法在当前浏览器登录 / Sign-in not available here</span>
         </div>
         <p style="margin:0 0 6px;">
-          您正在微信 / 钉钉 / QQ 等内置浏览器中打开此页面，Google 出于安全原因会拒绝登录。<br>
-          You opened this page inside an in-app browser. Google blocks sign-in here for security reasons.
+          您正在微信 / 钉钉 / QQ / Duolingo 等 App 的内置浏览器中打开此页面，Google 出于安全原因会拒绝登录（错误 403：disallowed_useragent）。<br>
+          You opened this page inside an app's in-app browser (e.g. WeChat, Duolingo). Google blocks sign-in here for security reasons (Error 403: disallowed_useragent).
         </p>
         <p style="margin:8px 0 4px;font-weight:600;">解决方法 / How to fix:</p>
         <ol>
           <li>点击右上角「···」菜单 — Tap the <strong>"···"</strong> menu in the top-right corner</li>
           <li>选择「在 Safari 中打开」或「在浏览器中打开」 — Choose <strong>"Open in Safari"</strong> (iPhone) or <strong>"Open in Browser"</strong> (Android)</li>
-          <li>在浏览器中重新登录 — Sign in from the browser</li>
+          <li>建议使用<strong>无痕 / 隐身模式</strong>登录，避免账号冲突 — Sign in using a <strong>private / Incognito window</strong> to avoid account conflicts</li>
         </ol>
         <hr class="inapp-divider">
         <p style="margin:0;">
-          如果菜单中没有该选项，请复制此链接并粘贴到 Safari 或 Chrome 中。<br>
-          If that option is missing, copy this link and paste it into Safari or Chrome.
+          如果菜单中没有该选项，请复制此链接，在 Safari 或 Chrome 的<strong>无痕 / 隐身窗口</strong>中粘贴打开。<br>
+          If that option is missing, copy this link and open it in a <strong>private / Incognito window</strong> in Safari or Chrome.
         </p>
         <div class="copy-link-row">
           <button type="button" class="copy-link-btn" onclick="copyPageLink()">
@@ -256,6 +256,11 @@
           Sign in with Google
         </button>
       </div>
+      <p style="font-size:12px;color:#999;margin:-8px 0 20px;line-height:1.5;">
+        <i class="material-icons" style="font-size:14px;vertical-align:middle;">tips_and_updates</i>
+        登录遇到问题？请用浏览器的<strong>无痕 / 隐身窗口</strong>打开此链接。<br>
+        Trouble signing in? Open this link in a <strong>private / Incognito window</strong> in Safari or Chrome.
+      </p>
       <? } else { ?>
       <!-- Fallback: GOOGLE_CLIENT_ID not set yet -->
       <div class="error-msg">
@@ -365,6 +370,7 @@
         ua.indexOf('weibo') !== -1 ||            // Weibo
         ua.indexOf('lark') !== -1 ||             // Feishu / Lark
         ua.indexOf('feishu') !== -1 ||
+        ua.indexOf('duolingo') !== -1 ||         // Duolingo in-app browser
         ua.indexOf('alipay') !== -1;             // Alipay
       if (isInApp) {
         var el = document.getElementById('inapp-warning');
