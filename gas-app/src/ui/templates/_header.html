@@ -58,7 +58,7 @@
       <button class="user-menu-trigger" type="button"
               aria-label="Account menu" aria-haspopup="true"
               aria-expanded="false">
-        <span class="user-avatar" aria-hidden="true"><?= userEmail.charAt(0).toUpperCase() ?></span>
+        <span class="user-avatar" aria-hidden="true"><?= (typeof userEmail !== 'undefined' && userEmail) ? userEmail.charAt(0).toUpperCase() : '?' ?></span>
         <span class="user-email-inline"><?= userEmail ?></span>
         <i class="material-icons user-menu-caret" aria-hidden="true">arrow_drop_down</i>
       </button>
