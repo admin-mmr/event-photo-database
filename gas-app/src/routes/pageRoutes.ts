@@ -64,6 +64,41 @@ function renderTemplate(
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
+/**
+ * Renders the shared header component (ui/templates/_header.html) and returns
+ * its HTML as a string. Call from a page template scriptlet, e.g.:
+ *
+ *   <?!= headerHtml(userEmail, isAdmin, isSuperAdmin, 'public_sheet') ?>
+ *
+ * IMPORTANT: _header.html must be evaluated as a TEMPLATE (not pulled in with
+ * HtmlService.createHtmlOutputFromFile().getContent()). createHtmlOutputFromFile
+ * returns the raw file contents WITHOUT executing scriptlets, so the header's
+ * <? ?> / <?= ?> tags would print verbatim into the page — the bug that showed
+ * literal "<?= userEmail.charAt(0)... ?>" text in the header bar. Evaluating the
+ * template here runs those scriptlets server-side before injection.
+ *
+ * The header's variables don't inherit from the calling page's scope, so we set
+ * them explicitly. currentAction drives the active-link (--current) highlight.
+ *
+ * @param currentAction the ?action= value of the current page, used to mark the
+ *                      matching nav link as current (pass '' for none).
+ */
+export function headerHtml(
+  userEmail: string,
+  isAdminFlag: boolean,
+  isSuperAdminFlag: boolean,
+  currentAction = ''
+): string {
+  const t = HtmlService.createTemplateFromFile('ui/templates/_header');
+  Object.assign(t, {
+    userEmail: userEmail ?? '',
+    isAdmin: !!isAdminFlag,
+    isSuperAdmin: !!isSuperAdminFlag,
+    currentAction: currentAction ?? '',
+  });
+  return t.evaluate().getContent();
+}
+
 // ─── Page handlers ────────────────────────────────────────────────────────────
 
 /**
@@ -157,6 +192,7 @@ export function adminUsersPage(user: UserRecord, sessionToken = ""): GoogleAppsS
     userEmail:    user.email,
     userRole:     user.role,
     userClubId:   user.clubId ?? '',
+    isAdmin:      isAdmin(user.role),
     isSuperAdmin: isSuperAdmin(user.role),
     users: result.items,
     total: result.total,
@@ -239,9 +275,10 @@ export function adminClubsPage(user: UserRecord, sessionToken = ""): GoogleAppsS
   const result = listAllClubs(1, 100);
 
   return renderTemplate('admin/clubs', { sessionToken,
-    userEmail:  user.email,
-    userRole:   user.role,
-    isAdmin:    isAdmin(user.role),
+    userEmail:    user.email,
+    userRole:     user.role,
+    isAdmin:      isAdmin(user.role),
+    isSuperAdmin: isSuperAdmin(user.role),
     clubs:      safeJsonForScript(result.items),
     totalClubs: result.total,
   });

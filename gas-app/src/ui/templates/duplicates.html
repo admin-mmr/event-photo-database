@@ -147,7 +147,7 @@
 </head>
 <body>
   <div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
-    <?!= HtmlService.createHtmlOutputFromFile('ui/templates/_header').getContent() ?>
+    <?!= headerHtml(userEmail, isAdmin, isSuperAdmin, 'duplicates') ?>
 
     <main class="mdl-layout__content">
       <div class="page-content">

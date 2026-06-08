@@ -13,7 +13,7 @@
     .pref-group {
       margin-bottom: 28px;
     <!-- Header nav bar (shared responsive component) -->
-    <?!= HtmlService.createHtmlOutputFromFile('ui/templates/_header').getContent() ?>
+    <?!= headerHtml(userEmail, isAdmin, isSuperAdmin, '') ?>
 
             <a class="mdl-navigation__link" href="?action=admin_users">
               <i class="material-icons" style="vertical-align:middle;margin-right:4px;">group</i>

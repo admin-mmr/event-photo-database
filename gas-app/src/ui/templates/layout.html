@@ -15,7 +15,7 @@
   <div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
 
     <!-- Header nav bar (shared responsive component) -->
-    <?!= HtmlService.createHtmlOutputFromFile('ui/templates/_header').getContent() ?>
+    <?!= headerHtml(userEmail, isAdmin, isSuperAdmin, '') ?>
 
     <!-- Main content -->
     <main class="mdl-layout__content">

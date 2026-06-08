@@ -1,5 +1,19 @@
 <!-- Shared responsive header component (responsive-display function) -->
-<!-- All pages call this template to ensure consistent header styling and behavior -->
+<!-- Rendered via headerHtml() in pageRoutes.ts, which evaluates this file as a
+     GAS template so the <? ?> scriptlets below actually run. Do NOT pull this
+     file in with HtmlService.createHtmlOutputFromFile().getContent() — that
+     returns the raw text and the scriptlets print verbatim into the page.
+     Expected template vars (all optional, guarded with typeof):
+       userEmail, isAdmin, isSuperAdmin, currentAction -->
+<?
+  var _email   = (typeof userEmail !== 'undefined' && userEmail) ? userEmail : '';
+  var _admin   = (typeof isAdmin !== 'undefined') && isAdmin;
+  var _super   = (typeof isSuperAdmin !== 'undefined') && isSuperAdmin;
+  var _current = (typeof currentAction !== 'undefined' && currentAction) ? currentAction : '';
+  function _cur(action) {
+    return _current === action ? ' mdl-navigation__link--current' : '';
+  }
+?>
 <header class="mdl-layout__header">
   <div class="mdl-layout__header-row">
     <a href="?action=dashboard" class="mdl-layout-title"
@@ -9,62 +23,60 @@
     <div class="mdl-layout-spacer"></div>
     <div class="nav-panel">
       <nav class="mdl-navigation">
-        <a class="mdl-navigation__link" href="?action=dashboard">
+        <a class="mdl-navigation__link<?= _cur('dashboard') ?>" href="?action=dashboard">
           <i class="material-icons" style="vertical-align:middle;margin-right:4px;">home</i>
           Home&nbsp;/&nbsp;首页
         </a>
-        <? if (isAdmin) { ?>
-        <a class="mdl-navigation__link" href="?action=admin_events">
+        <? if (_admin) { ?>
+        <a class="mdl-navigation__link<?= _cur('admin_events') ?>" href="?action=admin_events">
           <i class="material-icons" style="vertical-align:middle;margin-right:4px;">event</i>
           Events&nbsp;/&nbsp;活动
         </a>
-        <a class="mdl-navigation__link" href="?action=admin_links">
+        <a class="mdl-navigation__link<?= _cur('admin_links') ?>" href="?action=admin_links">
           <i class="material-icons" style="vertical-align:middle;margin-right:4px;">link</i>
           Upload Links&nbsp;/&nbsp;上传链接
         </a>
-        <a class="mdl-navigation__link" href="?action=admin_users">
+        <a class="mdl-navigation__link<?= _cur('admin_users') ?>" href="?action=admin_users">
           <i class="material-icons" style="vertical-align:middle;margin-right:4px;">manage_accounts</i>
           Users&nbsp;/&nbsp;用户
         </a>
-        <? if (isSuperAdmin) { ?>
-        <a class="mdl-navigation__link" href="?action=admin_clubs">
+        <? if (_super) { ?>
+        <a class="mdl-navigation__link<?= _cur('admin_clubs') ?>" href="?action=admin_clubs">
           <i class="material-icons" style="vertical-align:middle;margin-right:4px;">groups</i>
           Clubs&nbsp;/&nbsp;跑团
         </a>
         <? } ?>
-        <a class="mdl-navigation__link" href="?action=admin_audit">
+        <a class="mdl-navigation__link<?= _cur('admin_audit') ?>" href="?action=admin_audit">
           <i class="material-icons" style="vertical-align:middle;margin-right:4px;">history</i>
           Audit Log&nbsp;/&nbsp;操作日志
         </a>
-        <a class="mdl-navigation__link" href="?action=duplicates">
+        <a class="mdl-navigation__link<?= _cur('duplicates') ?>" href="?action=duplicates">
           <i class="material-icons" style="vertical-align:middle;margin-right:4px;">content_copy</i>
           Duplicates&nbsp;/&nbsp;重复清理
         </a>
         <? } ?>
-        <a class="mdl-navigation__link" href="?action=drive_tree">
+        <a class="mdl-navigation__link<?= _cur('drive_tree') ?>" href="?action=drive_tree">
           <i class="material-icons" style="vertical-align:middle;margin-right:4px;">account_tree</i>
           File System&nbsp;/&nbsp;文件系统
         </a>
-        <a class="mdl-navigation__link" href="?action=public_sheet">
+        <a class="mdl-navigation__link<?= _cur('public_sheet') ?>" href="?action=public_sheet">
           <i class="material-icons" style="vertical-align:middle;margin-right:4px;">public</i>
           公开文件索引&nbsp;/&nbsp;Public File Index
         </a>
       </nav>
     </div>
-    <?
-      if (typeof userEmail !== 'undefined' && userEmail) {
-    ?>
+    <? if (_email) { ?>
     <div class="user-menu">
       <button class="user-menu-trigger" type="button"
               aria-label="Account menu" aria-haspopup="true"
               aria-expanded="false">
-        <span class="user-avatar" aria-hidden="true"><?= (typeof userEmail !== 'undefined' && userEmail) ? userEmail.charAt(0).toUpperCase() : '?' ?></span>
-        <span class="user-email-inline"><?= userEmail ?></span>
+        <span class="user-avatar" aria-hidden="true"><?= _email.charAt(0).toUpperCase() ?></span>
+        <span class="user-email-inline"><?= _email ?></span>
         <i class="material-icons user-menu-caret" aria-hidden="true">arrow_drop_down</i>
       </button>
       <div class="user-menu-popover" role="menu" hidden>
         <div class="user-menu-popover-label">Signed in as</div>
-        <div class="user-menu-popover-email" role="menuitem" tabindex="-1"><?= userEmail ?></div>
+        <div class="user-menu-popover-email" role="menuitem" tabindex="-1"><?= _email ?></div>
         <div class="user-menu-popover-divider" role="separator"></div>
         <button type="button" class="user-menu-popover-logout" role="menuitem">
           <i class="material-icons" aria-hidden="true">logout</i>
