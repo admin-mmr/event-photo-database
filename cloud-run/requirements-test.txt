@@ -1,0 +1,29 @@
+# Test-only dependencies for running test_main.py locally.
+#
+# Production builds use requirements.txt on Python 3.12 (see Dockerfile).
+# This file exists so the suite can also run on newer local Pythons (e.g. 3.13),
+# where some production pins have no wheel. Keep requirements.txt pins unchanged.
+#
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements-test.txt
+#   pytest
+#
+# Notes:
+#   - rawpy: the RAW codepath is stubbed in the tests, so any importable version
+#     works. We floor at 0.24 because 0.23.1 (the production pin) has no wheel
+#     for Python 3.13.
+#   - pillow-heif: if this pin has no wheel for your Python, replace the line
+#     with a bare `pillow-heif` — the HEIC/AVIF tests skip automatically when
+#     the encoder isn't available.
+
+# Runtime libs needed to import and exercise main.py
+Flask>=3.0
+requests>=2.32
+Pillow>=10.4
+piexif==1.1.3
+pillow-heif==0.18.0
+rawpy>=0.24
+numpy>=2.0
+
+# Test runner
+pytest>=8.0

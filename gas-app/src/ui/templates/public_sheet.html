@@ -273,6 +273,15 @@
     // SESSION_TOKEN is required for google.script.run calls under USER_DEPLOYING.
     window.SESSION_TOKEN = '<?= (typeof sessionToken !== "undefined" && sessionToken) ? sessionToken : "" ?>';
 
+    // Wrapped in an IIFE so these helpers — especially callServer — do NOT leak
+    // into global scope and collide with the global callServer() defined in
+    // app.html (included at the bottom of every page). app.html's callServer has
+    // a different signature: callServer(functionName, args, btnElement, spinner).
+    // Because app.html loads last, its definition would otherwise override the
+    // one below; our string element IDs then landed in app.html's `btn` param and
+    // `btn.setAttribute('aria-busy', ...)` threw "btn.setAttribute is not a
+    // function". Scoping these locally keeps both callServer variants intact.
+    (function () {
     function setBusy(btnId, statusId, busy, label) {
       var btn    = document.getElementById(btnId);
       var status = document.getElementById(statusId);
@@ -353,6 +362,13 @@
       callServer('serverRebuildVideoFolders', 'btn-videos', 'status-videos', 'err-videos',
                  'Rebuilding Videos + Album folders… (may take a few minutes)');
     }
+
+    // Expose only the button onclick handlers (the sole functions referenced
+    // from the page markup) now that the helpers above are IIFE-scoped.
+    window.runRefreshSheet  = runRefreshSheet;
+    window.runRebuildPhotos = runRebuildPhotos;
+    window.runRebuildVideos = runRebuildVideos;
+    })();
   </script>
 
   <!--
