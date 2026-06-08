@@ -1,6 +1,14 @@
 # Office lock files (e.g. .~lock.IAF_Database_schema_v2.xlsx# from LibreOffice/Excel)
 .~lock.*#
 
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*.pytest_cache/
+
+# Scratch / probe temp files
+_probe_tmp
+
 # Logs
 logs
 *.log
