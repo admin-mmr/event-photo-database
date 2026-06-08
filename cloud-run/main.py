@@ -34,6 +34,7 @@ import numpy as np
 # ─── One-time Pillow setup ────────────────────────────────────────────────────
 
 pillow_heif.register_heif_opener()
+pillow_heif.register_avif_opener()  # AVIF input support (spec D12)
 # Cap at 500 megapixels. Large RAW photos from high-end cameras top out around
 # 100–150 MP; 500 MP leaves generous headroom while still guarding against
 # decompression-bomb attacks and accidental OOMs from malformed input.
