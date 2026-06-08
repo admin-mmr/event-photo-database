@@ -17,6 +17,7 @@ import {
   isPhotoFile,
   isVideoFile,
   isMediaFile,
+  planShortcutDedupe,
   PHOTO_TARGET_MIME_TYPES,
   VIDEO_TARGET_MIME_TYPES,
 } from '../../src/services/specialFoldersService';
@@ -206,5 +207,65 @@ describe('specialFoldersService — MIME classification', () => {
         expect(PHOTO_TARGET_MIME_TYPES.has(mime)).toBe(false);
       }
     });
+  });
+});
+
+// ─── planShortcutDedupe ───────────────────────────────────────────────────────
+
+describe('specialFoldersService — planShortcutDedupe()', () => {
+  const sc = (id: string, name: string, targetId: string) => ({ id, name, targetId });
+
+  it('keeps every shortcut when all targets are distinct', () => {
+    const existing = [
+      sc('s1', 'a.jpeg', 't1'),
+      sc('s2', 'b.jpeg', 't2'),
+      sc('s3', 'c.jpeg', 't3'),
+    ];
+    const { survivors, trashShortcutIds } = planShortcutDedupe(existing);
+    expect(trashShortcutIds).toEqual([]);
+    expect(survivors.map((s) => s.id).sort()).toEqual(['s1', 's2', 's3']);
+  });
+
+  it('trashes the "Copy of" duplicate and keeps the clean-named shortcut', () => {
+    // Mirrors the reported case: two shortcuts in Photos_001 → same target.
+    const clean = sc('s_clean', 'Misty_Mountain_Frida_IMG_0017.jpeg', 'tgt');
+    const copy = sc('s_copy', 'Copy of Misty_Mountain_Frida_IMG_0017.jpeg', 'tgt');
+    const { survivors, trashShortcutIds } = planShortcutDedupe([copy, clean]);
+    expect(survivors).toHaveLength(1);
+    expect(survivors[0].id).toBe('s_clean');
+    expect(trashShortcutIds).toEqual(['s_copy']);
+  });
+
+  it('also strips a " (N)" counter duplicate in favour of the base name', () => {
+    const base = sc('s_base', 'IMG_0042.jpg', 'tgt');
+    const counter = sc('s_dup', 'IMG_0042 (1).jpg', 'tgt');
+    const { survivors, trashShortcutIds } = planShortcutDedupe([counter, base]);
+    expect(survivors[0].id).toBe('s_base');
+    expect(trashShortcutIds).toEqual(['s_dup']);
+  });
+
+  it('collapses 3+ copies of one target down to a single keeper', () => {
+    const existing = [
+      sc('s3', 'Copy of Copy of x.png', 'tgt'),
+      sc('s1', 'x.png', 'tgt'),
+      sc('s2', 'Copy of x.png', 'tgt'),
+    ];
+    const { survivors, trashShortcutIds } = planShortcutDedupe(existing);
+    expect(survivors.map((s) => s.id)).toEqual(['s1']);
+    expect(trashShortcutIds.sort()).toEqual(['s2', 's3']);
+  });
+
+  it('breaks ties deterministically by smallest id when all names are noisy', () => {
+    const existing = [
+      sc('s_z', 'Copy of x.png', 'tgt'),
+      sc('s_a', 'x (2).png', 'tgt'),
+    ];
+    const { survivors, trashShortcutIds } = planShortcutDedupe(existing);
+    expect(survivors[0].id).toBe('s_a');
+    expect(trashShortcutIds).toEqual(['s_z']);
+  });
+
+  it('handles an empty folder', () => {
+    expect(planShortcutDedupe([])).toEqual({ survivors: [], trashShortcutIds: [] });
   });
 });

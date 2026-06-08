@@ -48,6 +48,7 @@ import { findById as findEventById } from './eventService';
 import { getFolderById } from './driveService';
 import { listFilesInFolder, DriveFileMeta } from './driveShortcutClient';
 import { isMediaFile } from './specialFoldersService';
+import { parseNoisyName } from '../utils/noisyName';
 
 /* global Logger */
 
@@ -99,45 +100,10 @@ export interface DuplicateScanReport {
 
 // ─── Pure helpers (exported for unit testing) ────────────────────────────────
 
-/**
- * Strips Drive's duplicate-noise decorations from a filename:
- *   - one or more leading "Copy of " prefixes (any case), and
- *   - a single trailing " (N)" counter before the extension.
- *
- * Returns the canonical base name plus whether anything was stripped.
- *
- *   "Copy of a.jpeg"        → { base: "a.jpeg",  noisy: true }
- *   "a (1).jpeg"            → { base: "a.jpeg",  noisy: true }
- *   "Copy of a (2).jpeg"    → { base: "a.jpeg",  noisy: true }
- *   "a.jpeg"                → { base: "a.jpeg",  noisy: false }
- */
-export function parseNoisyName(name: string): { base: string; noisy: boolean } {
-  let base = name;
-  let noisy = false;
-
-  // Leading "Copy of " (possibly stacked: "Copy of Copy of x").
-  const copyPrefix = /^copy of /i;
-  while (copyPrefix.test(base)) {
-    base = base.replace(copyPrefix, '');
-    noisy = true;
-  }
-
-  // Trailing " (N)" before the extension ("a (1).jpeg") or at the very end
-  // for extension-less names ("a (1)").
-  const withExt = base.match(/^(.*) \(\d+\)(\.[^.]*)$/);
-  if (withExt) {
-    base = `${withExt[1]}${withExt[2]}`;
-    noisy = true;
-  } else {
-    const noExt = base.match(/^(.*) \(\d+\)$/);
-    if (noExt) {
-      base = noExt[1];
-      noisy = true;
-    }
-  }
-
-  return { base, noisy };
-}
+// parseNoisyName moved to utils/noisyName.ts so specialFoldersService can share
+// it without a circular import. Imported above; re-exported here so existing
+// call sites and tests can keep importing it from this module.
+export { parseNoisyName };
 
 /** Sort key: canonical-named files first, then earliest createdTime, then id. */
 function keeperRank(f: ScannedFile): string {

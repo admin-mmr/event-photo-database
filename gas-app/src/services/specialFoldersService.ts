@@ -86,6 +86,7 @@ import {
   listShortcutsInFolder,
   trashDriveFile,
   driveFolderUrl,
+  ShortcutEntry,
 } from './driveShortcutClient';
 import {
   tryGrantAnyoneRead,
@@ -95,6 +96,7 @@ import {
   BatchGrantSummary,
 } from './drivePermissionsService';
 import { nowIsoTimestamp } from '../utils/dateFormatter';
+import { parseNoisyName } from '../utils/noisyName';
 
 /* global Logger */
 
@@ -204,6 +206,88 @@ export function bucketIndexForPosition(position0Based: number): number {
 export function bucketCountForFiles(count: number): number {
   if (count <= 0 || !Number.isFinite(count)) return 0;
   return Math.ceil(count / MAX_SHORTCUTS_PER_PHOTOS_FOLDER);
+}
+
+/**
+ * Plans a within-folder shortcut dedupe: when several shortcuts in the same
+ * folder point at the *same* target file, only one should survive.
+ *
+ * Why this happens — the rebuilds only ever ADD shortcuts and dedupe by
+ * targetId at creation time, so they never produce a duplicate. But a person
+ * using drive.google.com directly can "Make a copy" of a shortcut, yielding a
+ * second shortcut ("Copy of …") with the *same* targetId. The orphan-shortcut
+ * sweep (removeShortcutsForTargets) won't touch it because its target is still
+ * alive — so it lingers in the public-browse folders.
+ *
+ * Keeper rule (per targetId group):
+ *   1. Prefer a clean name over a "Copy of …"/" (N)" decorated one, so the
+ *      public folder shows "IMG_0017.jpeg" rather than "Copy of IMG_0017.jpeg".
+ *   2. Tie-break on the lexicographically smallest shortcut id for a stable,
+ *      deterministic choice.
+ *
+ * Pure — no Drive I/O — so it's exported for direct unit testing.
+ *
+ * @param existing  Shortcuts currently in one folder (from listShortcutsInFolder)
+ * @returns survivors (one per targetId) and the shortcut ids to trash
+ */
+export function planShortcutDedupe(
+  existing: ReadonlyArray<ShortcutEntry>
+): { survivors: ShortcutEntry[]; trashShortcutIds: string[] } {
+  const byTarget = new Map<string, ShortcutEntry[]>();
+  for (const s of existing) {
+    const group = byTarget.get(s.targetId);
+    if (group) group.push(s);
+    else byTarget.set(s.targetId, [s]);
+  }
+
+  const survivors: ShortcutEntry[] = [];
+  const trashShortcutIds: string[] = [];
+
+  for (const group of byTarget.values()) {
+    if (group.length === 1) {
+      survivors.push(group[0]);
+      continue;
+    }
+    const ranked = [...group].sort((a, b) => {
+      const aNoisy = parseNoisyName(a.name).noisy ? 1 : 0;
+      const bNoisy = parseNoisyName(b.name).noisy ? 1 : 0;
+      if (aNoisy !== bNoisy) return aNoisy - bNoisy; // clean name wins
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; // deterministic tie-break
+    });
+    survivors.push(ranked[0]);
+    for (let i = 1; i < ranked.length; i++) trashShortcutIds.push(ranked[i].id);
+  }
+
+  return { survivors, trashShortcutIds };
+}
+
+/**
+ * Applies planShortcutDedupe to one folder's shortcut list: trashes the
+ * redundant copies and returns the survivor list to drive the rest of the
+ * rebuild. Best-effort — a failed trash is recorded in `warnings` and left in
+ * place to retry next rebuild; the survivor list still has exactly one entry
+ * per targetId, so the rebuild never re-creates a shortcut for those targets.
+ */
+function dedupeFolderShortcuts(
+  existing: ShortcutEntry[],
+  folderName: string,
+  warnings: string[]
+): { survivors: ShortcutEntry[]; removed: number } {
+  const { survivors, trashShortcutIds } = planShortcutDedupe(existing);
+  if (trashShortcutIds.length === 0) return { survivors, removed: 0 };
+
+  let removed = 0;
+  for (const id of trashShortcutIds) {
+    const trashed = trashDriveFile(id);
+    if (trashed.ok) {
+      removed++;
+    } else {
+      warnings.push(
+        `Failed to trash duplicate shortcut ${id} in ${folderName}: ${trashed.error}`
+      );
+    }
+  }
+  return { survivors, removed };
 }
 
 // ─── Sheet helpers (Special_Folders) ─────────────────────────────────────────
@@ -407,6 +491,7 @@ export function rebuildEventPhotoFolders(
   const warnings: string[] = [];
   let shortcutsCreated = 0;
   let shortcutsExisting = 0;
+  let shortcutsDeduped = 0;
   let foldersTouched = 0;
 
   // Pre-load Special_Folders rows once — we'll upsert at most one row per bucket.
@@ -463,8 +548,13 @@ export function rebuildEventPhotoFolders(
       photos.length
     );
 
-    // Existing shortcuts inside this bucket — dedupe by targetId.
-    const existing = listShortcutsInFolder(bucketFolderId);
+    // Existing shortcuts inside this bucket. First collapse any same-target
+    // duplicates (e.g. a manual "Make a copy" of a shortcut on drive.google.com),
+    // then dedupe links by targetId.
+    const existingRaw = listShortcutsInFolder(bucketFolderId);
+    const { survivors: existing, removed: dupShortcutsRemoved } =
+      dedupeFolderShortcuts(existingRaw, folderName, warnings);
+    if (dupShortcutsRemoved > 0) shortcutsDeduped += dupShortcutsRemoved;
     const linkedTargetIds = new Set(existing.map((s) => s.targetId));
 
     for (let i = start; i < end; i++) {
@@ -504,7 +594,7 @@ export function rebuildEventPhotoFolders(
   Logger.log(
     `[specialFoldersService.rebuildEventPhotoFolders] event=${eventId} ` +
     `photos=${photos.length} buckets=${totalBuckets} created=${shortcutsCreated} ` +
-    `existing=${shortcutsExisting} warnings=${warnings.length}`
+    `existing=${shortcutsExisting} deduped=${shortcutsDeduped} warnings=${warnings.length}`
   );
 
   return {
@@ -653,7 +743,11 @@ function rebuildClubScopedFolder(
   // viewers — same rationale as the Photos_NNN buckets above.
   tryGrantAnyoneRead(shortcutFolderId);
 
-  const existing = listShortcutsInFolder(shortcutFolderId);
+  // Collapse same-target duplicate shortcuts (e.g. a manual "Make a copy" of a
+  // shortcut) before linking, so the folder holds one shortcut per target.
+  const existingRaw = listShortcutsInFolder(shortcutFolderId);
+  const { survivors: existing, removed: shortcutsDeduped } =
+    dedupeFolderShortcuts(existingRaw, spec.folderName, warnings);
   const linkedTargetIds = new Set(existing.map((s) => s.targetId));
 
   for (const f of targets) {
@@ -688,7 +782,8 @@ function rebuildClubScopedFolder(
   Logger.log(
     `[specialFoldersService.${spec.logName}] event=${eventId} ` +
     `club=${clubName} tag="${tag}" ${spec.noun}=${targets.length} ` +
-    `created=${shortcutsCreated} existing=${shortcutsExisting} warnings=${warnings.length}`
+    `created=${shortcutsCreated} existing=${shortcutsExisting} ` +
+    `deduped=${shortcutsDeduped} warnings=${warnings.length}`
   );
 
   return {
