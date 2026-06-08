@@ -113,6 +113,9 @@ export enum RouteAction {
   REBUILD_PHOTO_FOLDERS  = 'rebuild_photo_folders',
   REBUILD_VIDEO_FOLDERS  = 'rebuild_video_folders',
 
+  // Duplicate cleanup page — scan + review + bulk soft-delete (admins; club-scoped)
+  DUPLICATES = 'duplicates',
+
   // Phase 7 — Email communication preferences (admin only)
   ADMIN_EMAIL_PREFS = 'admin_email_prefs',
 

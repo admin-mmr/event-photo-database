@@ -237,18 +237,19 @@
         <div class="action-card icon-video">
           <div class="action-card__icon"><i class="material-icons">videocam</i></div>
           <div class="action-card__body">
-            <h3 class="action-card__title">Rebuild Videos folders&nbsp;/&nbsp;重建 Videos 文件夹</h3>
+            <h3 class="action-card__title">Rebuild Videos + Album folders&nbsp;/&nbsp;重建 Videos 和 Album 文件夹</h3>
             <p class="action-card__desc">
               For every (event, club, tag) upload-link triple, regenerate the
-              <code>&lt;Event&gt;/&lt;Club&gt;/&lt;Tag&gt;/Videos/</code> shortcut folder that
-              indexes every video under that scope. Idempotent — folders that already exist are
-              updated in place. Refreshes the public sheet at the end automatically.
-              <br><span class="zh">为每个（活动、跑团、标签）三元组重建 Videos 快捷方式文件夹，幂等更新。完成后自动刷新公开表格。</span>
+              <code>&lt;Event&gt;/&lt;Club&gt;/&lt;Tag&gt;/Videos/</code> shortcut folder (every video
+              under that scope) and the sibling <code>Album/</code> shortcut folder (every uploaded
+              file — photos and videos). Idempotent — folders that already exist are
+              updated in place. Refreshes the public sheet (including per-club album tabs) at the end automatically.
+              <br><span class="zh">为每个（活动、跑团、标签）三元组重建 Videos 和 Album 快捷方式文件夹（Album 包含该范围内所有上传文件），幂等更新。完成后自动刷新公开表格（含每个跑团的相册标签页）。</span>
             </p>
             <div class="action-card__controls">
               <button class="action-card__btn" id="btn-videos" onclick="runRebuildVideos(this)">
                 <i class="material-icons" style="font-size:18px;">build</i>
-                Rebuild Videos folders
+                Rebuild Videos + Album folders
               </button>
               <div class="action-card__status" id="status-videos">Ready</div>
             </div>
@@ -350,7 +351,7 @@
     }
     function runRebuildVideos() {
       callServer('serverRebuildVideoFolders', 'btn-videos', 'status-videos', 'err-videos',
-                 'Rebuilding Videos folders… (may take a few minutes)');
+                 'Rebuilding Videos + Album folders… (may take a few minutes)');
     }
   </script>
 

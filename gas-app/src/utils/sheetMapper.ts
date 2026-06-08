@@ -445,6 +445,7 @@ export function fromEmailPreferenceRecord(record: EmailPreferenceRecord): unknow
 const SPECIAL_FOLDER_SCOPES: ReadonlySet<SpecialFolderScope> = new Set([
   'photos',
   'videos',
+  'albums',
 ]);
 
 /**

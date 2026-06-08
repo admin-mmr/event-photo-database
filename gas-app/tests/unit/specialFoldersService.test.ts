@@ -16,6 +16,7 @@ import {
   bucketCountForFiles,
   isPhotoFile,
   isVideoFile,
+  isMediaFile,
   PHOTO_TARGET_MIME_TYPES,
   VIDEO_TARGET_MIME_TYPES,
 } from '../../src/services/specialFoldersService';
@@ -176,6 +177,23 @@ describe('specialFoldersService — MIME classification', () => {
       expect(isVideoFile('application/pdf')).toBe(false);
       expect(isVideoFile('audio/mpeg')).toBe(false);
       expect(isVideoFile('')).toBe(false);
+    });
+  });
+
+  describe('isMediaFile()', () => {
+    it('accepts every PhotoMimeType AND VideoMimeType enum value', () => {
+      for (const mime of Object.values(PhotoMimeType)) {
+        expect(isMediaFile(mime as string)).toBe(true);
+      }
+      for (const mime of Object.values(VideoMimeType)) {
+        expect(isMediaFile(mime as string)).toBe(true);
+      }
+    });
+
+    it('rejects unrelated MIME types and empty input', () => {
+      expect(isMediaFile('application/pdf')).toBe(false);
+      expect(isMediaFile('audio/mpeg')).toBe(false);
+      expect(isMediaFile('')).toBe(false);
     });
   });
 

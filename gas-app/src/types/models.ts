@@ -174,8 +174,12 @@ export interface ClubRecord {
  *
  * 'videos' rows describe the per-(event, club, tag) "Videos" folder that
  * holds shortcuts to every video uploaded under that scope.
+ *
+ * 'albums' rows describe the per-(event, club, tag) "Album" folder that
+ * holds shortcuts to EVERY uploaded file (photos AND videos) under that
+ * scope. These rows feed the per-club tabs on the public sheet.
  */
-export type SpecialFolderScope = 'photos' | 'videos';
+export type SpecialFolderScope = 'photos' | 'videos' | 'albums';
 
 /**
  * A row in the "Special_Folders" sheet.
@@ -189,7 +193,7 @@ export interface SpecialFolderRecord {
   readonly folderId: string;
   /** FK → EventRecord.eventId. */
   readonly eventId: string;
-  /** 'photos' = consolidated event-level Photos_NNN; 'videos' = (event, club, tag) Videos. */
+  /** 'photos' = consolidated event-level Photos_NNN; 'videos' = (event, club, tag) Videos; 'albums' = (event, club, tag) Album. */
   readonly scope: SpecialFolderScope;
   /** Normalized club name. Empty for scope='photos'. */
   readonly clubName: string;

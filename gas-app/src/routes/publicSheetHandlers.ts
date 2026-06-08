@@ -28,6 +28,7 @@ import { listAll as listAllUploadLinks } from '../services/uploadLinkService';
 import {
   rebuildEventPhotoFolders,
   rebuildClubVideoFolder,
+  rebuildClubAlbumFolder,
 } from '../services/specialFoldersService';
 import { rebuildPublicFoldersIndex } from '../services/publicSpreadsheetService';
 
@@ -170,16 +171,20 @@ export function serverRebuildPhotoFolders(payload: Payload): ServerResponse {
 }
 
 /**
- * Rebuild every (event, club, tag) Videos folder, then refresh the public
- * sheet. The set of tuples is derived from Upload_Links — a Videos folder
- * only makes sense where an upload link exists (or did at some point),
- * since the folder mirrors the per-link sub-tree.
+ * Rebuild every (event, club, tag) Videos folder AND Album folder, then
+ * refresh the public sheet. The set of tuples is derived from Upload_Links —
+ * these folders only make sense where an upload link exists (or did at some
+ * point), since they mirror the per-link sub-tree.
+ *
+ * The Album folder sits as a sibling of Videos and holds shortcuts to EVERY
+ * uploaded file (photos AND videos) for the scope; its rows feed the
+ * per-club tabs on the public sheet.
  *
  * Revoked links are still iterated: an admin who rotates a link still wants
- * the old folder rebuilt so the historical videos remain accessible. Each
- * call to rebuildClubVideoFolder is idempotent and no-ops gracefully if the
- * underlying tag folder doesn't exist (link was generated but nobody ever
- * uploaded), so iterating the full link list is safe.
+ * the old folder rebuilt so the historical files remain accessible. Each
+ * rebuild call is idempotent and no-ops gracefully if the underlying tag
+ * folder doesn't exist (link was generated but nobody ever uploaded), so
+ * iterating the full link list is safe.
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function serverRebuildVideoFolders(payload: Payload): ServerResponse {
@@ -207,21 +212,37 @@ export function serverRebuildVideoFolders(payload: Payload): ServerResponse {
     let failed    = 0;
 
     for (const w of work) {
-      try {
-        const r = rebuildClubVideoFolder(w.eventId, w.clubName, w.tag);
-        if (r.status === ResultStatus.SUCCESS) {
-          succeeded++;
-        } else {
-          failed++;
+      // A tuple counts as succeeded only when BOTH the Videos and the Album
+      // rebuild succeed; either failure marks the tuple failed (but never
+      // aborts the loop — remaining tuples still get rebuilt).
+      let tupleOk = true;
+      const scopedRebuilds: Array<{
+        label: string;
+        run: (eventId: string, clubName: string, tag: string) => ReturnType<typeof rebuildClubVideoFolder>;
+      }> = [
+        { label: 'Videos', run: rebuildClubVideoFolder },
+        { label: 'Album',  run: rebuildClubAlbumFolder },
+      ];
+      for (const s of scopedRebuilds) {
+        try {
+          const r = s.run(w.eventId, w.clubName, w.tag);
+          if (r.status !== ResultStatus.SUCCESS) {
+            tupleOk = false;
+            if (errorSamples.length < 5) {
+              errorSamples.push(`${w.eventId}/${w.clubName}/${w.tag} [${s.label}]: ${r.message ?? 'unknown error'}`);
+            }
+          }
+        } catch (err) {
+          tupleOk = false;
           if (errorSamples.length < 5) {
-            errorSamples.push(`${w.eventId}/${w.clubName}/${w.tag}: ${r.message ?? 'unknown error'}`);
+            errorSamples.push(`${w.eventId}/${w.clubName}/${w.tag} [${s.label}]: ${String(err)}`);
           }
         }
-      } catch (err) {
+      }
+      if (tupleOk) {
+        succeeded++;
+      } else {
         failed++;
-        if (errorSamples.length < 5) {
-          errorSamples.push(`${w.eventId}/${w.clubName}/${w.tag}: ${String(err)}`);
-        }
       }
     }
 
@@ -242,7 +263,7 @@ export function serverRebuildVideoFolders(payload: Payload): ServerResponse {
     return {
       status:  failed === 0 ? 'success' : 'warning',
       message:
-        `Rebuilt Videos folders for ${succeeded}/${work.length} (event, club, tag) tuple(s)` +
+        `Rebuilt Videos + Album folders for ${succeeded}/${work.length} (event, club, tag) tuple(s)` +
         (failed > 0 ? ` (${failed} failed)` : '') +
         ` and wrote ${rowsWritten} sheet row(s).`,
       data: summary,

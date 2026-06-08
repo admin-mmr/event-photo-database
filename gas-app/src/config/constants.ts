@@ -358,6 +358,17 @@ export const MAX_SHORTCUTS_PER_PHOTOS_FOLDER = 800;
 export const VIDEOS_FOLDER_NAME = 'Videos';
 
 /**
+ * Folder name for the per-(event, club, tag) Album folder created by
+ * specialFoldersService. Lives as a sibling of the Videos folder and batch
+ * folders inside the tag folder (or directly under the club folder for
+ * legacy tag-less rows).
+ *
+ *   <Event>/<Club>/<Tag>/Album/    ← shortcuts to EVERY uploaded file (photos
+ *                                    AND videos) under (event, club, tag)
+ */
+export const ALBUM_FOLDER_NAME = 'Album';
+
+/**
  * Expected header row for the Special_Folders sheet.
  * Column order must match COLUMNS.SPECIAL_FOLDERS exactly.
  */

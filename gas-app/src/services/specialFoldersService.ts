@@ -18,6 +18,11 @@
  *        <Event>/<Club>/<Tag>/Videos/  ← shortcuts to every video for that scope
  *      For legacy tag-less rows the folder hangs directly off the club folder.
  *
+ *   3. Per-(event, club, tag) Album folder (sibling of Videos):
+ *        <Event>/<Club>/<Tag>/Album/   ← shortcuts to EVERY uploaded file
+ *                                        (photos AND videos) for that scope
+ *      Album rows (scope='albums') feed the per-club tabs on the public sheet.
+ *
  * Every shortcut entry is a native Drive shortcut (mimeType
  * application/vnd.google-apps.shortcut), so opening it shows the original
  * file's preview/metadata and the original is never copied. See
@@ -55,6 +60,7 @@ import {
   getConfig,
   PHOTOS_FOLDER_PREFIX,
   VIDEOS_FOLDER_NAME,
+  ALBUM_FOLDER_NAME,
   MAX_SHORTCUTS_PER_PHOTOS_FOLDER,
   SPECIAL_FOLDERS_HEADERS,
 } from '../config/constants';
@@ -78,6 +84,7 @@ import { findById as findEventById } from './eventService';
 import {
   createDriveShortcut,
   listShortcutsInFolder,
+  trashDriveFile,
   driveFolderUrl,
 } from './driveShortcutClient';
 import {
@@ -144,6 +151,14 @@ export function isPhotoFile(mimeType: string): boolean {
 /** Returns true when a file's MIME type belongs in the per-scope Videos folder. */
 export function isVideoFile(mimeType: string): boolean {
   return VIDEO_TARGET_MIME_TYPES.has(mimeType);
+}
+
+/**
+ * Returns true when a file's MIME type belongs in the per-scope Album folder.
+ * Albums index EVERY uploaded media file — photos AND videos.
+ */
+export function isMediaFile(mimeType: string): boolean {
+  return isPhotoFile(mimeType) || isVideoFile(mimeType);
 }
 
 // ─── Folder name helpers ─────────────────────────────────────────────────────
@@ -273,8 +288,8 @@ function upsertSpecialFolderRow(
  *   - Shortcut files themselves (so we don't index our own shortcuts and
  *     create a feedback loop).
  *   - Files inside any descendant whose name starts with PHOTOS_FOLDER_PREFIX
- *     or equals VIDEOS_FOLDER_NAME — those are the consolidated folders we
- *     manage; never scan them for fresh source files.
+ *     or equals VIDEOS_FOLDER_NAME / ALBUM_FOLDER_NAME — those are the
+ *     consolidated folders we manage; never scan them for fresh source files.
  *   - Files inside trashed folders (Drive's getFolders/getFiles already
  *     filter those out by default).
  *
@@ -309,6 +324,7 @@ function walkMediaFiles(
       const name = child.getName();
       if (
         name === VIDEOS_FOLDER_NAME ||
+        name === ALBUM_FOLDER_NAME ||
         name.startsWith(PHOTOS_FOLDER_PREFIX)
       ) {
         continue;
@@ -507,19 +523,55 @@ export function rebuildEventPhotoFolders(
 }
 
 /**
- * Rebuilds the per-(event, club, tag) Videos folder.
+ * Per-scope spec describing one kind of (event, club, tag) shortcut folder.
+ * Used by rebuildClubScopedFolder to share the rebuild algorithm between the
+ * Videos folder (videos only) and the Album folder (every uploaded file).
+ */
+interface ClubScopedFolderSpec {
+  /** Special_Folders scope value written into the sheet row. */
+  readonly scope: SpecialFolderScope;
+  /** Drive folder name, e.g. "Videos" or "Album". */
+  readonly folderName: string;
+  /** MIME filter selecting which files get a shortcut. */
+  readonly accept: (mimeType: string) => boolean;
+  /** Human noun for log/result messages, e.g. "videos" or "files". */
+  readonly noun: string;
+  /** Log prefix, e.g. "rebuildClubVideoFolder". */
+  readonly logName: string;
+}
+
+const VIDEOS_FOLDER_SPEC: ClubScopedFolderSpec = {
+  scope: 'videos',
+  folderName: VIDEOS_FOLDER_NAME,
+  accept: isVideoFile,
+  noun: 'videos',
+  logName: 'rebuildClubVideoFolder',
+};
+
+const ALBUM_FOLDER_SPEC: ClubScopedFolderSpec = {
+  scope: 'albums',
+  folderName: ALBUM_FOLDER_NAME,
+  accept: isMediaFile,
+  noun: 'files',
+  logName: 'rebuildClubAlbumFolder',
+};
+
+/**
+ * Shared rebuild for one per-(event, club, tag) shortcut folder (Videos or
+ * Album).
  *
- * Locates the existing club / tag Drive folder, ensures a sibling folder
- * named VIDEOS_FOLDER_NAME exists, and links every video under the (event,
+ * Locates the existing club / tag Drive folder, ensures a child folder named
+ * spec.folderName exists, and links every matching file under the (event,
  * club, tag) subtree into it as a Drive shortcut.
  *
  * No-ops gracefully when the club / tag folder is missing (haven't synced
- * a batch yet) or when no videos are found under the scope.
+ * a batch yet) or when no matching files are found under the scope.
  */
-export function rebuildClubVideoFolder(
+function rebuildClubScopedFolder(
   eventId: string,
   clubName: string,
-  tag: string
+  tag: string,
+  spec: ClubScopedFolderSpec
 ): ServiceResult<RebuildResult> {
   const event = findEventById(eventId);
   if (!event) {
@@ -544,7 +596,7 @@ export function rebuildClubVideoFolder(
   const scopeFolder = resolveClubTagFolder(eventFolder, clubName, tag);
   if (!scopeFolder) {
     Logger.log(
-      `[specialFoldersService.rebuildClubVideoFolder] event=${eventId} ` +
+      `[specialFoldersService.${spec.logName}] event=${eventId} ` +
       `club=${clubName} tag="${tag}" — scope folder not yet on Drive; skipping.`
     );
     return {
@@ -560,22 +612,22 @@ export function rebuildClubVideoFolder(
     };
   }
 
-  const videos = walkMediaFiles(scopeFolder, isVideoFile);
-  videos.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const targets = walkMediaFiles(scopeFolder, spec.accept);
+  targets.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   const warnings: string[] = [];
   let shortcutsCreated = 0;
   let shortcutsExisting = 0;
   let foldersTouched = 0;
 
-  if (videos.length === 0) {
+  if (targets.length === 0) {
     Logger.log(
-      `[specialFoldersService.rebuildClubVideoFolder] event=${eventId} ` +
-      `club=${clubName} tag="${tag}" — no videos under scope; skipping folder creation.`
+      `[specialFoldersService.${spec.logName}] event=${eventId} ` +
+      `club=${clubName} tag="${tag}" — no ${spec.noun} under scope; skipping folder creation.`
     );
     return {
       status: ResultStatus.SUCCESS,
-      message: 'No videos found under (event, club, tag); nothing to rebuild.',
+      message: `No ${spec.noun} found under (event, club, tag); nothing to rebuild.`,
       data: {
         shortcutsCreated: 0,
         shortcutsExisting: 0,
@@ -586,72 +638,105 @@ export function rebuildClubVideoFolder(
     };
   }
 
-  const folderResult = getOrCreateSubfolder(scopeFolder, VIDEOS_FOLDER_NAME);
+  const folderResult = getOrCreateSubfolder(scopeFolder, spec.folderName);
   if (folderResult.status !== ResultStatus.SUCCESS || !folderResult.data) {
     return {
       status: ResultStatus.ERROR,
-      message: `Failed to create or open ${VIDEOS_FOLDER_NAME} folder: ${folderResult.message}`,
+      message: `Failed to create or open ${spec.folderName} folder: ${folderResult.message}`,
     };
   }
   foldersTouched = 1;
-  const videosFolder = folderResult.data;
-  const videosFolderId = videosFolder.getId();
+  const shortcutFolder = folderResult.data;
+  const shortcutFolderId = shortcutFolder.getId();
 
-  // Make the Videos folder public so the Folder Link works for unauthenticated
+  // Make the folder public so the Folder Link works for unauthenticated
   // viewers — same rationale as the Photos_NNN buckets above.
-  tryGrantAnyoneRead(videosFolderId);
+  tryGrantAnyoneRead(shortcutFolderId);
 
-  const existing = listShortcutsInFolder(videosFolderId);
+  const existing = listShortcutsInFolder(shortcutFolderId);
   const linkedTargetIds = new Set(existing.map((s) => s.targetId));
 
-  for (const v of videos) {
-    if (linkedTargetIds.has(v.id)) {
+  for (const f of targets) {
+    if (linkedTargetIds.has(f.id)) {
       shortcutsExisting++;
       continue;
     }
-    const created = createDriveShortcut(videosFolderId, v.id, v.name);
+    const created = createDriveShortcut(shortcutFolderId, f.id, f.name);
     if (!created.ok) {
       warnings.push(
-        `Failed to link ${v.name} (${v.id}) into ${VIDEOS_FOLDER_NAME}: ${created.error}`
+        `Failed to link ${f.name} (${f.id}) into ${spec.folderName}: ${created.error}`
       );
       continue;
     }
     shortcutsCreated++;
-    linkedTargetIds.add(v.id);
+    linkedTargetIds.add(f.id);
   }
 
   upsertSpecialFolderRow({
-    folderId: videosFolderId,
+    folderId: shortcutFolderId,
     eventId,
-    scope: 'videos' as SpecialFolderScope,
+    scope: spec.scope,
     clubName,
     tag,
-    folderName: VIDEOS_FOLDER_NAME,
+    folderName: spec.folderName,
     folderIndex: 1,
-    folderUrl: driveFolderUrl(videosFolderId),
-    fileCount: videos.length,
+    folderUrl: driveFolderUrl(shortcutFolderId),
+    fileCount: targets.length,
     lastRefreshedAt: nowIsoTimestamp(),
   });
 
   Logger.log(
-    `[specialFoldersService.rebuildClubVideoFolder] event=${eventId} ` +
-    `club=${clubName} tag="${tag}" videos=${videos.length} ` +
+    `[specialFoldersService.${spec.logName}] event=${eventId} ` +
+    `club=${clubName} tag="${tag}" ${spec.noun}=${targets.length} ` +
     `created=${shortcutsCreated} existing=${shortcutsExisting} warnings=${warnings.length}`
   );
 
   return {
     status: ResultStatus.SUCCESS,
     message:
-      `Rebuilt ${VIDEOS_FOLDER_NAME} for ${clubName}/${tag || '(no tag)'}: ` +
+      `Rebuilt ${spec.folderName} for ${clubName}/${tag || '(no tag)'}: ` +
       `${shortcutsCreated} new shortcut(s), ${shortcutsExisting} already linked`,
     data: {
       shortcutsCreated,
       shortcutsExisting,
-      targetFilesScanned: videos.length,
+      targetFilesScanned: targets.length,
       foldersTouched,
       warnings,
     },
   };
+}
+
+/**
+ * Rebuilds the per-(event, club, tag) Videos folder.
+ *
+ * Locates the existing club / tag Drive folder, ensures a sibling folder
+ * named VIDEOS_FOLDER_NAME exists, and links every video under the (event,
+ * club, tag) subtree into it as a Drive shortcut.
+ *
+ * No-ops gracefully when the club / tag folder is missing (haven't synced
+ * a batch yet) or when no videos are found under the scope.
+ */
+export function rebuildClubVideoFolder(
+  eventId: string,
+  clubName: string,
+  tag: string
+): ServiceResult<RebuildResult> {
+  return rebuildClubScopedFolder(eventId, clubName, tag, VIDEOS_FOLDER_SPEC);
+}
+
+/**
+ * Rebuilds the per-(event, club, tag) Album folder.
+ *
+ * Same algorithm as rebuildClubVideoFolder, but the Album folder receives a
+ * shortcut for EVERY uploaded file under the scope — photos AND videos. The
+ * resulting scope='albums' rows feed the per-club tabs on the public sheet.
+ */
+export function rebuildClubAlbumFolder(
+  eventId: string,
+  clubName: string,
+  tag: string
+): ServiceResult<RebuildResult> {
+  return rebuildClubScopedFolder(eventId, clubName, tag, ALBUM_FOLDER_SPEC);
 }
 
 // ─── Per-event full rebuild ───────────────────────────────────────────────────
@@ -664,6 +749,11 @@ export interface RebuildAllResult {
     tag: string;
     result: ServiceResult<RebuildResult>;
   }>;
+  albumResults: Array<{
+    clubName: string;
+    tag: string;
+    result: ServiceResult<RebuildResult>;
+  }>;
 }
 
 /**
@@ -672,11 +762,12 @@ export interface RebuildAllResult {
  * Photos: delegates to rebuildEventPhotoFolders — walks every photo under the
  * event subtree and partitions them into Photos_001, Photos_002, … buckets.
  *
- * Videos: enumerates every first-level club subfolder under the event, then
- * every second-level tag subfolder under each club. For each (club, '') scope
- * AND each (club, tag) scope it calls rebuildClubVideoFolder, which creates
- * (or updates) a sibling Videos/ folder containing shortcuts to every video
- * in that scope.
+ * Videos + Albums: enumerates every first-level club subfolder under the
+ * event, then every second-level tag subfolder under each club. For each
+ * (club, '') scope AND each (club, tag) scope it calls rebuildClubVideoFolder
+ * (sibling Videos/ folder with shortcuts to every video) and
+ * rebuildClubAlbumFolder (sibling Album/ folder with shortcuts to EVERY
+ * uploaded file in that scope).
  *
  * Returns a structured result so the caller can surface per-scope outcomes.
  * Errors inside individual scopes are captured, not thrown, so a single
@@ -687,68 +778,77 @@ export function rebuildAllSpecialFoldersForEvent(eventId: string): RebuildAllRes
 
   const event = findEventById(eventId);
   const videoResults: RebuildAllResult['videoResults'] = [];
+  const albumResults: RebuildAllResult['albumResults'] = [];
 
-  if (!event) return { photos, videoResults };
+  if (!event) return { photos, videoResults, albumResults };
 
   const eventFolderResult = getFolderById(event.driveFolderId);
   if (
     eventFolderResult.status !== ResultStatus.SUCCESS ||
     !eventFolderResult.data
   ) {
-    return { photos, videoResults };
+    return { photos, videoResults, albumResults };
   }
 
   const eventFolder = eventFolderResult.data;
   const clubIter = eventFolder.getFolders();
 
-  while (clubIter.hasNext()) {
-    const clubFolder = clubIter.next();
-    const clubName = clubFolder.getName();
-
-    // Skip the managed Photos_NNN and any Videos folders at the event level.
-    if (
-      clubName.startsWith(PHOTOS_FOLDER_PREFIX) ||
-      clubName === VIDEOS_FOLDER_NAME
-    ) {
-      continue;
-    }
-
-    // Rebuild for (club, '') — videos living directly inside the club folder.
+  // Rebuilds Videos + Album for one (club, tag) scope, capturing errors.
+  const rebuildScope = (clubName: string, tag: string): void => {
     try {
       videoResults.push({
         clubName,
-        tag: '',
-        result: rebuildClubVideoFolder(eventId, clubName, ''),
+        tag,
+        result: rebuildClubVideoFolder(eventId, clubName, tag),
       });
     } catch (err) {
       Logger.log(
         `[specialFoldersService.rebuildAllSpecialFoldersForEvent] event=${eventId} ` +
-        `club=${clubName} tag="" threw: ${String(err)}`
+        `club=${clubName} tag="${tag}" videos threw: ${String(err)}`
       );
     }
+    try {
+      albumResults.push({
+        clubName,
+        tag,
+        result: rebuildClubAlbumFolder(eventId, clubName, tag),
+      });
+    } catch (err) {
+      Logger.log(
+        `[specialFoldersService.rebuildAllSpecialFoldersForEvent] event=${eventId} ` +
+        `club=${clubName} tag="${tag}" albums threw: ${String(err)}`
+      );
+    }
+  };
+
+  while (clubIter.hasNext()) {
+    const clubFolder = clubIter.next();
+    const clubName = clubFolder.getName();
+
+    // Skip the managed Photos_NNN / Videos / Album folders at the event level.
+    if (
+      clubName.startsWith(PHOTOS_FOLDER_PREFIX) ||
+      clubName === VIDEOS_FOLDER_NAME ||
+      clubName === ALBUM_FOLDER_NAME
+    ) {
+      continue;
+    }
+
+    // Rebuild for (club, '') — files living directly inside the club folder.
+    rebuildScope(clubName, '');
 
     // Rebuild for each tag subfolder inside the club folder.
     const tagIter = clubFolder.getFolders();
     while (tagIter.hasNext()) {
       const tagFolder = tagIter.next();
       const tag = tagFolder.getName();
-      if (tag === VIDEOS_FOLDER_NAME) continue; // skip any stray Videos folder
-      try {
-        videoResults.push({
-          clubName,
-          tag,
-          result: rebuildClubVideoFolder(eventId, clubName, tag),
-        });
-      } catch (err) {
-        Logger.log(
-          `[specialFoldersService.rebuildAllSpecialFoldersForEvent] event=${eventId} ` +
-          `club=${clubName} tag="${tag}" threw: ${String(err)}`
-        );
-      }
+      // Skip our own managed shortcut folders.
+      if (tag === VIDEOS_FOLDER_NAME || tag === ALBUM_FOLDER_NAME) continue;
+      rebuildScope(clubName, tag);
     }
   }
 
-  return { photos, videoResults };
+  return { photos, videoResults, albumResults };
 }
 
 /**
@@ -792,6 +892,110 @@ export function tryRebuildSpecialFoldersForBatch(
       `club=${clubName} tag="${tag}" videos rebuild threw: ${String(err)}`
     );
   }
+
+  try {
+    const albumResult = rebuildClubAlbumFolder(eventId, clubName, tag);
+    if (albumResult.status !== ResultStatus.SUCCESS) {
+      Logger.log(
+        `[specialFoldersService.tryRebuildSpecialFoldersForBatch] event=${eventId} ` +
+        `club=${clubName} tag="${tag}" albums rebuild non-fatal failure: ${albumResult.message}`
+      );
+    }
+  } catch (err) {
+    Logger.log(
+      `[specialFoldersService.tryRebuildSpecialFoldersForBatch] event=${eventId} ` +
+      `club=${clubName} tag="${tag}" albums rebuild threw: ${String(err)}`
+    );
+  }
+}
+
+// ─── Orphan-shortcut sweep ───────────────────────────────────────────────────
+
+/** Outcome of removeShortcutsForTargets. */
+export interface ShortcutSweepResult {
+  /** Shortcut files moved to trash. */
+  shortcutsRemoved: number;
+  /** Shortcut folders that contained at least one removed shortcut. */
+  foldersTouched: number;
+  /** Soft errors (per-shortcut trash failures); never thrown. */
+  errors: string[];
+}
+
+/**
+ * Removes shortcuts pointing at the given target file IDs from EVERY managed
+ * shortcut folder (Photos_NNN, Videos, Album) recorded in Special_Folders.
+ *
+ * Why: the rebuilds only ever ADD shortcuts. When an original file is
+ * soft-deleted (e.g. by the duplicate cleanup flow) its shortcuts would
+ * otherwise dangle in the public-browse folders. Call this right after a
+ * batch of soft-deletes with the deleted Drive file IDs.
+ *
+ * Shortcuts are TRASHED (not hard-deleted) so a mistaken sweep is fully
+ * recoverable; restoring the original file + re-running a rebuild also
+ * recreates them. Each touched Special_Folders row gets its fileCount
+ * decremented and lastRefreshedAt stamped.
+ */
+export function removeShortcutsForTargets(
+  targetFileIds: ReadonlyArray<string>
+): ShortcutSweepResult {
+  const result: ShortcutSweepResult = {
+    shortcutsRemoved: 0,
+    foldersTouched: 0,
+    errors: [],
+  };
+  const targets = new Set(targetFileIds.filter((id) => id && id.trim()));
+  if (targets.size === 0) return result;
+
+  let records: SpecialFolderRecord[];
+  let rows: unknown[][];
+  try {
+    const loaded = loadAllSpecialFolders();
+    records = loaded.records;
+    rows = loaded.rows;
+  } catch (err) {
+    result.errors.push(`Could not load Special_Folders sheet: ${String(err)}`);
+    return result;
+  }
+
+  const now = nowIsoTimestamp();
+
+  for (const record of records) {
+    if (!record.folderId) continue;
+
+    let removedHere = 0;
+    for (const shortcut of listShortcutsInFolder(record.folderId)) {
+      if (!targets.has(shortcut.targetId)) continue;
+      const trashed = trashDriveFile(shortcut.id);
+      if (!trashed.ok) {
+        result.errors.push(
+          `Failed to trash shortcut "${shortcut.name}" (${shortcut.id}) in ` +
+          `${record.folderName} (${record.folderId}): ${trashed.error}`
+        );
+        continue;
+      }
+      removedHere++;
+    }
+
+    if (removedHere > 0) {
+      result.shortcutsRemoved += removedHere;
+      result.foldersTouched++;
+      upsertSpecialFolderRow(
+        {
+          ...record,
+          fileCount: Math.max(0, record.fileCount - removedHere),
+          lastRefreshedAt: now,
+        },
+        rows
+      );
+    }
+  }
+
+  Logger.log(
+    `[specialFoldersService.removeShortcutsForTargets] targets=${targets.size} ` +
+    `removed=${result.shortcutsRemoved} folders=${result.foldersTouched} ` +
+    `errors=${result.errors.length}`
+  );
+  return result;
 }
 
 // ─── Backfill sharing on every existing special folder ──────────────────────

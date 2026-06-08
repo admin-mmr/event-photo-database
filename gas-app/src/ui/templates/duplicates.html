@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>重复文件清理 — 湘舍动公益文件系统</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/material-design-lite/1.3.0/material.indigo-pink.min.css">
+  <?!= HtmlService.createHtmlOutputFromFile('ui/css/styles').getContent() ?>
+  <style>
+    .toolbar {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 10px;
+      padding: 18px 20px;
+      margin-bottom: 18px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .toolbar select {
+      padding: 9px 12px;
+      border: 1px solid #c5cae9;
+      border-radius: 6px;
+      font-size: .92rem;
+      min-width: 260px;
+      background: #fff;
+    }
+    .btn {
+      background: #3f51b5;
+      color: #fff;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      font-size: .92rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background .15s;
+    }
+    .btn:hover:not(:disabled) { background: #303f9f; }
+    .btn:disabled { background: #b0bec5; cursor: not-allowed; }
+    .btn.danger { background: #c62828; }
+    .btn.danger:hover:not(:disabled) { background: #b71c1c; }
+
+    .status-line {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: .88rem;
+      color: #888;
+      min-height: 20px;
+    }
+    .status-line.success { color: #2e7d32; }
+    .status-line.warning { color: #ef6c00; }
+    .status-line.error   { color: #c62828; }
+    .spinner-inline {
+      width: 14px; height: 14px;
+      border: 2px solid #c5cae9;
+      border-top-color: #3f51b5;
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .info-banner {
+      background: #e8eaf6;
+      border-left: 4px solid #3f51b5;
+      padding: 14px 16px;
+      border-radius: 0 6px 6px 0;
+      margin-bottom: 18px;
+      font-size: .9rem;
+      line-height: 1.6;
+      color: #333;
+    }
+    .info-banner .zh { color: #555; }
+
+    .summary-bar {
+      display: none;
+      background: #fff8e1;
+      border-left: 4px solid #f9a825;
+      padding: 12px 16px;
+      border-radius: 0 6px 6px 0;
+      margin-bottom: 14px;
+      font-size: .9rem;
+    }
+    .summary-bar.visible { display: block; }
+
+    .group-card {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 10px;
+      padding: 14px 18px;
+      margin-bottom: 12px;
+    }
+    .group-card__meta {
+      font-size: .8rem;
+      color: #777;
+      margin-bottom: 8px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .badge {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 10px;
+      font-size: .72rem;
+      font-weight: 600;
+    }
+    .badge.md5  { background: #e8f5e9; color: #2e7d32; }
+    .badge.name { background: #fff3e0; color: #ef6c00; }
+    table.dup-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .85rem;
+    }
+    table.dup-table td, table.dup-table th {
+      padding: 6px 8px;
+      border-top: 1px solid #f0f0f0;
+      text-align: left;
+      vertical-align: middle;
+    }
+    tr.keeper-row { background: #f1f8e9; }
+    tr.keeper-row td:first-child { color: #2e7d32; font-weight: 600; }
+    .file-name { word-break: break-all; }
+    .error-detail {
+      margin-top: 10px;
+      padding: 8px 12px;
+      background: #ffebee;
+      border-left: 3px solid #c62828;
+      border-radius: 0 6px 6px 0;
+      font-size: .82rem;
+      color: #b71c1c;
+      max-height: 140px;
+      overflow-y: auto;
+      display: none;
+    }
+    .error-detail.visible { display: block; }
+    .error-detail ul { margin: 0; padding-left: 18px; }
+  </style>
+</head>
+<body>
+  <div class="mdl-layout mdl-js-layout mdl-layout--fixed-header">
+    <?!= HtmlService.createHtmlOutputFromFile('ui/templates/_header').getContent() ?>
+
+    <main class="mdl-layout__content">
+      <div class="page-content">
+        <h2 style="margin:8px 0 6px;font-size:1.5rem;color:#1a1a2e;">
+          <i class="material-icons" style="vertical-align:middle;color:#3f51b5;">content_copy</i>
+          重复文件清理&nbsp;/&nbsp;Duplicate Cleanup
+        </h2>
+        <p style="color:#666;margin:0 0 18px;font-size:.92rem;">
+          Find and remove duplicate photos/videos (e.g. <code>IMG_5518 (1).jpeg</code>,
+          <code>Copy of …</code>) created by manual Drive actions.
+          <span style="color:#888;">查找并清理由 Drive 手动操作产生的重复照片/视频。</span>
+        </p>
+
+        <div class="info-banner">
+          <strong>Safe by design.</strong>
+          The scan is read-only. Review the proposed deletions below, then confirm —
+          deleted files go to Drive trash and stay restorable for 30 days. Every deletion
+          is recorded in the audit log.
+          <div class="zh">扫描只读、不删除任何文件。确认后文件移入回收站，30 天内可恢复，所有删除均有审计记录。</div>
+        </div>
+
+        <!-- ─── Scan toolbar ─────────────────────────────────────────────── -->
+        <div class="toolbar">
+          <label for="event-select" style="font-weight:600;font-size:.9rem;">Event&nbsp;/&nbsp;活动:</label>
+          <select id="event-select"></select>
+          <button class="btn" id="btn-scan" onclick="runScan()">
+            <i class="material-icons" style="font-size:18px;">search</i>
+            Scan for duplicates
+          </button>
+          <div class="status-line" id="status-scan">Ready</div>
+        </div>
+
+        <!-- ─── Results ──────────────────────────────────────────────────── -->
+        <div class="summary-bar" id="summary-bar"></div>
+        <div id="results"></div>
+
+        <div class="toolbar" id="trash-bar" style="display:none;">
+          <button class="btn danger" id="btn-trash" onclick="runTrash()">
+            <i class="material-icons" style="font-size:18px;">delete</i>
+            Move selected to trash
+          </button>
+          <div class="status-line" id="status-trash"></div>
+        </div>
+        <div class="error-detail" id="err-detail"></div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    window.SESSION_TOKEN = '<?= (typeof sessionToken !== "undefined" && sessionToken) ? sessionToken : "" ?>';
+    var EVENTS = <?!= events ?>;
+    var currentReport = null;
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
+
+    function fmtBytes(n) {
+      if (!n) return '0 B';
+      var units = ['B', 'KB', 'MB', 'GB'];
+      var i = 0;
+      while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+      return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+    }
+
+    function setStatus(id, cls, html) {
+      var el = document.getElementById(id);
+      el.className = 'status-line' + (cls ? ' ' + cls : '');
+      el.innerHTML = html;
+    }
+
+    function populateEvents() {
+      var sel = document.getElementById('event-select');
+      sel.innerHTML = (EVENTS || []).map(function (ev) {
+        return '<option value="' + escapeHtml(ev.eventId) + '">' +
+               escapeHtml(ev.eventDate + ' — ' + ev.eventName) + '</option>';
+      }).join('');
+    }
+
+    function runScan() {
+      var eventId = document.getElementById('event-select').value;
+      if (!eventId) return;
+      document.getElementById('btn-scan').disabled = true;
+      document.getElementById('results').innerHTML = '';
+      document.getElementById('summary-bar').classList.remove('visible');
+      document.getElementById('trash-bar').style.display = 'none';
+      document.getElementById('err-detail').classList.remove('visible');
+      setStatus('status-scan', '', '<span class="spinner-inline"></span>Scanning… (may take a minute)');
+
+      google.script.run
+        .withSuccessHandler(function (response) {
+          document.getElementById('btn-scan').disabled = false;
+          if (!response || response.status !== 'success') {
+            setStatus('status-scan', 'error',
+              '<i class="material-icons" style="font-size:16px;">error</i> ' +
+              escapeHtml((response && response.message) || 'Scan failed.'));
+            return;
+          }
+          currentReport = response.data;
+          setStatus('status-scan', 'success',
+            '<i class="material-icons" style="font-size:16px;">check_circle</i> ' +
+            escapeHtml(response.message || 'Done.'));
+          renderReport(currentReport);
+        })
+        .withFailureHandler(function (err) {
+          document.getElementById('btn-scan').disabled = false;
+          setStatus('status-scan', 'error',
+            '<i class="material-icons" style="font-size:16px;">error</i> Server error: ' +
+            escapeHtml(err && err.message ? err.message : String(err)));
+        })
+        .serverScanDuplicateFiles({ sessionToken: window.SESSION_TOKEN || '', eventId: eventId });
+    }
+
+    function renderReport(report) {
+      var results = document.getElementById('results');
+      var summary = document.getElementById('summary-bar');
+
+      if (!report || report.groups.length === 0) {
+        summary.classList.add('visible');
+        summary.innerHTML = '<strong>No duplicates found.</strong> Scanned ' +
+          report.filesScanned + ' file(s). <span class="zh">未发现重复文件。</span>';
+        return;
+      }
+
+      summary.classList.add('visible');
+      summary.innerHTML =
+        '<strong>' + report.duplicateFileCount + ' redundant cop(ies)</strong> in ' +
+        report.groups.length + ' group(s) across ' + report.filesScanned +
+        ' scanned file(s) — deleting all would reclaim <strong>' +
+        fmtBytes(report.duplicateBytes) + '</strong>. Uncheck anything you want to keep.' +
+        ' <span class="zh">取消勾选即可保留对应文件。</span>';
+
+      results.innerHTML = report.groups.map(function (g, gi) {
+        var rows = '';
+        rows += '<tr class="keeper-row"><td>KEEP</td><td class="file-name">' +
+          escapeHtml(g.keeper.fileName) + '</td><td>' + escapeHtml(g.keeper.tag || '—') +
+          '</td><td>' + escapeHtml(g.keeper.batchFolderName || '—') + '</td><td>' +
+          fmtBytes(g.keeper.sizeBytes) + '</td><td>' +
+          escapeHtml((g.keeper.createdTime || '').slice(0, 10)) + '</td></tr>';
+        rows += g.duplicates.map(function (d, di) {
+          return '<tr><td><label><input type="checkbox" checked ' +
+            'data-group="' + gi + '" data-dup="' + di + '"> delete</label></td>' +
+            '<td class="file-name">' + escapeHtml(d.fileName) + '</td>' +
+            '<td>' + escapeHtml(d.tag || '—') + '</td>' +
+            '<td>' + escapeHtml(d.batchFolderName || '—') + '</td>' +
+            '<td>' + fmtBytes(d.sizeBytes) + '</td>' +
+            '<td>' + escapeHtml((d.createdTime || '').slice(0, 10)) + '</td></tr>';
+        }).join('');
+
+        return '<div class="group-card">' +
+          '<div class="group-card__meta">' +
+          '<span class="badge ' + g.reason + '">' +
+          (g.reason === 'md5' ? 'identical content (MD5)' : 'name pattern + size') +
+          '</span><span>Club: ' + escapeHtml(g.clubName) + '</span></div>' +
+          '<table class="dup-table"><thead><tr>' +
+          '<th></th><th>File</th><th>Tag</th><th>Folder</th><th>Size</th><th>Created</th>' +
+          '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+      }).join('');
+
+      document.getElementById('trash-bar').style.display = 'flex';
+      setStatus('status-trash', '', '');
+    }
+
+    function collectSelected() {
+      var items = [];
+      var boxes = document.querySelectorAll('#results input[type=checkbox]:checked');
+      boxes.forEach(function (box) {
+        var g = currentReport.groups[Number(box.getAttribute('data-group'))];
+        var d = g.duplicates[Number(box.getAttribute('data-dup'))];
+        items.push({
+          fileId: d.fileId,
+          fileName: d.fileName,
+          clubName: g.clubName,
+          batchFolderName: d.batchFolderName,
+        });
+      });
+      return items;
+    }
+
+    function runTrash() {
+      var items = collectSelected();
+      if (items.length === 0) {
+        setStatus('status-trash', 'warning', 'Nothing selected.');
+        return;
+      }
+      if (!confirm('Move ' + items.length + ' file(s) to Drive trash?\n' +
+                   '确认将 ' + items.length + ' 个文件移入回收站？（30 天内可恢复）')) {
+        return;
+      }
+      document.getElementById('btn-trash').disabled = true;
+      setStatus('status-trash', '', '<span class="spinner-inline"></span>Deleting…');
+
+      google.script.run
+        .withSuccessHandler(function (response) {
+          document.getElementById('btn-trash').disabled = false;
+          var err = document.getElementById('err-detail');
+          err.classList.remove('visible');
+          err.innerHTML = '';
+          if (!response) {
+            setStatus('status-trash', 'error', 'No response from server');
+            return;
+          }
+          var cls = response.status === 'success' ? 'success'
+                  : response.status === 'warning' ? 'warning' : 'error';
+          var icon = cls === 'success' ? 'check_circle' : cls === 'warning' ? 'warning' : 'error';
+          setStatus('status-trash', cls,
+            '<i class="material-icons" style="font-size:16px;">' + icon + '</i> ' +
+            escapeHtml(response.message || ''));
+          var samples = (response.data && response.data.errorSamples) || [];
+          if (samples.length > 0) {
+            err.classList.add('visible');
+            err.innerHTML = '<strong>Error samples:</strong><ul>' +
+              samples.map(function (s) { return '<li>' + escapeHtml(s) + '</li>'; }).join('') +
+              '</ul>';
+          }
+          if (response.status !== 'error') runScan(); // re-scan to show the cleaned state
+        })
+        .withFailureHandler(function (err) {
+          document.getElementById('btn-trash').disabled = false;
+          setStatus('status-trash', 'error', 'Server error: ' +
+            escapeHtml(err && err.message ? err.message : String(err)));
+        })
+        .serverTrashDuplicateFiles({
+          sessionToken: window.SESSION_TOKEN || '',
+          eventId: document.getElementById('event-select').value,
+          items: items,
+        });
+    }
+
+    populateEvents();
+  </script>
+
+  <script>
+    window.APP_URL = '<?= scriptUrl ?>';
+    window.SESSION_TOKEN = '<?= (typeof sessionToken !== "undefined" && sessionToken) ? sessionToken : "" ?>';
+  </script>
+  <?!= HtmlService.createHtmlOutputFromFile('ui/js/app').getContent() ?>
+</body>
+</html>

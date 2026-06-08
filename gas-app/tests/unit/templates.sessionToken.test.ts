@@ -68,6 +68,12 @@ const UNAUTHENTICATED_TEMPLATES: ReadonlySet<string> = new Set([
   // authenticated as the current Google user; no SESSION_TOKEN mechanism needed.
   // Server-side assertSuperAdmin() enforces access independently.
   'uploadPrepSidebar.html',
+
+  // Shared header PARTIAL — not a page. It is included via
+  // HtmlService.createHtmlOutputFromFile() by every authenticated page, and
+  // each of those pages injects window.SESSION_TOKEN itself. Injecting it
+  // here too would be a duplicate assignment on every page.
+  '_header.html',
 ]);
 
 /**

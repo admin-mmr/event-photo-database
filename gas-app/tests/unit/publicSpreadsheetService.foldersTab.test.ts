@@ -18,6 +18,8 @@ jest.mock('../../src/services/clubService');
 import {
   buildPhotoFolderRows,
   buildVideoFolderRows,
+  buildClubAlbumTabs,
+  sanitizeTabName,
 } from '../../src/services/publicSpreadsheetService';
 import {
   EventRecord,
@@ -80,6 +82,24 @@ function makeVideoFolder(
     folderIndex: 1,
     folderUrl: 'https://drive.google.com/drive/folders/drv-videos-001',
     fileCount: 12,
+    lastRefreshedAt: '2026-04-20T10:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function makeAlbumFolder(
+  overrides: Partial<SpecialFolderRecord> = {}
+): SpecialFolderRecord {
+  return {
+    folderId: 'drv-album-001',
+    eventId: 'evt-001',
+    scope: 'albums',
+    clubName: 'New_Bee',
+    tag: 'finish_line',
+    folderName: 'Album',
+    folderIndex: 1,
+    folderUrl: 'https://drive.google.com/drive/folders/drv-album-001',
+    fileCount: 34,
     lastRefreshedAt: '2026-04-20T10:00:00.000Z',
     ...overrides,
   };
@@ -239,5 +259,126 @@ describe('publicSpreadsheetService — buildVideoFolderRows()', () => {
       'Alpha_Club|b',
       'Zeta_Club|a',
     ]);
+  });
+});
+
+// ─── sanitizeTabName ─────────────────────────────────────────────────────────
+
+describe('publicSpreadsheetService — sanitizeTabName()', () => {
+  it('keeps plain names (incl. CJK) untouched', () => {
+    expect(sanitizeTabName('岚山')).toBe('岚山');
+    expect(sanitizeTabName('New Bee')).toBe('New Bee');
+  });
+
+  it('strips characters Sheets forbids in tab names', () => {
+    expect(sanitizeTabName('a/b\\c[d]e*f?g:h')).toBe('a b c d e f g h');
+  });
+
+  it('caps the name at 100 characters', () => {
+    expect(sanitizeTabName('x'.repeat(150))).toHaveLength(100);
+  });
+
+  it('falls back to "Club" when sanitization leaves nothing', () => {
+    expect(sanitizeTabName('  ')).toBe('Club');
+    expect(sanitizeTabName('***')).toBe('Club');
+  });
+});
+
+// ─── buildClubAlbumTabs ──────────────────────────────────────────────────────
+
+describe('publicSpreadsheetService — buildClubAlbumTabs()', () => {
+  it('returns no tabs when there are no album-scope records', () => {
+    expect(
+      buildClubAlbumTabs(
+        [makePhotoFolder(), makeVideoFolder()],
+        [makeEvent()],
+        [makeClub()]
+      )
+    ).toEqual([]);
+  });
+
+  it('drops rows whose eventId is unknown to the Events list', () => {
+    const orphan = makeAlbumFolder({ eventId: 'evt-deleted-999' });
+    expect(buildClubAlbumTabs([orphan], [makeEvent()], [makeClub()])).toEqual([]);
+  });
+
+  it('names the tab with the club display name and emits rows in column order', () => {
+    const club = makeClub({ displayName: '岚山', normalizedName: 'Misty_Mountain' });
+    const album = makeAlbumFolder({ clubName: 'Misty_Mountain', tag: 'ALL' });
+
+    const tabs = buildClubAlbumTabs([album], [makeEvent()], [club]);
+
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].tabName).toBe('岚山');
+    expect(tabs[0].rows).toHaveLength(1);
+    const row = tabs[0].rows[0];
+    // [Event Date, Event Name, Tag, Folder Name, File Count, Folder Link, Last Refreshed]
+    expect(row[0]).toBe('2026-04-19');
+    expect(row[1]).toBe('NYC Marathon');
+    expect(row[2]).toBe('ALL');
+    expect(row[3]).toBe('Album');
+    expect(row[4]).toBe(34);
+    expect(row[5]).toBe('https://drive.google.com/drive/folders/drv-album-001');
+    expect(row[6]).toBe('2026-04-20T10:00:00.000Z');
+  });
+
+  it('groups records into one tab per club, only for clubs that have albums', () => {
+    const clubs = [
+      makeClub({ displayName: '岚山', normalizedName: 'Misty_Mountain' }),
+      makeClub({ displayName: '驰跑团', normalizedName: 'CHI' }),
+      makeClub({ displayName: '百骏', normalizedName: 'Bergen_Runners' }), // no albums
+    ];
+    const records = [
+      makeAlbumFolder({ folderId: 'a1', clubName: 'Misty_Mountain', tag: 'ALL' }),
+      makeAlbumFolder({ folderId: 'a2', clubName: 'Misty_Mountain', tag: 'finish' }),
+      makeAlbumFolder({ folderId: 'a3', clubName: 'CHI', tag: 'ALL' }),
+    ];
+
+    const tabs = buildClubAlbumTabs(records, [makeEvent()], clubs);
+
+    expect(tabs.map((t) => t.tabName).sort()).toEqual(['岚山', '驰跑团']);
+    const misty = tabs.find((t) => t.tabName === '岚山')!;
+    expect(misty.rows).toHaveLength(2);
+  });
+
+  it('falls back to the normalized club name when no club row matches', () => {
+    const album = makeAlbumFolder({ clubName: 'Unknown_Club' });
+    const tabs = buildClubAlbumTabs([album], [makeEvent()], []);
+    expect(tabs[0].tabName).toBe('Unknown_Club');
+  });
+
+  it('sorts rows within a tab newest-event-first, then by tag ascending', () => {
+    const oldEvent = makeEvent({ eventId: 'evt-old', eventDate: '2025-01-01', eventName: 'Old' });
+    const newEvent = makeEvent({ eventId: 'evt-new', eventDate: '2026-12-31', eventName: 'New' });
+    const records = [
+      makeAlbumFolder({ folderId: 'a1', eventId: 'evt-old', tag: 'b' }),
+      makeAlbumFolder({ folderId: 'a2', eventId: 'evt-old', tag: 'a' }),
+      makeAlbumFolder({ folderId: 'a3', eventId: 'evt-new', tag: 'z' }),
+    ];
+
+    const tabs = buildClubAlbumTabs(records, [oldEvent, newEvent], [makeClub()]);
+
+    expect(tabs[0].rows.map((r) => `${r[1]}|${r[2]}`)).toEqual([
+      'New|z',
+      'Old|a',
+      'Old|b',
+    ]);
+  });
+
+  it('disambiguates colliding tab names by appending the normalized name', () => {
+    const clubs = [
+      makeClub({ displayName: 'Same', normalizedName: 'Club_A' }),
+      makeClub({ displayName: 'Same', normalizedName: 'Club_B' }),
+    ];
+    const records = [
+      makeAlbumFolder({ folderId: 'a1', clubName: 'Club_A' }),
+      makeAlbumFolder({ folderId: 'a2', clubName: 'Club_B' }),
+    ];
+
+    const tabs = buildClubAlbumTabs(records, [makeEvent()], clubs);
+
+    const names = tabs.map((t) => t.tabName);
+    expect(new Set(names).size).toBe(2);
+    expect(names).toContain('Same');
   });
 });

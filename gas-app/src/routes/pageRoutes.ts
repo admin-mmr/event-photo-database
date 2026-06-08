@@ -298,6 +298,28 @@ export function publicSheetPage(user: UserRecord, sessionToken = ''): GoogleApps
 }
 
 /**
+ * Duplicate Cleanup page (admins; club admins see only their club's results).
+ *
+ * Pre-loads the event list for the scan dropdown. The scan itself runs via
+ * serverScanDuplicateFiles and the confirmed deletions via
+ * serverTrashDuplicateFiles (see routes/duplicateHandlers.ts). Nothing is
+ * ever deleted without explicit review — the page renders the proposed
+ * keep/delete pairs with checkboxes first.
+ */
+export function duplicatesPage(user: UserRecord, sessionToken = ''): GoogleAppsScript.HTML.HtmlOutput {
+  const events = listAllEvents(1, 200, 'desc');
+  return renderTemplate('duplicates', {
+    sessionToken,
+    userEmail:    user.email,
+    userRole:     user.role,
+    clubId:       user.clubId ?? '',
+    isAdmin:      isAdmin(user.role),
+    isSuperAdmin: isSuperAdmin(user.role),
+    events:       safeJsonForScript(events.items),
+  });
+}
+
+/**
  * Drive File System Tree page (all authenticated users).
  *
  * Pre-loads the full event list so the page can render the event list

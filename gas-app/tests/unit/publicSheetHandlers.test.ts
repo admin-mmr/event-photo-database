@@ -27,6 +27,7 @@ jest.mock('../../src/services/uploadLinkService', () => ({
 jest.mock('../../src/services/specialFoldersService', () => ({
   rebuildEventPhotoFolders: jest.fn(),
   rebuildClubVideoFolder:   jest.fn(),
+  rebuildClubAlbumFolder:   jest.fn(),
 }));
 jest.mock('../../src/services/publicSpreadsheetService', () => ({
   rebuildPublicFoldersIndex: jest.fn(),
@@ -43,6 +44,7 @@ import { listAll as listAllUploadLinks } from '../../src/services/uploadLinkServ
 import {
   rebuildEventPhotoFolders,
   rebuildClubVideoFolder,
+  rebuildClubAlbumFolder,
 } from '../../src/services/specialFoldersService';
 import { rebuildPublicFoldersIndex } from '../../src/services/publicSpreadsheetService';
 import { ResultStatus, UserRole, UserStatus } from '../../src/types/enums';
@@ -52,6 +54,7 @@ const mockListAllEvents          = listAllEvents          as jest.Mock;
 const mockListAllUploadLinks     = listAllUploadLinks     as jest.Mock;
 const mockRebuildEventPhotos     = rebuildEventPhotoFolders as jest.Mock;
 const mockRebuildClubVideo       = rebuildClubVideoFolder   as jest.Mock;
+const mockRebuildClubAlbum       = rebuildClubAlbumFolder   as jest.Mock;
 const mockRebuildPublicFolders   = rebuildPublicFoldersIndex as jest.Mock;
 
 function authedUser() {
@@ -78,6 +81,7 @@ beforeEach(() => {
   mockRebuildPublicFolders.mockReturnValue(0);
   mockListAllEvents.mockReturnValue({ items: [], total: 0 });
   mockListAllUploadLinks.mockReturnValue([]);
+  mockRebuildClubAlbum.mockReturnValue({ status: ResultStatus.SUCCESS });
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -253,6 +257,39 @@ describe('serverRebuildVideoFolders()', () => {
     const r = serverRebuildVideoFolders({ sessionToken: 'valid' });
     expect(r.status).toBe('success');
     expect(mockRebuildClubVideo).not.toHaveBeenCalled();
+    expect(mockRebuildClubAlbum).not.toHaveBeenCalled();
     expect(mockRebuildPublicFolders).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds the Album folder for every deduped tuple alongside Videos', () => {
+    mockListAllUploadLinks.mockReturnValue([
+      { eventId: 'e1', clubName: 'New_Bee',  tag: 'ALL' },
+      { eventId: 'e1', clubName: 'New_Bee',  tag: 'ALL' }, // duplicate
+      { eventId: 'e2', clubName: 'Old_Bird', tag: 'ALL' },
+    ]);
+    mockRebuildClubVideo.mockReturnValue({ status: ResultStatus.SUCCESS });
+
+    const r = serverRebuildVideoFolders({ sessionToken: 'valid' });
+
+    expect(r.status).toBe('success');
+    expect(mockRebuildClubAlbum).toHaveBeenCalledTimes(2);
+    expect(mockRebuildClubAlbum).toHaveBeenCalledWith('e1', 'New_Bee', 'ALL');
+    expect(mockRebuildClubAlbum).toHaveBeenCalledWith('e2', 'Old_Bird', 'ALL');
+  });
+
+  it('marks a tuple failed when the Album rebuild fails even if Videos succeeded', () => {
+    mockListAllUploadLinks.mockReturnValue([
+      { eventId: 'e1', clubName: 'A', tag: 'ALL' },
+    ]);
+    mockRebuildClubVideo.mockReturnValue({ status: ResultStatus.SUCCESS });
+    mockRebuildClubAlbum.mockReturnValue({ status: ResultStatus.ERROR, message: 'album boom' });
+
+    const r = serverRebuildVideoFolders({ sessionToken: 'valid' });
+
+    expect(r.status).toBe('warning');
+    const data = r.data as { failed: number; errorSamples: string[] };
+    expect(data.failed).toBe(1);
+    expect(data.errorSamples[0]).toContain('[Album]');
+    expect(data.errorSamples[0]).toContain('album boom');
   });
 });

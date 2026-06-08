@@ -27,6 +27,7 @@ import './routes/linkHandlers';
 import './routes/volunteerRoutes';
 import './routes/uploadPrepRoutes';
 import './routes/publicSheetHandlers';
+import './routes/duplicateHandlers';
 
 // ─── Remaining direct imports used by functions declared below ────────────────
 import { handleGet, handlePost } from './routes/router';

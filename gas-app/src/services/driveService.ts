@@ -898,7 +898,7 @@ export function trashBatchFolder(
 
 /** Managed folder name prefixes that are not user content and exempt from the empty-check. */
 function isManagedFolder(name: string): boolean {
-  return name === 'Videos' || name.startsWith('Photos_');
+  return name === 'Videos' || name === 'Album' || name.startsWith('Photos_');
 }
 
 /**

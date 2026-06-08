@@ -25,6 +25,11 @@
  * Tabs written
  *   1. "Photo Folders" — one row per Photos_NNN bucket (event-level).
  *   2. "Video Folders" — one row per (event, club, tag) Videos folder.
+ *   3. One tab PER CLUB (named with the club's display name, e.g. "岚山") —
+ *      one row per (event, tag) Album folder belonging to that club. Album
+ *      folders hold shortcuts to every uploaded file (photos AND videos) for
+ *      the scope; see specialFoldersService.ts. Tabs are only created for
+ *      clubs that have at least one Album folder.
  *
  * Update strategy
  *   Each tab is rewritten on every call. Folder churn is small (typically a
@@ -104,6 +109,22 @@ const VIDEO_FOLDERS_HEADERS: ReadonlyArray<string> = [
   'Club',
   'Tag',
   'Folder Name',    // always "Videos"
+  'File Count',     // shortcut count at last refresh
+  'Folder Link',    // https://drive.google.com/drive/folders/<id> — public-browse URL
+  'Last Refreshed', // ISO timestamp of the most recent rebuild
+];
+
+/**
+ * Header row written at the top of each per-club Album tab.
+ *
+ * One row per (event, tag) Album folder for the club. No Club column — the
+ * tab itself IS the club (its name is the club's display name).
+ */
+export const CLUB_ALBUM_HEADERS: ReadonlyArray<string> = [
+  'Event Date',     // YYYY-MM-DD
+  'Event Name',
+  'Tag',
+  'Folder Name',    // always "Album"
   'File Count',     // shortcut count at last refresh
   'Folder Link',    // https://drive.google.com/drive/folders/<id> — public-browse URL
   'Last Refreshed', // ISO timestamp of the most recent rebuild
@@ -273,6 +294,123 @@ export function buildVideoFolderRows(
   ]);
 }
 
+// ─── Per-club Album tabs ─────────────────────────────────────────────────────
+
+/** One per-club tab: the (sanitized) tab name plus its flattened data rows. */
+export interface ClubAlbumTab {
+  /** Sheet tab name — the club's display name, sanitized for Sheets. */
+  readonly tabName: string;
+  /** Rows in CLUB_ALBUM_HEADERS column order. */
+  readonly rows: unknown[][];
+}
+
+/**
+ * Sanitizes a club display name into a legal Sheets tab name.
+ * Sheets forbids []:*?/\ in tab names, caps length at 100 chars, and
+ * disallows empty names. Pure function — exported for unit testing.
+ */
+export function sanitizeTabName(name: string): string {
+  const cleaned = name.replace(/[[\]:*?/\\]/g, ' ').trim().slice(0, 100);
+  return cleaned || 'Club';
+}
+
+/**
+ * Comparator for per-club Album rows: newest event first, then by tag
+ * ascending. Same ordering philosophy as the Video Folders tab.
+ */
+function compareClubAlbumRows(
+  a: { eventDate: string; eventId: string; record: SpecialFolderRecord },
+  b: { eventDate: string; eventId: string; record: SpecialFolderRecord }
+): number {
+  if (a.eventDate !== b.eventDate) return b.eventDate.localeCompare(a.eventDate);
+  if (a.eventId !== b.eventId) return a.eventId.localeCompare(b.eventId);
+  return a.record.tag.localeCompare(b.record.tag);
+}
+
+/**
+ * Groups Special_Folders records (scope=albums only) into one tab per club.
+ * Pure function — exported for unit testing.
+ *
+ * Tab name is the club's display name resolved from the Clubs sheet; rows
+ * referencing an unknown club fall back to the raw normalizedName so admins
+ * can see and clean them up. Only clubs that actually have at least one
+ * Album folder get a tab. Rows whose eventId is unknown to the Events sheet
+ * are dropped (the event was deleted or migrated away).
+ *
+ * Tab name collisions (two clubs whose display names sanitize identically)
+ * are disambiguated by appending the normalizedName.
+ */
+export function buildClubAlbumTabs(
+  records: ReadonlyArray<SpecialFolderRecord>,
+  events: ReadonlyArray<EventRecord>,
+  clubs: ReadonlyArray<ClubRecord>
+): ClubAlbumTab[] {
+  const eventById = new Map<string, EventRecord>();
+  for (const ev of events) eventById.set(ev.eventId, ev);
+
+  const clubDisplayByNorm = new Map<string, string>();
+  for (const c of clubs) clubDisplayByNorm.set(c.normalizedName, c.displayName);
+
+  // Group enriched album records by normalized club name.
+  const byClub = new Map<
+    string,
+    Array<{ eventDate: string; eventId: string; eventName: string; record: SpecialFolderRecord }>
+  >();
+
+  for (const r of records) {
+    if (r.scope !== 'albums') continue;
+    const ev = eventById.get(r.eventId);
+    if (!ev) continue;
+    let bucket = byClub.get(r.clubName);
+    if (!bucket) {
+      bucket = [];
+      byClub.set(r.clubName, bucket);
+    }
+    bucket.push({
+      eventDate: ev.eventDate,
+      eventId: ev.eventId,
+      eventName: ev.eventName,
+      record: r,
+    });
+  }
+
+  const tabs: ClubAlbumTab[] = [];
+  const usedTabNames = new Set<string>();
+
+  // Deterministic tab order: sort clubs by display label.
+  const clubKeys = Array.from(byClub.keys()).sort((a, b) => {
+    const la = clubDisplayByNorm.get(a) ?? a;
+    const lb = clubDisplayByNorm.get(b) ?? b;
+    return la.localeCompare(lb);
+  });
+
+  for (const normName of clubKeys) {
+    const enriched = byClub.get(normName)!;
+    enriched.sort(compareClubAlbumRows);
+
+    let tabName = sanitizeTabName(clubDisplayByNorm.get(normName) ?? normName);
+    if (usedTabNames.has(tabName)) {
+      tabName = sanitizeTabName(`${tabName} ${normName}`);
+    }
+    usedTabNames.add(tabName);
+
+    tabs.push({
+      tabName,
+      rows: enriched.map((e) => [
+        e.eventDate,
+        e.eventName,
+        e.record.tag,
+        e.record.folderName,
+        e.record.fileCount,
+        e.record.folderUrl,
+        e.record.lastRefreshedAt,
+      ]),
+    });
+  }
+
+  return tabs;
+}
+
 // ─── Tab writer ──────────────────────────────────────────────────────────────
 
 /**
@@ -347,9 +485,19 @@ export function rebuildPublicFoldersIndex(): number {
 
   const photoRows = buildPhotoFolderRows(records, events);
   const videoRows = buildVideoFolderRows(records, events, clubs);
+  const clubTabs  = buildClubAlbumTabs(records, events, clubs);
 
   writeTab(ss, PUBLIC_PHOTO_FOLDERS_TAB, PHOTO_FOLDERS_HEADERS, photoRows);
   writeTab(ss, PUBLIC_VIDEO_FOLDERS_TAB, VIDEO_FOLDERS_HEADERS, videoRows);
+
+  // One tab per club that has at least one Album folder. Stale tabs for
+  // clubs whose albums all disappeared are left in place (never deleted) so
+  // we can't accidentally destroy a tab the admin created by hand.
+  let clubRowCount = 0;
+  for (const tab of clubTabs) {
+    writeTab(ss, tab.tabName, CLUB_ALBUM_HEADERS, tab.rows);
+    clubRowCount += tab.rows.length;
+  }
 
   // Force the writes to commit so a viewer reloading the page right after
   // upload sees the new rows.
@@ -357,10 +505,11 @@ export function rebuildPublicFoldersIndex(): number {
 
   Logger.log(
     `[publicSpreadsheetService] Rewrote ${PUBLIC_PHOTO_FOLDERS_TAB} ` +
-    `(${photoRows.length} row(s)) and ${PUBLIC_VIDEO_FOLDERS_TAB} ` +
-    `(${videoRows.length} row(s)) across ${records.length} folder(s)`
+    `(${photoRows.length} row(s)), ${PUBLIC_VIDEO_FOLDERS_TAB} ` +
+    `(${videoRows.length} row(s)) and ${clubTabs.length} club album tab(s) ` +
+    `(${clubRowCount} row(s)) across ${records.length} folder(s)`
   );
-  return photoRows.length + videoRows.length;
+  return photoRows.length + videoRows.length + clubRowCount;
 }
 
 /**

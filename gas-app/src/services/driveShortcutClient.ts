@@ -63,6 +63,35 @@ export interface CreateShortcutResult {
   status: number;
 }
 
+/**
+ * File metadata returned by listFilesInFolder. Drive's `size` and
+ * `md5Checksum` fields are only populated for binary content (which covers
+ * all uploaded photos/videos); Google-native files report sizeBytes=0 and
+ * md5Checksum='' and are not interesting to the duplicate scanner anyway.
+ */
+export interface DriveFileMeta {
+  /** Drive file ID. */
+  id: string;
+  /** User-visible filename. */
+  name: string;
+  /** MIME type as Drive reports it. */
+  mimeType: string;
+  /** Byte size; 0 when Drive omits the field. */
+  sizeBytes: number;
+  /** Content MD5 hex digest; '' when Drive omits the field. */
+  md5Checksum: string;
+  /** RFC 3339 creation timestamp; '' when omitted. */
+  createdTime: string;
+}
+
+/** Result envelope for a trash-file call. */
+export interface TrashFileResult {
+  ok: boolean;
+  error?: string;
+  /** HTTP status from the Drive API; 0 if the fetch itself threw. */
+  status: number;
+}
+
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -210,6 +239,127 @@ export function listShortcutsInFolder(parentFolderId: string): ShortcutEntry[] {
   } while (pageToken);
 
   return out;
+}
+
+/**
+ * Lists every NON-shortcut, NON-folder file directly inside `parentFolderId`
+ * (non-recursive) with the metadata the duplicate scanner needs: byte size,
+ * MD5 content checksum and creation time. Pages through all results.
+ *
+ * Unlike DriveApp, the v3 REST API exposes `md5Checksum`, which lets the
+ * duplicate scanner match binary-identical files regardless of filename.
+ *
+ * Returns whatever pages were fetched successfully — on an HTTP error the
+ * partial accumulation is returned and the error is logged, mirroring
+ * listShortcutsInFolder's degrade-gracefully contract.
+ */
+export function listFilesInFolder(parentFolderId: string): DriveFileMeta[] {
+  const out: DriveFileMeta[] = [];
+  let pageToken: string | null = null;
+
+  const q =
+    `'${parentFolderId}' in parents and ` +
+    `mimeType!='${DRIVE_SHORTCUT_MIME}' and ` +
+    `mimeType!='application/vnd.google-apps.folder' and ` +
+    `trashed=false`;
+
+  do {
+    const params: string[] = [
+      `q=${encodeURIComponent(q)}`,
+      'fields=nextPageToken,files(id,name,mimeType,size,md5Checksum,createdTime)',
+      `pageSize=${LIST_PAGE_SIZE}`,
+      'supportsAllDrives=true',
+      'includeItemsFromAllDrives=true',
+    ];
+    if (pageToken) params.push(`pageToken=${encodeURIComponent(pageToken)}`);
+
+    const url = `${DRIVE_API_BASE}/files?${params.join('&')}`;
+
+    let parsed: {
+      nextPageToken?: string;
+      files?: Array<{
+        id?: string;
+        name?: string;
+        mimeType?: string;
+        size?: string | number;
+        md5Checksum?: string;
+        createdTime?: string;
+      }>;
+    };
+    try {
+      const response = UrlFetchApp.fetch(url, {
+        method: 'get',
+        headers: { Authorization: `Bearer ${getDriveAuthToken()}` },
+        muteHttpExceptions: true,
+      });
+
+      const code = response.getResponseCode();
+      const text = response.getContentText();
+      if (code < 200 || code >= 300) {
+        Logger.log(
+          `[driveShortcutClient.listFilesInFolder] HTTP ${code} for folder ${parentFolderId}: ${text.slice(0, 200)}`
+        );
+        return out;
+      }
+      parsed = JSON.parse(text);
+    } catch (err) {
+      Logger.log(
+        `[driveShortcutClient.listFilesInFolder] threw for folder ${parentFolderId}: ${String(err)}`
+      );
+      return out;
+    }
+
+    for (const f of parsed.files ?? []) {
+      const id = String(f.id ?? '').trim();
+      if (!id) continue;
+      const size = Number(f.size ?? 0);
+      out.push({
+        id,
+        name: String(f.name ?? '').trim(),
+        mimeType: String(f.mimeType ?? '').trim(),
+        sizeBytes: Number.isFinite(size) && size > 0 ? size : 0,
+        md5Checksum: String(f.md5Checksum ?? '').trim(),
+        createdTime: String(f.createdTime ?? '').trim(),
+      });
+    }
+
+    pageToken = parsed.nextPageToken ?? null;
+  } while (pageToken);
+
+  return out;
+}
+
+/**
+ * Moves a Drive file to trash via `files.update {trashed: true}`.
+ *
+ * Used by the orphan-shortcut sweep to retire shortcut files whose targets
+ * were soft-deleted. We trash (not hard-delete) so even a mistaken sweep is
+ * recoverable from the Drive trash for 30 days.
+ */
+export function trashDriveFile(fileId: string): TrashFileResult {
+  const url = `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`;
+  try {
+    const response = UrlFetchApp.fetch(url, {
+      method: 'patch',
+      headers: {
+        Authorization: `Bearer ${getDriveAuthToken()}`,
+        'Content-Type': 'application/json',
+      },
+      payload: JSON.stringify({ trashed: true }),
+      muteHttpExceptions: true,
+    });
+    const code = response.getResponseCode();
+    if (code < 200 || code >= 300) {
+      return {
+        ok: false,
+        error: `HTTP ${code}: ${response.getContentText().slice(0, 300)}`,
+        status: code,
+      };
+    }
+    return { ok: true, status: code };
+  } catch (err) {
+    return { ok: false, error: String(err), status: 0 };
+  }
 }
 
 /**
