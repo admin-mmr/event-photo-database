@@ -93,7 +93,7 @@ def _drive_headers(token: str) -> dict:
 
 def _drive_get_metadata(file_id: str, token: str) -> dict:
     """Fetch file metadata from Drive. Raises on non-200."""
-    url = f"{DRIVE_BASE}/{file_id}?fields=id,name,mimeType,md5Checksum,size"
+    url = f"{DRIVE_BASE}/{file_id}?fields=id,name,mimeType,md5Checksum,size&supportsAllDrives=true"
     resp = requests.get(url, headers=_drive_headers(token), timeout=30)
     if resp.status_code == 401:
         raise PermissionError("unauthorized")
@@ -105,7 +105,7 @@ def _drive_get_metadata(file_id: str, token: str) -> dict:
 
 def _drive_download(file_id: str, token: str, dest_path: str) -> None:
     """Stream-download a Drive file to dest_path. Raises on failure."""
-    url = f"{DRIVE_BASE}/{file_id}?alt=media"
+    url = f"{DRIVE_BASE}/{file_id}?alt=media&supportsAllDrives=true"
     with requests.get(url, headers=_drive_headers(token), stream=True, timeout=120) as resp:
         if resp.status_code == 401:
             raise PermissionError("unauthorized")
@@ -145,7 +145,7 @@ def _drive_upload(
         "Content-Length": str(len(body)),
     }
     resp = requests.post(
-        f"{DRIVE_UPLOAD_BASE}?uploadType=multipart",
+        f"{DRIVE_UPLOAD_BASE}?uploadType=multipart&supportsAllDrives=true",
         headers=headers,
         data=body,
         timeout=120,

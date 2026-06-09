@@ -100,16 +100,10 @@ Then continue with the Apps Script manifest steps in spec §5.5.
 
 ---
 
-## ⚠ Action item before deploy: AVIF support
+## Supported input formats
 
-The spec (D12) lists **AVIF** as a supported input format, but `main.py` only
-registers the HEIF opener. With the pinned `Pillow==10.4.0` (no native AVIF),
-AVIF files will fail with `unsupported_format`. Add this line in `main.py`
-right after `pillow_heif.register_heif_opener()`:
-
-```python
-pillow_heif.register_avif_opener()
-```
-
-Verified locally: PNG (with transparency), TIFF, and WEBP convert correctly;
-HEIC and RAW paths match the spec. Only AVIF needs this fix.
+`main.py` registers both the HEIF and AVIF openers (`register_heif_opener()` and
+`register_avif_opener()`), so all formats in spec D12 are supported. Verified
+locally: PNG (with transparency), TIFF, WEBP, BMP, GIF, HEIC, AVIF, and RAW
+(`.dng`, `.cr2`, etc.) convert correctly. JPEGs are copied directly by Apps
+Script and are intentionally rejected by `/convert`.

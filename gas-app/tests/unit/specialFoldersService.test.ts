@@ -18,6 +18,8 @@ import {
   isVideoFile,
   isMediaFile,
   planShortcutDedupe,
+  decidePhotoAction,
+  photoCopyDestName,
   PHOTO_TARGET_MIME_TYPES,
   VIDEO_TARGET_MIME_TYPES,
 } from '../../src/services/specialFoldersService';
@@ -267,5 +269,58 @@ describe('specialFoldersService — planShortcutDedupe()', () => {
 
   it('handles an empty folder', () => {
     expect(planShortcutDedupe([])).toEqual({ survivors: [], trashShortcutIds: [] });
+  });
+});
+
+// ─── decidePhotoAction ────────────────────────────────────────────────────────
+
+describe('specialFoldersService — decidePhotoAction()', () => {
+  it('copies JPEGs (no re-encode)', () => {
+    expect(decidePhotoAction(PhotoMimeType.JPEG)).toBe('copy');
+  });
+
+  it('converts every non-JPEG photo MIME type', () => {
+    for (const mime of Object.values(PhotoMimeType)) {
+      if (mime === PhotoMimeType.JPEG) continue;
+      expect(decidePhotoAction(mime as string)).toBe('convert');
+    }
+    // PNG/HEIC/WEBP are the ones walkMediaFiles can surface.
+    expect(decidePhotoAction('image/png')).toBe('convert');
+    expect(decidePhotoAction('image/heic')).toBe('convert');
+    expect(decidePhotoAction('image/webp')).toBe('convert');
+  });
+});
+
+// ─── photoCopyDestName ────────────────────────────────────────────────────────
+
+describe('specialFoldersService — photoCopyDestName()', () => {
+  it('normalizes the extension to lowercase .jpg', () => {
+    expect(photoCopyDestName('IMG_5001.HEIC', new Set())).toBe('IMG_5001.jpg');
+    expect(photoCopyDestName('shot.PNG', new Set())).toBe('shot.jpg');
+    expect(photoCopyDestName('photo.jpeg', new Set())).toBe('photo.jpg');
+  });
+
+  it('keeps a name with no extension and appends .jpg', () => {
+    expect(photoCopyDestName('noext', new Set())).toBe('noext.jpg');
+  });
+
+  it('suffixes __2, __3, … on collision', () => {
+    const used = new Set(['IMG.jpg']);
+    expect(photoCopyDestName('IMG.png', used)).toBe('IMG__2.jpg');
+    used.add('IMG__2.jpg');
+    expect(photoCopyDestName('IMG.heic', used)).toBe('IMG__3.jpg');
+  });
+
+  it('preserves dots within the stem', () => {
+    expect(photoCopyDestName('my.photo.v2.png', new Set())).toBe('my.photo.v2.jpg');
+  });
+
+  it('is deterministic and side-effect free on the usedNames set', () => {
+    const used = new Set(['a.jpg']);
+    const first = photoCopyDestName('a.png', used);
+    const second = photoCopyDestName('a.png', used);
+    expect(first).toBe('a__2.jpg');
+    expect(second).toBe('a__2.jpg'); // unchanged — function must not mutate `used`
+    expect(used.has('a__2.jpg')).toBe(false);
   });
 });

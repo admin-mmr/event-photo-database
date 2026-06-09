@@ -7,12 +7,22 @@
  * maintain two extra folder hierarchies inside Drive that admins asked for:
  *
  *   1. Per-event Photos folders, FLAT and INDEXED:
- *        <Event>/Photos_001/    ← shortcut to up to MAX_SHORTCUTS_PER_PHOTOS_FOLDER photos
+ *        <Event>/Photos_001/    ← real JPGs for up to MAX_SHORTCUTS_PER_PHOTOS_FOLDER photos
  *        <Event>/Photos_002/    ← overflow when the previous folder fills up
  *        ...
  *      These folders sit as siblings of the existing club folders inside the
- *      event folder. Each holds Drive shortcut files (NOT copies) that point
- *      to every photo under any club / tag / batch beneath the event.
+ *      event folder. Each holds REAL, standalone files (NOT shortcuts): every
+ *      photo under any club / tag / batch beneath the event is materialized
+ *      here as a JPG. JPEG sources are copied byte-for-byte (files.copy);
+ *      non-JPEG sources (PNG/HEIC/WEBP) are converted to JPG via the Cloud Run
+ *      image-convert service. Each copy carries an appProperties.sourcePhotoId
+ *      tag (= the original file's Drive ID) so rebuilds dedupe and the orphan
+ *      sweep can retire a copy when its source is deleted. This duplicates
+ *      storage (every photo exists twice) but the resulting files survive even
+ *      if the original upload is deleted or its owner revokes access — the
+ *      tradeoff admins asked for. When the Cloud Run service is not configured
+ *      (or a conversion fails), the rebuild falls back to a Drive shortcut for
+ *      that one photo so nothing is ever lost.
  *
  *   2. Per-(event, club, tag) Videos folder:
  *        <Event>/<Club>/<Tag>/Videos/  ← shortcuts to every video for that scope
@@ -23,10 +33,13 @@
  *                                        (photos AND videos) for that scope
  *      Album rows (scope='albums') feed the per-club tabs on the public sheet.
  *
- * Every shortcut entry is a native Drive shortcut (mimeType
- * application/vnd.google-apps.shortcut), so opening it shows the original
- * file's preview/metadata and the original is never copied. See
- * driveShortcutClient.ts for the REST plumbing.
+ * The Videos and Album folders still use native Drive shortcuts (mimeType
+ * application/vnd.google-apps.shortcut) — videos can't be re-encoded into the
+ * Photos pipeline, and the Album is a lightweight browse view. Only the
+ * Photos_NNN buckets hold real, materialized JPG files. See
+ * driveShortcutClient.ts for the REST plumbing (createDriveShortcut for
+ * shortcuts; copyDriveFile / setFileAppProperties / listManagedCopiesInFolder
+ * for real copies) and cloudRunClient.ts for the convert call.
  *
  * State
  * ─────
@@ -63,6 +76,7 @@ import {
   ALBUM_FOLDER_NAME,
   MAX_SHORTCUTS_PER_PHOTOS_FOLDER,
   SPECIAL_FOLDERS_HEADERS,
+  isSpecialLayer2Folder,
 } from '../config/constants';
 import { PhotoMimeType, VideoMimeType } from '../types/enums';
 import {
@@ -80,14 +94,21 @@ import {
   findSubfolder,
   getOrCreateSubfolder,
 } from './driveService';
-import { findById as findEventById } from './eventService';
+import { findById as findEventById, listAll as listAllEvents } from './eventService';
 import {
   createDriveShortcut,
   listShortcutsInFolder,
+  listManagedCopiesInFolder,
+  copyDriveFile,
+  setFileAppProperties,
   trashDriveFile,
+  getDriveFileBasics,
   driveFolderUrl,
   ShortcutEntry,
+  SOURCE_PHOTO_ID_PROPERTY,
 } from './driveShortcutClient';
+import { convertImage } from './cloudRunClient';
+import { isCloudRunConfigured, JPG_QUALITY_DEFAULT } from '../config/superAdmins';
 import {
   tryGrantAnyoneRead,
   grantAnyoneRead,
@@ -114,16 +135,27 @@ interface MediaFile {
 
 /** Outcome envelope for a per-scope rebuild call. */
 export interface RebuildResult {
-  /** Number of new shortcut files created on this rebuild. */
+  /**
+   * Number of new entries created on this rebuild. For Videos/Album this is
+   * shortcut files; for Photos_NNN it is the total of real copies + converted
+   * JPGs + any shortcut fallbacks created. Kept under this name for backward
+   * compatibility with existing callers/logging.
+   */
   shortcutsCreated: number;
-  /** Number of files we found that already had a shortcut (deduped). */
+  /** Number of source files we found that were already represented (deduped). */
   shortcutsExisting: number;
   /** How many target files we considered (photos for scope='photos', videos for 'videos'). */
   targetFilesScanned: number;
-  /** Number of distinct shortcut folders the rebuild touched (Photos_001, Photos_002, ... or 1 Videos folder). */
+  /** Number of distinct folders the rebuild touched (Photos_001, Photos_002, ... or 1 Videos folder). */
   foldersTouched: number;
-  /** Soft errors collected during the rebuild — folder-creation or shortcut-creation failures we logged but didn't throw on. */
+  /** Soft errors collected during the rebuild — folder/copy/convert/shortcut failures we logged but didn't throw on. */
   warnings: string[];
+  /** Photos_NNN only: JPEG sources copied byte-for-byte via files.copy. */
+  copiesCreated?: number;
+  /** Photos_NNN only: non-JPEG sources converted to JPG via Cloud Run. */
+  conversionsCreated?: number;
+  /** Photos_NNN only: photos that fell back to a shortcut (Cloud Run unavailable or conversion failed). */
+  shortcutFallbacks?: number;
 }
 
 // ─── MIME classification helpers ─────────────────────────────────────────────
@@ -206,6 +238,53 @@ export function bucketIndexForPosition(position0Based: number): number {
 export function bucketCountForFiles(count: number): number {
   if (count <= 0 || !Number.isFinite(count)) return 0;
   return Math.ceil(count / MAX_SHORTCUTS_PER_PHOTOS_FOLDER);
+}
+
+// ─── Photo materialization helpers (pure) ────────────────────────────────────
+
+/**
+ * Decides how a photo should be materialized into a Photos_NNN bucket:
+ *   'copy'    — JPEGs are copied byte-for-byte (no re-encode, no quality loss)
+ *   'convert' — everything else (PNG/HEIC/WEBP) is converted to JPG via Cloud Run
+ *
+ * walkMediaFiles only surfaces PhotoMimeType files, so the input is always one
+ * of JPEG/PNG/HEIC/WEBP; JPEG is the only "copy" case.
+ *
+ * Pure function — exported for direct unit testing.
+ */
+export function decidePhotoAction(mimeType: string): 'copy' | 'convert' {
+  return mimeType === PhotoMimeType.JPEG ? 'copy' : 'convert';
+}
+
+/**
+ * Computes the JPG filename for a materialized photo, avoiding collisions with
+ * names already present in the same bucket.
+ *
+ * Policy (mirrors uploadPrepService.resolveDestName, decision D2):
+ *   - The extension is always normalized to lowercase ".jpg".
+ *   - If "<stem>.jpg" is taken, try "<stem>__2.jpg", "<stem>__3.jpg", …
+ *
+ * Pure function — exported for direct unit testing.
+ *
+ * @param sourceName Original source filename, e.g. "IMG_5001.HEIC"
+ * @param usedNames  Names already committed in this bucket (case-sensitive)
+ */
+export function photoCopyDestName(
+  sourceName: string,
+  usedNames: ReadonlySet<string>
+): string {
+  const lastDot = sourceName.lastIndexOf('.');
+  const stem = lastDot >= 0 ? sourceName.substring(0, lastDot) : sourceName;
+  const candidate = `${stem}.jpg`;
+  if (!usedNames.has(candidate)) return candidate;
+
+  let suffix = 2;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const withSuffix = `${stem}__${suffix}.jpg`;
+    if (!usedNames.has(withSuffix)) return withSuffix;
+    suffix++;
+  }
 }
 
 /**
@@ -445,17 +524,135 @@ function resolveClubTagFolder(
 // ─── Public rebuild API ──────────────────────────────────────────────────────
 
 /**
+ * One bucket folder's live state during a photo rebuild.
+ */
+interface PhotoBucketCtx {
+  /** 1-based bucket index (1 → Photos_001). */
+  index: number;
+  /** Folder name, e.g. "Photos_003". */
+  folderName: string;
+  /** Drive folder ID. */
+  folderId: string;
+  /** Filenames already present in the bucket (for collision-free naming). */
+  usedNames: Set<string>;
+  /** Count of entries (copies + converts + shortcuts) that will live here after this rebuild. */
+  placed: number;
+}
+
+/** Outcome of materializing one photo into a bucket. */
+type MaterializeOutcome = 'copied' | 'converted' | 'shortcut' | 'skipped' | 'failed';
+
+/**
+ * Materializes one photo into a Photos_NNN bucket as a real file:
+ *   - JPEG  → byte-for-byte copy via files.copy (tagged with sourcePhotoId)
+ *   - other → convert to JPG via Cloud Run, then tag the result
+ *
+ * When the conversion can't happen (Cloud Run unconfigured, or the call fails)
+ * the `allowShortcutFallback` flag decides what happens:
+ *   - true  (normal rebuild): create a native Drive shortcut so the photo is
+ *            still represented in the bucket → returns 'shortcut'
+ *   - false (one-time migration): do nothing and leave any existing entry in
+ *            place → returns 'skipped' (Cloud Run off) or 'failed' (convert
+ *            errored). The migration must never create shortcuts, since it is
+ *            trying to REMOVE them.
+ *
+ * Updates ctx.usedNames so subsequent photos in the same bucket avoid name
+ * collisions. Soft errors are pushed onto `warnings`; never throws.
+ */
+function materializePhotoIntoBucket(
+  photo: MediaFile,
+  ctx: PhotoBucketCtx,
+  cloudRunReady: boolean,
+  warnings: string[],
+  allowShortcutFallback: boolean
+): MaterializeOutcome {
+  const action = decidePhotoAction(photo.mimeType);
+
+  if (action === 'copy') {
+    const destName = photoCopyDestName(photo.name, ctx.usedNames);
+    const res = copyDriveFile(photo.id, ctx.folderId, destName, {
+      [SOURCE_PHOTO_ID_PROPERTY]: photo.id,
+    });
+    if (!res.ok) {
+      warnings.push(
+        `Failed to copy ${photo.name} (${photo.id}) into ${ctx.folderName}: ${res.error}`
+      );
+      return 'failed';
+    }
+    ctx.usedNames.add(destName);
+    return 'copied';
+  }
+
+  // action === 'convert'
+  if (cloudRunReady) {
+    const destName = photoCopyDestName(photo.name, ctx.usedNames);
+    const resp = convertImage({
+      sourceFileId: photo.id,
+      destFolderId: ctx.folderId,
+      destName,
+      jpgQuality: JPG_QUALITY_DEFAULT,
+      maxDim: null,
+      bakeOrientation: true,
+      preserveExif: true,
+    });
+    if (resp.ok && resp.destFileId) {
+      ctx.usedNames.add(destName);
+      // Cloud Run uploads the JPG without our dedupe tag — stamp it now so the
+      // next rebuild recognizes this source as already materialized.
+      const tagged = setFileAppProperties(resp.destFileId, {
+        [SOURCE_PHOTO_ID_PROPERTY]: photo.id,
+      });
+      if (!tagged.ok) {
+        warnings.push(
+          `Converted ${photo.name} (${photo.id}) into ${ctx.folderName} but could not tag ` +
+          `sourcePhotoId on ${resp.destFileId}: ${tagged.error}. It may be re-converted next rebuild.`
+        );
+      }
+      return 'converted';
+    }
+    warnings.push(
+      `Conversion failed for ${photo.name} (${photo.id}) in ${ctx.folderName}: ` +
+      `${resp.message ?? resp.error ?? 'unknown'}` +
+      (allowShortcutFallback ? '; falling back to a shortcut.' : '.')
+    );
+    if (!allowShortcutFallback) return 'failed';
+    // fall through to the shortcut fallback below
+  } else if (!allowShortcutFallback) {
+    // Cloud Run isn't configured and we're forbidden from creating shortcuts
+    // (migration mode) — leave whatever is already there untouched.
+    return 'skipped';
+  }
+
+  // Fallback: a native Drive shortcut (Cloud Run unconfigured, or convert failed).
+  const sc = createDriveShortcut(ctx.folderId, photo.id, photo.name);
+  if (!sc.ok) {
+    warnings.push(
+      `Failed to create fallback shortcut for ${photo.name} (${photo.id}) in ${ctx.folderName}: ${sc.error}`
+    );
+    return 'failed';
+  }
+  if (photo.name) ctx.usedNames.add(photo.name);
+  return 'shortcut';
+}
+
+/**
  * Rebuilds the consolidated Photos_NNN folders for one event.
  *
  * Walks every photo under the event subtree, partitions them into buckets of
  * up to MAX_SHORTCUTS_PER_PHOTOS_FOLDER, ensures the right number of
- * Photos_NNN folders exist directly under the event folder, and creates
- * shortcut files for any photos not yet linked.
+ * Photos_NNN folders exist directly under the event folder, and materializes a
+ * REAL JPG file for every photo not yet present: JPEG sources are copied
+ * byte-for-byte, non-JPEG sources (PNG/HEIC/WEBP) are converted to JPG via the
+ * Cloud Run image-convert service. When Cloud Run is unconfigured or a
+ * conversion fails, that one photo falls back to a Drive shortcut so nothing
+ * is lost.
  *
- * Idempotent: existing shortcuts are deduped by their targetId, so re-running
- * the function never produces duplicate shortcuts. New photos uploaded since
- * the last rebuild are appended into the latest bucket; when a bucket fills
- * up the next bucket is created on demand.
+ * Idempotent: every materialized file carries an appProperties.sourcePhotoId
+ * tag (legacy/fallback shortcuts are matched by their targetId), so a source
+ * already represented in ANY bucket is never copied again — re-running the
+ * function only fills in newly uploaded photos. Dedupe spans all buckets, so a
+ * photo whose bucket assignment shifts (Drive IDs aren't strictly time-ordered)
+ * is not duplicated across buckets.
  *
  * Returns SUCCESS even if zero photos were found — an empty event simply
  * yields zero buckets.
@@ -484,13 +681,15 @@ export function rebuildEventPhotoFolders(
   const eventFolder = eventFolderResult.data;
 
   const photos = walkMediaFiles(eventFolder, isPhotoFile);
-  // Stable order means a rebuild after a no-op upload never reshuffles
-  // existing shortcuts: sort by Drive file ID (immutable, lexicographic).
+  // Stable order means a rebuild after a no-op upload keeps bucket assignments
+  // steady: sort by Drive file ID (immutable, lexicographic).
   photos.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   const warnings: string[] = [];
-  let shortcutsCreated = 0;
-  let shortcutsExisting = 0;
+  let copiesCreated = 0;
+  let conversionsCreated = 0;
+  let shortcutFallbacks = 0;
+  let entriesExisting = 0;
   let shortcutsDeduped = 0;
   let foldersTouched = 0;
 
@@ -511,6 +710,9 @@ export function rebuildEventPhotoFolders(
         targetFilesScanned: 0,
         foldersTouched: 0,
         warnings,
+        copiesCreated: 0,
+        conversionsCreated: 0,
+        shortcutFallbacks: 0,
       },
     };
   }
@@ -518,96 +720,130 @@ export function rebuildEventPhotoFolders(
   const totalBuckets = bucketCountForFiles(photos.length);
   const now = nowIsoTimestamp();
 
+  const cloudRunReady = isCloudRunConfigured();
+  if (!cloudRunReady) {
+    warnings.push(
+      'Cloud Run image-convert service is not configured (CLOUD_RUN_URL Script ' +
+      'Property is unset); non-JPEG photos will fall back to shortcuts until it is set.'
+    );
+  }
+
+  // ── Pass 1: ensure every bucket folder exists and collect what's already in
+  // it. We gather represented source IDs across ALL buckets up front so a photo
+  // already materialized in one bucket is never re-created in another.
+  const buckets: Array<PhotoBucketCtx | null> = [];
+  const representedSourceIds = new Set<string>();
+
   for (let bucket = 1; bucket <= totalBuckets; bucket++) {
     const folderName = photosFolderName(bucket);
     const folderResult = getOrCreateSubfolder(eventFolder, folderName);
-    if (
-      folderResult.status !== ResultStatus.SUCCESS ||
-      !folderResult.data
-    ) {
+    if (folderResult.status !== ResultStatus.SUCCESS || !folderResult.data) {
       warnings.push(
         `Failed to create or open ${folderName}: ${folderResult.message}`
       );
+      buckets.push(null);
       continue;
     }
     foldersTouched++;
-    const bucketFolder = folderResult.data;
-    const bucketFolderId = bucketFolder.getId();
+    const folderId = folderResult.data.getId();
 
     // Make this Photos_NNN bucket public ("Anyone with link → Viewer") so the
     // Folder Link rendered on the public spreadsheet works for unauthenticated
-    // viewers. Idempotent — calling on an already-shared folder is a no-op.
-    // Errors here NEVER fail the shortcut rebuild; share state self-heals on
-    // the next sync. See drivePermissionsService.ts for the API contract.
-    tryGrantAnyoneRead(bucketFolderId);
+    // viewers. Idempotent; errors NEVER fail the rebuild — share state
+    // self-heals on the next sync. See drivePermissionsService.ts.
+    tryGrantAnyoneRead(folderId);
 
-    // Slice of photos that belong in this bucket (0-based math, bucket is 1-based).
-    const start = (bucket - 1) * MAX_SHORTCUTS_PER_PHOTOS_FOLDER;
-    const end = Math.min(
-      start + MAX_SHORTCUTS_PER_PHOTOS_FOLDER,
-      photos.length
-    );
+    // Collapse any same-target duplicate shortcuts (e.g. a manual "Make a copy"
+    // on drive.google.com), then read both the surviving shortcuts (legacy or
+    // fallback) and the real copies already in the bucket.
+    const existingShortcutsRaw = listShortcutsInFolder(folderId);
+    const { survivors: shortcuts, removed: dupRemoved } =
+      dedupeFolderShortcuts(existingShortcutsRaw, folderName, warnings);
+    if (dupRemoved > 0) shortcutsDeduped += dupRemoved;
+    const copies = listManagedCopiesInFolder(folderId);
 
-    // Existing shortcuts inside this bucket. First collapse any same-target
-    // duplicates (e.g. a manual "Make a copy" of a shortcut on drive.google.com),
-    // then dedupe links by targetId.
-    const existingRaw = listShortcutsInFolder(bucketFolderId);
-    const { survivors: existing, removed: dupShortcutsRemoved } =
-      dedupeFolderShortcuts(existingRaw, folderName, warnings);
-    if (dupShortcutsRemoved > 0) shortcutsDeduped += dupShortcutsRemoved;
-    const linkedTargetIds = new Set(existing.map((s) => s.targetId));
-
-    for (let i = start; i < end; i++) {
-      const photo = photos[i];
-      if (linkedTargetIds.has(photo.id)) {
-        shortcutsExisting++;
-        continue;
-      }
-      const created = createDriveShortcut(bucketFolderId, photo.id, photo.name);
-      if (!created.ok) {
-        warnings.push(
-          `Failed to link ${photo.name} (${photo.id}) into ${folderName}: ${created.error}`
-        );
-        continue;
-      }
-      shortcutsCreated++;
-      linkedTargetIds.add(photo.id);
+    const usedNames = new Set<string>();
+    let placed = 0;
+    for (const s of shortcuts) {
+      representedSourceIds.add(s.targetId);
+      if (s.name) usedNames.add(s.name);
+      placed++;
+    }
+    for (const c of copies) {
+      representedSourceIds.add(c.sourcePhotoId);
+      if (c.name) usedNames.add(c.name);
+      placed++;
     }
 
+    buckets.push({ index: bucket, folderName, folderId, usedNames, placed });
+  }
+
+  // ── Pass 2: materialize every not-yet-represented photo into its position bucket.
+  for (let i = 0; i < photos.length; i++) {
+    const photo = photos[i];
+    if (representedSourceIds.has(photo.id)) {
+      entriesExisting++;
+      continue;
+    }
+
+    const ctx = buckets[bucketIndexForPosition(i) - 1];
+    if (!ctx) continue; // bucket folder couldn't be created; warning already recorded
+
+    const outcome = materializePhotoIntoBucket(photo, ctx, cloudRunReady, warnings, true);
+    // 'skipped' can't occur with allowShortcutFallback=true, but treat it (and
+    // 'failed') as "not represented" so the next rebuild retries.
+    if (outcome === 'failed' || outcome === 'skipped') continue;
+    if (outcome === 'copied') copiesCreated++;
+    else if (outcome === 'converted') conversionsCreated++;
+    else shortcutFallbacks++;
+
+    representedSourceIds.add(photo.id);
+    ctx.placed++;
+  }
+
+  // ── Upsert one Special_Folders row per bucket that exists on Drive.
+  for (const ctx of buckets) {
+    if (!ctx) continue;
     upsertSpecialFolderRow(
       {
-        folderId: bucketFolderId,
+        folderId: ctx.folderId,
         eventId,
         scope: 'photos' as SpecialFolderScope,
         clubName: '',
         tag: '',
-        folderName,
-        folderIndex: bucket,
-        folderUrl: driveFolderUrl(bucketFolderId),
-        fileCount: end - start,
+        folderName: ctx.folderName,
+        folderIndex: ctx.index,
+        folderUrl: driveFolderUrl(ctx.folderId),
+        fileCount: ctx.placed,
         lastRefreshedAt: now,
       },
       sheetRows
     );
   }
 
+  const created = copiesCreated + conversionsCreated + shortcutFallbacks;
   Logger.log(
     `[specialFoldersService.rebuildEventPhotoFolders] event=${eventId} ` +
-    `photos=${photos.length} buckets=${totalBuckets} created=${shortcutsCreated} ` +
-    `existing=${shortcutsExisting} deduped=${shortcutsDeduped} warnings=${warnings.length}`
+    `photos=${photos.length} buckets=${totalBuckets} created=${created} ` +
+    `(copied=${copiesCreated} converted=${conversionsCreated} shortcutFallback=${shortcutFallbacks}) ` +
+    `existing=${entriesExisting} deduped=${shortcutsDeduped} warnings=${warnings.length}`
   );
 
   return {
     status: ResultStatus.SUCCESS,
     message:
       `Rebuilt ${foldersTouched} Photos_NNN folder(s) for "${event.folderName}": ` +
-      `${shortcutsCreated} new shortcut(s), ${shortcutsExisting} already linked`,
+      `${created} new file(s) (${copiesCreated} copied, ${conversionsCreated} converted, ` +
+      `${shortcutFallbacks} shortcut fallback(s)), ${entriesExisting} already present`,
     data: {
-      shortcutsCreated,
-      shortcutsExisting,
+      shortcutsCreated: created,
+      shortcutsExisting: entriesExisting,
       targetFilesScanned: photos.length,
       foldersTouched,
       warnings,
+      copiesCreated,
+      conversionsCreated,
+      shortcutFallbacks,
     },
   };
 }
@@ -1008,24 +1244,34 @@ export function tryRebuildSpecialFoldersForBatch(
 
 /** Outcome of removeShortcutsForTargets. */
 export interface ShortcutSweepResult {
-  /** Shortcut files moved to trash. */
+  /**
+   * Managed entries moved to trash — shortcuts (Videos/Album, plus any legacy
+   * or fallback shortcuts in Photos_NNN) AND materialized Photos_NNN copies
+   * whose source was deleted. Kept under this name for backward compatibility.
+   */
   shortcutsRemoved: number;
-  /** Shortcut folders that contained at least one removed shortcut. */
+  /** Managed folders that contained at least one removed entry. */
   foldersTouched: number;
-  /** Soft errors (per-shortcut trash failures); never thrown. */
+  /** Soft errors (per-entry trash failures); never thrown. */
   errors: string[];
 }
 
 /**
- * Removes shortcuts pointing at the given target file IDs from EVERY managed
- * shortcut folder (Photos_NNN, Videos, Album) recorded in Special_Folders.
+ * Removes every managed entry pointing at the given target file IDs from EVERY
+ * managed folder (Photos_NNN, Videos, Album) recorded in Special_Folders.
  *
- * Why: the rebuilds only ever ADD shortcuts. When an original file is
- * soft-deleted (e.g. by the duplicate cleanup flow) its shortcuts would
- * otherwise dangle in the public-browse folders. Call this right after a
- * batch of soft-deletes with the deleted Drive file IDs.
+ * Two kinds of entry are retired:
+ *   - native Drive shortcuts whose shortcutDetails.targetId is a deleted target
+ *     (Videos/Album, and legacy/fallback shortcuts in Photos_NNN), and
+ *   - materialized Photos_NNN copies whose appProperties.sourcePhotoId is a
+ *     deleted target (the JPGs produced by the photo rebuild).
  *
- * Shortcuts are TRASHED (not hard-deleted) so a mistaken sweep is fully
+ * Why: the rebuilds only ever ADD entries. When an original file is
+ * soft-deleted (e.g. by the duplicate cleanup flow) its shortcuts would dangle
+ * and its copies would linger in the public-browse folders. Call this right
+ * after a batch of soft-deletes with the deleted Drive file IDs.
+ *
+ * Entries are TRASHED (not hard-deleted) so a mistaken sweep is fully
  * recoverable; restoring the original file + re-running a rebuild also
  * recreates them. Each touched Special_Folders row gets its fileCount
  * decremented and lastRefreshedAt stamped.
@@ -1058,12 +1304,28 @@ export function removeShortcutsForTargets(
     if (!record.folderId) continue;
 
     let removedHere = 0;
+
+    // Shortcuts whose target was deleted (Videos/Album + legacy/fallback in Photos_NNN).
     for (const shortcut of listShortcutsInFolder(record.folderId)) {
       if (!targets.has(shortcut.targetId)) continue;
       const trashed = trashDriveFile(shortcut.id);
       if (!trashed.ok) {
         result.errors.push(
           `Failed to trash shortcut "${shortcut.name}" (${shortcut.id}) in ` +
+          `${record.folderName} (${record.folderId}): ${trashed.error}`
+        );
+        continue;
+      }
+      removedHere++;
+    }
+
+    // Materialized copies whose source was deleted (Photos_NNN real JPGs).
+    for (const copy of listManagedCopiesInFolder(record.folderId)) {
+      if (!targets.has(copy.sourcePhotoId)) continue;
+      const trashed = trashDriveFile(copy.id);
+      if (!trashed.ok) {
+        result.errors.push(
+          `Failed to trash copy "${copy.name}" (${copy.id}) in ` +
           `${record.folderName} (${record.folderId}): ${trashed.error}`
         );
         continue;
@@ -1091,6 +1353,286 @@ export function removeShortcutsForTargets(
     `errors=${result.errors.length}`
   );
   return result;
+}
+
+// ─── One-time migration: replace Photos_NNN shortcuts with real JPGs ─────────
+
+/** Per-event outcome of migratePhotoShortcutsToFiles. */
+export interface PhotoMigrationResult {
+  /** Total shortcuts examined across the event's Photos_NNN buckets. */
+  shortcutsScanned: number;
+  /** JPEG shortcuts replaced by a byte-for-byte copy. */
+  copiesCreated: number;
+  /** Non-JPEG shortcuts replaced by a Cloud Run conversion. */
+  conversionsCreated: number;
+  /** Shortcuts trashed because a real file now represents their source (migrated or already-present). */
+  shortcutsTrashed: number;
+  /** Shortcuts trashed because their target no longer exists under the event (dangling). */
+  danglingTrashed: number;
+  /** Non-JPEG shortcuts left in place because Cloud Run is not configured. */
+  skippedNoCloudRun: number;
+  /** Photos_NNN buckets visited. */
+  foldersTouched: number;
+  /** Soft errors collected (per-file copy/convert/trash failures); never thrown. */
+  warnings: string[];
+}
+
+const EMPTY_PHOTO_MIGRATION: PhotoMigrationResult = {
+  shortcutsScanned: 0,
+  copiesCreated: 0,
+  conversionsCreated: 0,
+  shortcutsTrashed: 0,
+  danglingTrashed: 0,
+  skippedNoCloudRun: 0,
+  foldersTouched: 0,
+  warnings: [],
+};
+
+/**
+ * ONE-TIME migration for a single event: replaces every Drive shortcut sitting
+ * in the event's Photos_NNN buckets with a REAL JPG (JPEG sources copied,
+ * other formats converted via Cloud Run), then trashes the shortcut.
+ *
+ * Why this exists
+ *   Photos_NNN used to hold shortcuts. The rebuild now materializes real files
+ *   for NEW photos, but it treats an existing shortcut as "already
+ *   represented" and won't upgrade it. This routine performs that upgrade for
+ *   the historical shortcuts.
+ *
+ * Per shortcut:
+ *   - target already has a real copy in the bucket → trash the shortcut (it's
+ *     now redundant).
+ *   - target no longer exists under the event → trash the dangling shortcut.
+ *   - otherwise → materialize a real JPG (NO shortcut fallback), and on success
+ *     trash the shortcut. A non-JPEG when Cloud Run is unconfigured is left
+ *     untouched (counted in skippedNoCloudRun) so nothing is lost.
+ *
+ * Idempotent & resumable: a shortcut is only ever trashed once its real file
+ * exists, so re-running continues where a timed-out run left off, and a fully
+ * migrated event is a fast no-op (no shortcuts remain to scan). Trashed (not
+ * hard-deleted) shortcuts are recoverable from Drive trash.
+ *
+ * Finishes by calling rebuildEventPhotoFolders to refresh Special_Folders
+ * counts and materialize any source photo that had neither a shortcut nor a
+ * copy.
+ */
+export function migrateEventPhotoShortcutsToFiles(
+  eventId: string
+): ServiceResult<PhotoMigrationResult> {
+  const event = findEventById(eventId);
+  if (!event) {
+    return { status: ResultStatus.ERROR, message: `Event "${eventId}" not found` };
+  }
+
+  const eventFolderResult = getFolderById(event.driveFolderId);
+  if (eventFolderResult.status !== ResultStatus.SUCCESS || !eventFolderResult.data) {
+    return {
+      status: ResultStatus.ERROR,
+      message: `Cannot open event Drive folder "${event.driveFolderId}": ${eventFolderResult.message}`,
+    };
+  }
+  const eventFolder = eventFolderResult.data;
+
+  // NOTE: we deliberately do NOT walk the whole event subtree here. Each shortcut
+  // in a Photos_NNN bucket already carries its target's id, name and MIME type
+  // (shortcutDetails.targetMimeType, surfaced by listShortcutsInFolder), which is
+  // everything materializePhotoIntoBucket needs to choose copy-vs-convert and to
+  // name the output. Resolving targets straight from the shortcut list avoids a
+  // full recursive Drive traversal per event. A per-file metadata lookup
+  // (getDriveFileBasics) is used only in the rare cases where targetMimeType is
+  // absent or a materialization fails (to tell a dangling target from a transient
+  // error).
+  const cloudRunReady = isCloudRunConfigured();
+  const result: PhotoMigrationResult = { ...EMPTY_PHOTO_MIGRATION, warnings: [] };
+  if (!cloudRunReady) {
+    result.warnings.push(
+      'Cloud Run image-convert service is not configured (CLOUD_RUN_URL Script ' +
+      'Property is unset); non-JPEG shortcuts will be left in place until it is set.'
+    );
+  }
+
+  // Visit each Photos_NNN bucket directly under the event folder.
+  const childIter = eventFolder.getFolders();
+  while (childIter.hasNext()) {
+    const folder = childIter.next();
+    const folderName = folder.getName();
+    if (!isSpecialLayer2Folder(folderName)) continue; // only Photos_NNN buckets
+    result.foldersTouched++;
+    const folderId = folder.getId();
+
+    // Collapse any same-target duplicate shortcuts first, then read the real
+    // copies already present so we never duplicate a migration.
+    const shortcutsRaw = listShortcutsInFolder(folderId);
+    const { survivors: shortcuts } = dedupeFolderShortcuts(shortcutsRaw, folderName, result.warnings);
+    const copies = listManagedCopiesInFolder(folderId);
+
+    const copiesBySource = new Set(copies.map((c) => c.sourcePhotoId));
+    const ctx: PhotoBucketCtx = {
+      index: 0, // unused by materializePhotoIntoBucket
+      folderName,
+      folderId,
+      usedNames: new Set<string>([
+        ...copies.map((c) => c.name).filter(Boolean),
+        ...shortcuts.map((s) => s.name).filter(Boolean),
+      ]),
+      placed: 0,
+    };
+
+    for (const shortcut of shortcuts) {
+      result.shortcutsScanned++;
+      const sourceId = shortcut.targetId;
+
+      // A real copy already represents this source — the shortcut is redundant.
+      if (copiesBySource.has(sourceId)) {
+        const trashed = trashDriveFile(shortcut.id);
+        if (trashed.ok) result.shortcutsTrashed++;
+        else result.warnings.push(`Failed to trash redundant shortcut ${shortcut.id} in ${folderName}: ${trashed.error}`);
+        continue;
+      }
+
+      // Resolve the source's name + MIME straight from the shortcut. If Drive
+      // didn't populate targetMimeType, fall back to a single metadata fetch —
+      // and treat a definitive 404 there as a dangling shortcut.
+      let src: MediaFile = {
+        id: sourceId,
+        name: shortcut.name,
+        mimeType: shortcut.targetMimeType ?? '',
+      };
+      if (!src.mimeType) {
+        const lookup = getDriveFileBasics(sourceId);
+        if (lookup.found) {
+          src = { id: sourceId, name: lookup.file.name || shortcut.name, mimeType: lookup.file.mimeType };
+        } else if (lookup.gone) {
+          const trashed = trashDriveFile(shortcut.id);
+          if (trashed.ok) result.danglingTrashed++;
+          else result.warnings.push(`Failed to trash dangling shortcut ${shortcut.id} in ${folderName}: ${trashed.error}`);
+          continue;
+        } else {
+          // Ambiguous error — leave the shortcut for a later retry.
+          result.warnings.push(`Could not resolve target ${sourceId} for shortcut ${shortcut.id} in ${folderName}; leaving for retry.`);
+          continue;
+        }
+      }
+
+      const outcome = materializePhotoIntoBucket(src, ctx, cloudRunReady, result.warnings, false);
+      if (outcome === 'copied' || outcome === 'converted') {
+        if (outcome === 'copied') result.copiesCreated++;
+        else result.conversionsCreated++;
+        copiesBySource.add(sourceId);
+        const trashed = trashDriveFile(shortcut.id);
+        if (trashed.ok) result.shortcutsTrashed++;
+        else result.warnings.push(`Materialized ${src.name} but failed to trash its shortcut ${shortcut.id} in ${folderName}: ${trashed.error}`);
+      } else if (outcome === 'skipped') {
+        result.skippedNoCloudRun++; // non-JPEG, Cloud Run off — leave the shortcut
+      } else if (outcome === 'failed') {
+        // Materialization failed. If the target no longer exists, this is a
+        // dangling shortcut (matching the old photosById-based sweep) — trash it
+        // so the migration can reach completion. Otherwise it's a transient
+        // failure: leave the shortcut in place for a retry (warning already logged).
+        const lookup = getDriveFileBasics(sourceId);
+        if (lookup.found === false && lookup.gone) {
+          const trashed = trashDriveFile(shortcut.id);
+          if (trashed.ok) result.danglingTrashed++;
+          else result.warnings.push(`Failed to trash dangling shortcut ${shortcut.id} in ${folderName}: ${trashed.error}`);
+        }
+      }
+    }
+  }
+
+  // Refresh Special_Folders counts and fill any photo that had no entry at all.
+  const rebuild = rebuildEventPhotoFolders(eventId);
+  if (rebuild.status !== ResultStatus.SUCCESS) {
+    result.warnings.push(`Post-migration rebuild reported: ${rebuild.message}`);
+  }
+
+  Logger.log(
+    `[specialFoldersService.migrateEventPhotoShortcutsToFiles] event=${eventId} ` +
+    `scanned=${result.shortcutsScanned} copied=${result.copiesCreated} ` +
+    `converted=${result.conversionsCreated} trashed=${result.shortcutsTrashed} ` +
+    `dangling=${result.danglingTrashed} skippedNoCloudRun=${result.skippedNoCloudRun} ` +
+    `folders=${result.foldersTouched} warnings=${result.warnings.length}`
+  );
+
+  return {
+    status: ResultStatus.SUCCESS,
+    message:
+      `Migrated Photos_NNN for "${event.folderName}": ${result.copiesCreated} copied, ` +
+      `${result.conversionsCreated} converted, ${result.shortcutsTrashed} shortcut(s) removed` +
+      (result.skippedNoCloudRun > 0 ? `, ${result.skippedNoCloudRun} left (Cloud Run off)` : '') +
+      (result.danglingTrashed > 0 ? `, ${result.danglingTrashed} dangling removed` : ''),
+    data: result,
+  };
+}
+
+/** Aggregate outcome of migrateAllPhotoShortcutsToFiles. */
+export interface PhotoMigrationSummary {
+  eventsProcessed: number;
+  eventsFailed: number;
+  copiesCreated: number;
+  conversionsCreated: number;
+  shortcutsTrashed: number;
+  danglingTrashed: number;
+  skippedNoCloudRun: number;
+  /** Sample of per-event error messages (capped). */
+  errors: string[];
+}
+
+/**
+ * ONE-TIME migration across EVERY event: runs migrateEventPhotoShortcutsToFiles
+ * for each event and aggregates the results. Per-event failures are captured,
+ * not thrown, so one bad event never aborts the rest.
+ *
+ * Heavy: each non-JPEG shortcut triggers a Cloud Run conversion. For a large
+ * catalogue this may exceed the 6-minute GAS execution limit — the routine is
+ * idempotent and resumable, so simply re-run it until a run reports zero
+ * shortcuts scanned. Prefer running per-event via migrateEventPhotoShortcutsToFiles
+ * for very large events.
+ */
+export function migrateAllPhotoShortcutsToFiles(): PhotoMigrationSummary {
+  const summary: PhotoMigrationSummary = {
+    eventsProcessed: 0,
+    eventsFailed: 0,
+    copiesCreated: 0,
+    conversionsCreated: 0,
+    shortcutsTrashed: 0,
+    danglingTrashed: 0,
+    skippedNoCloudRun: 0,
+    errors: [],
+  };
+
+  const events = listAllEvents(1, 100000, 'desc').items;
+  for (const ev of events) {
+    try {
+      const r = migrateEventPhotoShortcutsToFiles(ev.eventId);
+      if (r.status === ResultStatus.SUCCESS && r.data) {
+        summary.eventsProcessed++;
+        summary.copiesCreated += r.data.copiesCreated;
+        summary.conversionsCreated += r.data.conversionsCreated;
+        summary.shortcutsTrashed += r.data.shortcutsTrashed;
+        summary.danglingTrashed += r.data.danglingTrashed;
+        summary.skippedNoCloudRun += r.data.skippedNoCloudRun;
+      } else {
+        summary.eventsFailed++;
+        if (summary.errors.length < 10) {
+          summary.errors.push(`${ev.folderName}: ${r.message}`);
+        }
+      }
+    } catch (err) {
+      summary.eventsFailed++;
+      if (summary.errors.length < 10) {
+        summary.errors.push(`${ev.folderName}: ${String(err)}`);
+      }
+    }
+  }
+
+  Logger.log(
+    `[specialFoldersService.migrateAllPhotoShortcutsToFiles] ` +
+    `events=${summary.eventsProcessed} failed=${summary.eventsFailed} ` +
+    `copied=${summary.copiesCreated} converted=${summary.conversionsCreated} ` +
+    `trashed=${summary.shortcutsTrashed} dangling=${summary.danglingTrashed} ` +
+    `skippedNoCloudRun=${summary.skippedNoCloudRun}`
+  );
+  return summary;
 }
 
 // ─── Backfill sharing on every existing special folder ──────────────────────

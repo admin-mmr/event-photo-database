@@ -298,16 +298,17 @@ export const SOFT_DELETE_RETENTION_DAYS = 30;
 // ─── Special folders (consolidated photos + per-scope videos) ────────────────
 
 /**
- * Folder name prefix for the consolidated photo shortcut folders that
+ * Folder name prefix for the consolidated photo folders that
  * specialFoldersService creates directly under each event folder.
  *
- *   <Event>/Photos_001/      ← shortcuts to up to MAX_SHORTCUTS_PER_PHOTOS_FOLDER photos
+ *   <Event>/Photos_001/      ← real JPGs for up to MAX_SHORTCUTS_PER_PHOTOS_FOLDER photos
  *   <Event>/Photos_002/      ← overflow when the previous folder fills up
  *   ...
  *
- * Three-digit zero-padded ordinals support up to 999 folders × 800 files =
- * 799,200 photos per event before we'd need to widen the suffix — well past
- * any realistic event size.
+ * These hold REAL, materialized JPG files (JPEGs copied byte-for-byte, other
+ * formats converted via Cloud Run), not shortcuts. Three-digit zero-padded
+ * ordinals support up to 999 folders × 800 files = 799,200 photos per event
+ * before we'd need to widen the suffix — well past any realistic event size.
  */
 export const PHOTOS_FOLDER_PREFIX = 'Photos_';
 
@@ -338,13 +339,13 @@ export function isSpecialLayer2Folder(name: string): boolean {
 }
 
 /**
- * Cap on the number of Drive shortcut files inside a single Photos_NNN folder.
+ * Cap on the number of files inside a single Photos_NNN folder.
  *
  * Drive itself doesn't enforce 800 — the cap is a UX choice: folders with
  * more than ~1,000 children become slow to browse in the Drive UI and slow
- * to enumerate via DriveApp.getFiles(). 800 leaves headroom for the
- * "shortcut to <name>" rendering Drive sometimes appends without spilling
- * over the soft scroll limit.
+ * to enumerate via DriveApp.getFiles(). 800 leaves comfortable headroom.
+ * (Named for its original shortcut-era use; the buckets now hold real JPGs,
+ * but the same browse-performance cap applies.)
  */
 export const MAX_SHORTCUTS_PER_PHOTOS_FOLDER = 800;
 

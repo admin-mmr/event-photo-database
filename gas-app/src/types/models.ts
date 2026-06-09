@@ -168,9 +168,11 @@ export interface ClubRecord {
 /**
  * Scope tag for a row in the Special_Folders sheet.
  *
- * 'photos' rows describe the per-event "Photos_NNN" indexed shortcut folders
- * that consolidate every photo under an event into flat shortcut buckets of
- * up to MAX_SHORTCUTS_PER_PHOTOS_FOLDER files each.
+ * 'photos' rows describe the per-event "Photos_NNN" indexed folders that
+ * consolidate every photo under an event into flat buckets of up to
+ * MAX_SHORTCUTS_PER_PHOTOS_FOLDER files each. Unlike Videos/Album, these hold
+ * REAL materialized JPGs (JPEGs copied, other formats converted via Cloud Run),
+ * not shortcuts.
  *
  * 'videos' rows describe the per-(event, club, tag) "Videos" folder that
  * holds shortcuts to every video uploaded under that scope.
@@ -205,7 +207,7 @@ export interface SpecialFolderRecord {
   readonly folderIndex: number;
   /** Drive folder web URL (https://drive.google.com/drive/folders/<id>). */
   readonly folderUrl: string;
-  /** Number of shortcut files inside the folder at the last rebuild. */
+  /** Number of files inside the folder at the last rebuild (shortcuts for Videos/Album; real JPGs for Photos_NNN). */
   readonly fileCount: number;
   /** ISO 8601 timestamp of the most recent rebuild that touched this folder. */
   readonly lastRefreshedAt: string;

@@ -36,10 +36,12 @@ import { migrateFromLegacy } from './services/migrationService';
 import { rebuildPublicFoldersIndex as _rebuildPublicFoldersIndex } from './services/publicSpreadsheetService';
 import {
   backfillSpecialFoldersSharing as _backfillSpecialFoldersSharing,
+  migrateAllPhotoShortcutsToFiles as _migrateAllPhotoShortcutsToFiles,
   getLatestRefreshedAt,
 } from './services/specialFoldersService';
 import { getLatestUploadTimestamp } from './services/uploadLogService';
-import { getSuperAdmins } from './config/superAdmins';
+import { getSuperAdmins, getCloudRunUrl, isCloudRunConfigured } from './config/superAdmins';
+import { convertImage } from './services/cloudRunClient';
 import { showUploadPrepSidebar as _showUploadPrepSidebar } from './routes/uploadPrepRoutes';
 import {
   uploadPrep_listEvents as _uploadPrep_listEvents,
@@ -49,7 +51,7 @@ import {
 } from './routes/uploadPrepRoutes';
 import { ServerResponse } from './types/responses';
 
-/* global Logger, SpreadsheetApp, Session, PropertiesService, ScriptApp, UrlFetchApp, DriveApp */
+/* global Logger, SpreadsheetApp, Session, PropertiesService, ScriptApp, UrlFetchApp, DriveApp, Utilities */
 
 // ─── Web App entry points ─────────────────────────────────────────────────────
 
@@ -105,6 +107,93 @@ export function debugConfig(): void {
   Logger.log('Active user email:    ' + activeEmail);
   Logger.log('Effective user email: ' + effectEmail);
   Logger.log('===================');
+}
+
+/**
+ * Convert one specific Drive file through the Cloud Run image-convert service —
+ * a controllable end-to-end test that doesn't touch the rebuild/migration.
+ *
+ * Setup (Project Settings → Script Properties), then Run → debugConvertImage:
+ *   TEST_CONVERT_SOURCE_FILE_ID = <Drive ID of a NON-JPEG image, e.g. a .png>
+ *   TEST_CONVERT_DEST_FOLDER_ID = <Drive ID of a scratch folder to drop the JPG in>
+ *
+ * Logs the full convert response. Pair this with the Cloud Run logs (see
+ * PHOTOS_MIGRATION_RUNBOOK / cloud-run/DEPLOY_RUNBOOK) — the request_id, mime
+ * and destFileId appear on both sides.
+ *
+ *   ok=true  + destFileId  → the JPG was created in the dest folder.
+ *   error='not_configured' → CLOUD_RUN_URL Script Property isn't set.
+ *   error='unsupported_format' for a JPEG → expected (JPEGs are copied, not converted).
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function debugConvertImage(): void {
+  const callerEmail = Session.getActiveUser().getEmail();
+  if (!getSuperAdmins().includes(callerEmail.toLowerCase())) {
+    Logger.log(`[debugConvertImage] Permission denied for ${callerEmail}`);
+    return;
+  }
+
+  const props = PropertiesService.getScriptProperties();
+  const sourceFileId = props.getProperty('TEST_CONVERT_SOURCE_FILE_ID') ?? '';
+  const destFolderId = props.getProperty('TEST_CONVERT_DEST_FOLDER_ID') ?? '';
+
+  Logger.log('=== debugConvertImage ===');
+  Logger.log('Cloud Run configured: ' + isCloudRunConfigured());
+  Logger.log('Cloud Run URL:        ' + getCloudRunUrl());
+  Logger.log('Source file ID:       ' + (sourceFileId || '(TEST_CONVERT_SOURCE_FILE_ID not set)'));
+  Logger.log('Dest folder ID:       ' + (destFolderId || '(TEST_CONVERT_DEST_FOLDER_ID not set)'));
+
+  if (!sourceFileId || !destFolderId) {
+    Logger.log(
+      '[debugConvertImage] Set both TEST_CONVERT_SOURCE_FILE_ID and ' +
+      'TEST_CONVERT_DEST_FOLDER_ID in Script Properties, then re-run.'
+    );
+    return;
+  }
+
+  // Build a .jpg dest name from the source file's current name.
+  let destName = 'debug_convert_test.jpg';
+  try {
+    const srcName = DriveApp.getFileById(sourceFileId).getName();
+    const dot = srcName.lastIndexOf('.');
+    destName = (dot >= 0 ? srcName.substring(0, dot) : srcName) + '.jpg';
+    Logger.log('Source file name:     ' + srcName);
+  } catch (err) {
+    Logger.log('[debugConvertImage] Could not read source file name: ' + String(err));
+  }
+  Logger.log('Dest name:            ' + destName);
+
+  // Diagnostic: confirm an ID token is actually being minted, and what audience
+  // it carries (Cloud Run IAM rejects tokens whose `aud` != the service URL).
+  try {
+    const idTok = ScriptApp.getIdentityToken();
+    const aud = idTok
+      ? JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(idTok.split('.')[1])).getDataAsString()).aud
+      : '(none)';
+    Logger.log('ID token length: ' + (idTok ? idTok.length : 0) + '  aud=' + aud);
+  } catch (err) {
+    Logger.log('ID token length: <decode failed: ' + String(err) + '>');
+  }
+
+  const started = Date.now();
+  const resp = convertImage({
+    sourceFileId,
+    destFolderId,
+    destName,
+    jpgQuality: 92,
+    maxDim: null,
+    bakeOrientation: true,
+    preserveExif: true,
+  });
+  Logger.log('Round-trip ms:        ' + (Date.now() - started));
+  Logger.log('Response:             ' + JSON.stringify(resp));
+  Logger.log(
+    resp.ok && resp.destFileId
+      ? '✅ Converted OK — new JPG file ID: ' + resp.destFileId +
+        ' (sourceMime=' + (resp.sourceMimeType ?? '?') + ', cloudRunMs=' + (resp.conversionMs ?? '?') + ')'
+      : '❌ Convert did NOT succeed — error=' + (resp.error ?? '?') + ' message=' + (resp.message ?? '?')
+  );
+  Logger.log('=========================');
 }
 
 // ─── Spreadsheet on-open trigger ─────────────────────────────────────────────
@@ -238,6 +327,39 @@ export function backfillSpecialFoldersSharing(): void {
     `[backfillSpecialFoldersSharing] Done — created=${summary.created} ` +
     `alreadyShared=${summary.alreadyShared} errors=${summary.errors}`
   );
+}
+
+/**
+ * ONE-TIME migration: replaces every existing Drive shortcut in the Photos_NNN
+ * buckets across ALL events with a real JPG (JPEG sources copied, other formats
+ * converted via the Cloud Run image-convert service), then trashes the shortcut.
+ *
+ * Run this once from the GAS editor (Run → migratePhotoShortcutsToFiles) as a
+ * super-admin AFTER the Cloud Run service is configured (CLOUD_RUN_URL Script
+ * Property). Non-JPEG shortcuts are left untouched when Cloud Run is unset.
+ *
+ * Idempotent & resumable — heavy events may exceed the 6-minute limit; just
+ * re-run until a run reports zero shortcuts trashed. Trashed shortcuts are
+ * recoverable from Drive trash. Super-admin guarded.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function migratePhotoShortcutsToFiles(): void {
+  const callerEmail = Session.getActiveUser().getEmail();
+  if (!getSuperAdmins().includes(callerEmail.toLowerCase())) {
+    Logger.log(`[migratePhotoShortcutsToFiles] Permission denied for ${callerEmail}`);
+    return;
+  }
+  Logger.log(`[migratePhotoShortcutsToFiles] Started by ${callerEmail}`);
+  const summary = _migrateAllPhotoShortcutsToFiles();
+  Logger.log(
+    `[migratePhotoShortcutsToFiles] Done — events=${summary.eventsProcessed} ` +
+    `failed=${summary.eventsFailed} copied=${summary.copiesCreated} ` +
+    `converted=${summary.conversionsCreated} shortcutsTrashed=${summary.shortcutsTrashed} ` +
+    `dangling=${summary.danglingTrashed} skippedNoCloudRun=${summary.skippedNoCloudRun}`
+  );
+  if (summary.errors.length > 0) {
+    Logger.log(`[migratePhotoShortcutsToFiles] Errors: ${summary.errors.join(' | ')}`);
+  }
 }
 
 // ─── Public-sheet scheduled refresh trigger ──────────────────────────────────
