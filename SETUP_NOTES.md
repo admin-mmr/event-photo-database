@@ -20,10 +20,16 @@ GCP_WORKLOAD_IDP    = projects/489676654863/locations/global/workloadIdentityPoo
 - [x] **D3** `cloud-webapp/infra/firebase.json` + `.firebaserc` → mmr-data-pipeline
 - [x] **D4** Web app `event-photo-web` registered, SDK config captured
 - [x] **E1** bootstrap-gcp.sh complete — verified: deployer SA active, Firestore NATIVE, Artifact Registry repo, WIF pool ACTIVE
-- [ ] **E2** Runtime SAs (api-runtime, matcher-runtime, indexer-runtime)
-- [ ] **F** Cloud SQL + pgvector, buckets, Pub/Sub
-- [ ] **G** Drive access, secrets, reCAPTCHA
+- [x] **E2** Runtime SAs created via `infra/scripts/provision-runtime-sas.sh` (verified 2026-06-09)
+- [ ] **F** Buckets + Pub/Sub topics — **Cloud SQL SKIPPED** (zero-cost decision, see below)
+- [ ] **G** Drive access, secrets (`CONSENT_POLICY_VERSION`, `RECAPTCHA_KEY` — no `DB_CONNECTION`), reCAPTCHA
 - [ ] **H/I** Deploy + GitHub Actions
+
+## Decision (2026-06-09): zero-cost architecture — no Cloud SQL
+
+Cloud SQL has no free tier (~$50–58/mo for db-custom-1-3840 Enterprise). Replaced pgvector with **flat-file embeddings in GCS** (`gs://mmr-data-pipeline-derivatives/<eventId>/embeddings/`) + in-memory cosine similarity in the matcher. Everything now targets free tiers: Firestore, GCS (5 GB regional, us-central1), Cloud Run, Pub/Sub, Secret Manager, Firebase Auth/Hosting. Expected steady-state spend: **$0** (watch Artifact Registry >0.5 GB and GCS egress). Details: runbook Phase F + dev plan decision-update banner.
+
+⚠️ A `findme-pg` instance was briefly created on 2026-06-10 before this decision — **deleted same day** (`gcloud sql instances delete findme-pg`); cost a few cents at most. Confirm it's gone: `gcloud sql instances list`.
 
 ## Gotchas encountered
 

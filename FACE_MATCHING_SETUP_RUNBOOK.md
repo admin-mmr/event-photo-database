@@ -35,7 +35,7 @@ node --version          # Node 20 LTS (matches cloud-webapp/.nvmrc)
 docker --version        # for building api/matcher/indexer images
 psql --version          # to run SQL migrations (optional, can use Cloud SQL Studio)
 ```
-- [ ] All five tools present. Missing gcloud → install Google Cloud CLI; missing firebase → `npm i -g firebase-tools`.
+- [x] All five tools present. Missing gcloud → install Google Cloud CLI; missing firebase → `npm i -g firebase-tools`.
 
 ### A2. Authenticate as a project Owner 🟡
 ```bash
@@ -43,13 +43,13 @@ gcloud auth login
 gcloud auth application-default login
 firebase login
 ```
-- [ ] `gcloud auth list` shows your account as ACTIVE.
+- [x] `gcloud auth list` shows your account as ACTIVE.
 
 ### A3. Nonprofit billing + $10k credit ⚠️
 The credit is **separate** from Workspace for Nonprofits (see `UX_AND_GCP_ASSESSMENT.md` §2.1 and `GCP_Nonprofit_Credit_Application_Guide.md`).
-- [ ] Org verified via Goodstack/TechSoup.
-- [ ] Cloud credit requested at the Google for Nonprofits Cloud credit page.
-- [ ] A **Billing Account** exists and you can link projects to it.
+- [x] Org verified via Goodstack/TechSoup.
+- [x] Cloud credit requested at the Google for Nonprofits Cloud credit page.
+- [x] A **Billing Account** exists and you can link projects to it.
 
 ---
 
@@ -70,7 +70,7 @@ gcloud billing projects link "$PROJECT_ID" \
 gcloud projects describe "$PROJECT_ID" --format='value(projectId,projectNumber)'
 gcloud billing projects describe "$PROJECT_ID" --format='value(billingEnabled)'   # → True
 ```
-- [ ] Project exists and `billingEnabled = True`.
+- [x] Project exists and `billingEnabled = True`.
 
 ---
 
@@ -98,7 +98,7 @@ gcloud services list --enabled \
   --filter="config.name:(run firestore firebase firebasehosting secretmanager storage sqladmin pubsub eventarc cloudscheduler drive recaptchaenterprise)" \
   --format='value(config.name)'
 ```
-- [ ] All core + feature APIs appear in the output.
+- [x] All core + feature APIs appear in the output.
 
 ---
 
@@ -194,32 +194,24 @@ done
 
 ---
 
-## Phase F — Data plane (Cloud SQL + pgvector, buckets, eventing)
+## Phase F — Data plane (buckets, eventing) — ZERO-COST DESIGN
 
-> These will live in `infra/scripts/provision-data-plane.sh` (dev plan §2.4). Until that script lands, run the inline commands. 🟡
+> **Decision update (2026-06-09): Cloud SQL/pgvector is SKIPPED.** Cloud SQL has no free tier (~$50–58/mo for the planned tier). At our scale (searches are scoped to one event = a few thousand photos, PRD §5), a vector database is unnecessary: per-event embeddings live as a single flat file in Cloud Storage and the matcher does in-memory cosine similarity (NumPy, milliseconds at this scale). pgvector can be added later without changing the matcher's API if an event ever approaches ~100k photos. See `STORAGE_AND_DATABASE_OPTIONS.md` ("if budget is literally zero") and dev plan decision note.
 
-### F1. Cloud SQL Postgres + pgvector
-```bash
-gcloud sql instances create findme-pg \
-  --database-version=POSTGRES_16 \
-  --tier=db-custom-1-3840 \
-  --region="$REGION" \
-  --storage-auto-increase \
-  --backup --enable-point-in-time-recovery
-
-gcloud sql databases create findme --instance=findme-pg
-gcloud sql users set-password postgres --instance=findme-pg --password="$(openssl rand -base64 24)"
-# Enable extension + schema (or paste infra/sql/0001_init.sql into Cloud SQL Studio):
-#   CREATE EXTENSION IF NOT EXISTS vector;   (then the embeddings table from dev plan §4.3)
+### F1. Vector store — flat-file embeddings on Cloud Storage 🟢 ($0)
+Nothing to provision. Layout (replaces dev plan §4.3 Postgres schema):
 ```
-**Verify:**
-```bash
-gcloud sql instances describe findme-pg --format='value(state)'   # → RUNNABLE
+gs://${PROJECT_ID}-derivatives/<eventId>/embeddings/faces.npy      # float32 [N, dim]
+gs://${PROJECT_ID}-derivatives/<eventId>/embeddings/persons.npy
+gs://${PROJECT_ID}-derivatives/<eventId>/embeddings/manifest.json  # row→photoId/cropBox/model+version
 ```
-- [ ] Instance RUNNABLE; `vector` extension + `embeddings` table created (dev plan §4.3).
-- ⚠️ Use a dedicated tier (not shared-core `db-f1-micro`) for prod — shared-core has no SLA (`STORAGE_AND_DATABASE_OPTIONS.md`).
+- Indexer writes/rewrites these files per event; matcher lazy-loads an event's file into memory on first query and caches for the instance lifetime.
+- Firestore keeps `photos` + `photo_embeddings_meta` exactly as planned (free tier: 50k reads/day — ~10× expected traffic).
+- [ ] Layout agreed; dev plan §4.3 superseded.
+- Cleanup from the abandoned Cloud SQL attempt (no instance was created, nothing billed): `gcloud services disable sqladmin.googleapis.com --project="$PROJECT_ID"` (optional); the `roles/cloudsql.client` grants on the runtime SAs are unused — strip or ignore.
 
-### F2. Cloud Storage buckets
+### F2. Cloud Storage buckets 🟡 ($0 within free tier)
+GCS always-free tier: 5 GB-months regional storage **in us-central1** (also us-east1/us-west1) — derivatives + embeddings for our event sizes fit comfortably. Watch egress (1 GB/mo free to most regions); the CDN/serving design in `STORAGE_AND_DATABASE_OPTIONS.md` covers this.
 ```bash
 gcloud storage buckets create "gs://${PROJECT_ID}-derivatives" \
   --location="$REGION" --uniform-bucket-level-access
@@ -238,7 +230,7 @@ gcloud storage buckets describe "gs://${PROJECT_ID}-uploads" --format='value(lif
 ```
 - [ ] Both buckets exist; uploads bucket has the 7-day delete rule.
 
-### F3. Pub/Sub + Scheduler (indexing + retention)
+### F3. Pub/Sub + Scheduler (indexing + retention) 🟡 ($0 — free tier: 10 GB/mo messages, 3 Scheduler jobs)
 ```bash
 gcloud pubsub topics create photo-index-requests
 gcloud pubsub topics create photo-index-deadletter
@@ -256,14 +248,13 @@ Indexing reads event photos from Drive; the app writes user uploads back to Driv
 - [ ] **Option B:** a dedicated Workspace user shares the event folders + the `_find_me_uploads` folder with the SA's email.
 - [ ] Confirm the SA can list the test event folder and write to `_find_me_uploads`.
 
-### G2. Secret Manager (dev plan §2.2)
+### G2. Secret Manager (dev plan §2.2) — ($0 — free tier: 6 active secret versions)
+`DB_CONNECTION` is **no longer needed** (no Cloud SQL — see Phase F).
 ```bash
-printf '%s' "postgres://USER:PASS@/findme?host=/cloudsql/${PROJECT_ID}:${REGION}:findme-pg" \
-  | gcloud secrets create DB_CONNECTION --data-file=-
 printf '%s' "v1-2026-06" | gcloud secrets create CONSENT_POLICY_VERSION --data-file=-
 # Add RECAPTCHA_KEY after G3; add DRIVE creds if using a key file (prefer WIF/DWD over keys).
 ```
-- [ ] `DB_CONNECTION` and `CONSENT_POLICY_VERSION` secrets created; mounted into services later via `--set-secrets`.
+- [ ] `CONSENT_POLICY_VERSION` secret created; mounted into services later via `--set-secrets`.
 
 ### G3. reCAPTCHA Enterprise key (PRD §9)
 ```bash
@@ -322,15 +313,15 @@ gcloud billing budgets create \
   --budget-amount=50USD \
   --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0
 ```
-- [ ] $50/mo budget with 50/90/100% alerts.
+- [ ] Budget with 50/90/100% alerts. With the zero-cost design the expected steady-state spend is **$0** (everything sits in free tiers), so set `--budget-amount=10USD` — any alert means something drifted out of free tier (likely Artifact Registry image storage >0.5 GB free, or GCS egress).
 
 ### J2. Cloud Run max-instances caps 🟡
 Set `--max-instances=10` on api and matcher at deploy time; keep matcher `--min-instances=0` off-peak (raise to 1–2 before event weekends).
 - [ ] Caps set; egress watched (Cloud Storage egress is the historic surprise — `STORAGE_AND_DATABASE_OPTIONS.md`).
 
 ### J3. Vector-store cost check ⚠️
-Confirm you're on **Cloud SQL + pgvector**, not Vertex Vector Search (PRD §10.1: a Vertex node bills 24/7 and eats ~30–40% of the monthly credit; pgvector is ~$7–15/mo).
-- [ ] Vector store = pgvector confirmed.
+Confirm you're on **flat-file embeddings in GCS + in-memory matching** ($0), not Cloud SQL/pgvector (~$50/mo, no free tier) and not Vertex Vector Search (a node bills 24/7; PRD §10.1).
+- [x] Vector store = GCS flat files confirmed *(decision 2026-06-09)*.
 
 ---
 
@@ -341,8 +332,8 @@ Confirm you're on **Cloud SQL + pgvector**, not Vertex Vector Search (PRD §10.1
 - [ ] **C** All core + feature APIs enabled
 - [x] **D** Firebase added, Google sign-in on, web SDK config captured *(2026-06-09)*
 - [x] **E** `bootstrap-gcp.sh` run; deployer SA + Firestore + Artifact Registry + WIF; 3 runtime SAs *(2026-06-09)*
-- [ ] **F** Cloud SQL+pgvector, 2 buckets (uploads 7-day lifecycle), Pub/Sub topics
-- [ ] **G** Drive SA access, Secret Manager secrets, reCAPTCHA key
+- [ ] **F** 2 buckets (uploads 7-day lifecycle), Pub/Sub topics — Cloud SQL skipped (zero-cost design)
+- [ ] **G** Drive SA access, `CONSENT_POLICY_VERSION` + `RECAPTCHA_KEY` secrets, reCAPTCHA key
 - [ ] **H** api `/api/health` OK; hosting live; matcher/indexer deferred to M1/M2
 - [ ] **I** GitHub WIF secrets set; no JSON keys
 - [ ] **J** $50 budget alert, max-instances caps, pgvector confirmed
