@@ -1,6 +1,13 @@
 # Find Me — Setup Values & Progress
 
-**Project:** mmr-data-pipeline (489676654863) · **Updated:** 2026-06-10 (Phases F–G complete)
+**Project:** mmr-data-pipeline (489676654863) · **Updated:** 2026-06-10 (Phases F–H complete; I in progress)
+
+## URLs & daily workflow
+
+- **Live site:** https://mmr-data-pipeline.web.app (custom domain `photos.mmrunners.org` not yet wired — Firebase Console → Hosting → Add custom domain + DNS)
+- **API direct:** https://event-photo-api-emi5arbbea-uc.a.run.app (auth required for direct access; public via Hosting rewrite)
+- **Local dev:** `cd cloud-webapp && npm run dev` → http://localhost:5173 (vite, hot reload; proxies `/api/*` to the api on :8080)
+- **Deploys:** automatic on `git push` to main (paths-filtered: `web/**` → hosting, `api/**` → Cloud Run). Manual redeploy: `gh workflow run deploy-web.yml --ref main`; watch with `gh run watch` or the Actions tab.
 
 ## GitHub Actions configuration (Phase I)
 
@@ -27,7 +34,12 @@ GCP_WORKLOAD_IDP    = projects/489676654863/locations/global/workloadIdentityPoo
 - [x] **G3** reCAPTCHA key `6Ld_cxgtAAAAAGJ2nH2TvvFhP745x41RqPPHki6r` → `RECAPTCHA_KEY` secret (v2; v1 was a paste error, destroyed). Still to do: put key id in SPA config.
 - [x] **H1** API deployed 2026-06-10: revision `event-photo-api-00002-wdt`, `https://event-photo-api-emi5arbbea-uc.a.run.app`, `/api/health` OK (`v0.1.0`, commit `1db13d0`)
 - [x] **H2** Hosting live 2026-06-10: `https://mmr-data-pipeline.web.app`, `/api/health` OK through the rewrite. Required `allUsers` invoker on `event-photo-api` (Hosting rewrites are anonymous): temporary project-level DRS override → `add-iam-policy-binding --member=allUsers --role=roles/run.invoker` → override deleted (binding persists). ⚠️ API is now publicly invokable — protected routes must verify Firebase ID tokens.
-- [ ] **I** GitHub Actions WIF secrets
+- [x] **I** GitHub Actions working end-to-end (2026-06-10): 4 WIF values as **repository secrets** (not variables — workflows use `${{ secrets.… }}`); workflows at repo-root `.github/workflows/`; CI deployed commit `4a81145` to Cloud Run + Hosting, verified live. Push to main = auto-deploy.
+- [ ] **J** Budget alert ($10) + max-instances caps (api already capped at 10 via deploy-api.sh; matcher in M1/M2)
+
+## Dev progress (FACE_MATCHING_DEV_PLAN.md)
+
+- **2026-06-11 — M0 code complete** (`cloud-webapp/matcher/`): SCRFD+ArcFace face pipeline, OSNet outfit pipeline (YOLO person detector optional, falls back to face-box expansion), flat-file GCS/local embedding store + in-memory cosine search, score/RRF fusion, quality gates, `/embed` + `/search` Flask endpoints, `scripts/embed_folder.py` (sample indexer), `eval/run_eval.py` (P@20 harness). 31 pytest tests green (fake models; real-model tests gated on `MODEL_DIR`); matcher job added to `ci.yml`. **Human steps remaining for M0 DoD:** fetch models (OSNet needs a one-time ONNX export — see `scripts/fetch_models.py`), embed ~500 real event photos, hand-label ~10 attendees, run the eval → go/no-go at P@20 ≥ 0.8. See `cloud-webapp/matcher/README.md` quickstart. M0 tasks 0.4 (DWD) + 0.5 (flat-file store) were already decided during setup.
 
 ## Decision (2026-06-09): zero-cost architecture — no Cloud SQL
 
@@ -43,3 +55,5 @@ Cloud SQL has no free tier (~$50–58/mo for db-custom-1-3840 Enterprise). Repla
 - ~~`firebase` CLI commands must run from `cloud-webapp/infra/`~~ **2026-06-10:** `firebase.json` + `.firebaserc` moved to `cloud-webapp/` root — the CLI errors with "outside of project directory" if the hosting public dir (`web/dist`) isn't under the dir containing firebase.json. Run firebase commands from `cloud-webapp/`. Rules files stayed in `infra/` (paths updated in firebase.json); `deploy-web.sh` + `deploy-web.yml` updated.
 - Firebase CLI auth expires periodically → `firebase login --reauth`. The "no site name or target name" assertion error is a symptom of expired auth, not a config problem.
 - **2026-06-10:** Workflows were in `cloud-webapp/.github/workflows/` where GitHub never registers them (404 on `gh workflow run`). Moved to repo-root `.github/workflows/` — their paths were already repo-root-relative, no content changes. Both deploy workflows support `workflow_dispatch`.
+- **2026-06-10:** CI builds failed with TS6305 (`shared/dist/index.d.ts has not been built`) — web's tsconfig has a project reference to `../shared`, which worked locally only because `shared/dist` existed on disk. Fix: added `"build": "tsc -b"` to `shared/package.json`; `ci.yml` + `deploy-web.yml` now run `npm run build -w @cloud-webapp/shared` before typecheck/web build.
+- GitHub Actions annotation: Node 20-based actions deprecated; runners force Node 24 from **2026-06-16**. Bump `actions/checkout` + `actions/setup-node` versions when convenient.
