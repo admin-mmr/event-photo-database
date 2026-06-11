@@ -14,8 +14,10 @@ store.py             flat-file embedding store (local dir or gs://) + cosine top
 fusion.py            face+outfit score fusion (reference impl for api's fusion.ts)
 quality.py           reference-photo quality checks (no-face / small / blurry)
 models/              ONNX wrappers: scrfd.py, arcface.py, person.py, registry.py
-scripts/fetch_models.py   download model files → model_files/
-scripts/embed_folder.py   M0 indexer stand-in: photos dir → embeddings store
+scripts/fetch_models.py        download model files → model_files/
+scripts/sample_drive_folder.py pull a random ~500-photo sample from a Drive event folder (DWD)
+scripts/embed_folder.py        M0 indexer stand-in: photos dir → embeddings store
+eval/make_label_sheet.py  browser labeling sheet → labels.csv
 eval/run_eval.py     M0.3 harness: Precision@20 / Recall / FP, fusion-weight sweep
 test_main.py         pytest suite (fake models — no weights needed in CI)
 ```
@@ -32,11 +34,17 @@ pytest -v                                  # should be green without models
 python scripts/fetch_models.py --dir model_files
 export MODEL_DIR=$PWD/model_files
 
-# 2. Index a sample of real event photos (M0.1/M0.2, target ~500)
+# 2. Pull a sample of real event photos from Drive (M0.1, target ~500),
+#    then index it. Uses the verified G1 DWD pattern (needs gcloud auth +
+#    serviceAccountTokenCreator on indexer-runtime@).
+python scripts/sample_drive_folder.py <EVENT_FOLDER_ID> --out ~/event-sample-photos --n 500
 python scripts/embed_folder.py ~/event-sample-photos --event-id ev_sample --out ./local_store
 
-# 3. Label + evaluate (M0.3). Copy eval/labels.example.csv → eval/labels.csv,
-#    label ~10 known attendees; put reference selfies in eval/queries/<person>/.
+# 3. Label + evaluate (M0.3): generate the labeling sheet, open it in a
+#    browser, tick ~10 known attendees per photo, download labels.csv →
+#    eval/labels.csv. Put reference selfies in eval/queries/<person>/
+#    (see eval/queries/README.md).
+python eval/make_label_sheet.py ~/event-sample-photos --people alice,bob
 python eval/run_eval.py --store ./local_store --event-id ev_sample \
     --labels eval/labels.csv --queries eval/queries --report eval/report.json
 
