@@ -318,8 +318,8 @@ Deploy with `infra/scripts/deploy-matcher.sh` / `deploy-indexer.sh` once those s
 
 ### I1. GitHub repo secrets (from E1 output) ⚠️
 In GitHub → Settings → Secrets and variables → Actions, add:
-- [ ] `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_SERVICE_ACCOUNT`, `GCP_WORKLOAD_IDP` (printed by `bootstrap-gcp.sh`).
-- [ ] Confirm `.github/workflows/` (`ci.yml`, `deploy-api.yml`, `deploy-web.yml`) authenticate via Workload Identity Federation — **no service-account JSON keys** in GitHub.
+- [x] `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_SERVICE_ACCOUNT`, `GCP_WORKLOAD_IDP` (printed by `bootstrap-gcp.sh`). *(2026-06-10, added as repository **secrets**)*
+- [x] Confirm `.github/workflows/` (`ci.yml`, `deploy-api.yml`, `deploy-web.yml`) authenticate via Workload Identity Federation — **no service-account JSON keys** in GitHub. *(2026-06-10: workflows moved to repo root, shared-build fix applied; CI deployed commit `4a81145` to both Cloud Run and Hosting, verified live on mmr-data-pipeline.web.app.)*
 
 ---
 
@@ -355,7 +355,7 @@ Confirm you're on **flat-file embeddings in GCS + in-memory matching** ($0), not
 - [ ] **F** 2 buckets (uploads 7-day lifecycle), Pub/Sub topics — Cloud SQL skipped (zero-cost design)
 - [x] **G** Drive SA access (DWD, verified), `CONSENT_POLICY_VERSION` + `RECAPTCHA_KEY` secrets, reCAPTCHA key *(2026-06-10; SPA config wiring deferred to dev)*
 - [x] **H** api `/api/health` OK; hosting live (`mmr-data-pipeline.web.app`); matcher/indexer deferred to M1/M2 *(2026-06-10)*
-- [ ] **I** GitHub WIF secrets set; no JSON keys
+- [x] **I** GitHub WIF secrets set; no JSON keys; CI deploys verified end-to-end *(2026-06-10)*
 - [ ] **J** $50 budget alert, max-instances caps, pgvector confirmed
 
 When every box is checked, the platform is ready for the M1 indexing build in `FACE_MATCHING_DEV_PLAN.md`.
