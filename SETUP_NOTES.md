@@ -1,6 +1,6 @@
 # Find Me — Setup Values & Progress
 
-**Project:** mmr-data-pipeline (489676654863) · **Updated:** 2026-06-09 (Phase E complete)
+**Project:** mmr-data-pipeline (489676654863) · **Updated:** 2026-06-10 (Phases F–G complete)
 
 ## GitHub Actions configuration (Phase I)
 
@@ -21,9 +21,13 @@ GCP_WORKLOAD_IDP    = projects/489676654863/locations/global/workloadIdentityPoo
 - [x] **D4** Web app `event-photo-web` registered, SDK config captured
 - [x] **E1** bootstrap-gcp.sh complete — verified: deployer SA active, Firestore NATIVE, Artifact Registry repo, WIF pool ACTIVE
 - [x] **E2** Runtime SAs created via `infra/scripts/provision-runtime-sas.sh` (verified 2026-06-09)
-- [ ] **F** Buckets + Pub/Sub topics — **Cloud SQL SKIPPED** (zero-cost decision, see below)
-- [ ] **G** Drive access, secrets (`CONSENT_POLICY_VERSION`, `RECAPTCHA_KEY` — no `DB_CONNECTION`), reCAPTCHA
-- [ ] **H/I** Deploy + GitHub Actions
+- [x] **F** Buckets + Pub/Sub topics (verified) — **Cloud SQL SKIPPED** (zero-cost decision, see below)
+- [x] **G1** Drive access via **domain-wide delegation** (2026-06-10): `indexer-runtime` SA, DWD client ID `106562625333715022810`, scope `https://www.googleapis.com/auth/drive`, Admin console entry shows as "MMR WebApp" (name comes from the project's OAuth consent screen). Drive API enabled. Verified read (event folder) + write (`_find_me_uploads`) with `cloud-webapp/infra/scripts/verify-g1-dwd.sh`. DWD calls must impersonate a Workspace user (`sub=admin@mmrunners.org`); keyless via IAM `signJwt` — needs `roles/iam.serviceAccountTokenCreator`.
+- [x] **G2** `CONSENT_POLICY_VERSION` secret = `v1-2026-06`
+- [x] **G3** reCAPTCHA key `6Ld_cxgtAAAAAGJ2nH2TvvFhP745x41RqPPHki6r` → `RECAPTCHA_KEY` secret (v2; v1 was a paste error, destroyed). Still to do: put key id in SPA config.
+- [x] **H1** API deployed 2026-06-10: revision `event-photo-api-00002-wdt`, `https://event-photo-api-emi5arbbea-uc.a.run.app`, `/api/health` OK (`v0.1.0`, commit `1db13d0`)
+- [x] **H2** Hosting live 2026-06-10: `https://mmr-data-pipeline.web.app`, `/api/health` OK through the rewrite. Required `allUsers` invoker on `event-photo-api` (Hosting rewrites are anonymous): temporary project-level DRS override → `add-iam-policy-binding --member=allUsers --role=roles/run.invoker` → override deleted (binding persists). ⚠️ API is now publicly invokable — protected routes must verify Firebase ID tokens.
+- [ ] **I** GitHub Actions WIF secrets
 
 ## Decision (2026-06-09): zero-cost architecture — no Cloud SQL
 
@@ -36,4 +40,5 @@ Cloud SQL has no free tier (~$50–58/mo for db-custom-1-3840 Enterprise). Repla
 - `firebase projects:addfirebase` returned generic 403 despite Owner + firebase.admin. Cause: Firebase ToS never accepted by admin@mmrunners.org. Fix: add the project via console.firebase.google.com once.
 - Org enforces `iam.allowedPolicyMemberDomains` (domain restricted sharing). `add-firebase.sh` temporarily overrides it at project level and restores on exit — reuse if IAM bindings fail with that constraint.
 - No deny policies at project or org level (verified 2026-06-09 via roles/iam.denyReviewer, since removed? — remove binding when done: `gcloud organizations remove-iam-policy-binding 838436601528 --member="user:admin@mmrunners.org" --role="roles/iam.denyReviewer"`).
-- `firebase` CLI commands must run from `cloud-webapp/infra/` (where firebase.json lives) or use `--project mmr-data-pipeline`.
+- ~~`firebase` CLI commands must run from `cloud-webapp/infra/`~~ **2026-06-10:** `firebase.json` + `.firebaserc` moved to `cloud-webapp/` root — the CLI errors with "outside of project directory" if the hosting public dir (`web/dist`) isn't under the dir containing firebase.json. Run firebase commands from `cloud-webapp/`. Rules files stayed in `infra/` (paths updated in firebase.json); `deploy-web.sh` + `deploy-web.yml` updated.
+- Firebase CLI auth expires periodically → `firebase login --reauth`. The "no site name or target name" assertion error is a symptom of expired auth, not a config problem.

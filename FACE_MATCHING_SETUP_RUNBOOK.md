@@ -126,7 +126,7 @@ Auth providers can't be fully enabled from CLI.
 
 ### D3. Firebase Hosting target 🟢/🟡
 Hosting config already lives in `cloud-webapp/infra/firebase.json` (rewrites `/api/**` → Cloud Run service `event-photo-api`, SPA fallback to `index.html`). You deploy it in Phase H. Nothing to create now; just confirm the file is present.
-- [x] `cloud-webapp/infra/firebase.json` exists and `.firebaserc` points at `$PROJECT_ID` (mmr-data-pipeline).
+- [x] `cloud-webapp/firebase.json` exists and `.firebaserc` points at `$PROJECT_ID` (mmr-data-pipeline). *(Moved from `infra/` to `cloud-webapp/` root 2026-06-10 — the CLI requires the hosting public dir `web/dist` inside the project directory; rules paths now `infra/…`.)*
 
 ### D4. Web app config for the SPA 🟡
 ```bash
@@ -226,9 +226,9 @@ gcloud storage buckets update "gs://${PROJECT_ID}-uploads" --lifecycle-file=/tmp
 ```
 **Verify:**
 ```bash
-gcloud storage buckets describe "gs://${PROJECT_ID}-uploads" --format='value(lifecycle)'
+gcloud storage buckets describe "gs://${PROJECT_ID}-uploads" --format='value(lifecycle_config)'
 ```
-- [ ] Both buckets exist; uploads bucket has the 7-day delete rule.
+- [x] Both buckets exist; uploads bucket has the 7-day delete rule.
 
 ### F3. Pub/Sub + Scheduler (indexing + retention) 🟡 ($0 — free tier: 10 GB/mo messages, 3 Scheduler jobs)
 ```bash
@@ -236,7 +236,7 @@ gcloud pubsub topics create photo-index-requests
 gcloud pubsub topics create photo-index-deadletter
 # Scheduled jobs are created in M1/M5 once the api endpoints exist; topics are the prerequisite.
 ```
-- [ ] Both topics created.
+- [x] Both topics created.
 
 ---
 
@@ -244,9 +244,28 @@ gcloud pubsub topics create photo-index-deadletter
 
 ### G1. Drive read/write service account ⚠️
 Indexing reads event photos from Drive; the app writes user uploads back to Drive (PRD D6). Decide the access model in dev plan task 0.4:
-- [ ] **Option A (recommended):** Workspace **domain-wide delegation** — admin grants the `indexer-runtime` SA the Drive scopes in the Workspace Admin console (Security → API controls → Domain-wide delegation), client ID = the SA's unique ID, scope = `https://www.googleapis.com/auth/drive`.
-- [ ] **Option B:** a dedicated Workspace user shares the event folders + the `_find_me_uploads` folder with the SA's email.
-- [ ] Confirm the SA can list the test event folder and write to `_find_me_uploads`.
+- [x] **Option A (recommended, CHOSEN 2026-06-10):** Workspace **domain-wide delegation** — admin grants the `indexer-runtime` SA the Drive scopes in the Workspace Admin console (Security → API controls → Domain-wide delegation), client ID = the SA's unique ID, scope = `https://www.googleapis.com/auth/drive`.
+- [ ] ~~**Option B:** a dedicated Workspace user shares the event folders + the `_find_me_uploads` folder with the SA's email.~~ (not used)
+- [x] Confirm the SA can list the test event folder and write to `_find_me_uploads`. *(verified 2026-06-10 via `cloud-webapp/infra/scripts/verify-g1-dwd.sh` — read + write OK)*
+
+**Completed setup (2026-06-10):**
+```bash
+# SA unique ID (used as the DWD client ID):
+gcloud iam service-accounts describe \
+  indexer-runtime@mmr-data-pipeline.iam.gserviceaccount.com \
+  --format='value(uniqueId)'
+# → 106562625333715022810
+
+# Drive API enabled on the project:
+gcloud services enable drive.googleapis.com --project=mmr-data-pipeline
+```
+- DWD grant added in Admin console (Security → API Controls → Domain-wide Delegation), name **"MMR WebApp"**, client ID `106562625333715022810`, scope `https://www.googleapis.com/auth/drive`.
+- Note: only `mmr-data-pipeline` exists as a GCP project; there is no `mmr-webapp` project.
+
+**DWD usage notes:**
+- The SA never accesses Drive as itself — every Drive API call must impersonate a Workspace user via the JWT `sub` claim (e.g. `admin@mmrunners.org`); the SA then sees that user's Drive, no folder sharing required.
+- Keyless pattern (preferred, per G2): from Cloud Run as `indexer-runtime`, sign the assertion via IAM Credentials `signJwt`, then exchange it at Google's OAuth token endpoint. Requires `roles/iam.serviceAccountTokenCreator` on the SA itself.
+- DWD changes can take minutes–1 hour to propagate; an immediate 403 isn't necessarily a misconfiguration.
 
 ### G2. Secret Manager (dev plan §2.2) — ($0 — free tier: 6 active secret versions)
 `DB_CONNECTION` is **no longer needed** (no Cloud SQL — see Phase F).
@@ -254,7 +273,7 @@ Indexing reads event photos from Drive; the app writes user uploads back to Driv
 printf '%s' "v1-2026-06" | gcloud secrets create CONSENT_POLICY_VERSION --data-file=-
 # Add RECAPTCHA_KEY after G3; add DRIVE creds if using a key file (prefer WIF/DWD over keys).
 ```
-- [ ] `CONSENT_POLICY_VERSION` secret created; mounted into services later via `--set-secrets`.
+- [x] `CONSENT_POLICY_VERSION` secret created; mounted into services later via `--set-secrets`. *(2026-06-10, value `v1-2026-06`)*
 
 ### G3. reCAPTCHA Enterprise key (PRD §9)
 ```bash
@@ -262,7 +281,8 @@ gcloud recaptcha keys create --display-name="findme-web" \
   --web --integration-type=SCORE --domains="photos.mmrunners.org"
 gcloud recaptcha keys list   # copy the key id → store as RECAPTCHA_KEY secret + web env
 ```
-- [ ] Web key created; id stored in Secret Manager and the SPA config.
+- [x] Web key created *(2026-06-10)*: `6Ld_cxgtAAAAAGJ2nH2TvvFhP745x41RqPPHki6r`, stored as `RECAPTCHA_KEY` secret (v1 had a paste error with placeholder text — destroyed; real id in v2).
+- [ ] Add the key id to the SPA config (web env) when wiring the find-me upload form.
 
 ---
 
@@ -273,20 +293,20 @@ gcloud recaptcha keys list   # copy the key id → store as RECAPTCHA_KEY secret
 cd cloud-webapp
 ./infra/scripts/deploy-api.sh        # builds image, pushes to Artifact Registry, gcloud run deploy
 ```
-Add `--service-account api-runtime@…`, `--add-cloudsql-instances ${PROJECT_ID}:${REGION}:findme-pg`, and `--set-secrets` for the secrets above (per dev plan; update the script).
+~~Add `--service-account api-runtime@…`, `--add-cloudsql-instances ${PROJECT_ID}:${REGION}:findme-pg`, and `--set-secrets` for the secrets above (per dev plan; update the script).~~ **Done 2026-06-10:** script now sets `--service-account api-runtime@…` and `--set-secrets CONSENT_POLICY_VERSION,RECAPTCHA_KEY`; the Cloud SQL flag was stale (no Cloud SQL — Phase F) and is intentionally omitted. Usage: `./infra/scripts/deploy-api.sh "$PROJECT_ID" "$REGION"`.
 **Verify:**
 ```bash
 gcloud run services describe event-photo-api --region="$REGION" --format='value(status.url)'
 curl -s "$(gcloud run services describe event-photo-api --region=$REGION --format='value(status.url)')/api/health"
 ```
-- [ ] `/api/health` returns OK.
+- [x] `/api/health` returns OK. *(2026-06-10: revision `event-photo-api-00002-wdt`, URL `https://event-photo-api-emi5arbbea-uc.a.run.app`, health `{"ok":true,"version":"0.1.0","commit":"1db13d0"}`. Service requires auth (org domain-restricted sharing) — smoke test uses an identity token.)*
 
 ### H2. Deploy hosting (web) 🟢
 ```bash
 cd cloud-webapp/web && npm ci && npm run build && cd ..
-firebase deploy --only hosting     # uses infra/firebase.json
+firebase deploy --only hosting --project mmr-data-pipeline   # run from cloud-webapp/ (firebase.json is there)
 ```
-- [ ] Hosting URL loads the SPA; `/api/health` works through the same origin (rewrite to Cloud Run).
+- [x] Hosting URL loads the SPA; `/api/health` works through the same origin (rewrite to Cloud Run). *(2026-06-10: `https://mmr-data-pipeline.web.app`. Hosting rewrites invoke Cloud Run anonymously, so the api needed `allUsers` `roles/run.invoker` — granted via a temporary project-level `iam.allowedPolicyMemberDomains` allowAll override, then the override was deleted (binding survives). Auth is now app-level: the api must verify Firebase ID tokens on protected routes.)*
 
 ### H3. Matcher + indexer (added during M1/M2)
 Deploy with `infra/scripts/deploy-matcher.sh` / `deploy-indexer.sh` once those services exist. Matcher is **private** (no `--allow-unauthenticated`); only `api-runtime` may invoke it.
@@ -333,8 +353,8 @@ Confirm you're on **flat-file embeddings in GCS + in-memory matching** ($0), not
 - [x] **D** Firebase added, Google sign-in on, web SDK config captured *(2026-06-09)*
 - [x] **E** `bootstrap-gcp.sh` run; deployer SA + Firestore + Artifact Registry + WIF; 3 runtime SAs *(2026-06-09)*
 - [ ] **F** 2 buckets (uploads 7-day lifecycle), Pub/Sub topics — Cloud SQL skipped (zero-cost design)
-- [ ] **G** Drive SA access, `CONSENT_POLICY_VERSION` + `RECAPTCHA_KEY` secrets, reCAPTCHA key
-- [ ] **H** api `/api/health` OK; hosting live; matcher/indexer deferred to M1/M2
+- [x] **G** Drive SA access (DWD, verified), `CONSENT_POLICY_VERSION` + `RECAPTCHA_KEY` secrets, reCAPTCHA key *(2026-06-10; SPA config wiring deferred to dev)*
+- [x] **H** api `/api/health` OK; hosting live (`mmr-data-pipeline.web.app`); matcher/indexer deferred to M1/M2 *(2026-06-10)*
 - [ ] **I** GitHub WIF secrets set; no JSON keys
 - [ ] **J** $50 budget alert, max-instances caps, pgvector confirmed
 

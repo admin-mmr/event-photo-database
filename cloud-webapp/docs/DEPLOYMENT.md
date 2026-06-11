@@ -143,3 +143,28 @@ the rollback button is in the Firebase Console → Hosting → Release history.
 - **Errors**: Cloud Console → Error Reporting. Auto-clusters by stack trace.
 - **Uptime**: create a Cloud Monitoring uptime check pointing at
   `https://<custom-domain>/api/health` with a 5-minute interval. Free.
+
+cathylin@Cathys-MacBook-Air infra % firebase apps:create WEB "event-photo-web" 2>/dev/null || true
+Create your WEB app in project mmr-data-pipeline:
+
+🎉🎉🎉 Your Firebase WEB App is ready! 🎉🎉🎉
+
+App information:
+  - App ID: 1:489676654863:web:b135d1921c7214fd45567a
+  - Display name: event-photo-web
+
+You can run this command to print out your new app's Google Services config:
+  firebase apps:sdkconfig WEB 1:489676654863:web:b135d1921c7214fd45567a
+cathylin@Cathys-MacBook-Air infra % firebase apps:sdkconfig WEB
+✔ Downloading configuration data of your Firebase WEB app
+{
+  "projectId": "mmr-data-pipeline",
+  "appId": "1:489676654863:web:b135d1921c7214fd45567a",
+  "storageBucket": "mmr-data-pipeline.firebasestorage.app",
+  "apiKey": "AIzaSyCv2o8wTUUJWS59QTBRTgo1jl11KZ1i1jc",
+  "authDomain": "mmr-data-pipeline.firebaseapp.com",
+  "messagingSenderId": "489676654863",
+  "measurementId": "G-Y65EFZ8MXP",
+  "projectNumber": "489676654863",
+  "version": "2"
+}

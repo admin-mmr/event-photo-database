@@ -27,16 +27,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 echo "==> Building image $IMAGE"
-gcloud builds submit "$REPO_ROOT" \
-  --tag="$IMAGE" \
-  --project="$PROJECT_ID" \
-  --gcs-log-dir="gs://${PROJECT_ID}_cloudbuild/logs" \
-  --config=- <<EOF
+CLOUDBUILD_CONFIG="$(mktemp -t cloudbuild-XXXXXX.yaml)"
+trap 'rm -f "$CLOUDBUILD_CONFIG"' EXIT
+cat > "$CLOUDBUILD_CONFIG" <<EOF
 steps:
   - name: gcr.io/cloud-builders/docker
     args: ['build', '-f', 'api/Dockerfile', '-t', '$IMAGE', '.']
 images: ['$IMAGE']
 EOF
+gcloud builds submit "$REPO_ROOT" \
+  --project="$PROJECT_ID" \
+  --gcs-log-dir="gs://${PROJECT_ID}_cloudbuild/logs" \
+  --config="$CLOUDBUILD_CONFIG"
 
 echo "==> Deploying revision to Cloud Run service $SERVICE"
 gcloud run deploy "$SERVICE" \
@@ -44,7 +46,8 @@ gcloud run deploy "$SERVICE" \
   --region="$REGION" \
   --project="$PROJECT_ID" \
   --platform=managed \
-  --allow-unauthenticated \
+  --service-account="api-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --no-allow-unauthenticated \
   --port=8080 \
   --memory=512Mi \
   --cpu=1 \
@@ -52,9 +55,17 @@ gcloud run deploy "$SERVICE" \
   --min-instances=0 \
   --concurrency=80 \
   --timeout=60 \
-  --set-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  --set-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+  --set-secrets="CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_KEY=RECAPTCHA_KEY:latest"
+# Note: no --add-cloudsql-instances — Cloud SQL was dropped (zero-cost design, runbook Phase F).
+# Runtime SA is api-runtime (least privilege), never the deployer SA (runbook E2).
 
 URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)')"
 echo "==> Deployed:  $URL"
 echo "==> Smoke test:"
-curl -fsS "$URL/api/health" && echo
+# The org's Domain Restricted Sharing policy blocks public (allUsers) access,
+# so the service requires authentication. Send a Google-signed identity token
+# for the active gcloud account (which must hold roles/run.invoker).
+curl -fsS \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+  "$URL/api/health" && echo

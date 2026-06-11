@@ -6,7 +6,7 @@ on:
     paths:
       - 'cloud-webapp/web/**'
       - 'cloud-webapp/shared/**'
-      - 'cloud-webapp/infra/firebase.json'
+      - 'cloud-webapp/firebase.json'
       - 'cloud-webapp/infra/firestore.rules'
       - 'cloud-webapp/infra/firestore.indexes.json'
       - 'cloud-webapp/infra/storage.rules'
@@ -46,7 +46,7 @@ jobs:
         run: npm install -g firebase-tools@latest
 
       - name: Deploy
-        working-directory: cloud-webapp/infra
+        working-directory: cloud-webapp
         env:
           PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
         run: |

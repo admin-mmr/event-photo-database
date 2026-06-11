@@ -11,7 +11,8 @@
 #   1. Sets the active project for gcloud.
 #   2. Enables required APIs (run, firestore, secretmanager, etc).
 #   3. Creates the deploy service account.
-#   4. Grants minimum IAM roles to that service account.
+#   4. Grants minimum IAM roles to that service account, plus the Cloud Build
+#      roles the default compute service account needs to run `builds submit`.
 #   5. Creates the Firestore database in Native mode.
 #   6. Creates an Artifact Registry Docker repo for the api image.
 #   7. Configures Workload Identity Federation for GitHub Actions
@@ -79,6 +80,25 @@ for ROLE in \
 do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:${SA_EMAIL}" \
+    --role="$ROLE" \
+    --condition=None \
+    --quiet >/dev/null
+done
+
+# ── 3b. Cloud Build permissions for the default compute service account ──────
+# `gcloud builds submit` runs as the project's default Compute Engine service
+# account. On recently-created projects this account is NOT granted the build
+# role automatically, so the first build fails with a 403 reading the source
+# tarball from the *_cloudbuild bucket. Grant it the builder + Artifact
+# Registry writer roles so deploy-api.sh works out of the box.
+COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+echo "==> Granting Cloud Build roles to default compute SA: $COMPUTE_SA"
+for ROLE in \
+  roles/cloudbuild.builds.builder \
+  roles/artifactregistry.writer
+do
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${COMPUTE_SA}" \
     --role="$ROLE" \
     --condition=None \
     --quiet >/dev/null

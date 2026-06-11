@@ -1,7 +1,11 @@
 {
   "hosting": {
-    "public": "../web/dist",
-    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "public": "web/dist",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
     "rewrites": [
       {
         "source": "/api/**",
@@ -28,10 +32,10 @@
     ]
   },
   "firestore": {
-    "rules": "firestore.rules",
-    "indexes": "firestore.indexes.json"
+    "rules": "infra/firestore.rules",
+    "indexes": "infra/firestore.indexes.json"
   },
   "storage": {
-    "rules": "storage.rules"
+    "rules": "infra/storage.rules"
   }
 }

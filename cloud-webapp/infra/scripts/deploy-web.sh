@@ -23,7 +23,9 @@ cd "$REPO_ROOT"
 npm run build -w @cloud-webapp/web
 
 echo "==> Deploying to Firebase Hosting + Firestore rules + Storage rules"
-cd "$INFRA_DIR"
+# firebase.json lives at the repo root (cloud-webapp/) because the CLI requires
+# the hosting public dir (web/dist) to be inside the project directory.
+cd "$REPO_ROOT"
 firebase deploy \
   --project="$PROJECT_ID" \
   --only=hosting,firestore:rules,firestore:indexes,storage \
