@@ -43,3 +43,19 @@ jobs:
       - run: pip install -r requirements.txt -r requirements-test.txt
       # Model weights are not in the repo; real-model tests self-skip.
       - run: pytest -v
+
+  indexer:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloud-webapp/indexer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: cloud-webapp/indexer/requirements.txt
+      # Tests fake Drive/Firestore/embedding — only numpy + Pillow are exercised.
+      - run: pip install numpy Pillow pytest
+      - run: pytest -v

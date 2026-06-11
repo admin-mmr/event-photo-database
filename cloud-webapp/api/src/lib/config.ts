@@ -28,6 +28,19 @@ const EnvSchema = z.object({
   // In production, traffic comes from the same origin via Firebase Hosting
   // rewrite, so CORS is unnecessary.
   CORS_ORIGINS: z.string().optional(),
+
+  // ── Find Me / indexing (dev plan M1) ──────────────────────────────────
+  // Region + job name for the photo-indexer Cloud Run Job.
+  GCP_REGION: z.string().default('us-central1'),
+  INDEXER_JOB_NAME: z.string().default('photo-indexer'),
+
+  // Admin allowlist for the "Index event" trigger (comma-separated emails).
+  ADMIN_EMAILS: z.string().default('admin@mmrunners.org'),
+
+  // Keyless DWD for Drive reads (runbook §G1): the DWD-enabled SA we sign
+  // JWTs for, and the Workspace user it impersonates.
+  DWD_SA: z.string().default('indexer-runtime@mmr-data-pipeline.iam.gserviceaccount.com'),
+  DWD_SUBJECT: z.string().default('admin@mmrunners.org'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

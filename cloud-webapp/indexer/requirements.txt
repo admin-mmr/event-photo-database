@@ -1,0 +1,12 @@
+# indexer runtime deps. The matcher pipeline modules (copied into the image,
+# see Dockerfile) additionally need onnxruntime/opencv — listed here so one
+# install covers both.
+numpy>=2.0,<3
+onnxruntime>=1.18,<2
+opencv-python-headless>=4.10,<5
+Pillow>=10.4,<13
+pillow-heif>=0.18
+google-cloud-storage>=2.18,<4
+google-cloud-firestore>=2.19,<3
+google-auth>=2.34,<3
+requests>=2.32,<3
