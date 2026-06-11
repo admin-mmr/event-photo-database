@@ -9,6 +9,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "build": "tsc -b",
     "typecheck": "tsc --noEmit",
     "lint": "echo 'no lint config yet for shared'"
   },

@@ -22,6 +22,8 @@ jobs:
           cache: npm
           cache-dependency-path: cloud-webapp/package-lock.json
       - run: npm ci
+      # web's project reference to shared needs shared/dist to exist (TS6305)
+      - run: npm run build -w @cloud-webapp/shared
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test

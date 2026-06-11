@@ -34,6 +34,10 @@ jobs:
 
       - run: npm ci
 
+      # shared must be built first: web's tsconfig has a project reference to
+      # ../shared and fails (TS6305) if shared/dist is missing on a clean clone.
+      - run: npm run build -w @cloud-webapp/shared
+
       - run: npm run build -w @cloud-webapp/web
 
       - id: auth
