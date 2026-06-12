@@ -1,0 +1,12 @@
+# One-time model-export deps (scripts/export_osnet.py). NOT runtime deps —
+# keep these out of requirements.txt so the Cloud Run image stays ONNX-only.
+#
+# torchreid itself is deliberately NOT installed (its setup.py imports the
+# full package → scipy/h5py/... dependency sprawl). export_osnet.py loads
+# the one self-contained file it needs from a plain clone:
+#   pip install -r requirements-export.txt
+#   git clone --depth 1 https://github.com/KaiyangZhou/deep-person-reid.git /tmp/deep-person-reid
+#   python scripts/export_osnet.py
+torch>=2.2
+gdown
+onnxscript  # required by torch.onnx.export in torch >= 2.6

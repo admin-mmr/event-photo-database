@@ -65,7 +65,7 @@ def evaluate(event, truth: dict[str, set[str]], query_embeddings: dict, k: int) 
     """query_embeddings: person → {"face": vec|None, "person": vec|None}."""
     report: dict = {"k": k, "per_mode": {}}
 
-    def run_mode(name: str, ranked_fn) -> dict:
+    def run_mode(name: str, ranked_fn, keep_retrieved: bool = False) -> dict:
         per_person, agg = {}, defaultdict(float)
         n = 0
         for person, relevant in truth.items():
@@ -76,6 +76,11 @@ def evaluate(event, truth: dict[str, set[str]], query_embeddings: dict, k: int) 
             if ranked is None:
                 continue
             m = metrics_at_k([h["photoId"] for h in ranked], relevant, k)
+            if keep_retrieved:
+                m["retrieved"] = [
+                    {"photoId": h["photoId"], "labeled": h["photoId"] in relevant}
+                    for h in ranked[:k]
+                ]
             per_person[person] = m
             for key in ("precision", "recall", "fp_rate"):
                 agg[key] += m[key]
@@ -84,10 +89,14 @@ def evaluate(event, truth: dict[str, set[str]], query_embeddings: dict, k: int) 
         return {"mean": means, "queries": n, "per_person": per_person}
 
     report["per_mode"]["face"] = run_mode(
-        "face", lambda q: event.top_photos("face", q["face"], k=k) if q["face"] is not None else None
+        "face",
+        lambda q: event.top_photos("face", q["face"], k=k) if q["face"] is not None else None,
+        keep_retrieved=True,
     )
     report["per_mode"]["person"] = run_mode(
-        "person", lambda q: event.top_photos("person", q["person"], k=k) if q["person"] is not None else None
+        "person",
+        lambda q: event.top_photos("person", q["person"], k=k) if q["person"] is not None else None,
+        keep_retrieved=True,
     )
 
     report["fusion_sweep"] = []
@@ -170,6 +179,15 @@ def main() -> int:
     event = EmbeddingStore(args.store).load_event(args.event_id)
     print(f"Event '{args.event_id}': {len(event.meta['face'])} face rows, {len(event.meta['person'])} person rows")
     queries = embed_queries(args.queries)
+    if not queries:
+        sys.exit(
+            f"ERROR: no reference photos found in '{args.queries}'. "
+            "Expected one subfolder per labeled person (e.g. queries/alice/selfie.jpg) — "
+            "see eval/queries/README.md."
+        )
+    missing = sorted(set(truth) - set(queries))
+    if missing:
+        print(f"WARNING: labeled people with no reference photos (skipped): {', '.join(missing)}")
 
     report = evaluate(event, truth, queries, args.k)
 
@@ -184,6 +202,15 @@ def main() -> int:
     b = report["best_fusion"]
     gate = "PASS ✅" if report["gate"]["passed"] else "FAIL ❌"
     print(f"\n  Best: wF={b['w_face']} wP={b['w_person']} → P@{args.k}={b['mean']['precision']:.3f}  → M0 gate (≥0.8): {gate}")
+
+    # Retrieved-but-unlabeled photos: likely true hits missing from labels.csv.
+    # Review these and add real matches to labels.csv, then rerun.
+    print("\n  Retrieved but unlabeled (face mode) — check these for missed labels:")
+    for person, pm in report["per_mode"]["face"]["per_person"].items():
+        unlabeled = [r["photoId"] for r in pm.get("retrieved", []) if not r["labeled"]]
+        print(f"    {person} ({len(unlabeled)}):")
+        for pid in unlabeled:
+            print(f"      {pid}")
 
     if args.report:
         with open(args.report, "w", encoding="utf-8") as f:

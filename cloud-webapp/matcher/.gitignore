@@ -7,3 +7,4 @@ eval/queries/*
 !eval/queries/README.md
 eval/labels.csv
 eval/report.json
+eval/review.html

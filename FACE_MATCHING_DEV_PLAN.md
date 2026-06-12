@@ -17,7 +17,10 @@ This is the build plan for the PRD. It is organized as: prerequisites → GCP pr
 
 > **⚠️ DECISION UPDATE (2026-06-09) — zero-cost vector store.** The vector store decision is superseded: **no Cloud SQL/pgvector** (no free tier; ~$50–58/mo). Instead, per-event embeddings are stored as flat files in Cloud Storage (`gs://…-derivatives/<eventId>/embeddings/{faces,persons}.npy` + `manifest.json`) and the matcher does in-memory cosine similarity — trivial at our per-event scale (a few thousand photos; searches are event-scoped per PRD §5). Consequences for this plan: §2.1 drop `sqladmin`; §2.2 drop Cloud SQL row and `DB_CONNECTION`/`DB_PASSWORD` secrets; §2.4 `provision-data-plane.sh` provisions buckets/topics only; `infra/sql/0001_init.sql` and §4.3 are replaced by the manifest layout; `vectorService.ts`/`sql.ts` become a GCS-backed embedding store module; M0 task 0.2 becomes "load sample embeddings from GCS, brute-force query in matcher"; CI needs no Postgres container. Revisit pgvector only if a single event approaches ~100k photos. See `FACE_MATCHING_SETUP_RUNBOOK.md` Phase F and `SETUP_NOTES.md`.
 
----
+> **⚠️ DECISION UPDATE (2026-06-11) — M0 decisions recorded; eval scope relaxed.**
+> - **Task 0.4 decided:** Drive read via **domain-wide delegation** (keyless, IAM `signJwt`, impersonating `admin@mmrunners.org`). Details: `SETUP_NOTES.md` G1.
+> - **Task 0.5 decided:** **flat-file GCS embedding store** (see 2026-06-09 banner above); pgvector/Vertex dropped.
+> - **Task 0.3 scope relaxed:** M0 go/no-go is judged on **2 labeled people** (not ~10) on the `ev_sample` event, using `eval/run_eval.py` + `eval/make_review_page.py`. Exhaustive labeling is **deferred to the beta feedback loop** — accuracy is then measured continuously from real user feedback instead of a one-off hand-labeled set. Design: `EVAL_FEEDBACK_LOOP.md`. Consequence: the M2 DoD eval gate (P@20 ≥ 0.85 on 2 events) is measured as **judged precision** per that doc once feedback exists; until then the M0-style spot-labeled eval is the gate.
 
 ## 1. Prerequisites & assumptions
 
