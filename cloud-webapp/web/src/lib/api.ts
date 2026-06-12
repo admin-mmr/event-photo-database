@@ -2,28 +2,65 @@
  * Tiny fetch wrapper. Same-origin in production (Firebase Hosting rewrites
  * /api/** to Cloud Run); proxied by Vite in dev.
  *
- * When auth is wired in, this is the place to attach the
- * `Authorization: Bearer <Firebase ID token>` header.
+ * Attaches `Authorization: Bearer <Firebase ID token>` when signed in.
  */
+
+import { idToken } from './firebase.js';
+
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function authHeader(): Promise<Record<string, string>> {
+  try {
+    const token = await idToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
+async function parseError(res: Response, fallback: string): Promise<ApiError> {
+  const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+  return new ApiError(res.status, body.error ?? 'http_error', body.message ?? fallback);
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(path, {
     method: 'GET',
-    headers: { Accept: 'application/json' },
+    headers: { Accept: 'application/json', ...(await authHeader()) },
   });
-  if (!res.ok) {
-    throw new Error(`GET ${path} failed: HTTP ${res.status}`);
-  }
+  if (!res.ok) throw await parseError(res, `GET ${path} failed: HTTP ${res.status}`);
   return (await res.json()) as T;
 }
 
 export async function apiPost<T, B = unknown>(path: string, body: B): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      ...(await authHeader()),
+    },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    throw new Error(`POST ${path} failed: HTTP ${res.status}`);
-  }
+  if (!res.ok) throw await parseError(res, `POST ${path} failed: HTTP ${res.status}`);
+  return (await res.json()) as T;
+}
+
+/** Multipart POST (Find Me reference upload). */
+export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { Accept: 'application/json', ...(await authHeader()) },
+    body: form,
+  });
+  if (!res.ok) throw await parseError(res, `POST ${path} failed: HTTP ${res.status}`);
   return (await res.json()) as T;
 }

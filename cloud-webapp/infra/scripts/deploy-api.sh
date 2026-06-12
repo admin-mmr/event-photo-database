@@ -55,7 +55,7 @@ gcloud run deploy "$SERVICE" \
   --min-instances=0 \
   --concurrency=80 \
   --timeout=60 \
-  --set-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+  --set-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown),MATCHER_URL=${MATCHER_URL:-}" \
   --set-secrets="CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_KEY=RECAPTCHA_KEY:latest"
 # Note: no --add-cloudsql-instances — Cloud SQL was dropped (zero-cost design, runbook Phase F).
 # Runtime SA is api-runtime (least privilege), never the deployer SA (runbook E2).

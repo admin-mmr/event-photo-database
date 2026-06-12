@@ -1,15 +1,32 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
-import { App } from './App.js';
+import type { User } from 'firebase/auth';
 
-// Mock fetch so we don't hit the real api in tests.
+// Mock the firebase module so tests never load the real SDK / network.
+const authState: { user: User | null } = { user: null };
+
+vi.mock('./lib/firebase.js', () => ({
+  watchAuth: (cb: (u: User | null) => void) => {
+    cb(authState.user);
+    return () => undefined;
+  },
+  idToken: async () => (authState.user ? 'fake-token' : null),
+  signInWithGoogle: vi.fn(),
+  signOutUser: vi.fn(),
+}));
+
+const { App } = await import('./App.js');
+
 beforeEach(() => {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (url: string) => {
-      if (url === '/api/health') {
+    vi.fn(async (url: string | URL | Request) => {
+      if (String(url) === '/api/events') {
         return new Response(
-          JSON.stringify({ ok: true, version: '0.1.0', uptimeSec: 1, commit: null }),
+          JSON.stringify({
+            ok: true,
+            events: [{ id: 'ev1', name: 'Spring Run 2026', indexState: { status: 'done', photoCount: 42 } }],
+          }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         );
       }
@@ -19,11 +36,18 @@ beforeEach(() => {
 });
 
 describe('<App />', () => {
-  it('renders and surfaces the api health payload', async () => {
+  it('shows the sign-in screen when signed out', () => {
+    authState.user = null;
     render(<App />);
-    expect(screen.getByText(/Event Photo Database/i)).toBeTruthy();
+    expect(screen.getByText(/Sign in with Google/i)).toBeTruthy();
+  });
+
+  it('lists events when signed in', async () => {
+    authState.user = { email: 'member@mmrunners.org' } as User;
+    render(<App />);
     await waitFor(() => {
-      expect(screen.getByText(/"version": "0.1.0"/)).toBeTruthy();
+      expect(screen.getByText(/Spring Run 2026/)).toBeTruthy();
     });
+    expect(screen.getByText(/42 photos · Find Me ready/)).toBeTruthy();
   });
 });

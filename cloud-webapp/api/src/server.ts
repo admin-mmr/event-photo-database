@@ -5,6 +5,8 @@ import { logger } from './lib/logger.js';
 import { env, isProd } from './lib/config.js';
 import { healthRouter } from './routes/health.js';
 import { eventsRouter } from './routes/events.js';
+import { galleryRouter } from './routes/gallery.js';
+import { findmeRouter } from './routes/findme.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 
 export function buildServer(): express.Express {
@@ -61,6 +63,8 @@ export function buildServer(): express.Express {
   // unchanged. Add new routers here.
   app.use('/api', healthRouter);
   app.use('/api', eventsRouter);
+  app.use('/api', galleryRouter);
+  app.use('/api', findmeRouter);
 
   // 404 + final error handler must be registered last.
   app.use(notFoundHandler);

@@ -14,6 +14,12 @@ export default defineConfig({
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
+      // Firebase Hosting's reserved namespace (web SDK auto-config). Proxying
+      // to the live site means local dev needs no VITE_FIREBASE_CONFIG.
+      '/__': {
+        target: 'https://mmr-data-pipeline.web.app',
+        changeOrigin: true,
+      },
     },
   },
   build: {

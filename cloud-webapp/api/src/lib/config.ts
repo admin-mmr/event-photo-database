@@ -41,6 +41,21 @@ const EnvSchema = z.object({
   // JWTs for, and the Workspace user it impersonates.
   DWD_SA: z.string().default('indexer-runtime@mmr-data-pipeline.iam.gserviceaccount.com'),
   DWD_SUBJECT: z.string().default('admin@mmrunners.org'),
+
+  // ── Find Me search (dev plan M2) ──────────────────────────────────────
+  // Base URL of the private matcher Cloud Run service. Empty until the
+  // matcher is deployed — the /api/findme routes 503 with a clear message
+  // rather than failing confusingly.
+  MATCHER_URL: z.string().default(''),
+
+  // Derivatives bucket (indexer output; gallery + search serving copies).
+  DERIVATIVES_BUCKET: z.string().default('mmr-data-pipeline-derivatives'),
+
+  // Signed-URL lifetime. PRD §4.2 caps this at 60 minutes.
+  SIGNED_URL_TTL_MINUTES: z.coerce.number().int().positive().max(60).default(60),
+
+  // Active consent policy version recorded with each consent (secret G2).
+  CONSENT_POLICY_VERSION: z.string().default('v1-2026-06'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

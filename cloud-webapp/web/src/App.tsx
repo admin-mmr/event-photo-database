@@ -1,32 +1,47 @@
-import { useEffect, useState } from 'react';
-import type { HealthResponse } from '@cloud-webapp/shared';
-import { apiGet } from './lib/api.js';
+import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
+import { signInWithGoogle, signOutUser } from './lib/firebase.js';
+import { useAuth } from './lib/useAuth.js';
+import { Events } from './pages/Events.js';
+import { Gallery } from './pages/Gallery.js';
+import { FindMe } from './pages/FindMe.js';
 
 export function App(): JSX.Element {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    apiGet<HealthResponse>('/api/health')
-      .then(setHealth)
-      .catch((e: Error) => setError(e.message));
-  }, []);
+  const { user, loading } = useAuth();
 
   return (
-    <main className="page">
-      <h1>Event Photo Database</h1>
-      <p>Cloud webapp scaffold — replaces the gas-app implementation.</p>
+    <BrowserRouter>
+      <main className="page">
+        <header className="app-header">
+          <Link to="/" className="app-title">
+            <h1>Event Photo Database</h1>
+          </Link>
+          {user && (
+            <div className="user-box">
+              <span className="muted">{user.email}</span>
+              <button className="btn btn-light" onClick={() => void signOutUser()}>
+                Sign out
+              </button>
+            </div>
+          )}
+        </header>
 
-      <section>
-        <h2>API status</h2>
-        {error ? (
-          <pre className="error">Could not reach api: {error}</pre>
-        ) : health ? (
-          <pre>{JSON.stringify(health, null, 2)}</pre>
+        {loading ? (
+          <p className="muted">Loading…</p>
+        ) : user ? (
+          <Routes>
+            <Route path="/" element={<Events />} />
+            <Route path="/events/:eventId" element={<Gallery />} />
+            <Route path="/events/:eventId/findme" element={<FindMe />} />
+          </Routes>
         ) : (
-          <p>Loading…</p>
+          <div className="consent-card signin-card">
+            <p>Browse event photos and find yourself in them with Find Me.</p>
+            <button className="btn btn-primary" onClick={() => void signInWithGoogle()}>
+              Sign in with Google
+            </button>
+          </div>
         )}
-      </section>
-    </main>
+      </main>
+    </BrowserRouter>
   );
 }

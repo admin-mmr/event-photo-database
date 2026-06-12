@@ -49,6 +49,9 @@ jobs:
         env:
           REGION: ${{ secrets.GCP_REGION }}
           PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          # Repo variable (Settings → Secrets and variables → Actions → Variables).
+          # Set after the matcher service is deployed; empty = findme routes 503.
+          MATCHER_URL: ${{ vars.MATCHER_URL }}
         run: |
           gcloud run deploy "$SERVICE" \
             --image="$IMAGE" \
@@ -63,7 +66,7 @@ jobs:
             --min-instances=0 \
             --concurrency=80 \
             --timeout=60 \
-            --set-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=${GITHUB_SHA::7}"
+            --set-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=${GITHUB_SHA::7},MATCHER_URL=${MATCHER_URL}"
 
       - name: Smoke test
         env:
