@@ -60,19 +60,27 @@ def dwd_token() -> str:
         f.write(claims)
         claims_path = f.name
     try:
-        jwt = subprocess.run(
+        proc = subprocess.run(
             ["gcloud", "iam", "service-accounts", "sign-jwt", claims_path, "/dev/stdout",
              f"--iam-account={SA}"],
-            check=True, capture_output=True, text=True,
-        ).stdout.strip()
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            print(f"gcloud sign-jwt failed:\n{proc.stderr}", file=sys.stderr)
+            raise SystemExit(1)
+        jwt = proc.stdout.strip()
     finally:
         os.unlink(claims_path)
 
     data = urllib.parse.urlencode(
         {"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": jwt}
     ).encode()
-    with urllib.request.urlopen("https://oauth2.googleapis.com/token", data=data) as resp:
-        return json.load(resp)["access_token"]
+    try:
+        with urllib.request.urlopen("https://oauth2.googleapis.com/token", data=data) as resp:
+            return json.load(resp)["access_token"]
+    except urllib.error.HTTPError as e:
+        print(f"Token exchange failed ({e.code}):\n{e.read().decode()}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 def _get(url: str, token: str) -> dict:

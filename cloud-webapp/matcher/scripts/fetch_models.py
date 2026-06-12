@@ -26,9 +26,17 @@ from __future__ import annotations
 import argparse
 import io
 import os
+import ssl
 import sys
 import urllib.request
 import zipfile
+
+try:  # use certifi's CA bundle if available (fixes bare python.org installs on macOS)
+    import certifi
+
+    _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _SSL_CONTEXT = ssl.create_default_context()
 
 BUFFALO_URL = os.environ.get(
     "BUFFALO_URL",
@@ -42,7 +50,7 @@ WANTED_FROM_BUFFALO = {"det_10g.onnx", "w600k_r50.onnx"}
 
 def _download(url: str, label: str) -> bytes:
     print(f"Downloading {label}: {url}")
-    with urllib.request.urlopen(url) as resp:  # noqa: S310 — trusted, user-set URLs
+    with urllib.request.urlopen(url, context=_SSL_CONTEXT) as resp:  # noqa: S310 — trusted, user-set URLs
         return resp.read()
 
 

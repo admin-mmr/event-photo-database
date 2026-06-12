@@ -16,6 +16,12 @@ python3 scripts/fetch_models.py --dir model_files
 export MODEL_DIR=$PWD/model_files
 ```
 
+If python certificate error:
+
+```bash
+/Applications/Python\ 3.13/Install\ Certificates.command
+```
+
 Every new shell: `cd cloud-webapp/matcher && source .venv/bin/activate && export MODEL_DIR=$PWD/model_files`
 
 ## Tests
@@ -30,8 +36,12 @@ python3 -m pytest -v        # green without model files (real-model tests self-s
 # 1. Pull ~500 sample photos from a Drive event folder (keyless DWD, needs gcloud login)
 python3 scripts/sample_drive_folder.py <EVENT_FOLDER_ID> --out ~/event-sample-photos --n 500
 
+python3 scripts/sample_drive_folder.py 1TPVcsXUlphltb10WG9fQIAxiUd2COOs8 --out ~/event-sample-photos --n 500
+
 # 2. Embed them into a local store
 python3 scripts/embed_folder.py ~/event-sample-photos --event-id ev_sample --out ./local_store
+
+
 
 # 3. Label: generates label_sheet.html inside the photos folder — open in a
 #    browser, tick people, "Download labels.csv", save as eval/labels.csv
