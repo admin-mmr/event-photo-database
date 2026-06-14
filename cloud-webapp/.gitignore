@@ -6,6 +6,9 @@ dist/
 build/
 *.tsbuildinfo
 
+# Vite/Vitest temp config files
+*.timestamp-*.mjs
+
 # Logs
 *.log
 npm-debug.log*
