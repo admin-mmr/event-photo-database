@@ -41,6 +41,18 @@ gcloud builds submit "$REPO_ROOT" \
   --config="$CLOUDBUILD_CONFIG"
 
 echo "==> Deploying revision to Cloud Run service $SERVICE"
+# Build the env-var list. We use --update-env-vars (MERGE), not --set-env-vars
+# (REPLACE): the latter wipes every var not re-listed, so forgetting to export
+# MATCHER_URL / MASTER_SPREADSHEET_ID / SYNC_TRIGGER_TOKEN once silently breaks
+# Find Me, sync, and the indexing triggers. With merge, unspecified vars are
+# preserved. The three optional vars are only included when actually set in the
+# shell, so an empty shell var can never blank a live value.
+ENV_VARS="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [[ -n "${MATCHER_URL:-}" ]];          then ENV_VARS="${ENV_VARS},MATCHER_URL=${MATCHER_URL}"; fi
+if [[ -n "${MASTER_SPREADSHEET_ID:-}" ]]; then ENV_VARS="${ENV_VARS},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID}"; fi
+if [[ -n "${SYNC_TRIGGER_TOKEN:-}" ]];    then ENV_VARS="${ENV_VARS},SYNC_TRIGGER_TOKEN=${SYNC_TRIGGER_TOKEN}"; fi
+echo "==> Setting env vars: ${ENV_VARS//SYNC_TRIGGER_TOKEN=*/SYNC_TRIGGER_TOKEN=***}"
+
 gcloud run deploy "$SERVICE" \
   --image="$IMAGE" \
   --region="$REGION" \
@@ -55,12 +67,12 @@ gcloud run deploy "$SERVICE" \
   --min-instances=0 \
   --concurrency=80 \
   --timeout=60 \
-  --set-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown),MATCHER_URL=${MATCHER_URL:-},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID:-},SYNC_TRIGGER_TOKEN=${SYNC_TRIGGER_TOKEN:-}" \
+  --update-env-vars="$ENV_VARS" \
   --set-secrets="CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_KEY=RECAPTCHA_KEY:latest"
 # MASTER_SPREADSHEET_ID = the gas-app master Sheet id ("Sync with Drive", dev plan §8);
 #   empty = POST /api/admin/sync 503s. SYNC_TRIGGER_TOKEN = shared secret for the
-#   Cloud Scheduler trigger (export before running, or leave empty to allow only
-#   Firebase-admin syncs). Both follow the MATCHER_URL "set via shell var" pattern.
+#   Cloud Scheduler trigger + gas-app trigger. These are MERGED in (see above), so
+#   they persist across deploys even if you don't re-export them.
 # Note: no --add-cloudsql-instances — Cloud SQL was dropped (zero-cost design, runbook Phase F).
 # Runtime SA is api-runtime (least privilege), never the deployer SA (runbook E2).
 

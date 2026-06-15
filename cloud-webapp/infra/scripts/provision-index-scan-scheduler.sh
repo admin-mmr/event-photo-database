@@ -52,6 +52,27 @@ if [[ -z "$API_URL" ]]; then
 fi
 URI="${API_URL}/api/admin/index-scan"
 
+# The api is deployed --no-allow-unauthenticated, so Cloud Run's IAM layer
+# rejects unauthenticated calls *before* our X-Sync-Token gate ever runs (you'd
+# see an HTML "403 Forbidden" from Google, not our JSON). Cloud Scheduler must
+# therefore attach a Google OIDC token. Default OIDC_SA to whatever the existing
+# daily-sync job uses so both schedulers authenticate the same way.
+if [[ -z "${OIDC_SA:-}" ]]; then
+  OIDC_SA="$(gcloud scheduler jobs describe findme-drive-sync \
+    --location="$REGION" --project="$PROJECT_ID" \
+    --format='value(httpTarget.oidcToken.serviceAccountEmail)' 2>/dev/null || true)"
+fi
+if [[ -z "$OIDC_SA" ]]; then
+  echo "ERROR: no OIDC service account found." >&2
+  echo "  The daily-sync job 'findme-drive-sync' has no OIDC token set, so there's" >&2
+  echo "  nothing to match. Export OIDC_SA=<sa-email> (a SA with roles/run.invoker" >&2
+  echo "  on $SERVICE) and re-run. Grant it with:" >&2
+  echo "    gcloud run services add-iam-policy-binding $SERVICE --region=$REGION \\" >&2
+  echo "      --member=serviceAccount:<sa-email> --role=roles/run.invoker --project=$PROJECT_ID" >&2
+  exit 1
+fi
+echo "==> Using OIDC service account: $OIDC_SA (audience $API_URL)"
+
 if gcloud scheduler jobs describe "$JOB" --location="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1; then
   VERB="update http"
 else
@@ -69,6 +90,8 @@ gcloud scheduler jobs $VERB "$JOB" \
   --http-method=POST \
   --headers="X-Sync-Token=${SYNC_TRIGGER_TOKEN},Content-Type=application/json" \
   --message-body='{}' \
+  --oidc-service-account-email="$OIDC_SA" \
+  --oidc-token-audience="$API_URL" \
   --attempt-deadline=320s
 
 echo "==> Done. Trigger a one-off scan with:"

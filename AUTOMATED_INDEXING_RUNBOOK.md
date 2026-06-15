@@ -17,6 +17,35 @@ Companion to `AUTOMATED_INDEXING_IMPLEMENTATION.md`. Conventions follow `FACE_MA
 - A shared secret exists. Reuse the **same** `SYNC_TRIGGER_TOKEN` already deployed for `findme-drive-sync`. Retrieve it (Secret Manager or your records) and keep it handy as `$TOKEN`. If you don't have one yet, generate: `openssl rand -hex 32`.
 - `cloudscheduler.googleapis.com` is enabled (it is, from the daily sync).
 
+> **The api is private (`--no-allow-unauthenticated`).** Cloud Run's IAM layer
+> rejects unauthenticated calls *before* the `X-Sync-Token` gate runs — a raw
+> `curl` (or a scheduler/gas-app call with only the header) gets an **HTML "403
+> Forbidden" from Google**, not our JSON. Every machine caller must also present
+> a Google **OIDC token** whose identity has `roles/run.invoker` on
+> `event-photo-api`. This affects steps 3 (gas-app), 4 (scheduler), and any
+> manual `curl` verification.
+
+Pick the OIDC identity the schedulers will authenticate as and grant it invoker (reuse the daily-sync SA if it already has one):
+
+```bash
+# What does the daily sync use today? (empty = it has no OIDC and likely doesn't work against the private service yet)
+gcloud scheduler jobs describe findme-drive-sync --location=us-central1 --project=mmr-data-pipeline \
+  --format='value(httpTarget.oidcToken.serviceAccountEmail)'
+
+# Grant that SA (or a dedicated one) invoker on the api:
+gcloud run services add-iam-policy-binding event-photo-api --region=us-central1 \
+  --member="serviceAccount:<oidc-sa-email>" --role="roles/run.invoker" --project=mmr-data-pipeline
+```
+
+Verify the endpoint manually with BOTH tokens (your user needs invoker — owners have it):
+
+```bash
+URL=$(gcloud run services describe event-photo-api --region=us-central1 --project=mmr-data-pipeline --format='value(status.url)')
+curl -s -X POST "$URL/api/admin/index-scan" \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+  -H "X-Sync-Token: $TOKEN" -d '{}'
+```
+
 ## 1. Deploy the parallelized indexer
 
 ```bash
@@ -49,17 +78,18 @@ The api must carry `SYNC_TRIGGER_TOKEN` (already set for the daily sync; no new 
 ./infra/scripts/deploy-api.sh mmr-data-pipeline us-central1   # or the deploy-api.yml GH Action
 ```
 
-Verify the token path works end-to-end (replace `$URL` with the api URL, `$TOKEN` with the secret):
+Verify the token path works end-to-end. Both tokens are required (OIDC for the Cloud Run IAM gate, `X-Sync-Token` for the app gate) — see the prerequisites note:
 
 ```bash
 URL=$(gcloud run services describe event-photo-api --region=us-central1 --project=mmr-data-pipeline --format='value(status.url)')
+OIDC="Authorization: Bearer $(gcloud auth print-identity-token)"
 # manual scan (should 200 with a triggered/skipped report):
-curl -s -X POST "$URL/api/admin/index-scan" -H "X-Sync-Token: $TOKEN" -H 'Content-Type: application/json' -d '{}' | jq .
+curl -s -X POST "$URL/api/admin/index-scan" -H "$OIDC" -H "X-Sync-Token: $TOKEN" -H 'Content-Type: application/json' -d '{}' | jq .
 # direct event trigger via the machine path (should 202):
-curl -s -X POST "$URL/api/events/<eventId>/index" -H "X-Sync-Token: $TOKEN" -d '{}' | jq .
+curl -s -X POST "$URL/api/events/<eventId>/index" -H "$OIDC" -H "X-Sync-Token: $TOKEN" -d '{}' | jq .
 ```
 
-A wrong/empty token must return 401 (falls through to Firebase auth).
+A valid OIDC token + wrong/empty `X-Sync-Token` returns our JSON 401. Missing/invalid OIDC returns Google's **HTML** 403 (never reaches our code).
 
 ## 3. Configure the gas-app (end-of-batch trigger)
 
@@ -68,18 +98,29 @@ In the Apps Script project, set two Script Properties (Project Settings → Scri
 - `FINDME_API_URL` = the `event-photo-api` URL from step 2 (e.g. `https://event-photo-api-xxxx.a.run.app`)
 - `INDEX_TRIGGER_TOKEN` = the **same** value as the api's `SYNC_TRIGGER_TOKEN`
 
+The gas-app sends its OIDC identity token (`ScriptApp.getIdentityToken()`) for the Cloud Run IAM gate, so that identity needs `run.invoker` on the api. It's the same Apps Script identity already used for the image-convert service; confirm/grant it:
+
+```bash
+gcloud run services add-iam-policy-binding event-photo-api --region=us-central1 \
+  --member="serviceAccount:<apps-script-identity>" --role="roles/run.invoker" --project=mmr-data-pipeline
+```
+
 ```bash
 cd ../gas-app
 clasp push
 ```
 
-Verify: run an upload of one photo through the volunteer/admin upload page, then check the api logs for `index job triggered` and the event's `indexState` flipping to `queued`/`running`. If the properties are unset, the trigger logs `not_configured` and no-ops — safe, but step 4's scan is then your only automation.
+Verify: run an upload of one photo through the volunteer/admin upload page, then check the api logs for `index job triggered` and the event's `indexState` flipping to `queued`/`running`. If the properties are unset, the trigger logs `not_configured` and no-ops (safe). If you see `[indexTrigger] … HTTP 403`, the OIDC identity lacks `run.invoker`.
 
 ## 4. Provision the scheduled scan (safety net)
+
+The script attaches an OIDC token; by default it reuses the daily-sync job's service account. If that job has none, export `OIDC_SA=<sa-email>` (a SA with `run.invoker` on the api — see prerequisites).
 
 ```bash
 cd ../cloud-webapp
 SYNC_TRIGGER_TOKEN=$TOKEN ./infra/scripts/provision-index-scan-scheduler.sh mmr-data-pipeline us-central1
+#   …or with an explicit identity:
+# OIDC_SA=<sa-email> SYNC_TRIGGER_TOKEN=$TOKEN ./infra/scripts/provision-index-scan-scheduler.sh mmr-data-pipeline us-central1
 # one-off run:
 gcloud scheduler jobs run findme-index-scan --location=us-central1 --project=mmr-data-pipeline
 ```

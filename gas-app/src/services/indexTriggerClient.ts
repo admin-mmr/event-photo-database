@@ -14,10 +14,16 @@
  * — it must never surface as an upload error to the volunteer (same philosophy
  * as the legacy special-folders rebuild, DESIGN_DECISIONS §11).
  *
+ * Auth: the api is private (Cloud Run --no-allow-unauthenticated), so we send
+ * BOTH a Google OIDC ID token for the Cloud Run IAM gate (Authorization
+ * header, same pattern as cloudRunClient.ts) AND the X-Sync-Token the api's
+ * cronAuth middleware checks. The gas-app's effective identity must have
+ * roles/run.invoker on the event-photo-api service (one-time IAM grant).
+ *
  * Config (Script Properties): FINDME_API_URL, INDEX_TRIGGER_TOKEN.
  */
 
-/* global UrlFetchApp, Logger */
+/* global UrlFetchApp, ScriptApp, Logger */
 
 import { getFindMeApiUrl, getIndexTriggerToken, isIndexTriggerConfigured } from '../config/superAdmins';
 
@@ -48,7 +54,12 @@ export function triggerEventIndex(eventId: string): IndexTriggerResult {
     const res = UrlFetchApp.fetch(url, {
       method: 'post',
       contentType: 'application/json',
-      headers: { 'X-Sync-Token': getIndexTriggerToken() },
+      headers: {
+        // Cloud Run IAM gate (service is --no-allow-unauthenticated).
+        Authorization: `Bearer ${ScriptApp.getIdentityToken()}`,
+        // App-level machine-caller gate (cronAuth middleware).
+        'X-Sync-Token': getIndexTriggerToken(),
+      },
       payload: JSON.stringify({}), // force defaults to false; incremental diff handles the rest
       muteHttpExceptions: true,
     });

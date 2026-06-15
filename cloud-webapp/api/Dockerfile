@@ -21,10 +21,15 @@ COPY api/package.json ./api/
 # Use --workspaces so npm resolves the internal @cloud-webapp/shared link.
 RUN npm ci --workspaces --include-workspace-root
 
-# Now copy the source and build the api.
+# Now copy the source and build. Strip any incremental build cache that may
+# have ridden along from the host (a stray *.tsbuildinfo with no matching dist/
+# makes `tsc -b` think shared is already built and skip emit → TS6305). Build
+# shared first so the api's project reference resolves to fresh dist output.
 COPY shared ./shared
 COPY api ./api
-RUN npm run build -w @cloud-webapp/api
+RUN rm -rf shared/dist shared/*.tsbuildinfo api/dist api/*.tsbuildinfo \
+ && npm run build -w @cloud-webapp/shared \
+ && npm run build -w @cloud-webapp/api
 
 # ─── Stage 2: runtime ────────────────────────────────────────────────────────
 FROM node:22-slim AS runtime
