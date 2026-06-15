@@ -59,7 +59,6 @@ gcloud run deploy "$SERVICE" \
   --project="$PROJECT_ID" \
   --platform=managed \
   --service-account="api-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
-  --no-allow-unauthenticated \
   --port=8080 \
   --memory=512Mi \
   --cpu=1 \
@@ -69,6 +68,15 @@ gcloud run deploy "$SERVICE" \
   --timeout=60 \
   --update-env-vars="$ENV_VARS" \
   --set-secrets="CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_KEY=RECAPTCHA_KEY:latest"
+# Auth: we deliberately pass NEITHER --allow-unauthenticated nor
+#   --no-allow-unauthenticated, so deploy leaves the service's IAM policy
+#   untouched. Classic Firebase Hosting → Cloud Run rewrites require the service
+#   to be publicly invokable (allUsers/run.invoker); the app does its own auth
+#   (requireAuth/requireAdmin/X-Sync-Token), so public *invocation* is by design.
+#   Passing --no-allow-unauthenticated here previously STRIPPED the allUsers
+#   binding on every deploy, which broke the web app (Cloud Run IAM then rejected
+#   the browser's Firebase token with an HTML 401 before it reached the app).
+#   The allUsers binding requires a DRS org-policy exception to (re)create.
 # MASTER_SPREADSHEET_ID = the gas-app master Sheet id ("Sync with Drive", dev plan §8);
 #   empty = POST /api/admin/sync 503s. SYNC_TRIGGER_TOKEN = shared secret for the
 #   Cloud Scheduler trigger + gas-app trigger. These are MERGED in (see above), so

@@ -54,12 +54,24 @@
 
 ## Cloud Run / deploy gotchas (learned the hard way)
 
-- **`event-photo-api` is private** (`--no-allow-unauthenticated`). Cloud Run's
-  IAM layer consumes the `Authorization` bearer for IAM and does NOT forward it
-  to the app. So a raw `curl` to the `*.run.app` URL can't exercise the app's
-  Firebase `requireAuth` — test that via the Firebase Hosting domain
-  (`mmr-data-pipeline.web.app`), which forwards the token. Machine callers need
-  BOTH: a Google OIDC token (IAM) and the `X-Sync-Token` header (app gate).
+- **`event-photo-api` must be PUBLICLY invokable** (`allUsers`/`run.invoker`);
+  the app does its own auth (`requireAuth`/`requireAdmin`/`X-Sync-Token`).
+  Classic Firebase Hosting → Cloud Run rewrites require a public service — there
+  is NO Hosting service account to authorize (the
+  `service-<num>@gcp-sa-firebasehosting…` SA does not exist for classic
+  rewrites). If the service is private, the browser's Firebase token (not an IAM
+  credential) is rejected by Cloud Run IAM with an **HTML 401** before reaching
+  the app (no app log line).
+  - **Do NOT deploy with `--no-allow-unauthenticated`** — it strips the
+    `allUsers` binding and breaks the web app. `deploy-api.sh` now passes
+    neither auth flag, leaving IAM untouched.
+  - The org's **DRS** policy (`iam.allowedPolicyMemberDomains`) blocks adding
+    `allUsers`, so restoring it needs an Org Policy Admin to add a
+    project-scoped exception, then:
+    `gcloud run services add-iam-policy-binding event-photo-api --region=us-central1 --member=allUsers --role=roles/run.invoker`.
+  - A raw `curl` to the `*.run.app` URL still can't exercise Firebase
+    `requireAuth` (Cloud Run consumes the `Authorization` bearer for IAM);
+    machine callers use the `X-Sync-Token` header instead.
 - **`deploy-api.sh` uses `--update-env-vars` (merge), not `--set-env-vars`.**
   `--set-env-vars` wipes every var not re-listed — it repeatedly blanked
   `MATCHER_URL` / `SYNC_TRIGGER_TOKEN`. Optional vars are only set when exported.
