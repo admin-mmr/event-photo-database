@@ -42,6 +42,23 @@ const EnvSchema = z.object({
   DWD_SA: z.string().default('indexer-runtime@mmr-data-pipeline.iam.gserviceaccount.com'),
   DWD_SUBJECT: z.string().default('admin@mmrunners.org'),
 
+  // ── "Sync with Drive" reconciler (dev plan §8) ────────────────────────
+  // The master Google Sheet the gas-app admin workflow writes to (its
+  // SPREADSHEET_ID Script Property). Empty until configured — POST
+  // /api/admin/sync then 503s with a clear message instead of failing oddly.
+  // NOTE: reading this Sheet via the Sheets API needs the
+  // `spreadsheets.readonly` scope authorized on the DWD client (runbook §G1
+  // granted `drive` only — add the Sheets scope in the Workspace Admin
+  // console for the same client id, one-time).
+  MASTER_SPREADSHEET_ID: z.string().default(''),
+  // Tab names within the master Sheet (gas-app SHEET_NAMES).
+  EVENTS_SHEET_NAME: z.string().default('Events'),
+  UPLOAD_LINKS_SHEET_NAME: z.string().default('Upload_Links'),
+  // Optional shared secret that lets a machine caller (Cloud Scheduler) invoke
+  // POST /api/admin/sync via the `X-Sync-Token` header instead of a Firebase
+  // admin token. Empty = only Firebase admins can trigger a sync.
+  SYNC_TRIGGER_TOKEN: z.string().default(''),
+
   // ── Find Me search (dev plan M2) ──────────────────────────────────────
   // Base URL of the private matcher Cloud Run service. Empty until the
   // matcher is deployed — the /api/findme routes 503 with a clear message

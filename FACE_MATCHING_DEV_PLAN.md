@@ -319,6 +319,8 @@ Existing workflows: `ci.yml`, `deploy-api.yml`, `deploy-web.yml` (Workload Ident
 ## 8. Cutover, rollback, ops
 
 - **Parallel to live.** Find Me ships disabled behind a flag; the existing `gas-app` keeps running untouched. No big-bang cutover.
+- **GAS stays the workflow of record during the demo.** While we demo `cloud-webapp`, super-admin and club-admin users continue to do all of their real work — creating events, generating upload links, and uploading files — in the Apps Script app. `cloud-webapp` is shown as a read-mostly preview of the new Find Me experience and is seeded from existing Drive/Sheet data; it does not yet own any admin workflow. The Google Sheets master file in Drive remains the source of truth throughout.
+- **Planned sync (post-demo).** Two-way reconciliation is roadmap, not demo scope: (1) `cloud-webapp` pulls from Drive/Sheets — an admin "Sync with Drive" button (and a scheduled job) reconciles events and tags from the master Sheet into Firestore; (2) GAS optionally pushes event/link/upload changes to `cloud-webapp` for near-real-time updates. Drive/Sheets stays authoritative; the cloud copy is derived.
 - **Rollback.** Cloud Run keeps prior revisions; flip traffic back. DB migrations are additive/forward-only with a documented down path.
 - **Re-index.** A bumped `model_version` triggers background re-embedding per event; old vectors serve until the new set is ready.
 - **Cost guardrails.** Budget alert at $50/mo, max-instances caps, matcher scale-to-zero off-peak, pre-warm before known events (PRD §9, §10).

@@ -25,6 +25,9 @@ export const EventSummarySchema = z.object({
   date: z.string().optional(),
   visibility: z.enum(['public', 'link', 'login']).optional(),
   driveFolderId: z.string().optional(),
+  /** Distinct photographer/location tags for the event, derived from the
+   *  master Sheet's Upload_Links rows by the Drive reconciler (dev plan §8). */
+  tags: z.array(z.string()).optional(),
   indexState: IndexStateSchema.optional(),
 });
 export type EventSummary = z.infer<typeof EventSummarySchema>;

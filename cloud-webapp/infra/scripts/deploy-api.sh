@@ -55,8 +55,12 @@ gcloud run deploy "$SERVICE" \
   --min-instances=0 \
   --concurrency=80 \
   --timeout=60 \
-  --set-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown),MATCHER_URL=${MATCHER_URL:-}" \
+  --set-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown),MATCHER_URL=${MATCHER_URL:-},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID:-},SYNC_TRIGGER_TOKEN=${SYNC_TRIGGER_TOKEN:-}" \
   --set-secrets="CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_KEY=RECAPTCHA_KEY:latest"
+# MASTER_SPREADSHEET_ID = the gas-app master Sheet id ("Sync with Drive", dev plan §8);
+#   empty = POST /api/admin/sync 503s. SYNC_TRIGGER_TOKEN = shared secret for the
+#   Cloud Scheduler trigger (export before running, or leave empty to allow only
+#   Firebase-admin syncs). Both follow the MATCHER_URL "set via shell var" pattern.
 # Note: no --add-cloudsql-instances — Cloud SQL was dropped (zero-cost design, runbook Phase F).
 # Runtime SA is api-runtime (least privilege), never the deployer SA (runbook E2).
 

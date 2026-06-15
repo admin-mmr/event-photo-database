@@ -1,0 +1,37 @@
+# .gcloudignore — controls what `gcloud builds submit cloud-webapp/` uploads as
+# the build context. Used by deploy-api.sh and deploy-indexer.sh (both build
+# from this directory). When this file exists, gcloud uses it INSTEAD of
+# .gitignore.
+#
+# Everything excluded here is either rebuilt inside the image (the api
+# Dockerfile runs `npm ci` + `tsc` itself) or fetched in-cloud during the build
+# (model weights, pulled from GCS by deploy-indexer.sh / deploy-matcher.sh).
+# Keeping the upload small (~code only) makes deploys fast and incremental.
+
+# Node — reinstalled inside the image, never uploaded.
+**/node_modules/
+**/dist/
+
+# Python local envs / caches — not part of any image.
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/pytest-cache-files-*/
+
+# Model weights (~184 MB) — pulled from GCS by Cloud Build, not uploaded.
+matcher/model_files/
+indexer/model_files/
+
+# Local-only matcher sample store + biometric eval data (PRD §8) — not
+# referenced by any Dockerfile.
+matcher/local_store/
+matcher/eval/
+
+# The React frontend ships via Firebase Hosting, not the api/indexer images.
+web/
+
+# Junk.
+.DS_Store
+**/.DS_Store
+*.log
+.firebase/
