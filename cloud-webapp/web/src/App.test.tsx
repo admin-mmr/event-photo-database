@@ -48,6 +48,9 @@ describe('<App />', () => {
     await waitFor(() => {
       expect(screen.getByText(/Spring Run 2026/)).toBeTruthy();
     });
-    expect(screen.getByText(/42 photos · Find Me ready/)).toBeTruthy();
+    expect(screen.getByText(/Find Me ready/)).toBeTruthy();
+    expect(screen.getByText(/42 photos/)).toBeTruthy();
+    // The per-event "Index now" control is present.
+    expect(screen.getByRole('button', { name: /Index now|Indexing/i })).toBeTruthy();
   });
 });

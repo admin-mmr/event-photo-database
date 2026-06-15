@@ -8,6 +8,9 @@ import { z } from 'zod';
 
 export const IndexStateSchema = z.object({
   status: z.enum(['queued', 'running', 'done', 'failed']),
+  /** ISO-8601 timestamp of the last indexState write (queued/running/done/
+   *  failed). Surfaced in the UI as "last updated". */
+  updatedAt: z.string().optional(),
   modelVersion: z.string().optional(),
   photoCount: z.number().int().nonnegative().optional(),
   faces: z.number().int().nonnegative().optional(),

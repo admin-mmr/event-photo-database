@@ -22,6 +22,7 @@ import {
 } from '../services/driveService';
 import { appendAuditLog, appendAuditFailure } from '../services/auditLogService';
 import { appendUploadLog } from '../services/uploadLogService';
+import { triggerEventIndex } from '../services/indexTriggerClient';
 import { ADMIN_CLUB_ID, isCreditRenameEnabled } from '../config/constants';
 import { buildLayer3FolderName } from '../utils/folderNameValidator';
 import { toBatchTimestamp } from '../utils/dateFormatter';
@@ -285,6 +286,14 @@ export function serverCompleteUpload(payload: WithSession<{
     });
     if (Number(payload.fileCount) > 0) {
       invalidateEventDriveTreeCache(payload.eventId);
+      // No-touch indexing: as soon as the batch lands in Drive, ask the
+      // cloud-webapp to (re)index this event so Find Me matches appear without
+      // an admin clicking anything. Best-effort — never fails the upload.
+      try {
+        triggerEventIndex(payload.eventId);
+      } catch (e) {
+        Logger.log(`serverCompleteUpload: index trigger error (non-fatal): ${String(e)}`);
+      }
     }
     return { status: result.status, message: result.message, data: result.data };
   } catch (err) {

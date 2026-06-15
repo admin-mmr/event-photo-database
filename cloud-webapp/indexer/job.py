@@ -32,11 +32,20 @@ import json
 import logging
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 import numpy as np
 
+from derivatives import make_derivatives
+
 log = logging.getLogger("indexer")
+
+# Default fan-out for the download+embed+upload stage. The work is dominated by
+# Drive download + 3 GCS uploads (I/O) and ONNX inference (native, releases the
+# GIL), so threads overlap well even on a 2-vCPU job. Override with the
+# INDEX_CONCURRENCY env var; 1 reproduces the old serial behaviour.
+DEFAULT_CONCURRENCY = 8
 
 EMB_DIR = "embeddings"
 FILES = {"face": "faces.npy", "person": "persons.npy"}
@@ -70,7 +79,10 @@ class FirestoreMeta:
         return snap.to_dict() if snap.exists else None
 
     def set_index_state(self, event_id: str, state: dict) -> None:
-        self._db.collection("events").document(event_id).set({"indexState": state}, merge=True)
+        from datetime import datetime, timezone
+
+        stamped = {"updatedAt": datetime.now(timezone.utc).isoformat(), **state}
+        self._db.collection("events").document(event_id).set({"indexState": stamped}, merge=True)
 
     def upsert_photo(self, photo_id: str, doc: dict) -> None:
         self._db.collection("photos").document(photo_id).set(doc, merge=True)
@@ -117,13 +129,18 @@ def _write_store(blobs, event_id: str, manifest: dict,
 # ── the run ──────────────────────────────────────────────────────────────────
 
 def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
-        face_dim: int = 512, person_dim: int = 512) -> dict:
+        face_dim: int = 512, person_dim: int = 512, concurrency: int = 0) -> dict:
     """Index one event. All collaborators injected for testability.
 
     drive: .list_images(folder_id) / .download(file_id)
     blobs: BlobStore-like (write/read/exists)
     fs:    FirestoreMeta-like
     embed: bytes → {"faces": [{box, score, embedding}], "persons": [...]}
+    concurrency: worker threads for the download+embed+upload stage. 0 → read
+                 INDEX_CONCURRENCY env (default DEFAULT_CONCURRENCY). The
+                 manifest/vector arrays are always assembled in Drive-listing
+                 order regardless of completion order, so output stays
+                 byte-identical across runs (idempotency).
     """
     folder_id = cfg.drive_folder_id
     if not folder_id:
@@ -155,6 +172,49 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
     photos_map: dict[str, dict] = {}
     embedded = reused = skipped = 0
 
+    # Partition into reused (cheap, no I/O) vs changed (needs download+embed).
+    changed = []
+    for f in files:
+        pid, md5 = f["id"], f.get("md5Checksum", "")
+        if pid in prev_photos and md5 and prev_photos[pid].get("md5") == md5 and pid in prev_rows:
+            continue  # assembled below from the previous run
+        changed.append(f)
+
+    # The heavy stage (Drive download → embed → 2 encodes → 3 GCS writes) runs
+    # concurrently. Each worker is self-contained and returns its result; no
+    # shared mutable state is touched here, so assembly stays deterministic.
+    def _process(f: dict) -> dict:
+        pid = f["id"]
+        data = drive.download(pid)
+        result = embed(data)
+        ext = ORIG_EXT_BY_MIME.get(f["mimeType"], "bin")
+        blobs.write(f"{cfg.event_id}/photos/orig/{pid}.{ext}", data, f["mimeType"])
+        deriv = make_derivatives(data)
+        blobs.write(f"{cfg.event_id}/photos/web/{pid}.jpg", deriv["web"], "image/jpeg")
+        blobs.write(f"{cfg.event_id}/photos/thumb/{pid}.jpg", deriv["thumb"], "image/jpeg")
+        return result
+
+    workers = concurrency or int(os.environ.get("INDEX_CONCURRENCY", DEFAULT_CONCURRENCY))
+    workers = max(1, min(workers, len(changed) or 1))
+    log.info("processing %d changed photos with %d worker(s)", len(changed), workers)
+
+    results: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_process, f): f for f in changed}
+        done = 0
+        for fut in as_completed(futures):
+            f = futures[fut]
+            try:
+                results[f["id"]] = fut.result()
+            except Exception as exc:
+                log.warning("SKIP %s (%s): %s", f["relPath"], f["id"], exc)
+                results[f["id"]] = None  # mark skipped; assembled below
+            done += 1
+            if done % 25 == 0:
+                log.info("  %d/%d changed photos processed", done, len(changed))
+
+    # Assemble vectors/manifest/Firestore in Drive-listing order so the stored
+    # arrays are identical regardless of which worker finished first.
     for f in files:
         pid, md5 = f["id"], f.get("md5Checksum", "")
         unchanged = (pid in prev_photos and md5 and prev_photos[pid].get("md5") == md5)
@@ -168,18 +228,8 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
             reused += 1
             continue
 
-        try:
-            data = drive.download(pid)
-            result = embed(data)
-            from derivatives import make_derivatives
-
-            ext = ORIG_EXT_BY_MIME.get(f["mimeType"], "bin")
-            blobs.write(f"{cfg.event_id}/photos/orig/{pid}.{ext}", data, f["mimeType"])
-            deriv = make_derivatives(data)
-            blobs.write(f"{cfg.event_id}/photos/web/{pid}.jpg", deriv["web"], "image/jpeg")
-            blobs.write(f"{cfg.event_id}/photos/thumb/{pid}.jpg", deriv["thumb"], "image/jpeg")
-        except Exception as exc:
-            log.warning("SKIP %s (%s): %s", f["relPath"], pid, exc)
+        result = results.get(pid)
+        if result is None:  # download/embed/derivative failed → skip, non-fatal
             skipped += 1
             continue
 
@@ -201,8 +251,6 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
             "faceCount": len(result["faces"]), "personCount": len(result["persons"]),
             "modelVersion": model_version,
         })
-        if embedded % 25 == 0:
-            log.info("  %d embedded · %d reused · %d skipped", embedded, reused, skipped)
 
     # Photos that disappeared from Drive: drop their rows + Firestore docs.
     removed = [pid for pid in prev_photos if pid not in photos_map]

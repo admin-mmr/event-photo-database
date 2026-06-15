@@ -99,10 +99,21 @@ findmeRouter.post('/findme/search', requireAuth, upload.single('file'), async (r
         return;
       }
       if (match.error === 'event_not_indexed') {
+        // Indexing is automated now (end-of-batch trigger + scheduled scan), so
+        // "not indexed yet" almost always means a run is in progress or just
+        // queued rather than something an admin forgot. Surface the live
+        // indexState so the UI can show a friendly "still gathering photos,
+        // check back shortly" state and poll, instead of a dead end.
+        const indexState = eventDoc.data()?.indexState as { status?: string } | undefined;
+        const inProgress = indexState?.status === 'queued' || indexState?.status === 'running';
         res.status(409).json({
           ok: false,
           error: 'event_not_indexed',
-          message: 'This event has not been indexed yet — ask an admin to run indexing',
+          status: indexState?.status ?? 'pending',
+          retryable: true,
+          message: inProgress
+            ? "We're still gathering this event's photos — check back in a few minutes and your matches will appear automatically."
+            : "This event's photos are being prepared for search. New photos are added automatically as they're uploaded — please check back shortly.",
         });
         return;
       }

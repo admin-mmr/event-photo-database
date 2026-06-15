@@ -109,6 +109,46 @@ export function isCloudRunConfigured(): boolean {
  */
 export const CLOUD_RUN_URL = CLOUD_RUN_URL_PLACEHOLDER;
 
+// ─── Find Me indexing trigger (automated no-touch indexing) ───────────────────
+
+/**
+ * Base URL of the cloud-webapp api (event-photo-api Cloud Run service), e.g.
+ * https://event-photo-api-XXXX.a.run.app. Set the `FINDME_API_URL` Script
+ * Property after deploying the api. Used to fire POST /api/events/:id/index at
+ * the end of an upload batch so photos are indexed on arrival.
+ */
+export function getFindMeApiUrl(): string {
+  try {
+    const v = PropertiesService.getScriptProperties().getProperty('FINDME_API_URL');
+    if (v && v.trim().length > 0) return v.trim().replace(/\/$/, '');
+  } catch {
+    // fall through
+  }
+  return '';
+}
+
+/**
+ * Shared machine-caller secret that authorizes POST /api/events/:id/index and
+ * /api/admin/index-scan via the `X-Sync-Token` header (matches the api's
+ * SYNC_TRIGGER_TOKEN env var). Set the `INDEX_TRIGGER_TOKEN` Script Property.
+ * Keep it in sync with the value deployed on the api.
+ */
+export function getIndexTriggerToken(): string {
+  try {
+    const v = PropertiesService.getScriptProperties().getProperty('INDEX_TRIGGER_TOKEN');
+    if (v && v.trim().length > 0) return v.trim();
+  } catch {
+    // fall through
+  }
+  return '';
+}
+
+/** True only when both the api URL and the shared token are configured, so the
+ *  end-of-batch index trigger can actually authenticate. */
+export function isIndexTriggerConfigured(): boolean {
+  return getFindMeApiUrl().length > 0 && getIndexTriggerToken().length > 0;
+}
+
 // ─── Drive folder names ───────────────────────────────────────────────────────
 
 /** Name of the upload-prep root folder created at the SSOT root. */

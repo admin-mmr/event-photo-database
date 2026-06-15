@@ -94,12 +94,12 @@ gcloud run jobs deploy "$JOB" \
   --region="$REGION" \
   --project="$PROJECT_ID" \
   --service-account="indexer-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
-  --memory=2Gi \
-  --cpu=2 \
+  --memory=4Gi \
+  --cpu=4 \
   --task-timeout=3600 \
   --max-retries=1 \
   --parallelism=1 \
-  --set-env-vars="DERIVATIVES_ROOT=gs://${PROJECT_ID}-derivatives,DWD_SA=indexer-runtime@${PROJECT_ID}.iam.gserviceaccount.com"
+  --set-env-vars="DERIVATIVES_ROOT=gs://${PROJECT_ID}-derivatives,DWD_SA=indexer-runtime@${PROJECT_ID}.iam.gserviceaccount.com,INDEX_CONCURRENCY=8"
 
 echo
 echo "==> Deployed. Index one event (writes photos + embeddings, updates indexState):"
