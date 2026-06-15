@@ -54,4 +54,8 @@ RUN useradd --no-create-home --uid 10001 appuser \
 USER appuser
 
 EXPOSE 8080
-CMD ["node", "api/dist/index.js"]
+# Resolve the @cloud-webapp/shared package to its compiled output (dist) rather
+# than its TypeScript source. Without --conditions=production, Node resolves the
+# package's "default" export (./src/index.ts), which re-exports ./schemas/*.js
+# files that only exist under dist/ — crashing the container on startup.
+CMD ["node", "--conditions=production", "api/dist/index.js"]
