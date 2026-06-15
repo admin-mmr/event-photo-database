@@ -140,10 +140,21 @@ class DriveClient:
                 return items
 
     def download(self, file_id: str) -> bytes:
+        # Refresh the token once on 401 (same as _get_json): the DWD access
+        # token lives ~1h, and a large event's downloads outlast it. Without
+        # this, every download after expiry 401s and the photo is skipped.
         url = f"{DRIVE}/{file_id}?alt=media&supportsAllDrives=true"
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {self._auth()}"})
-        with urllib.request.urlopen(req) as resp:
-            chunks = []
-            while chunk := resp.read(1 << 20):
-                chunks.append(chunk)
-            return b"".join(chunks)
+        for attempt in (1, 2):
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {self._auth()}"})
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    chunks = []
+                    while chunk := resp.read(1 << 20):
+                        chunks.append(chunk)
+                    return b"".join(chunks)
+            except urllib.error.HTTPError as e:
+                if e.code == 401 and attempt == 1:  # token expired mid-run → refresh once
+                    self._token = None
+                    continue
+                raise
+        raise RuntimeError("unreachable")  # loop always returns or raises
