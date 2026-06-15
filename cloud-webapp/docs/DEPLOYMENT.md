@@ -242,6 +242,23 @@ gcloud projects add-iam-policy-binding mmr-data-pipeline \
 If the rules step then fails with a rules permission error, grant the deployer
 `roles/firebaserules.admin`.
 
+**`Permission 'firebasestorage.defaultBucket.get' denied … defaultBucket (or
+it may not exist)` (403)** (web deploy, after the API check passes).
+The deployer can manage Cloud Storage (`roles/storage.admin`) but not the
+Firebase Storage *management* layer, which owns the default bucket. Grant it
+(now in `bootstrap-gcp.sh`):
+
+```bash
+gcloud projects add-iam-policy-binding mmr-data-pipeline \
+  --member="serviceAccount:cloud-webapp-deployer@mmr-data-pipeline.iam.gserviceaccount.com" \
+  --role="roles/firebasestorage.admin" --condition=None
+```
+
+If the error persists with "may not exist", Firebase Storage hasn't been
+initialized for the project yet — do it once in the Firebase Console
+(Build → Storage → Get started), which creates the default bucket, then
+re-run deploy-web.
+
 **Container failed to start and listen on PORT=8080** (api deploy, "Creating
 Revision … failed").
 The container crashed on startup before binding the port. Check

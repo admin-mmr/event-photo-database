@@ -77,6 +77,7 @@ for ROLE in \
   roles/artifactregistry.writer \
   roles/storage.admin \
   roles/firebasehosting.admin \
+  roles/firebasestorage.admin \
   roles/datastore.user \
   roles/secretmanager.secretAccessor \
   roles/serviceusage.serviceUsageConsumer
