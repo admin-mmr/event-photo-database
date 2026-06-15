@@ -239,8 +239,18 @@ gcloud projects add-iam-policy-binding mmr-data-pipeline \
   --role="roles/serviceusage.serviceUsageConsumer" --condition=None
 ```
 
-If the rules step then fails with a rules permission error, grant the deployer
-`roles/firebaserules.admin`.
+**`Request to https://firebaserules.googleapis.com/v1/projects/…:test had HTTP
+Error: 403, The caller does not have permission`** (web deploy, "checking
+…/storage.rules for compilation errors").
+Deploying Firestore/Storage security rules compiles them through the Firebase
+Rules API, which the deployer can't call without `roles/firebaserules.admin`
+(now in `bootstrap-gcp.sh`):
+
+```bash
+gcloud projects add-iam-policy-binding mmr-data-pipeline \
+  --member="serviceAccount:cloud-webapp-deployer@mmr-data-pipeline.iam.gserviceaccount.com" \
+  --role="roles/firebaserules.admin" --condition=None
+```
 
 **`Permission 'firebasestorage.defaultBucket.get' denied … defaultBucket (or
 it may not exist)` (403)** (web deploy, after the API check passes).
@@ -254,10 +264,15 @@ gcloud projects add-iam-policy-binding mmr-data-pipeline \
   --role="roles/firebasestorage.admin" --condition=None
 ```
 
-If the error persists with "may not exist", Firebase Storage hasn't been
-initialized for the project yet — do it once in the Firebase Console
-(Build → Storage → Get started), which creates the default bucket, then
-re-run deploy-web.
+**`Firebase Storage has not been set up on project …`** (web deploy, after
+the API and bucket-permission checks pass).
+The project's default storage bucket has never been provisioned. This is a
+one-time manual step that `gcloud`/CI can't do: open
+`https://console.firebase.google.com/project/mmr-data-pipeline/storage`,
+click **Get started**, accept the default rules (your `infra/storage.rules`
+overwrites them on deploy), and pick a **permanent** Cloud Storage location
+consistent with the stack (a US region such as `us-central1`). Then re-run
+deploy-web.
 
 **Container failed to start and listen on PORT=8080** (api deploy, "Creating
 Revision … failed").

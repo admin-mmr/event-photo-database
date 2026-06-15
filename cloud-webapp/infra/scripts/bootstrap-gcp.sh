@@ -78,6 +78,7 @@ for ROLE in \
   roles/storage.admin \
   roles/firebasehosting.admin \
   roles/firebasestorage.admin \
+  roles/firebaserules.admin \
   roles/datastore.user \
   roles/secretmanager.secretAccessor \
   roles/serviceusage.serviceUsageConsumer
