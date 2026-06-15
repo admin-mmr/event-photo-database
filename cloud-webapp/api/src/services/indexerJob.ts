@@ -8,12 +8,14 @@
  * unnecessary. The `photo-index-requests` topic stays provisioned for the
  * M2+ scheduled change-scan if we want it.
  *
- * IAM prerequisite: api-runtime@ needs roles/run.invoker (run.jobs.run) on
- * the photo-indexer job:
+ * IAM prerequisite: api-runtime@ needs roles/run.developer on the photo-indexer
+ * job. We pass per-execution env overrides (EVENT_ID/FORCE_REINDEX), so the
+ * platform checks run.jobs.runWithOverrides — which roles/run.invoker does NOT
+ * grant (it only has run.jobs.run). run.developer includes both:
  *
  *   gcloud run jobs add-iam-policy-binding photo-indexer --region=us-central1 \
  *     --member="serviceAccount:api-runtime@mmr-data-pipeline.iam.gserviceaccount.com" \
- *     --role="roles/run.invoker"
+ *     --role="roles/run.developer"
  */
 
 import { GoogleAuth } from 'google-auth-library';

@@ -6,13 +6,15 @@ Companion to `AUTOMATED_INDEXING_IMPLEMENTATION.md`. Conventions follow `FACE_MA
 
 ## 0. Prerequisites (one-time, verify)
 
-- `api-runtime@mmr-data-pipeline.iam.gserviceaccount.com` has `roles/run.invoker` on the `photo-indexer` job:
+- `api-runtime@mmr-data-pipeline.iam.gserviceaccount.com` has `roles/run.developer` on the `photo-indexer` job. The API triggers the job with per-execution env overrides (`EVENT_ID`), so the platform requires `run.jobs.runWithOverrides` — which `roles/run.invoker` does NOT grant (it only has plain `run.jobs.run`). Use `run.developer`:
 
   ```bash
   gcloud run jobs add-iam-policy-binding photo-indexer --region=us-central1 \
     --member="serviceAccount:api-runtime@mmr-data-pipeline.iam.gserviceaccount.com" \
-    --role="roles/run.invoker" --project=mmr-data-pipeline
+    --role="roles/run.developer" --project=mmr-data-pipeline
   ```
+
+  (If your org doesn't evaluate `run.developer` at job scope, grant it at project level: `gcloud projects add-iam-policy-binding mmr-data-pipeline --member="serviceAccount:api-runtime@…" --role="roles/run.developer"`.)
 
 - A shared secret exists. Reuse the **same** `SYNC_TRIGGER_TOKEN` already deployed for `findme-drive-sync`. Retrieve it (Secret Manager or your records) and keep it handy as `$TOKEN`. If you don't have one yet, generate: `openssl rand -hex 32`.
 - `cloudscheduler.googleapis.com` is enabled (it is, from the daily sync).
