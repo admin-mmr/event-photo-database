@@ -221,17 +221,26 @@ Two distinct causes have produced this, both now fixed:
 
 **`Permission denied to get service [firebasestorage.googleapis.com]` (403)**
 (web deploy, `firebase deploy … --only=…,storage`).
-The `firebasestorage.googleapis.com` API isn't enabled on the project, and the
-deployer service account can read already-enabled APIs but can't enable a new
-one. Enable it once as an owner, then re-run deploy-web:
+Two things are needed and both are now in `bootstrap-gcp.sh`: the
+`firebasestorage.googleapis.com` API must be enabled, **and** the deployer
+service account needs `roles/serviceusage.serviceUsageConsumer` — Firebase's
+"ensuring required API is enabled" step reads the service via Service Usage
+(`serviceusage.services.get`), which the deployer otherwise lacks. (Hosting and
+Firestore deploy fine without it because only the `storage` target makes that
+check.) Enabling the API alone is not enough; you also need the role.
+
+Run both once as an owner, then re-run deploy-web:
 
 ```bash
 gcloud services enable firebasestorage.googleapis.com --project=mmr-data-pipeline
+
+gcloud projects add-iam-policy-binding mmr-data-pipeline \
+  --member="serviceAccount:cloud-webapp-deployer@mmr-data-pipeline.iam.gserviceaccount.com" \
+  --role="roles/serviceusage.serviceUsageConsumer" --condition=None
 ```
 
-`bootstrap-gcp.sh` now enables `firebasestorage` and `firebaserules` up front,
-so fresh projects won't hit this. If the rules step then fails with a rules
-permission error, grant the deployer `roles/firebaserules.admin`.
+If the rules step then fails with a rules permission error, grant the deployer
+`roles/firebaserules.admin`.
 
 **Container failed to start and listen on PORT=8080** (api deploy, "Creating
 Revision … failed").

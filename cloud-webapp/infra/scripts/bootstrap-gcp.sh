@@ -78,7 +78,8 @@ for ROLE in \
   roles/storage.admin \
   roles/firebasehosting.admin \
   roles/datastore.user \
-  roles/secretmanager.secretAccessor
+  roles/secretmanager.secretAccessor \
+  roles/serviceusage.serviceUsageConsumer
 do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:${SA_EMAIL}" \
