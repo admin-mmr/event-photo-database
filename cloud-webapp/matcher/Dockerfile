@@ -20,7 +20,13 @@ COPY scripts/ scripts/
 RUN if [ "$FETCH_MODELS" = "1" ]; then \
       OSNET_URL="$OSNET_URL" YOLO_URL="$YOLO_URL" python scripts/fetch_models.py --dir model_files; \
     fi
-COPY model_file[s]/ model_files/
+# Bake the ONNX weights into the image. The models must be present in the
+# build context — deploy-matcher.sh guarantees this by syncing them from GCS
+# (MODELS_GCS) before the build. A plain COPY is used deliberately: the old
+# `COPY model_file[s]/` glob trick only skips-when-missing under BuildKit, and
+# Cloud Build's legacy Docker builder fails it with "no source files were
+# specified" even when model_files/ is present.
+COPY model_files/ model_files/
 
 COPY models/ models/
 COPY main.py pipeline.py store.py fusion.py quality.py ./

@@ -1,0 +1,25 @@
+# .gcloudignore — controls what `gcloud builds submit` uploads as the build
+# context. IMPORTANT: when this file exists, gcloud uses it INSTEAD of
+# .gitignore.
+#
+# The ~184 MB model_files/ directory is deliberately EXCLUDED from the upload:
+# deploy-matcher.sh syncs the models into the build context from GCS in-cloud
+# (see MODELS_GCS in that script), so they don't travel from the laptop on
+# every deploy. Keeping the upload to ~1 MB of code makes deploys fast and
+# incremental.
+
+# The model weights — pulled from GCS by Cloud Build, not uploaded.
+model_files/
+
+# Local-only junk — never needed in the image, safe to keep out of the upload.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+pytest-cache-files-*/
+.DS_Store
+
+# Local sample store and biometric eval data stay local (PRD §8) and aren't
+# referenced by the Dockerfile.
+local_store/
+eval/

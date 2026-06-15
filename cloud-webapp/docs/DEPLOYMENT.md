@@ -5,6 +5,35 @@ End-to-end: from "billing account active in `console.cloud.google.com`" to
 
 ---
 
+## 0. Project reference
+
+The concrete values for this deployment. Wherever a command below says
+`<project-id>`, use `mmr-data-pipeline`.
+
+| What | Value |
+|---|---|
+| Project ID | `mmr-data-pipeline` |
+| Project number | `489676654863` |
+| Region | `us-central1` |
+| Live site | `https://mmr-data-pipeline.web.app` |
+
+To find the project ID yourself at any time:
+
+```bash
+gcloud config get-value project   # the currently active project
+gcloud projects list              # every project you can access
+```
+
+In the Cloud Console it's in the project picker at the top — use the **ID**
+(e.g. `mmr-data-pipeline`), not the display name or the numeric number.
+
+None of these are secrets — the project ID and number ship in the web
+client config and appear throughout this repo. Real secrets (deploy
+credentials) live in GitHub Actions secrets via Workload Identity
+Federation; see §2.
+
+---
+
 ## 1. Bootstrap GCP (one time)
 
 After your billing account is set up, you have a project. Pick one project
@@ -118,6 +147,86 @@ gcloud secrets add-iam-policy-binding sendgrid-api-key \
 #   --set-secrets=SENDGRID_API_KEY=sendgrid-api-key:latest
 # And add it to api/src/lib/config.ts EnvSchema.
 ```
+
+---
+
+## 6b. Deploying the matcher (Find Me search)
+
+The matcher is the private Cloud Run service that runs face/person search. It
+is **not** deployed by CI — you deploy it manually from your machine with
+`infra/scripts/deploy-matcher.sh`, because it ships ~184 MB of ONNX model
+weights that we don't keep in git.
+
+To avoid re-uploading those 184 MB from your laptop on every deploy, the
+models live in GCS and Cloud Build pulls them in-cloud. Your laptop upload
+stays at ~1 MB of code.
+
+**One-time setup** (from `cloud-webapp/matcher/`):
+
+```bash
+# 1. Fetch the model files locally if you don't already have them.
+python3 scripts/fetch_models.py --dir model_files   # OSNet: scripts/export_osnet.py
+
+# 2. Stage them in GCS (once, and again only when a model changes).
+gcloud storage buckets create gs://mmr-data-pipeline-models --location=us-central1
+gcloud storage cp -r model_files/* gs://mmr-data-pipeline-models/model_files/
+```
+
+**Every deploy** (from `cloud-webapp/`):
+
+```bash
+./infra/scripts/deploy-matcher.sh mmr-data-pipeline us-central1
+```
+
+The script pulls the models from `gs://<project-id>-models/model_files` into
+the build context inside Cloud Build (override with
+`MODELS_GCS=gs://bucket/path`). `matcher/.gcloudignore` excludes
+`model_files/` from the laptop upload, so the only thing that travels each
+deploy is the source code.
+
+After the first deploy, grant the api permission to call the matcher and wire
+up its URL:
+
+```bash
+gcloud run services add-iam-policy-binding matcher --region=us-central1 \
+  --member="serviceAccount:api-runtime@mmr-data-pipeline.iam.gserviceaccount.com" \
+  --role="roles/run.invoker"
+```
+
+Then set the GitHub repo **variable** `MATCHER_URL` (Settings → Secrets and
+variables → Actions → **Variables**) to the URL the script prints, and re-run
+the deploy-api workflow.
+
+---
+
+## 6c. Troubleshooting
+
+**`COPY failed: no source files were specified`** (matcher build, step
+`COPY model_files/`).
+Two distinct causes have produced this, both now fixed:
+
+1. *The models weren't in the build context.* `gcloud builds submit` decides
+   what to upload from `.gcloudignore`; if that file is missing it falls back
+   to `.gitignore`, which lists `model_files/`, stripping the 184 MB of
+   weights out of the upload. Fixed by the GCS-staging flow in §6b — confirm
+   `gcloud storage ls gs://mmr-data-pipeline-models/model_files/` lists four
+   `.onnx` files; the deploy script preflights this and fails early if empty.
+2. *The `COPY` itself was a fragile glob.* The Dockerfile previously used
+   `COPY model_file[s]/` — an "optional copy" trick that only skips-when-empty
+   under BuildKit. Cloud Build uses the **legacy** Docker builder, which fails
+   that bracket glob with this exact error even when `model_files/` is present
+   (check the `Sending build context to Docker daemon` line — if it's ~193 MB,
+   the models are there and this is your cause). Fixed by switching to a plain
+   `COPY model_files/ model_files/`.
+
+**Container failed to start and listen on PORT=8080** (api deploy, "Creating
+Revision … failed").
+The container crashed on startup before binding the port. Check
+Logs Explorer for the revision (the deploy error includes a direct link). A
+past instance: the `@cloud-webapp/shared` package resolved to its TypeScript
+source at runtime instead of compiled JS — fixed by the `production` export
+condition in `shared/package.json` plus `node --conditions=production` in
+`api/Dockerfile`.
 
 ---
 
