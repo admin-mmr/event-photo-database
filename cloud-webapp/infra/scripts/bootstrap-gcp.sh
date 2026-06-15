@@ -49,6 +49,8 @@ gcloud services enable \
   firestore.googleapis.com \
   firebase.googleapis.com \
   firebasehosting.googleapis.com \
+  firebasestorage.googleapis.com \
+  firebaserules.googleapis.com \
   iam.googleapis.com \
   iamcredentials.googleapis.com \
   secretmanager.googleapis.com \

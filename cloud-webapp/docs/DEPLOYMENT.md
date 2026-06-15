@@ -219,6 +219,20 @@ Two distinct causes have produced this, both now fixed:
    the models are there and this is your cause). Fixed by switching to a plain
    `COPY model_files/ model_files/`.
 
+**`Permission denied to get service [firebasestorage.googleapis.com]` (403)**
+(web deploy, `firebase deploy … --only=…,storage`).
+The `firebasestorage.googleapis.com` API isn't enabled on the project, and the
+deployer service account can read already-enabled APIs but can't enable a new
+one. Enable it once as an owner, then re-run deploy-web:
+
+```bash
+gcloud services enable firebasestorage.googleapis.com --project=mmr-data-pipeline
+```
+
+`bootstrap-gcp.sh` now enables `firebasestorage` and `firebaserules` up front,
+so fresh projects won't hit this. If the rules step then fails with a rules
+permission error, grant the deployer `roles/firebaserules.admin`.
+
 **Container failed to start and listen on PORT=8080** (api deploy, "Creating
 Revision … failed").
 The container crashed on startup before binding the port. Check
