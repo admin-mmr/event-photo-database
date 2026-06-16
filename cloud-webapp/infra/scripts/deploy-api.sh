@@ -42,15 +42,26 @@ gcloud builds submit "$REPO_ROOT" \
 
 echo "==> Deploying revision to Cloud Run service $SERVICE"
 # Build the env-var list. We use --update-env-vars (MERGE), not --set-env-vars
-# (REPLACE): the latter wipes every var not re-listed, so forgetting to export
-# MATCHER_URL / MASTER_SPREADSHEET_ID once silently breaks Find Me and sync.
-# With merge, unspecified vars are preserved, and the optional vars are only
-# included when actually set in the shell, so an empty shell var can never blank
-# a live value. SYNC_TRIGGER_TOKEN is NOT here — it's a Secret Manager secret
-# (see --set-secrets below), so every deploy gets it automatically and it can't
-# be wiped by a shell/CI env that doesn't have it.
+# (REPLACE): the latter wipes every var not re-listed. With merge, unspecified
+# vars are preserved. MATCHER_URL is auto-resolved from the matcher service
+# below (no shell var needed). MASTER_SPREADSHEET_ID is only included when set,
+# so an empty shell var can never blank a live value. SYNC_TRIGGER_TOKEN is NOT
+# here — it's a Secret Manager secret (see --set-secrets below), so every deploy
+# gets it automatically and it can't be wiped by a shell/CI env that lacks it.
 ENV_VARS="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-if [[ -n "${MATCHER_URL:-}" ]];          then ENV_VARS="${ENV_VARS},MATCHER_URL=${MATCHER_URL}"; fi
+
+# MATCHER_URL: don't rely on a shell var that might be missing. Prefer an
+# explicit override, else auto-resolve from the deployed matcher service so the
+# value is always correct and can never drift or go empty across deploys.
+MATCHER_SERVICE="${MATCHER_SERVICE:-matcher}"
+MATCHER_URL="${MATCHER_URL:-$(gcloud run services describe "$MATCHER_SERVICE" \
+  --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)' 2>/dev/null || true)}"
+if [[ -n "$MATCHER_URL" ]]; then
+  ENV_VARS="${ENV_VARS},MATCHER_URL=${MATCHER_URL}"
+else
+  echo "WARN: could not resolve the '$MATCHER_SERVICE' service URL; leaving MATCHER_URL unchanged (merge preserves any existing value)." >&2
+fi
+
 if [[ -n "${MASTER_SPREADSHEET_ID:-}" ]]; then ENV_VARS="${ENV_VARS},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID}"; fi
 echo "==> Setting env vars: ${ENV_VARS}"
 
