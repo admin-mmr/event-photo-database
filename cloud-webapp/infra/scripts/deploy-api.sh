@@ -43,15 +43,16 @@ gcloud builds submit "$REPO_ROOT" \
 echo "==> Deploying revision to Cloud Run service $SERVICE"
 # Build the env-var list. We use --update-env-vars (MERGE), not --set-env-vars
 # (REPLACE): the latter wipes every var not re-listed, so forgetting to export
-# MATCHER_URL / MASTER_SPREADSHEET_ID / SYNC_TRIGGER_TOKEN once silently breaks
-# Find Me, sync, and the indexing triggers. With merge, unspecified vars are
-# preserved. The three optional vars are only included when actually set in the
-# shell, so an empty shell var can never blank a live value.
+# MATCHER_URL / MASTER_SPREADSHEET_ID once silently breaks Find Me and sync.
+# With merge, unspecified vars are preserved, and the optional vars are only
+# included when actually set in the shell, so an empty shell var can never blank
+# a live value. SYNC_TRIGGER_TOKEN is NOT here — it's a Secret Manager secret
+# (see --set-secrets below), so every deploy gets it automatically and it can't
+# be wiped by a shell/CI env that doesn't have it.
 ENV_VARS="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 if [[ -n "${MATCHER_URL:-}" ]];          then ENV_VARS="${ENV_VARS},MATCHER_URL=${MATCHER_URL}"; fi
 if [[ -n "${MASTER_SPREADSHEET_ID:-}" ]]; then ENV_VARS="${ENV_VARS},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID}"; fi
-if [[ -n "${SYNC_TRIGGER_TOKEN:-}" ]];    then ENV_VARS="${ENV_VARS},SYNC_TRIGGER_TOKEN=${SYNC_TRIGGER_TOKEN}"; fi
-echo "==> Setting env vars: ${ENV_VARS//SYNC_TRIGGER_TOKEN=*/SYNC_TRIGGER_TOKEN=***}"
+echo "==> Setting env vars: ${ENV_VARS}"
 
 gcloud run deploy "$SERVICE" \
   --image="$IMAGE" \
@@ -67,7 +68,7 @@ gcloud run deploy "$SERVICE" \
   --concurrency=80 \
   --timeout=60 \
   --update-env-vars="$ENV_VARS" \
-  --set-secrets="CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_KEY=RECAPTCHA_KEY:latest"
+  --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_KEY=RECAPTCHA_KEY:latest"
 # Auth: we deliberately pass NEITHER --allow-unauthenticated nor
 #   --no-allow-unauthenticated, so deploy leaves the service's IAM policy
 #   untouched. Classic Firebase Hosting → Cloud Run rewrites require the service
@@ -78,9 +79,17 @@ gcloud run deploy "$SERVICE" \
 #   the browser's Firebase token with an HTML 401 before it reached the app).
 #   The allUsers binding requires a DRS org-policy exception to (re)create.
 # MASTER_SPREADSHEET_ID = the gas-app master Sheet id ("Sync with Drive", dev plan §8);
-#   empty = POST /api/admin/sync 503s. SYNC_TRIGGER_TOKEN = shared secret for the
-#   Cloud Scheduler trigger + gas-app trigger. These are MERGED in (see above), so
-#   they persist across deploys even if you don't re-export them.
+#   empty = POST /api/admin/sync 503s. MERGED in (see above), so it persists
+#   across deploys even if you don't re-export it.
+# SYNC_TRIGGER_TOKEN = shared secret for the Cloud Scheduler + gas-app indexing
+#   triggers. Sourced from Secret Manager (--set-secrets), so every deploy —
+#   manual or CI — gets it automatically and it can never be blanked by a shell
+#   that doesn't have it. One-time setup (see runbook §0a): create the secret and
+#   grant api-runtime@ secretAccessor:
+#     printf '%s' "<token>" | gcloud secrets create SYNC_TRIGGER_TOKEN --data-file=- --project=mmr-data-pipeline
+#     gcloud secrets add-iam-policy-binding SYNC_TRIGGER_TOKEN --project=mmr-data-pipeline \
+#       --member="serviceAccount:api-runtime@mmr-data-pipeline.iam.gserviceaccount.com" \
+#       --role="roles/secretmanager.secretAccessor"
 # Note: no --add-cloudsql-instances — Cloud SQL was dropped (zero-cost design, runbook Phase F).
 # Runtime SA is api-runtime (least privilege), never the deployer SA (runbook E2).
 

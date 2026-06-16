@@ -48,6 +48,92 @@ curl -s -X POST "$URL/api/admin/index-scan" \
   -H "X-Sync-Token: $TOKEN" -d '{}'
 ```
 
+## 0a. SYNC_TRIGGER_TOKEN in Secret Manager (one-time)
+
+The shared machine-caller secret is sourced from Secret Manager via
+`deploy-api.sh`'s `--set-secrets`, so every deploy (manual or CI) sets it
+automatically and it can never be blanked by a shell/CI env that lacks it.
+Create it once and grant the api runtime access:
+
+```bash
+# Use your existing token value, or generate one: openssl rand -hex 32
+printf '%s' "$SYNC_TRIGGER_TOKEN" | gcloud secrets create SYNC_TRIGGER_TOKEN \
+  --data-file=- --project=mmr-data-pipeline
+gcloud secrets add-iam-policy-binding SYNC_TRIGGER_TOKEN --project=mmr-data-pipeline \
+  --member="serviceAccount:api-runtime@mmr-data-pipeline.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+```
+
+To rotate later: `printf '%s' "<new>" | gcloud secrets versions add SYNC_TRIGGER_TOKEN --data-file=-`,
+then redeploy the api and update the scheduler + gas-app Script Property to match.
+
+> If `SYNC_TRIGGER_TOKEN` was previously set as a **plain env var** on the
+> service, the first deploy with `--set-secrets` will replace it with the
+> secret-backed value (Cloud Run forbids the same key as both). That's expected.
+
+## 0b. Web app access — public invoke + DRS exception (one-time)
+
+The `event-photo-api` Cloud Run service **must be publicly invokable**
+(`allUsers` → `roles/run.invoker`). The app does its own auth
+(`requireAuth`/`requireAdmin`/`X-Sync-Token`), and classic Firebase Hosting →
+Cloud Run rewrites require a public service — there is no Hosting service
+account to authorize (the `service-<num>@gcp-sa-firebasehosting…` SA does not
+exist for classic rewrites). If the service is private, the browser's Firebase
+token (not a Google IAM credential) is rejected by Cloud Run IAM with an **HTML
+401** *before* reaching the app, and there is **no app log line**.
+
+> Symptom: web app shows `Could not load events: GET /api/events failed: HTTP 401`
+> and the response body is Google's HTML `401 Unauthorized` page (not our JSON).
+
+**Do NOT deploy with `--no-allow-unauthenticated`** — it strips the `allUsers`
+binding on every deploy. `deploy-api.sh` now passes neither auth flag, leaving
+IAM untouched.
+
+The org's **Domain Restricted Sharing** policy
+(`constraints/iam.allowedPolicyMemberDomains`) blocks adding `allUsers`:
+
+```
+FAILED_PRECONDITION: One or more users named in the policy do not belong to a
+permitted customer, perhaps due to an organization policy.
+```
+
+To allow it, an **Org Policy Administrator** adds a **project-scoped** exception,
+then re-grants the binding:
+
+1. Inspect current state:
+   ```bash
+   gcloud run services get-iam-policy event-photo-api --region=us-central1 --project=mmr-data-pipeline
+   gcloud org-policies describe iam.allowedPolicyMemberDomains --project=mmr-data-pipeline
+   ```
+2. Override the constraint for **this project only** (Console: IAM & Admin →
+   Organization Policies → "Domain restricted sharing" → select project
+   `mmr-data-pipeline` → Manage policy → Override parent's policy → Add rule →
+   Allow All → Save). Or via gcloud:
+   ```bash
+   cat > /tmp/drs-allow.yaml <<'EOF'
+   name: projects/mmr-data-pipeline/policies/iam.allowedPolicyMemberDomains
+   spec:
+     inheritFromParent: false
+     rules:
+       - allowAll: true
+   EOF
+   gcloud org-policies set-policy /tmp/drs-allow.yaml
+   ```
+   (Needs `roles/orgpolicy.policyAdmin`.) Keep the override scoped to the
+   project, never the org — it relaxes DRS for the whole project, which is
+   acceptable here because every endpoint enforces its own app-level auth.
+3. Re-grant public invoke (wait ~1 min for the policy to propagate):
+   ```bash
+   gcloud run services add-iam-policy-binding event-photo-api \
+     --region=us-central1 --project=mmr-data-pipeline \
+     --member=allUsers --role=roles/run.invoker
+   ```
+4. Reload `mmr-data-pipeline.web.app` — events load and Find Me works.
+
+Because `deploy-api.sh` no longer touches IAM, this binding survives future
+deploys. If a CI run on stale `main` re-strips it, push the current scripts to
+`main` (the fix) and re-run step 3.
+
 ## 1. Deploy the parallelized indexer
 
 ```bash
