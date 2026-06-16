@@ -10,4 +10,5 @@ export * from './schemas/health.js';
 export * from './schemas/common.js';
 export * from './schemas/event.js';
 export * from './schemas/findme.js';
+export * from './schemas/feedback.js';
 export * from './schemas/sync.js';

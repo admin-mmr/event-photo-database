@@ -182,6 +182,31 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
         files = files[: cfg.limit]
     log.info("event %s: %d images in Drive folder %s", cfg.event_id, len(files), folder_id)
 
+    # De-duplicate exact-duplicate images by content hash (B6 / FR-2c). Drive's
+    # md5Checksum is a content hash of the bytes and is already in the listing,
+    # so identical images (re-uploads, the same file copied into several
+    # folders) collapse to ONE photo with no extra download. Canonical = first
+    # in relPath order; later duplicates are dropped from indexing. Files with
+    # no md5 (rare for images) are always kept. Near-duplicate *re-encodes*
+    # (different bytes, same picture) need perceptual hashing — tracked as a B6
+    # follow-up; this pass handles byte-identical duplicates.
+    deduped: list[dict] = []
+    canonical_by_hash: dict[str, str] = {}
+    dup_map: dict[str, list[str]] = {}
+    for f in files:
+        h = f.get("md5Checksum", "")
+        if h and h in canonical_by_hash:
+            dup_map.setdefault(canonical_by_hash[h], []).append(f["id"])
+            continue
+        if h:
+            canonical_by_hash[h] = f["id"]
+        deduped.append(f)
+    dup_count = sum(len(v) for v in dup_map.values())
+    if dup_count:
+        log.info("deduped %d byte-identical duplicate(s) → %d unique image(s)",
+                 dup_count, len(deduped))
+    files = deduped
+
     prev = None if cfg.force else _load_previous(blobs, cfg.event_id)
     prev_rows: dict[str, dict] = {}
     prev_photos: dict[str, dict] = {}
@@ -266,13 +291,18 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
             persons_meta.append({"photoId": pid, "box": person["box"],
                                  "score": person["score"],
                                  "source": person.get("source", "detector")})
+        dup_n = len(dup_map.get(pid, []))
         photos_map[pid] = {"md5": md5, "name": f["name"], "relPath": f["relPath"],
-                           "mimeType": f["mimeType"], "modifiedTime": f.get("modifiedTime", "")}
+                           "mimeType": f["mimeType"], "modifiedTime": f.get("modifiedTime", ""),
+                           "contentHash": md5, "duplicateCount": dup_n}
         embedded += 1
 
         fs.upsert_photo(pid, {
             "eventId": cfg.event_id, "driveFileId": pid, "name": f["name"],
             "relPath": f["relPath"], "mimeType": f["mimeType"], "md5": md5,
+            # contentHash mirrors md5 (Drive's byte checksum); surfaced so the
+            # gallery can defensively de-dupe at list time (B6).
+            "contentHash": md5, "duplicateCount": dup_n,
             "faceCount": len(result["faces"]), "personCount": len(result["persons"]),
             "modelVersion": model_version,
         })
@@ -292,13 +322,16 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
     manifest = {
         "version": 1, "eventId": cfg.event_id, "modelVersion": model_version,
         "faces": faces_meta, "persons": persons_meta, "photos": photos_map,
+        # Audit trail of collapsed duplicates: canonical photoId → [dropped ids].
+        "duplicates": dup_map,
     }
     _write_store(blobs, cfg.event_id, manifest, faces, persons)
 
     summary = {"eventId": cfg.event_id, "photoCount": len(photos_map),
                "faces": len(faces_meta), "persons": len(persons_meta),
                "embedded": embedded, "reused": reused, "skipped": skipped,
-               "removed": len(removed), "modelVersion": model_version}
+               "removed": len(removed), "duplicates": dup_count,
+               "modelVersion": model_version}
     fs.set_index_state(cfg.event_id, {"status": "done", **summary})
     log.info("done: %s", summary)
     return summary

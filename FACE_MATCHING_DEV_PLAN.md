@@ -271,6 +271,23 @@ Each phase maps to a PRD milestone and lists ticket-sized tasks. "DoD" = definit
 
 ---
 
+> **⚠️ STATUS UPDATE (2026-06-16b) — §5A B3/B6/B7 shipped (code).** Completes the
+> §5A backlog (CI-green locally: api 56, web 15, indexer 13; typecheck + eslint
+> clean): **B6** content-hash de-dup — the indexer collapses byte-identical
+> images by Drive `md5Checksum` before download (canonical = first in relPath
+> order), stores `contentHash`/`duplicateCount` on each photo + a `duplicates`
+> audit map in the manifest and `indexState.duplicates`; `gallery.ts` de-dupes
+> defensively at list time; new admin `GET /api/events/:id/duplicates` audit
+> route. Perceptual-hash dedup of re-encodes is a noted follow-up. **B7**
+> wrong-match feedback — shared `feedback` schema, `api/src/routes/feedback.ts`
+> writing immutable `match_feedback` docs keyed to `runId`, per-result "Not me /
+> That's me" buttons with optimistic removal. **B3** reference-selfie history —
+> `FindMe.tsx` keeps a result set per uploaded selfie with a picker to switch,
+> an explicit deduped Combined view, and no cross-upload blending elsewhere
+> (pure `web/src/lib/results.ts` helpers, unit-tested). **B6 needs an indexer
+> re-run** (`{"force":true}`) on already-indexed events to collapse existing
+> duplicates and populate `contentHash`. Not yet deployed/pushed.
+>
 > **⚠️ STATUS UPDATE (2026-06-16) — §5A P0 + cheap bug fixes shipped (code).**
 > Implemented and unit-tested (CI-green locally: api 52, web 11, indexer 12;
 > typecheck + eslint clean): **B1** original-resolution batch ZIP download

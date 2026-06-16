@@ -9,6 +9,7 @@ import {
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
+import { requireAdmin } from '../middleware/admin.js';
 import { allowCronOrAdmin } from '../middleware/cronAuth.js';
 import { triggerIndexJob } from '../services/indexerJob.js';
 
@@ -31,6 +32,40 @@ eventsRouter.get('/events', requireAuth, async (_req, res, next) => {
     );
     const body: ListEventsResponse = { ok: true, events };
     res.json(body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/events/:id/duplicates — admin audit of de-duplicated photos
+ * (B6 / FR-2c). Reports how many byte-identical duplicates the indexer collapsed
+ * and which canonical photos absorbed them, so an admin can verify dedup is
+ * working without digging into the GCS manifest.
+ */
+eventsRouter.get('/events/:id/duplicates', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const eventId = String(req.params.id);
+    const snap = await firestore().collection('photos').where('eventId', '==', eventId).get();
+
+    let duplicatesRemoved = 0;
+    const byPhoto: Array<{ photoId: string; name: string; duplicateCount: number }> = [];
+    for (const d of snap.docs) {
+      const n = Number(d.data().duplicateCount ?? 0);
+      if (n > 0) {
+        duplicatesRemoved += n;
+        byPhoto.push({ photoId: d.id, name: String(d.data().name ?? ''), duplicateCount: n });
+      }
+    }
+    byPhoto.sort((a, b) => b.duplicateCount - a.duplicateCount);
+
+    res.json({
+      ok: true,
+      eventId,
+      uniquePhotos: snap.size,
+      duplicatesRemoved,
+      byPhoto,
+    });
   } catch (err) {
     next(err);
   }

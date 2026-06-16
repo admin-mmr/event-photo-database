@@ -19,6 +19,8 @@ export const IndexStateSchema = z.object({
   reused: z.number().int().nonnegative().optional(),
   skipped: z.number().int().nonnegative().optional(),
   removed: z.number().int().nonnegative().optional(),
+  /** Byte-identical duplicates collapsed during indexing (B6 / FR-2c). */
+  duplicates: z.number().int().nonnegative().optional(),
 });
 export type IndexState = z.infer<typeof IndexStateSchema>;
 

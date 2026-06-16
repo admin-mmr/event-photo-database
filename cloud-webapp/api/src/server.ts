@@ -8,6 +8,7 @@ import { eventsRouter } from './routes/events.js';
 import { galleryRouter } from './routes/gallery.js';
 import { findmeRouter } from './routes/findme.js';
 import { downloadRouter } from './routes/download.js';
+import { feedbackRouter } from './routes/feedback.js';
 import { syncRouter } from './routes/sync.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 
@@ -68,6 +69,7 @@ export function buildServer(): express.Express {
   app.use('/api', galleryRouter);
   app.use('/api', findmeRouter);
   app.use('/api', downloadRouter);
+  app.use('/api', feedbackRouter);
   app.use('/api', syncRouter);
 
   // 404 + final error handler must be registered last.

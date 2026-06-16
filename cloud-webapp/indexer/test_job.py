@@ -237,3 +237,31 @@ def test_event_name_not_clobbered_when_already_set(env):
     drive.folder_names = {"folder123": "Spring Run 2026"}
     _run(drive, fs, blobs)
     assert fs.events["ev1"]["name"] == "Custom Admin Name"
+
+
+def test_byte_identical_duplicates_collapse_to_one_photo(tmp_path):
+    """B6: two files with the same content hash → one indexed photo + audit."""
+    dup_bytes = _png((123, 222, 11))
+    drive = FakeDrive({
+        # f1 and f3 are byte-identical (same md5) — f3 should be dropped.
+        "f1": drive_file("a.png", "md5-dup", dup_bytes),
+        "f2": drive_file("b.png", "md5-b", _png((10, 10, 240))),
+        "f3": drive_file("c.png", "md5-dup", dup_bytes),
+    })
+    fs = FakeFS(events={"ev1": {"driveFolderId": "folder123"}})
+    blobs = BlobStore(str(tmp_path))
+
+    summary = _run(drive, fs, blobs)
+
+    # Canonical = first in relPath order ("a.png" → f1); f3 collapsed into it.
+    assert summary["photoCount"] == 2
+    assert summary["duplicates"] == 1
+    assert set(fs.photos.keys()) == {"f1", "f2"}
+    assert "f3" not in fs.photos
+    assert fs.photos["f1"]["duplicateCount"] == 1
+    assert fs.photos["f1"]["contentHash"] == "md5-dup"
+    # The duplicate's bytes were never downloaded twice.
+    assert drive.downloads.count("f3") == 0
+
+    manifest = json.loads(blobs.read(f"ev1/{EMB_DIR}/{MANIFEST}"))
+    assert manifest["duplicates"] == {"f1": ["f3"]}

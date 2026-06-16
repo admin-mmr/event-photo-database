@@ -33,15 +33,29 @@ galleryRouter.get('/events/:id/photos', requireAuth, async (req, res, next) => {
       .limit(MAX_PHOTOS)
       .get();
 
-    const metas = snap.docs.map((d) => ({
+    const allMetas = snap.docs.map((d) => ({
       photoId: d.id,
       name: String(d.data().name ?? ''),
+      contentHash: String(d.data().contentHash ?? ''),
     }));
+
+    // Defensive de-dupe at list time (B6 / FR-2c): the indexer already collapses
+    // byte-identical images, but events indexed before that logic (or with mixed
+    // model versions) can still hold duplicates. Keep the first photo per
+    // contentHash; photos with no hash are always kept (can't dedupe safely).
+    const seenHashes = new Set<string>();
+    const metas = allMetas.filter((m) => {
+      if (!m.contentHash) return true;
+      if (seenHashes.has(m.contentHash)) return false;
+      seenHashes.add(m.contentHash);
+      return true;
+    });
 
     const signed = await signPhotoUrls(eventId, metas.map((m) => m.photoId));
     const urlsById = new Map(signed.map((s) => [s.photoId, s]));
     const photos: GalleryPhoto[] = metas.map((m) => ({
-      ...m,
+      photoId: m.photoId,
+      name: m.name,
       thumbUrl: urlsById.get(m.photoId)?.thumbUrl ?? '',
       webUrl: urlsById.get(m.photoId)?.webUrl ?? '',
     }));
