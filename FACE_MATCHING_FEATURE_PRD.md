@@ -148,6 +148,34 @@ The six-step journey from the request, expanded into requirements. Each requirem
 
 **FR-20.** All states have explicit designs: loading, empty, no-face, low-confidence-only, over-rate-limit, consent-declined, and error.
 
+### 4.8 Demo-feedback refinements (added 2026-06-15)
+
+These come from hands-on use of the shipped demo fast-path (see DEV_PLAN §0 status banner, 2026-06-12) on the live event `d2307147-…`. Some are bugs in the demo slice; some are clarifications of requirements already specified above (FR-9/FR-11/FR-12/FR-15) that the demo deferred. Build tickets are in `FACE_MATCHING_DEV_PLAN.md` §5A.
+
+**FR-1b (event name).** Each event must display its human-readable name, never a placeholder. The demo shows "Untitled event" because the Firestore `events` doc has no `name` (the indexer/sync never populated it). The indexer/Drive-sync must set `name` from the Drive folder name (with an admin-editable override), and the UI must fall back to a sensible label, never the literal "Untitled event", when a name is genuinely absent.
+
+*Acceptance:* a freshly indexed event shows the Drive folder name on the Events list, the Gallery header, and the document title; admin can rename; no user-facing "Untitled event" string for an event that has photos.
+
+**FR-2b (navigation back to event / events).** From the Gallery the user must be able to return to the event view and the Events list. Provide a back control (breadcrumb or back button) and ensure browser back works. The demo Gallery is a dead-end with no way back.
+
+*Acceptance:* Gallery shows a persistent "← Events" (and event-level) affordance; browser back and the in-app control both return without a full reload or auth bounce; works on mobile.
+
+**FR-2c (duplicate photos in the gallery).** The gallery must not show the same photo twice. Duplicates are de-duplicated at index time (preferred) and defensively at list time. Dedup key: content hash of the original (e.g. SHA-256 of bytes, or perceptual hash for re-encoded copies), not filename — the same shot can land in Drive under different names. A duplicate maps to a single `photoId`; its embeddings and gallery tile appear once.
+
+*Acceptance:* indexing the live event produces no visually identical tiles; re-running index does not create new dupes; an audit query reports zero duplicate content hashes per event.
+
+**FR-9b (show & switch the active reference selfie).** Results must make explicit **which uploaded selfie produced the current set**, and let the user switch between previously uploaded selfies to see each one's distinct result set. This sharpens FR-9/FR-10: the demo mixes results from multiple people's uploads into one undifferentiated set, which is the reported confusion. Each upload in the session/history is a selectable source (thumbnail + label + match count); selecting one shows only that selfie's matches; results never silently combine across different reference photos unless the user picks the explicit "All my matches (deduplicated)" view.
+
+*Acceptance:* the active reference selfie thumbnail is visible above the results; an upload-history picker lists prior selfies for the session (and, for signed-in users, recent runs) with per-selfie match counts; switching selfies swaps the result set; no result set blends two different reference uploads except the explicitly-labeled combined view.
+
+**FR-11/FR-12 reaffirmed — original-resolution batch download is the top-priority gap.** Batch ZIP download of **original full-resolution** files (FR-12) plus the selection UI (FR-11) are confirmed as the single most-wanted capability and are the highest priority of this backlog. Clarifications: the ZIP must contain originals (not the `web`/`thumb` derivatives); the selection bar must support **Select all**, **Select none**, and **select-all-then-deselect-wrong-ones** as first-class actions; download acts on the current selection.
+
+*Acceptance:* as FR-11/FR-12, with the added assertion that ZIP entries are byte-for-byte the original Drive files (or the `orig` derivative when the original is unservable), and the three selection actions are present and keyboard-accessible.
+
+**FR-15 reaffirmed — wrong-match feedback.** The "Not me / wrong match" control (FR-15) is in scope for this round so users can flag incorrect results; it pairs with FR-9b (a wrong match is often a different person's selfie bleeding in) to drive both removal and quality monitoring.
+
+*Acceptance:* as FR-15.
+
 ---
 
 ## 5. System architecture

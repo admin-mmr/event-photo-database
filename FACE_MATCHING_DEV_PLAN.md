@@ -24,6 +24,8 @@ This is the build plan for the PRD. It is organized as: prerequisites → GCP pr
 
 > **⚠️ STATUS UPDATE (2026-06-12) — demo fast-path.** For the stakeholder demo, M2 (search API: `matcherClient.ts`, `gcsService.ts` signed URLs, `findme.ts` route) plus a minimal slice of M3 (Events/Gallery/FindMe pages, Firebase Auth, simple consent checkbox) shipped ahead of full M3. Demo-scope deferrals tracked in `cloud-webapp/docs/DEMO_CHECKLIST.md`: ZH localization, enrollment/MyData, minor-guardian consent path, Drive mirror of reference uploads (D6), rate limit + reCAPTCHA (M5.3), feedback UI (M4). These remain on the plan's original schedule. Remaining human steps to a live demo are in the checklist.
 
+> **⚠️ STATUS UPDATE (2026-06-15) — demo-feedback backlog.** Hands-on use of the shipped demo on the live event surfaced two bugs (no back-navigation out of the Gallery; events display as "Untitled event") and a confirmed priority ordering for the deferred M3/M4 work (original-resolution batch download is the most-wanted feature). PRD §4.8 adds FR-1b, FR-2b, FR-2c, FR-9b and reaffirms FR-11/FR-12/FR-15. Ticket-level build sequence is in **§5A** below; it slots into the existing M3/M4 milestones rather than adding a new milestone.
+
 ## 1. Prerequisites & assumptions
 
 - **Photos already in Drive.** Event photos live in Drive folders today. We do *not* move them; the indexing pipeline mirrors copies to Cloud Storage for serving + embedding. Drive stays SSOT.
@@ -266,6 +268,26 @@ Each phase maps to a PRD milestone and lists ticket-sized tasks. "DoD" = definit
 | 6.4 | Remove flag; general rollout to link/login-gated events |
 
 **Rough total:** ~10–12 weeks of focused work for 1–2 engineers — consistent with the "6–10 weeks part-time" envelope in `UX_AND_GCP_ASSESSMENT.md` §2.6, with the extra time attributable to the ML/privacy surface.
+
+---
+
+## 5A. Demo-feedback backlog (2026-06-15)
+
+Tickets from hands-on use of the shipped demo (PRD §4.8). Priority is **P0** (ship next) → **P2**. These do not add a milestone; they slot into M1 (indexing), M3 (frontend), and M4 (download/feedback). Two are bugs in the demo slice; the rest are deferred-but-designed work now confirmed and ordered.
+
+| # | Item (PRD ref) | Type | Priority | Maps to | Files | Notes |
+|---|---|---|---|---|---|---|
+| B1 | Original-resolution batch ZIP download (FR-12) | feature | **P0** | M4.2 | `api/src/routes/download.ts`, `services/gcsService.ts`, `web/src/pages/Results.tsx` | The most-wanted capability. ZIP streams the **originals** (or `orig` derivative), not `web`/`thumb`. Short-TTL signed URLs; per-user rate limit (§M5.3). |
+| B2 | Selection UI before download (FR-11) | feature | **P0** | M4.1 | `web/src/pages/Results.tsx`, `components/SelectBar` | First-class **Select all / Select none / select-all-then-deselect**. Selection drives B1. Keyboard-accessible. |
+| B3 | Show & switch active reference selfie (FR-9b) | feature | **P1** | M3.3 | `web/src/pages/FindMe.tsx`, `Results.tsx`, `api/src/routes/findme.ts` | Display the selfie that produced the current set; upload-history picker to switch per-selfie result sets. Fixes "results from different people are mixed." No silent cross-upload blending except the explicit deduped combined view. |
+| B4 | Gallery → back to event / Events (FR-2b) | **bug** | **P1** | M3.1 | `web/src/pages/Gallery.tsx`, router/`App.tsx` | Add breadcrumb/back control; ensure browser back works without reload/auth bounce. |
+| B5 | Event name instead of "Untitled event" (FR-1b) | **bug** | **P1** | M1.3 / M1.4 | `indexer/job.py`, `api/src/routes/events.ts`, `web/src/pages/{Events,Gallery}.tsx` | Populate `events.name` from Drive folder name at index/sync; admin-editable override; UI never renders the literal "Untitled event" for an event with photos. |
+| B6 | De-duplicate gallery photos (FR-2c) | feature | **P1** | M1.3 / M1.5 | `indexer/job.py`, `api/src/routes/events.ts` | Dedup at index time by content hash (SHA-256 of bytes; perceptual hash for re-encodes), not filename. One `photoId` per unique image; defensive de-dupe at list time. Add an audit query. |
+| B7 | Wrong-match feedback (FR-15) | feature | **P2** | M4.4 | `api/src/routes/feedback.ts`, `web/` | "Not me / wrong match" per result → `match_feedback`, optimistic removal. Pairs with B3. Already an M4 deliverable; confirmed in scope this round. |
+
+**Sequencing.** B1+B2 ship together first (they are the headline ask and are mutually dependent). B4 and B5 are cheap bug fixes that can land in parallel. B3 is the largest frontend change and lands with B7. B6 requires an indexer re-run on the live event after the hash logic is added (use `{"force":true}` per `CLAUDE.md` indexer notes).
+
+**Test additions (extend §6).** Download: assert ZIP entries are original bytes and links die after TTL. Selection: reducer unit tests for all-three actions. FR-9b: result sets never merge across distinct uploads except the combined view. Dedup: indexing a folder with known duplicates yields one tile per unique content hash. Event name: indexed event exposes a non-empty `name`; UI fallback never emits "Untitled event".
 
 ---
 
