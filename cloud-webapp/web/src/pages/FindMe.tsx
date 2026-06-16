@@ -1,7 +1,9 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import type { SearchResponse, MatchResult } from '@cloud-webapp/shared';
-import { apiUpload, ApiError } from '../lib/api.js';
+import type { SearchResponse, MatchResult, DownloadRequest } from '@cloud-webapp/shared';
+import { apiUpload, apiDownloadFile, ApiError } from '../lib/api.js';
+import { useSelection } from '../lib/selection.js';
+import { SelectBar } from '../components/SelectBar.js';
 
 type Phase = 'consent' | 'pick' | 'searching' | 'results';
 
@@ -16,7 +18,29 @@ export function FindMe(): JSX.Element {
   const [agreed, setAgreed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<MatchResult[]>([]);
+  const [downloading, setDownloading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  const ids = useMemo(() => results.map((r) => r.photoId), [results]);
+  const sel = useSelection(ids);
+
+  async function downloadSelected(): Promise<void> {
+    if (sel.count === 0) return;
+    setDownloading(true);
+    setError(null);
+    try {
+      const body: DownloadRequest = { photoIds: [...sel.selected] };
+      await apiDownloadFile(
+        `/api/events/${encodeURIComponent(eventId)}/download`,
+        body,
+        'my-photos.zip',
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Download failed');
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   async function search(file: File): Promise<void> {
     setPhase('searching');
@@ -27,6 +51,7 @@ export function FindMe(): JSX.Element {
     form.set('consent', 'true');
     try {
       const res = await apiUpload<SearchResponse>('/api/findme/search', form);
+      sel.selectNone();
       setResults(res.results);
       setPhase('results');
     } catch (e) {
@@ -114,21 +139,34 @@ export function FindMe(): JSX.Element {
           ) : (
             <>
               <p className="muted">
-                {results.length} possible matches, best first. Tap a photo to download it.
+                {results.length} possible matches, best first. Tap to select, then download the
+                originals.
               </p>
+              <SelectBar
+                total={ids.length}
+                selectedCount={sel.count}
+                busy={downloading}
+                onSelectAll={sel.selectAll}
+                onSelectNone={sel.selectNone}
+                onInvert={sel.invert}
+                onDownload={() => void downloadSelected()}
+              />
               <div className="photo-grid">
-                {results.map((r) => (
-                  <a
-                    key={r.photoId}
-                    className="photo-cell"
-                    href={r.webUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <img src={r.thumbUrl} alt="" loading="lazy" />
-                    <span className="score-chip">{Math.round(r.score * 100)}%</span>
-                  </a>
-                ))}
+                {results.map((r) => {
+                  const checked = sel.isSelected(r.photoId);
+                  return (
+                    <button
+                      key={r.photoId}
+                      className={`photo-cell${checked ? ' selected' : ''}`}
+                      aria-pressed={checked}
+                      onClick={() => sel.toggle(r.photoId)}
+                    >
+                      <img src={r.thumbUrl} alt="" loading="lazy" />
+                      <span className="score-chip">{Math.round(r.score * 100)}%</span>
+                      <span className="select-tick">{checked ? '✓' : ''}</span>
+                    </button>
+                  );
+                })}
               </div>
             </>
           )}

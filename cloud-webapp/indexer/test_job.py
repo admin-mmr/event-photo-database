@@ -42,6 +42,11 @@ class FakeDrive:
         self.downloads.append(file_id)
         return self.files[file_id]["data"]
 
+    def get_folder_name(self, folder_id: str) -> str:
+        return self.folder_names.get(folder_id, "")
+
+    folder_names: dict[str, str] = {}
+
 
 class FakeFS:
     def __init__(self, events: dict | None = None):
@@ -54,6 +59,13 @@ class FakeFS:
 
     def set_index_state(self, event_id, state):
         self.states.append(state)
+
+    def set_event_name_if_empty(self, event_id, name):
+        ev = self.events.setdefault(event_id, {})
+        if not name or str(ev.get("name", "") or "").strip():
+            return False
+        ev["name"] = name
+        return True
 
     def upsert_photo(self, photo_id, doc):
         self.photos[photo_id] = {**self.photos.get(photo_id, {}), **doc}
@@ -208,3 +220,20 @@ def test_matcher_store_can_load_indexer_output(env, monkeypatch, tmp_path):
     ev = EmbeddingStore(blobs.root).load_event("ev1")
     hits = ev.top_k("face", np.ones(DIM, np.float32), k=2)
     assert len(hits) == 2 and {h["photoId"] for h in hits} == {"f1", "f2"}
+
+
+def test_event_name_backfilled_from_drive_folder_when_empty(env):
+    """B5: a nameless event gets named from its Drive folder during indexing."""
+    drive, fs, blobs = env
+    drive.folder_names = {"folder123": "Spring Run 2026"}
+    _run(drive, fs, blobs)
+    assert fs.events["ev1"]["name"] == "Spring Run 2026"
+
+
+def test_event_name_not_clobbered_when_already_set(env):
+    """B5: an admin/Sheet-provided name is preserved, not overwritten."""
+    drive, fs, blobs = env
+    fs.events["ev1"]["name"] = "Custom Admin Name"
+    drive.folder_names = {"folder123": "Spring Run 2026"}
+    _run(drive, fs, blobs)
+    assert fs.events["ev1"]["name"] == "Custom Admin Name"

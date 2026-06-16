@@ -271,6 +271,23 @@ Each phase maps to a PRD milestone and lists ticket-sized tasks. "DoD" = definit
 
 ---
 
+> **⚠️ STATUS UPDATE (2026-06-16) — §5A P0 + cheap bug fixes shipped (code).**
+> Implemented and unit-tested (CI-green locally: api 52, web 11, indexer 12;
+> typecheck + eslint clean): **B1** original-resolution batch ZIP download
+> (`api/src/routes/download.ts` streaming `application/zip` of the `orig`
+> derivatives; `gcsService` orig helpers + mime→ext map mirroring `indexer/job.py`;
+> shared `DownloadRequest` + `MAX_DOWNLOAD_PHOTOS=200`; `apiDownloadFile` client
+> helper), **B2** selection UI (pure `selection.ts` reducer + `useSelection` hook,
+> `SelectBar` with Select all / none / invert, wired into FindMe results **and** the
+> Gallery), **B4** Gallery back-navigation (breadcrumb to Events + event-name
+> header), **B5** real event names (indexer backfills `events.name` from the Drive
+> folder name when empty — never clobbering an admin/Sheet name — `gallery` API
+> returns `eventName`, and the shared `eventLabel()` helper guarantees the literal
+> "Untitled event" is never shown for an event with photos). Still open in §5A:
+> **B3** (switch active selfie), **B6** (content-hash dedup, needs an indexer
+> re-run), **B7** (wrong-match feedback). New runtime dep: `archiver`. No new IAM
+> (api-runtime already has derivatives access for signing). Not yet deployed/pushed.
+
 ## 5A. Demo-feedback backlog (2026-06-15)
 
 Tickets from hands-on use of the shipped demo (PRD §4.8). Priority is **P0** (ship next) → **P2**. These do not add a milestone; they slot into M1 (indexing), M3 (frontend), and M4 (download/feedback). Two are bugs in the demo slice; the rest are deferred-but-designed work now confirmed and ordered.
@@ -284,10 +301,13 @@ Tickets from hands-on use of the shipped demo (PRD §4.8). Priority is **P0** (s
 | B5 | Event name instead of "Untitled event" (FR-1b) | **bug** | **P1** | M1.3 / M1.4 | `indexer/job.py`, `api/src/routes/events.ts`, `web/src/pages/{Events,Gallery}.tsx` | Populate `events.name` from Drive folder name at index/sync; admin-editable override; UI never renders the literal "Untitled event" for an event with photos. |
 | B6 | De-duplicate gallery photos (FR-2c) | feature | **P1** | M1.3 / M1.5 | `indexer/job.py`, `api/src/routes/events.ts` | Dedup at index time by content hash (SHA-256 of bytes; perceptual hash for re-encodes), not filename. One `photoId` per unique image; defensive de-dupe at list time. Add an audit query. |
 | B7 | Wrong-match feedback (FR-15) | feature | **P2** | M4.4 | `api/src/routes/feedback.ts`, `web/` | "Not me / wrong match" per result → `match_feedback`, optimistic removal. Pairs with B3. Already an M4 deliverable; confirmed in scope this round. |
+| B8 | Instant event-metadata push on creation | feature | **P1** | M1.4 | `gas-app/src/routes/uploadHandlers.ts` (+ event/link creation handlers), `gas-app/src/services/indexTriggerClient.ts`, `api/src/routes/sync.ts` | Today new events reach Firestore only via the **daily** `findme-drive-sync` reconciler — no GAS push on creation. Have the gas-app call `POST /api/admin/sync` (reusing the existing `X-Sync-Token` machine path, same as B-series triggers) immediately after creating an event or upload link, so events/names appear in seconds, not up to a day. Best-effort/non-fatal like the end-of-batch index trigger; the daily reconciler stays as backstop. **Photo indexing already auto-pushes** (end-of-batch `triggerEventIndex` + 10-min `findme-index-scan`); this closes the remaining metadata gap. NOT the abandoned per-photo `firestoreClient.ts` push path. |
 
-**Sequencing.** B1+B2 ship together first (they are the headline ask and are mutually dependent). B4 and B5 are cheap bug fixes that can land in parallel. B3 is the largest frontend change and lands with B7. B6 requires an indexer re-run on the live event after the hash logic is added (use `{"force":true}` per `CLAUDE.md` indexer notes).
+**Sequencing.** B1+B2 ship together first (they are the headline ask and are mutually dependent). B4 and B5 are cheap bug fixes that can land in parallel. **B8 should land with (or just before) B5** — instant metadata sync is the root cause of the "Untitled event" delay B5 fixes; with B8 a freshly created event surfaces its name in seconds. B3 is the largest frontend change and lands with B7. B6 requires an indexer re-run on the live event after the hash logic is added (use `{"force":true}` per `CLAUDE.md` indexer notes).
 
-**Test additions (extend §6).** Download: assert ZIP entries are original bytes and links die after TTL. Selection: reducer unit tests for all-three actions. FR-9b: result sets never merge across distinct uploads except the combined view. Dedup: indexing a folder with known duplicates yields one tile per unique content hash. Event name: indexed event exposes a non-empty `name`; UI fallback never emits "Untitled event".
+**Auto-push status (context for B8).** Photo indexing is already fully event-driven: a finished upload batch fires `triggerEventIndex` → `POST /api/events/:id/index`, with a 10-minute `findme-index-scan` backstop (`AUTOMATED_INDEXING_IMPLEMENTATION.md` / `AUTOMATED_INDEXING_RUNBOOK.md`). The only non-instant link in the GAS→cloud chain is **event/link creation**, which today waits on the daily reconciler — that is exactly what B8 closes.
+
+**Test additions (extend §6).** Download: assert ZIP entries are original bytes and links die after TTL. Selection: reducer unit tests for all-three actions. FR-9b: result sets never merge across distinct uploads except the combined view. Dedup: indexing a folder with known duplicates yields one tile per unique content hash. Event name: indexed event exposes a non-empty `name`; UI fallback never emits "Untitled event". B8: creating an event/link in the gas-app issues a `POST /api/admin/sync` and the event appears in Firestore without waiting for the daily job; a failed sync call is swallowed (non-fatal) and the daily reconciler still backfills.
 
 ---
 

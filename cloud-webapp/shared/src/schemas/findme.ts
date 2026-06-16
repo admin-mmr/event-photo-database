@@ -20,9 +20,25 @@ export type GalleryPhoto = z.infer<typeof GalleryPhotoSchema>;
 export const ListPhotosResponseSchema = z.object({
   ok: z.literal(true),
   eventId: z.string(),
+  /** Human-readable event name (from Drive folder / master Sheet). Empty when
+   *  the event has no name yet — the UI applies its own fallback (B5). */
+  eventName: z.string().default(''),
   photos: z.array(GalleryPhotoSchema),
 });
 export type ListPhotosResponse = z.infer<typeof ListPhotosResponseSchema>;
+
+// ── Batch download (POST /api/events/:id/download → application/zip) ──────────
+
+/** Hard cap on photos per ZIP request — bounds server memory/time and the
+ *  client-side blob. Realistic selections are dozens; large galleries should
+ *  download in batches. Revisit with streaming-to-disk if this becomes a
+ *  limit users hit (see B1 follow-up note). */
+export const MAX_DOWNLOAD_PHOTOS = 200;
+
+export const DownloadRequestSchema = z.object({
+  photoIds: z.array(z.string().min(1)).min(1).max(MAX_DOWNLOAD_PHOTOS),
+});
+export type DownloadRequest = z.infer<typeof DownloadRequestSchema>;
 
 // ── Search (POST /api/findme/search, multipart) ──────────────────────────────
 

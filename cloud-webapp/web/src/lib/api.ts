@@ -64,3 +64,40 @@ export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
   if (!res.ok) throw await parseError(res, `POST ${path} failed: HTTP ${res.status}`);
   return (await res.json()) as T;
 }
+
+/**
+ * POST a JSON body and save the binary response as a file (B1 ZIP download).
+ * A plain <a download> can't carry the Firebase bearer header, so we fetch the
+ * blob and save it via an object URL. The blob lives in browser memory — the
+ * server caps the photo count to keep that bounded.
+ */
+export async function apiDownloadFile<B = unknown>(
+  path: string,
+  body: B,
+  filename: string,
+): Promise<void> {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/zip, application/octet-stream',
+      ...(await authHeader()),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await parseError(res, `POST ${path} failed: HTTP ${res.status}`);
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    // Defer revoke so the download has a chance to start across browsers.
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+}

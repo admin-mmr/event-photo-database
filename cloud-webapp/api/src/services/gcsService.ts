@@ -18,6 +18,7 @@
  *     --role="roles/iam.serviceAccountTokenCreator"
  */
 
+import type { File } from '@google-cloud/storage';
 import { Storage } from '@google-cloud/storage';
 import { env } from '../lib/config.js';
 
@@ -31,6 +32,51 @@ function getStorage(): Storage {
 }
 
 export type DerivativeKind = 'thumb' | 'web' | 'orig';
+
+/**
+ * MIME → original file extension. Mirrors `ORIG_EXT_BY_MIME` in
+ * `indexer/job.py` so we reconstruct the exact `orig/<photoId>.<ext>` key the
+ * indexer wrote. Keep the two in sync. Unknown types fall back to `bin`, which
+ * is what the indexer stores them under too.
+ */
+export const ORIG_EXT_BY_MIME: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+  'image/webp': 'webp',
+  'image/tiff': 'tif',
+};
+
+export function origExtForMime(mimeType: string | undefined): string {
+  return (mimeType && ORIG_EXT_BY_MIME[mimeType]) || 'bin';
+}
+
+/** GCS object key for a derivative/original of a photo. */
+export function objectPath(
+  eventId: string,
+  photoId: string,
+  kind: DerivativeKind,
+  ext = 'jpg',
+): string {
+  return `${eventId}/photos/${kind}/${photoId}.${ext}`;
+}
+
+/** Bucket file handle for an original — used to stream bytes into a ZIP. */
+export function origFile(eventId: string, photoId: string, mimeType: string | undefined): File {
+  return getStorage()
+    .bucket(env.DERIVATIVES_BUCKET)
+    .file(objectPath(eventId, photoId, 'orig', origExtForMime(mimeType)));
+}
+
+/** Signed URL for a single original (e.g. "download this one" on Results). */
+export async function signOrigUrl(
+  eventId: string,
+  photoId: string,
+  mimeType: string | undefined,
+): Promise<string> {
+  return signPhotoUrl(eventId, photoId, 'orig', origExtForMime(mimeType));
+}
 
 export async function signPhotoUrl(
   eventId: string,

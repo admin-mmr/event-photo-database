@@ -108,6 +108,18 @@ class DriveClient:
                     return json.load(resp)
             raise
 
+    def get_folder_name(self, folder_id: str) -> str:
+        """Display name of a Drive folder (used to label the event — B5).
+
+        Returns "" on any error so a metadata hiccup never fails an index run.
+        """
+        try:
+            params = {"fields": "name", "supportsAllDrives": "true"}
+            meta = self._get_json(f"{DRIVE}/{folder_id}?{urllib.parse.urlencode(params)}")
+            return str(meta.get("name", "") or "")
+        except Exception:  # noqa: BLE001 — best-effort; naming is non-critical
+            return ""
+
     def list_images(self, folder_id: str, rel: str = "") -> list[dict]:
         """Recursively list image files in a folder.
 

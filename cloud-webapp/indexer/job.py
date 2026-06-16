@@ -84,6 +84,21 @@ class FirestoreMeta:
         stamped = {"updatedAt": datetime.now(timezone.utc).isoformat(), **state}
         self._db.collection("events").document(event_id).set({"indexState": stamped}, merge=True)
 
+    def set_event_name_if_empty(self, event_id: str, name: str) -> bool:
+        """Set events.name only if it's currently empty (B5).
+
+        Never clobbers a name already set by an admin or the master-Sheet
+        reconciler — the Drive folder name is just a sensible default for
+        events that have none. Returns True if a write happened.
+        """
+        if not name:
+            return False
+        ev = self.get_event(event_id) or {}
+        if str(ev.get("name", "") or "").strip():
+            return False
+        self._db.collection("events").document(event_id).set({"name": name}, merge=True)
+        return True
+
     def upsert_photo(self, photo_id: str, doc: dict) -> None:
         self._db.collection("photos").document(photo_id).set(doc, merge=True)
 
@@ -151,6 +166,16 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
                          f"events/{cfg.event_id} or pass DRIVE_FOLDER_ID)")
 
     fs.set_index_state(cfg.event_id, {"status": "running", "modelVersion": model_version})
+
+    # Label the event from its Drive folder name when it has none yet (B5).
+    # Best-effort: a metadata hiccup must not fail the run.
+    try:
+        if hasattr(fs, "set_event_name_if_empty") and hasattr(drive, "get_folder_name"):
+            folder_name = drive.get_folder_name(folder_id)
+            if folder_name and fs.set_event_name_if_empty(cfg.event_id, folder_name):
+                log.info("event %s named from Drive folder: %r", cfg.event_id, folder_name)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("event-name backfill skipped (%s)", exc)
 
     files = sorted(drive.list_images(folder_id), key=lambda f: f["relPath"])
     if cfg.limit:

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { ListEventsResponse, EventSummary, TriggerIndexResponse } from '@cloud-webapp/shared';
 import { apiGet, apiPost, ApiError } from '../lib/api.js';
+import { eventLabel } from '../lib/eventLabel.js';
 
 /** Compact "x minutes ago" for the last-indexed timestamp. */
 function timeAgo(iso?: string): string {
@@ -109,11 +110,13 @@ export function Events(): JSX.Element {
             const photoCount = ev.indexState?.photoCount;
             const updated = timeAgo(ev.indexState?.updatedAt);
             const hasName = Boolean(ev.name);
+            const hasPhotos = (photoCount ?? 0) > 0;
+            const label = eventLabel({ name: ev.name, date: ev.date, id: ev.id, hasPhotos });
             return (
               <li key={ev.id} className="event-card">
                 <div className="event-row">
                   <Link to={`/events/${ev.id}`} className="event-link">
-                    <span className="event-name">{hasName ? ev.name : 'Untitled event'}</span>
+                    <span className="event-name">{label}</span>
                     {ev.date && <span className="event-date">{ev.date}</span>}
                     {!hasName && <span className="event-id muted">{ev.id}</span>}
                   </Link>

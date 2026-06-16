@@ -46,7 +46,8 @@ galleryRouter.get('/events/:id/photos', requireAuth, async (req, res, next) => {
       webUrl: urlsById.get(m.photoId)?.webUrl ?? '',
     }));
 
-    const body: ListPhotosResponse = { ok: true, eventId, photos };
+    const eventName = String(eventDoc.data()?.name ?? '');
+    const body: ListPhotosResponse = { ok: true, eventId, eventName, photos };
     res.json(body);
   } catch (err) {
     next(err);
