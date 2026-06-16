@@ -96,6 +96,60 @@ export async function signPhotoUrl(
   return url;
 }
 
+// ── Reference selfies (uploads bucket; PRD §6.1, D7 reuse) ───────────────────
+
+/** MIME → extension for stored reference selfies (uploads bucket). */
+const REF_EXT_BY_MIME: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+  'image/webp': 'webp',
+};
+
+export function referenceExtForMime(mimeType: string | undefined): string {
+  return (mimeType && REF_EXT_BY_MIME[mimeType]) || 'jpg';
+}
+
+/** GCS object key for a user's reference selfie. */
+export function referencePath(uid: string, uploadId: string, mimeType: string | undefined): string {
+  return `find_me_references/${uid}/${uploadId}.${referenceExtForMime(mimeType)}`;
+}
+
+/** Store a reference selfie in the uploads bucket. Returns the object path. */
+export async function uploadReference(
+  uid: string,
+  uploadId: string,
+  buffer: Buffer,
+  contentType: string,
+): Promise<string> {
+  const path = referencePath(uid, uploadId, contentType);
+  await getStorage()
+    .bucket(env.UPLOADS_BUCKET)
+    .file(path)
+    .save(buffer, { contentType, resumable: false });
+  return path;
+}
+
+/** Download a stored reference selfie's bytes (for re-running a search). */
+export async function readReference(gcsPath: string): Promise<Buffer> {
+  const [buf] = await getStorage().bucket(env.UPLOADS_BUCKET).file(gcsPath).download();
+  return buf;
+}
+
+/** Short-lived signed read URL for displaying a stored reference in the picker. */
+export async function signReferenceUrl(gcsPath: string): Promise<string> {
+  const [url] = await getStorage()
+    .bucket(env.UPLOADS_BUCKET)
+    .file(gcsPath)
+    .getSignedUrl({
+      version: 'v4',
+      action: 'read',
+      expires: Date.now() + env.SIGNED_URL_TTL_MINUTES * 60 * 1000,
+    });
+  return url;
+}
+
 /** Sign thumb + web for a batch of photos. Order preserved. */
 export async function signPhotoUrls(
   eventId: string,

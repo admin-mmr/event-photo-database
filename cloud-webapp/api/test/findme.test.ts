@@ -47,6 +47,16 @@ vi.mock('../src/services/gcsService.js', () => ({
       thumbUrl: `https://signed.example/${eventId}/thumb/${photoId}.jpg`,
       webUrl: `https://signed.example/${eventId}/web/${photoId}.jpg`,
     })),
+  uploadReference: vi.fn().mockResolvedValue('find_me_references/u1/up-1.jpg'),
+  readReference: vi.fn(),
+  signReferenceUrl: vi.fn(),
+}));
+
+const createReference = vi.fn().mockResolvedValue(undefined);
+vi.mock('../src/services/references.js', () => ({
+  createReference: (...a: unknown[]) => createReference(...(a as [])),
+  getReference: vi.fn(),
+  listReferencesForUser: vi.fn(),
 }));
 
 const { buildServer } = await import('../src/server.js');
@@ -70,6 +80,7 @@ describe('POST /api/findme/search', () => {
     fakeDb.events.clear();
     fakeDb.added.length = 0;
     matcherSearch.mockReset();
+    createReference.mockClear();
     fakeDb.events.set('ev1', { name: 'Spring Run 2026' });
   });
 
@@ -143,6 +154,10 @@ describe('POST /api/findme/search', () => {
     const runs = fakeDb.added.filter((a) => a.collection === 'match_runs');
     expect(runs).toHaveLength(1);
     expect(runs[0]?.data).toMatchObject({ uid: 'u1', eventId: 'ev1', resultPhotoIds: ['p1', 'p2'] });
+
+    // Fresh uploads are persisted for reuse (D7).
+    expect(createReference).toHaveBeenCalledTimes(1);
+    expect(createReference.mock.calls[0]?.[0]).toMatchObject({ uid: 'u1', eventId: 'ev1', mode: 'fused' });
   });
 
   it('maps no_usable_face to a friendly 422', async () => {
@@ -179,5 +194,48 @@ describe('POST /api/findme/search', () => {
     const res = await search(app, { eventId: 'ev1', consent: 'true' });
     expect(res.status).toBe(502);
     expect(res.body.error).toBe('matcher_unconfigured');
+  });
+
+  // ── minor / guardian gate (3.2 / PRD §8.3) ───────────────────────────────
+  it('blocks a minor-subject search without guardian attestation', async () => {
+    const res = await search(app, { eventId: 'ev1', consent: 'true', subjectIsMinor: 'true' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('guardian_required');
+    expect(fakeDb.added).toHaveLength(0);
+    expect(matcherSearch).not.toHaveBeenCalled();
+  });
+
+  it('allows a minor-subject search with guardian attestation and records it', async () => {
+    matcherSearch.mockResolvedValue({ ok: true, eventId: 'ev1', mode: 'fused', results: [] });
+    const res = await search(app, {
+      eventId: 'ev1',
+      consent: 'true',
+      subjectIsMinor: 'true',
+      guardianAttested: 'true',
+    });
+    expect(res.status).toBe(200);
+    const consents = fakeDb.added.filter((a) => a.collection === 'consents');
+    expect(consents[0]?.data).toMatchObject({ subjectIsMinor: true, guardianAttested: true });
+  });
+
+  it('records subjectIsMinor=false by default', async () => {
+    matcherSearch.mockResolvedValue({ ok: true, eventId: 'ev1', mode: 'fused', results: [] });
+    await search(app, { eventId: 'ev1', consent: 'true' });
+    const consents = fakeDb.added.filter((a) => a.collection === 'consents');
+    expect(consents[0]?.data).toMatchObject({ subjectIsMinor: false, guardianAttested: false });
+  });
+
+  // ── outfit-only fallback (FR-7) ──────────────────────────────────────────
+  it('passes mode=person through to the matcher (outfit-only fallback)', async () => {
+    matcherSearch.mockResolvedValue({ ok: true, eventId: 'ev1', mode: 'person', results: [] });
+    const res = await search(app, { eventId: 'ev1', consent: 'true', mode: 'person' });
+    expect(res.status).toBe(200);
+    expect(matcherSearch.mock.calls[0]?.[0]).toMatchObject({ mode: 'person' });
+  });
+
+  it('defaults to fused mode when mode is omitted or unknown', async () => {
+    matcherSearch.mockResolvedValue({ ok: true, eventId: 'ev1', mode: 'fused', results: [] });
+    await search(app, { eventId: 'ev1', consent: 'true', mode: 'bogus' });
+    expect(matcherSearch.mock.calls[0]?.[0]).toMatchObject({ mode: 'fused' });
   });
 });

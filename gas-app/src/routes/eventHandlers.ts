@@ -34,6 +34,7 @@ import {
 import { scanAllViolations } from '../services/driveService';
 import { appendAuditLog, appendAuditFailure } from '../services/auditLogService';
 import { notifyEventCreated } from '../services/emailService';
+import { triggerMetadataSync } from '../services/indexTriggerClient';
 import { AuditAction } from '../types/enums';
 
 /* global Logger */
@@ -126,6 +127,15 @@ export function serverCreateEvent(payload: WithSession): ServerResponse {
       const msg = `Event notification email could not be sent: ${String(emailErr)}`;
       Logger.log(`[serverCreateEvent] notifyEventCreated failed (non-fatal): ${String(emailErr)}`);
       warnings.push(msg);
+    }
+    // Instant metadata push (§5A B8): ask the cloud-webapp to reconcile Drive/
+    // Sheet metadata now so this event + its name appear in Find Me within
+    // seconds instead of waiting on the daily reconciler. Best-effort — never
+    // fails event creation; the daily `findme-drive-sync` job is the backstop.
+    try {
+      triggerMetadataSync('event_created');
+    } catch (syncErr) {
+      Logger.log(`[serverCreateEvent] metadata sync trigger error (non-fatal): ${String(syncErr)}`);
     }
     return {
       status: result.status,

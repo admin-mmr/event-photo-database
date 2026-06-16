@@ -26,6 +26,40 @@ This is the build plan for the PRD. It is organized as: prerequisites → GCP pr
 
 > **⚠️ STATUS UPDATE (2026-06-15) — demo-feedback backlog.** Hands-on use of the shipped demo on the live event surfaced two bugs (no back-navigation out of the Gallery; events display as "Untitled event") and a confirmed priority ordering for the deferred M3/M4 work (original-resolution batch download is the most-wanted feature). PRD §4.8 adds FR-1b, FR-2b, FR-2c, FR-9b and reaffirms FR-11/FR-12/FR-15. Ticket-level build sequence is in **§5A** below; it slots into the existing M3/M4 milestones rather than adding a new milestone.
 
+## 0.1 Status at a glance — legend & §5A↔Mx reconciliation (2026-06-16)
+
+The §5A demo-feedback backlog (B1–B8) and milestones M1/M3/M4 describe the **same
+work from two angles**: §5A is the ticket-level view of items that live *inside*
+those milestones. They are not separate scopes. This section is the single source
+of truth for status; the milestone tables (§5) and the §5A table now carry the
+same markers and cross-reference each other.
+
+**Status legend**
+
+| Mark | Meaning |
+|---|---|
+| ✅ | **Done & live** — deployed/pushed and running (demo fast-path or earlier) |
+| 🟢 | **Code-complete** — implemented + unit-tested locally (CI-green), **not yet deployed/pushed** |
+| 🟡 | **Partial** — some sub-tasks done, others still open |
+| ⬜ | **To do** — not started |
+
+**§5A ↔ milestone map** (every backlog item is a ticket within an existing milestone — no new milestone):
+
+| §5A | Maps to | Status | One-liner |
+|---|---|---|---|
+| B1 — original-res ZIP download (FR-12) | **M4.2** | 🟢 | `download.ts` zip-streams `orig` derivatives; shipped 2026-06-16, not deployed |
+| B2 — selection UI (FR-11) | **M4.1** | 🟢 | `selection.ts`/`useSelection`/`SelectBar` in FindMe + Gallery; not deployed |
+| B3 — switch active selfie (FR-9b) | **M3.3** | 🟢 | per-selfie result sets + picker in `FindMe.tsx`; shipped 2026-06-16b, not deployed |
+| B4 — Gallery back-nav (FR-2b) | **M3.1** | 🟢 | breadcrumb to Events + event header; not deployed |
+| B5 — real event names (FR-1b) | **M1.3 / M1.4** | 🟢 | indexer backfills `events.name` from Drive folder; not deployed |
+| B6 — content-hash dedup (FR-2c) | **M1.3 / M1.5** | 🟢 | md5 de-dup in indexer; **needs re-run** (`{"force":true}`) on indexed events; not deployed |
+| B7 — wrong-match feedback (FR-15) | **M4.4** | 🟢 | `feedback.ts` + per-result buttons; shipped 2026-06-16b, not deployed |
+| B8 — instant event-metadata push | **M1.4** | 🟢 | gas-app `triggerMetadataSync()` → `POST /api/admin/sync` on event + link creation; shipped 2026-06-16c, not deployed |
+
+**Net:** §5A is **B1–B8 all code-complete** — one deploy (api + web + gas-app `clasp push`) plus a B6 indexer re-run away from live. The milestone tables below reflect this: M0–M2 are done/live, M1's last gap (B8 metadata push) is closed in code, M3 and M4 are mostly addressed by the (undeployed) §5A work, and M5–M6 are still to do.
+
+---
+
 ## 1. Prerequisites & assumptions
 
 - **Photos already in Drive.** Event photos live in Drive folders today. We do *not* move them; the indexing pipeline mirrors copies to Cloud Storage for serving + embedding. Drive stays SSOT.
@@ -192,85 +226,123 @@ Query is `ORDER BY embedding <=> $1 LIMIT k` with `WHERE event_id = $2 AND kind 
 
 Each phase maps to a PRD milestone and lists ticket-sized tasks. "DoD" = definition of done.
 
-### M0 — Spike & decisions (1–2 weeks)
+### M0 — Spike & decisions (1–2 weeks) — ✅ Done
 
-| # | Task | Output |
+| # | Task | Status | Output |
+|---|---|---|---|
+| 0.1 | Stand up `matcher/` skeleton; load a face model (InsightFace/ArcFace ONNX) and a person-ReID model; embed a sample of ~500 real event photos | ✅ | Embeddings produced locally / on a dev Cloud Run |
+| 0.2 | ~~Stand up Cloud SQL + pgvector dev instance~~ → **load sample embeddings from GCS, brute-force query in matcher** (per 2026-06-09 decision) | ✅ | Working query path (flat-file GCS store) |
+| 0.3 | Hand-label known attendees and measure Precision@20/Recall (face/outfit/fused) | ✅ | Scope **relaxed to 2 labeled people** on `ev_sample`; exhaustive labeling deferred to the feedback loop (`EVAL_FEEDBACK_LOOP.md`) |
+| 0.4 | Confirm Drive read approach (domain-wide delegation vs shared-folder SA) | ✅ | **Domain-wide delegation** (keyless, `signJwt`, impersonating `admin@mmrunners.org`) — `SETUP_NOTES.md` G1 |
+| 0.5 | Confirm pgvector vs Vertex (cost recheck per PRD §10.1) | ✅ | **Flat-file GCS embedding store**; pgvector/Vertex dropped (no free tier) |
+| **DoD** | | ✅ | Spot-eval gate met; fusion weights chosen; **go = demo fast-path shipped** |
+
+### M1 — Indexing pipeline (1.5–2 weeks) — 🟢 Done (B5/B6/B8 code-complete, pending deploy + B6 re-run)
+
+| # | Task | Status | Files |
+|---|---|---|---|
+| 1.1 | `provision-data-plane.sh` + ~~`0001_init.sql`~~ (replaced by GCS manifest layout); extend `bootstrap-gcp.sh` (APIs, IAM) | ✅ | `infra/` |
+| 1.2 | `driveService.ts`: list an event's Drive folder, fetch file metadata | ✅ | `api/src/services/driveService.ts` |
+| 1.3 | `indexer/job.py`: Drive→GCS mirror (HEIC/RAW/EXIF), detect faces+persons, embed, write flat `.npy` + manifest, write `photos` meta | ✅ | `indexer/` — **+B5** (backfill `events.name`, 🟢) **+B6** (content-hash de-dup, 🟢, needs re-run) |
+| 1.4 | Admin "Index event" trigger (api route → job) + scheduled change scan | ✅ photos / 🟢 **B8** metadata | Auto-push live: end-of-batch `triggerEventIndex` + 10-min `findme-index-scan`. **B8** now code-complete: gas-app `triggerMetadataSync()` fires `POST /api/admin/sync` on event + link creation so names appear in seconds; daily reconciler remains the backstop. Not yet deployed/pushed |
+| 1.5 | Idempotency + `model_version` re-index logic | ✅ | `indexer/` — **B6** dedup hooks in here (🟢) |
+| **DoD** | One real event fully indexed; re-run indexes only changed photos; counts reconcile with Drive | ✅ | Met. Outstanding: deploy B5/B6 + B6 indexer re-run; B8 metadata push |
+
+### M2 — Search API + matcher (1.5–2 weeks) — ✅ Done & live (demo fast-path, 2026-06-12)
+
+| # | Task | Status | Files |
+|---|---|---|---|
+| 2.1 | `matcher/main.py`: `/embed` endpoint — detect + face/person embeddings + quality/no-face handling | ✅ | `matcher/` |
+| 2.2 | `matcherClient.ts`: call matcher with Cloud Run IAM token | ✅ | `api/src/services/matcherClient.ts` |
+| 2.3 | `vectorService.ts`: top-k per kind, event-filtered (GCS flat-file store, in-memory cosine) | ✅ | `api/src/services/vectorService.ts` |
+| 2.4 | `fusion.ts`: combine face+outfit ranks, threshold (PRD §7.2) | ✅ | `api/src/lib/fusion.ts` |
+| 2.5 | `findme.ts`: `POST /api/findme/search` — embed, query, fuse, persist `match_runs`, return signed URLs | ✅ | `api/src/routes/findme.ts` — Drive mirror of reference uploads (D6) still deferred (see M3/M5) |
+| **DoD** | p95 ≤ 6 s on the M1 event; eval gate (P@20 ≥ 0.85) on 2 events | 🟡 | Latency met. Eval gate now **judged precision via the feedback loop** (`EVAL_FEEDBACK_LOOP.md`); M0-style spot eval is the interim gate until feedback accrues |
+
+### M3 — Frontend Find Me flow (2 weeks) — 🟡 Partial (demo slice live; rest deferred/code-complete)
+
+| # | Task | Status | Files |
+|---|---|---|---|
+| 3.1 | `Events.tsx`, `Gallery.tsx` with signed-URL grid + Find Me button (FR-1…FR-3) | ✅ live + 🟢 **B4** | `web/src/pages/` — demo grid live; **B4** back-nav (FR-2b) code-complete, not deployed |
+| 3.2 | `ConsentDialog` + consent gate; minor → guardian path (FR-5, D8) | 🟢 (copy pending legal) | **Minor/guardian mechanism shipped 2026-06-16d**: consent UI asks "under 18?" → requires guardian-attestation checkbox; `subjectIsMinor`/`guardianAttested` sent to `findme/search` and **enforced server-side** (`guardian_required` 403) + recorded on the `consents` doc. Final consent *wording* still gated on legal review (M5.6) |
+| 3.3 | `FindMe.tsx`: upload/capture, no-face fallback, multi-reference tabs (FR-4, FR-7…FR-10) | 🟢 | Upload/search live; **B3** per-selfie result sets + switcher (FR-9b); **no-face fallback (FR-7) shipped 2026-06-16d** — `no_usable_face` now offers "Search by outfit instead" (re-runs `mode=person`, which the matcher already supports). Not deployed |
+| 3.4 | `MyData.tsx` + enrollment reuse "Use my enrolled photo" (FR-10b, D7) | 🟡 (reuse done; MyData/enroll pending) | **Reference reuse shipped 2026-06-16e**: fresh uploads persist to the uploads bucket + a `find_me_uploads` record (90/30-day `expiresAt`, PRD §8.4); `GET /api/findme/uploads` lists the caller's own past selfies; `POST /api/findme/uploads/:id/search` reuses one against any event; FindMe shows a **multi-select picker of past photos**, each producing its own result set (FR-9). Still open: a dedicated **My Data** screen (view/delete/opt-in enrollment) + delete-cascade (overlaps M5.1/5.2) |
+| 3.5 | EN/ZH localization + accessibility + all empty/error states (FR-18…FR-20) | ⬜ | **ZH localization deferred** (cross-cutting i18n refactor); a11y/state coverage outstanding |
+| **DoD** | FR-1…FR-10b pass on iOS Safari + Android Chrome, EN + ZH | 🟡 | Remaining: deploy; build 3.4 enrollment; 3.5 ZH/i18n |
+
+### M4 — Download/save + feedback (1–1.5 weeks) — 🟢 Code-complete (pending deploy)
+
+| # | Task | Status | Files |
+|---|---|---|---|
+| 4.1 | `Results.tsx` multi-select + sticky action bar (FR-11) = **B2** | 🟢 | `selection.ts` reducer + `useSelection` + `SelectBar` (Select all/none/invert), wired into FindMe **and** Gallery; not deployed |
+| 4.2 | `download.ts`: signed-URL batch + zip stream from GCS (FR-12, FR-14) = **B1** | 🟢 | Streams `application/zip` of `orig` derivatives; `MAX_DOWNLOAD_PHOTOS=200`; new dep `archiver`; not deployed |
+| 4.3 | "Save to phone" via Web Share API L2 w/ fallback (FR-13) | 🟢 | **Shipped 2026-06-16d**: `web/src/lib/share.ts` (`canShareFiles`/`shareFiles`/`saveToPhone`, unit-tested) + `apiFetchBlob`; "📲 Save to phone" in `SelectBar` shares the originals ZIP via the native sheet, falls back to download where Web Share L2 is absent |
+| 4.4 | `feedback.ts` + UI: "Not me"/"That's me" → `match_feedback`, optimistic removal + admin queue (FR-15…FR-17) = **B7** | 🟢 | B7 vote write + per-result buttons; **admin review queue shipped 2026-06-16d**: `GET /api/admin/feedback` (admin-gated, eventId/verdict filters, verdict counts) |
+| **DoD** | FR-11…FR-17 pass; feedback feeds the eval set | 🟢 | Code-complete; remaining is deploy + an admin UI page to render the queue |
+
+### M5 — Privacy, retention, security, hardening (1.5 weeks) — 🟡 Partial (5.3 done)
+
+| # | Task | Status | Files |
+|---|---|---|---|
+| 5.1 | `retentionService.ts` + scheduled deletion jobs (uploads 90/30d, enrollment expiry, `match_runs` TTL, GCS lifecycle) (PRD §8.4) | ⬜ | `api/`, scheduler |
+| 5.2 | Consent records immutable + revoke→delete cascade; user "delete my data" (PRD §8) | ⬜ | `api/src/services/consentService.ts`, `retentionService.ts` |
+| 5.3 | `rateLimit.ts` + reCAPTCHA Enterprise on upload; upload size/MIME allowlist; decompression-bomb guard | 🟢 | **Shipped 2026-06-16d**: `middleware/rateLimit.ts` (Firestore fixed-window, fail-open, on `findme/search` + `download`), `middleware/recaptcha.ts` + `services/recaptcha.ts` (Enterprise assessment, no-op until keyed, fail-open on infra error, fail-closed on bad verdict), config env. MIME allowlist + 15 MB cap already in `findme.ts`; matcher `MAX_IMAGE_PIXELS` + `MAX_UPLOAD_BYTES` guards already present. Not deployed; needs reCAPTCHA key + a `rate_limits.expireAt` TTL policy |
+| 5.4 | Budget alert $50/mo, Cloud Run max-instances caps, per-service runtime SAs verified | ⬜ | `infra/` |
+| 5.5 | Firestore + Storage security rules tightened; audit logging of consent/deletion | ⬜ | `infra/firestore.rules`, `infra/storage.rules` |
+| 5.6 | **Legal review of consent + minor language (launch gate)** | ⬜ | doc/sign-off — the minor/guardian *mechanism* (3.2) is built; the *wording* still needs counsel |
+| **DoD** | PRD §8/§9 complete; legal sign-off; deletion verified end-to-end | 🟡 | 5.3 done; 5.1/5.2/5.4/5.5/5.6 remain |
+
+### M6 — Pilot & launch (1 week + soak) — ⬜ To do
+
+| # | Task | Status |
 |---|---|---|
-| 0.1 | Stand up `matcher/` skeleton; load a face model (InsightFace/ArcFace ONNX) and a person-ReID model; embed a sample of ~500 real event photos | Embeddings produced locally / on a dev Cloud Run |
-| 0.2 | Stand up Cloud SQL + pgvector dev instance; load the sample; run nearest-neighbor queries | Working query path |
-| 0.3 | Hand-label ~10 known attendees across the sample; measure Precision@20 and Recall with face-only, outfit-only, and fused scoring | Accuracy report |
-| 0.4 | Confirm Drive read approach (domain-wide delegation vs shared-folder SA) | Decision recorded |
-| 0.5 | Confirm pgvector vs Vertex (cost recheck per PRD §10.1) | Decision recorded |
-| **DoD** | | Precision@20 ≥ 0.8 on the sample; fusion weights chosen; **go/no-go** |
-
-### M1 — Indexing pipeline (1.5–2 weeks)
-
-| # | Task | Files |
-|---|---|---|
-| 1.1 | `provision-data-plane.sh` + `0001_init.sql`; extend `bootstrap-gcp.sh` (APIs, IAM) | `infra/` |
-| 1.2 | `driveService.ts`: list an event's Drive folder, fetch file metadata | `api/src/services/driveService.ts` |
-| 1.3 | `indexer/job.py`: Drive→GCS mirror (reuse `cloud-run/main.py` conversion patterns for HEIC/RAW/EXIF), detect faces+persons, embed, upsert to pgvector, write `photos`/`photo_embeddings_meta` | `indexer/` |
-| 1.4 | Admin "Index event" trigger (api route → Pub/Sub → Job) + scheduled change scan | `api/src/routes/events.ts`, scheduler |
-| 1.5 | Idempotency + `model_version` re-index logic | `indexer/` |
-| **DoD** | One real event fully indexed; re-running indexes only changed photos; counts reconcile with Drive | |
-
-### M2 — Search API + matcher (1.5–2 weeks)
-
-| # | Task | Files |
-|---|---|---|
-| 2.1 | `matcher/main.py`: `/embed` endpoint — detect + face/person embeddings + quality/no-face handling | `matcher/` |
-| 2.2 | `matcherClient.ts`: call matcher with Cloud Run IAM token (pattern from `cloud-run/main.py` auth) | `api/src/services/matcherClient.ts` |
-| 2.3 | `vectorService.ts`: pgvector top-k per kind, event-filtered | `api/src/services/vectorService.ts` |
-| 2.4 | `fusion.ts`: combine face+outfit ranks, threshold (PRD §7.2) | `api/src/lib/fusion.ts` |
-| 2.5 | `findme.ts`: `POST /api/findme/search` — write upload to Drive (SSOT) + GCS, embed, query, fuse, persist `match_runs`, return signed URLs | `api/src/routes/findme.ts` |
-| **DoD** | p95 ≤ 6 s on the M1 event; eval gate (Precision@20 ≥ 0.85) met on 2 events | |
-
-### M3 — Frontend Find Me flow (2 weeks)
-
-| # | Task | Files |
-|---|---|---|
-| 3.1 | `Events.tsx`, `Gallery.tsx` with CDN/signed-URL grid + Find Me button (FR-1…FR-3) | `web/src/pages/` |
-| 3.2 | `ConsentDialog` + consent gate wiring; minor → guardian path (FR-5, D8) | `web/`, `api/src/routes/consent.ts`, `middleware/consentGate.ts` |
-| 3.3 | `FindMe.tsx`: upload/capture, no-face fallback, multi-reference tabs (FR-4, FR-7…FR-10) | `web/src/pages/FindMe.tsx` |
-| 3.4 | `MyData.tsx` + enrollment reuse "Use my enrolled photo" (FR-10b, D7) | `web/src/pages/MyData.tsx` |
-| 3.5 | EN/ZH localization + accessibility + all empty/error states (FR-18…FR-20) | `web/` |
-| **DoD** | FR-1…FR-10b pass on iOS Safari + Android Chrome, EN + ZH | |
-
-### M4 — Download/save + feedback (1–1.5 weeks)
-
-| # | Task | Files |
-|---|---|---|
-| 4.1 | `Results.tsx` multi-select + sticky action bar (FR-11) | `web/src/pages/Results.tsx` |
-| 4.2 | `download.ts`: signed-URL batch + zip stream from GCS (FR-12, FR-14) | `api/src/routes/download.ts` |
-| 4.3 | "Save to phone" via Web Share API L2 w/ fallback (FR-13) | `web/` |
-| 4.4 | `feedback.ts` + UI: "Not me"/"Confirmed" → `match_feedback`, optimistic removal, admin queue (FR-15…FR-17) | `api/src/routes/feedback.ts`, `web/` |
-| **DoD** | FR-11…FR-17 pass; feedback feeds the eval set | |
-
-### M5 — Privacy, retention, security, hardening (1.5 weeks)
-
-| # | Task | Files |
-|---|---|---|
-| 5.1 | `retentionService.ts` + scheduled deletion jobs (uploads 90/30d, enrollment expiry, `match_runs` TTL, GCS lifecycle) (PRD §8.4) | `api/`, scheduler |
-| 5.2 | Consent records immutable + revoke→delete cascade; user "delete my data" (PRD §8) | `api/src/services/consentService.ts`, `retentionService.ts` |
-| 5.3 | `rateLimit.ts` + reCAPTCHA Enterprise on upload; upload size/MIME allowlist; decompression-bomb guard | `api/src/middleware/rateLimit.ts`, `matcher/` |
-| 5.4 | Budget alert $50/mo, Cloud Run max-instances caps, per-service runtime SAs verified | `infra/` |
-| 5.5 | Firestore + Storage security rules tightened; audit logging of consent/deletion | `infra/firestore.rules`, `infra/storage.rules` |
-| 5.6 | **Legal review of consent + minor language (launch gate)** | doc/sign-off |
-| **DoD** | PRD §8/§9 complete; legal sign-off; deletion verified end-to-end | |
-
-### M6 — Pilot & launch (1 week + soak)
-
-| # | Task |
-|---|---|
-| 6.1 | Feature-flag Find Me to one real event; invite a small attendee group |
-| 6.2 | Measure PRD §2 metrics (precision, latency, deflection, consent coverage) |
-| 6.3 | Write `cloud-webapp/docs/FINDME_RUNBOOK.md` (deploy, re-index, incident, data-deletion) in the style of `cloud-run/DEPLOY_RUNBOOK.md` |
-| 6.4 | Remove flag; general rollout to link/login-gated events |
+| 6.1 | Feature-flag Find Me to one real event; invite a small attendee group | ⬜ (informal demo already ran on live event `d2307147-…`) |
+| 6.2 | Measure PRD §2 metrics (precision, latency, deflection, consent coverage) | ⬜ |
+| 6.3 | Write `cloud-webapp/docs/FINDME_RUNBOOK.md` (deploy, re-index, incident, data-deletion) | ⬜ |
+| 6.4 | Remove flag; general rollout to link/login-gated events | ⬜ |
 
 **Rough total:** ~10–12 weeks of focused work for 1–2 engineers — consistent with the "6–10 weeks part-time" envelope in `UX_AND_GCP_ASSESSMENT.md` §2.6, with the extra time attributable to the ML/privacy surface.
 
 ---
 
+> **⚠️ STATUS UPDATE (2026-06-16e) — reference reuse / "match this event with a past photo" shipped (code).**
+> Implements the D7/FR-10b reuse half of M3.4 (CI-green locally: api 87 tests /
+> 13 files, web 25 tests, typecheck + eslint clean). Fresh `findme/search`
+> uploads now **persist** to the uploads bucket (`gcsService.uploadReference`)
+> plus a `find_me_uploads` Firestore record (`services/references.ts`) with a
+> 90/30-day `expiresAt` (PRD §8.4). New endpoints: `GET /api/findme/uploads`
+> (lists the caller's own non-expired selfies, self-service-only) and
+> `POST /api/findme/uploads/:uploadId/search` (reuses a stored selfie against any
+> event — owner-checked 404, minor/guardian gate re-enforced, 410 if the bytes
+> expired). The search core is refactored into a shared `runSearch`. UI: a
+> **multi-select picker of past photos** in the FindMe "pick" step, each selected
+> photo producing its own switchable result set (FR-9). Config: `UPLOADS_BUCKET`
+> + retention-day envs. New tests: `findmeUploads` (7) + extended `findme`.
+> **Not deployed.** Needs the uploads bucket to exist with a matching
+> object-lifecycle (or the M5.1 deletion job) and a `find_me_uploads.expiresAt`
+> TTL policy. Still open in M3.4: the **My Data** screen (view/delete/opt-in
+> persistent enrollment) and the delete-cascade (overlaps M5.1/5.2).
+>
+> **⚠️ STATUS UPDATE (2026-06-16d) — M5.3 hardening + M4.3/4.4 + M3 fallback/minor-gate shipped (code).**
+> Post-§5A milestone work, CI-green locally (api typecheck + new tests pass;
+> web typecheck + 25 web tests pass; eslint clean). **M5.3:** per-user rate
+> limiting (`middleware/rateLimit.ts`, Firestore fixed-window, fail-open) on
+> `findme/search` + `download`, and reCAPTCHA Enterprise (`middleware/recaptcha.ts`
+> + `services/recaptcha.ts`, no-op until keyed, fail-open on infra error /
+> fail-closed on a bad verdict); new config env; matcher decompression-bomb +
+> upload-size guards confirmed already present. **M4.3:** "Save to phone" via Web
+> Share API L2 (`web/src/lib/share.ts` + `apiFetchBlob`, "📲 Save to phone" in
+> `SelectBar`) with download fallback. **M4.4:** admin review queue
+> `GET /api/admin/feedback` (admin-gated, eventId/verdict filters + counts).
+> **M3:** no-face → outfit-only fallback (FR-7; `findme/search` now takes
+> `mode`, matcher already supports `person`), and the minor/guardian consent
+> mechanism (FR-5/D8) — UI asks "under 18?" → guardian attestation, enforced
+> server-side (`guardian_required`) and recorded on the consent doc; final
+> consent *wording* still gated on legal (M5.6). New tests: api `rateLimit`,
+> `recaptcha`, `feedbackAdmin`, extended `findme`; web `share`. **Not deployed**;
+> reCAPTCHA needs a key + a `rate_limits.expireAt` Firestore TTL policy. Still
+> open: M3.4 enrollment/MyData, M3.5 ZH/i18n, M5.1/5.2/5.4/5.5/5.6, M6.
+>
 > **⚠️ STATUS UPDATE (2026-06-16b) — §5A B3/B6/B7 shipped (code).** Completes the
 > §5A backlog (CI-green locally: api 56, web 15, indexer 13; typecheck + eslint
 > clean): **B6** content-hash de-dup — the indexer collapses byte-identical
@@ -307,20 +379,28 @@ Each phase maps to a PRD milestone and lists ticket-sized tasks. "DoD" = definit
 
 ## 5A. Demo-feedback backlog (2026-06-15)
 
-Tickets from hands-on use of the shipped demo (PRD §4.8). Priority is **P0** (ship next) → **P2**. These do not add a milestone; they slot into M1 (indexing), M3 (frontend), and M4 (download/feedback). Two are bugs in the demo slice; the rest are deferred-but-designed work now confirmed and ordered.
+Tickets from hands-on use of the shipped demo (PRD §4.8). Priority is **P0** (ship next) → **P2**. These do not add a milestone; they slot into M1 (indexing), M3 (frontend), and M4 (download/feedback) — see the §0.1 reconciliation map for the canonical status. Two are bugs in the demo slice; the rest are deferred-but-designed work now confirmed and ordered.
 
-| # | Item (PRD ref) | Type | Priority | Maps to | Files | Notes |
-|---|---|---|---|---|---|---|
-| B1 | Original-resolution batch ZIP download (FR-12) | feature | **P0** | M4.2 | `api/src/routes/download.ts`, `services/gcsService.ts`, `web/src/pages/Results.tsx` | The most-wanted capability. ZIP streams the **originals** (or `orig` derivative), not `web`/`thumb`. Short-TTL signed URLs; per-user rate limit (§M5.3). |
-| B2 | Selection UI before download (FR-11) | feature | **P0** | M4.1 | `web/src/pages/Results.tsx`, `components/SelectBar` | First-class **Select all / Select none / select-all-then-deselect**. Selection drives B1. Keyboard-accessible. |
-| B3 | Show & switch active reference selfie (FR-9b) | feature | **P1** | M3.3 | `web/src/pages/FindMe.tsx`, `Results.tsx`, `api/src/routes/findme.ts` | Display the selfie that produced the current set; upload-history picker to switch per-selfie result sets. Fixes "results from different people are mixed." No silent cross-upload blending except the explicit deduped combined view. |
-| B4 | Gallery → back to event / Events (FR-2b) | **bug** | **P1** | M3.1 | `web/src/pages/Gallery.tsx`, router/`App.tsx` | Add breadcrumb/back control; ensure browser back works without reload/auth bounce. |
-| B5 | Event name instead of "Untitled event" (FR-1b) | **bug** | **P1** | M1.3 / M1.4 | `indexer/job.py`, `api/src/routes/events.ts`, `web/src/pages/{Events,Gallery}.tsx` | Populate `events.name` from Drive folder name at index/sync; admin-editable override; UI never renders the literal "Untitled event" for an event with photos. |
-| B6 | De-duplicate gallery photos (FR-2c) | feature | **P1** | M1.3 / M1.5 | `indexer/job.py`, `api/src/routes/events.ts` | Dedup at index time by content hash (SHA-256 of bytes; perceptual hash for re-encodes), not filename. One `photoId` per unique image; defensive de-dupe at list time. Add an audit query. |
-| B7 | Wrong-match feedback (FR-15) | feature | **P2** | M4.4 | `api/src/routes/feedback.ts`, `web/` | "Not me / wrong match" per result → `match_feedback`, optimistic removal. Pairs with B3. Already an M4 deliverable; confirmed in scope this round. |
-| B8 | Instant event-metadata push on creation | feature | **P1** | M1.4 | `gas-app/src/routes/uploadHandlers.ts` (+ event/link creation handlers), `gas-app/src/services/indexTriggerClient.ts`, `api/src/routes/sync.ts` | Today new events reach Firestore only via the **daily** `findme-drive-sync` reconciler — no GAS push on creation. Have the gas-app call `POST /api/admin/sync` (reusing the existing `X-Sync-Token` machine path, same as B-series triggers) immediately after creating an event or upload link, so events/names appear in seconds, not up to a day. Best-effort/non-fatal like the end-of-batch index trigger; the daily reconciler stays as backstop. **Photo indexing already auto-pushes** (end-of-batch `triggerEventIndex` + 10-min `findme-index-scan`); this closes the remaining metadata gap. NOT the abandoned per-photo `firestoreClient.ts` push path. |
+**Status (2026-06-16c):** **B1–B8 are all 🟢 code-complete and unit-tested locally, not yet deployed/pushed.** B6 additionally needs an indexer re-run on already-indexed events. B8 — the last open item — is now implemented (`gas-app/src/services/indexTriggerClient.ts` `triggerMetadataSync()`, wired into `serverCreateEvent` + `serverGenerateLink`, 10 new unit tests; gas-app typecheck clean, handler tests green). Legend in §0.1.
 
-**Sequencing.** B1+B2 ship together first (they are the headline ask and are mutually dependent). B4 and B5 are cheap bug fixes that can land in parallel. **B8 should land with (or just before) B5** — instant metadata sync is the root cause of the "Untitled event" delay B5 fixes; with B8 a freshly created event surfaces its name in seconds. B3 is the largest frontend change and lands with B7. B6 requires an indexer re-run on the live event after the hash logic is added (use `{"force":true}` per `CLAUDE.md` indexer notes).
+| # | Item (PRD ref) | Type | Priority | Status | Maps to | Files | Notes |
+|---|---|---|---|---|---|---|---|
+| B1 | Original-resolution batch ZIP download (FR-12) | feature | **P0** | 🟢 not deployed | M4.2 | `api/src/routes/download.ts`, `services/gcsService.ts`, `web/src/pages/Results.tsx` | Shipped 2026-06-16. ZIP streams the `orig` derivatives; `MAX_DOWNLOAD_PHOTOS=200`; new dep `archiver`. Short-TTL signed URLs; per-user rate limit (§M5.3) **still to add**. |
+| B2 | Selection UI before download (FR-11) | feature | **P0** | 🟢 not deployed | M4.1 | `web/src/pages/Results.tsx`, `components/SelectBar` | Shipped 2026-06-16. `selection.ts` reducer + `useSelection`; Select all / none / invert; wired into FindMe **and** Gallery. Keyboard-accessible. |
+| B3 | Show & switch active reference selfie (FR-9b) | feature | **P1** | 🟢 not deployed | M3.3 | `web/src/pages/FindMe.tsx`, `Results.tsx`, `api/src/routes/findme.ts` | Shipped 2026-06-16b. Result set per uploaded selfie + picker to switch; explicit deduped Combined view; no silent cross-upload blending (`web/src/lib/results.ts`, unit-tested). |
+| B4 | Gallery → back to event / Events (FR-2b) | **bug** | **P1** | 🟢 not deployed | M3.1 | `web/src/pages/Gallery.tsx`, router/`App.tsx` | Shipped 2026-06-16. Breadcrumb to Events + event-name header. |
+| B5 | Event name instead of "Untitled event" (FR-1b) | **bug** | **P1** | 🟢 not deployed | M1.3 / M1.4 | `indexer/job.py`, `api/src/routes/events.ts`, `web/src/pages/{Events,Gallery}.tsx` | Shipped 2026-06-16. Indexer backfills `events.name` from Drive folder (never clobbers an admin/Sheet name); `eventLabel()` guarantees the literal "Untitled event" never shows for an event with photos. **Pairs with B8** (B8 removes the up-to-a-day delay before the name appears). |
+| B6 | De-duplicate gallery photos (FR-2c) | feature | **P1** | 🟢 not deployed — **needs indexer re-run** | M1.3 / M1.5 | `indexer/job.py`, `api/src/routes/events.ts` | Shipped 2026-06-16b. Collapses byte-identical images by Drive `md5Checksum` (canonical = first in relPath order); `contentHash`/`duplicateCount` per photo + `duplicates` audit map; defensive de-dupe at list time; admin `GET /api/events/:id/duplicates`. Re-run with `{"force":true}` to collapse existing dupes. Perceptual-hash dedup of re-encodes is a noted follow-up. |
+| B7 | Wrong-match feedback (FR-15) | feature | **P2** | 🟢 not deployed | M4.4 | `api/src/routes/feedback.ts`, `web/` | Shipped 2026-06-16b. Immutable `match_feedback` docs keyed to `runId`; per-result "Not me / That's me" buttons + optimistic removal. Pairs with B3. Admin review queue still open. |
+| B8 | Instant event-metadata push on creation | feature | **P1** | 🟢 not deployed | M1.4 | `gas-app/src/services/indexTriggerClient.ts`, `gas-app/src/routes/eventHandlers.ts`, `gas-app/src/routes/linkHandlers.ts` | Shipped 2026-06-16c. New `triggerMetadataSync(context)` POSTs `/api/admin/sync` (OIDC + existing `X-Sync-Token` machine path, same as `triggerEventIndex`); wired best-effort/non-fatal into `serverCreateEvent` (`'event_created'`) and `serverGenerateLink` (`'link_generated'`) so events/names reach Firestore in seconds, not up to a day. Daily `findme-drive-sync` reconciler stays as backstop. No api change needed — `POST /api/admin/sync` already exists and accepts `X-Sync-Token` (`allowCronOrAdmin`). NOT the abandoned per-photo `firestoreClient.ts` path. **Needs gas-app `clasp push`** + the `FINDME_API_URL`/`INDEX_TRIGGER_TOKEN` Script Properties (already set for the index trigger). |
+
+**Sequencing (original plan, now fully executed in code).** B1+B2 shipped together first (the headline ask, mutually dependent); B4+B5 landed in parallel as cheap bug fixes; B3+B7 landed together; B8 (the last item) is now implemented alongside B5 as intended. **All of B1–B8 are code-complete (not deployed).** Remaining work is deploy + one re-run, in order:
+
+1. **Deploy/push** — single api + web deploy, plus a gas-app `clasp push` for B8.
+2. **B6 indexer re-run** on already-indexed events with `{"force":true}` (per `CLAUDE.md` indexer notes) to collapse existing duplicates and populate `contentHash`.
+3. **Smoke-test B8** — create an event (and an upload link) in the gas-app and confirm the event + name appears in Firestore within seconds without waiting on the daily reconciler, and that a forced `/api/admin/sync` failure is swallowed (non-fatal).
+
+> **⚠️ STATUS UPDATE (2026-06-16c) — §5A B8 shipped (code).** Closes the §5A backlog: every item B1–B8 is now code-complete. **B8** instant event-metadata push — new `triggerMetadataSync(context)` in `gas-app/src/services/indexTriggerClient.ts` POSTs `/api/admin/sync` over the existing OIDC + `X-Sync-Token` machine path, wired best-effort/non-fatal into `serverCreateEvent` and `serverGenerateLink`. No api change (the route already accepts `X-Sync-Token` via `allowCronOrAdmin`). 10 new unit tests (`tests/unit/indexTriggerClient.test.ts`) cover not-configured no-op, 200/202 success, non-2xx + thrown-exception swallowing, URL/header shape, and the existing `triggerEventIndex` path; gas-app typecheck clean; eventHandlers/linkHandlers tests green. Not yet deployed/`clasp push`ed; needs the `FINDME_API_URL`/`INDEX_TRIGGER_TOKEN` Script Properties (already set for the index trigger).
 
 **Auto-push status (context for B8).** Photo indexing is already fully event-driven: a finished upload batch fires `triggerEventIndex` → `POST /api/events/:id/index`, with a 10-minute `findme-index-scan` backstop (`AUTOMATED_INDEXING_IMPLEMENTATION.md` / `AUTOMATED_INDEXING_RUNBOOK.md`). The only non-instant link in the GAS→cloud chain is **event/link creation**, which today waits on the daily reconciler — that is exactly what B8 closes.
 

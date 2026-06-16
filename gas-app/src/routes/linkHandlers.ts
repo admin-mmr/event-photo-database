@@ -17,6 +17,7 @@ import {
   listAll as listAllLinks,
 } from '../services/uploadLinkService';
 import { appendAuditLog, appendAuditFailure } from '../services/auditLogService';
+import { triggerMetadataSync } from '../services/indexTriggerClient';
 import { AuditAction } from '../types/enums';
 
 /* global Logger */
@@ -98,6 +99,14 @@ export function serverGenerateLink(
       resourceType: 'link', resourceId: result.data.linkId,
       details: { eventId, clubName, tag, linkId: result.data.linkId, version: result.data.version },
     });
+    // Instant metadata push (§5A B8): a new upload link can introduce a new
+    // event/club/tag association; reconcile it into Firestore now so Find Me
+    // reflects it in seconds. Best-effort — never fails link generation.
+    try {
+      triggerMetadataSync('link_generated');
+    } catch (syncErr) {
+      Logger.log(`[serverGenerateLink] metadata sync trigger error (non-fatal): ${String(syncErr)}`);
+    }
     Logger.log(`[serverGenerateLink] success — linkId=${result.data.linkId} actor=${auth.adminEmail}`);
     return { status: result.status, message: result.message, data: result.data };
   } catch (err) {

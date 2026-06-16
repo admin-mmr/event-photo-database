@@ -68,11 +68,40 @@ const EnvSchema = z.object({
   // Derivatives bucket (indexer output; gallery + search serving copies).
   DERIVATIVES_BUCKET: z.string().default('mmr-data-pipeline-derivatives'),
 
+  // Uploads bucket: working copies of reference selfies, kept so a signed-in
+  // member can reuse a past photo to search a new event (PRD D7/§6.1). Objects
+  // live under `find_me_references/<uid>/<uploadId>.<ext>`. Retention is the
+  // PRD §8.4 tier (below); a Firestore TTL on `find_me_uploads.expiresAt` plus
+  // the M5.1 deletion job / a matching bucket lifecycle do the actual cleanup.
+  UPLOADS_BUCKET: z.string().default('mmr-data-pipeline-uploads'),
+  REFERENCE_RETENTION_DAYS_ADULT: z.coerce.number().int().positive().default(90),
+  REFERENCE_RETENTION_DAYS_MINOR: z.coerce.number().int().positive().default(30),
+
   // Signed-URL lifetime. PRD §4.2 caps this at 60 minutes.
   SIGNED_URL_TTL_MINUTES: z.coerce.number().int().positive().max(60).default(60),
 
   // Active consent policy version recorded with each consent (secret G2).
   CONSENT_POLICY_VERSION: z.string().default('v1-2026-06'),
+
+  // ── Abuse protection (dev plan M5.3 / PRD §9) ─────────────────────────
+  // Per-user rate limits, enforced via a Firestore fixed-window counter
+  // (middleware/rateLimit.ts). A limit of 0 disables that bucket. The limiter
+  // fails OPEN — a Firestore hiccup never blocks a real user.
+  // Searches per FINDME_SEARCH_WINDOW_SEC, keyed by uid.
+  FINDME_SEARCH_LIMIT: z.coerce.number().int().min(0).default(20),
+  FINDME_SEARCH_WINDOW_SEC: z.coerce.number().int().positive().default(60),
+  // Bulk ZIP downloads per rolling day, keyed by uid.
+  DOWNLOAD_LIMIT_PER_DAY: z.coerce.number().int().min(0).default(50),
+
+  // reCAPTCHA Enterprise on the upload/search action (services/recaptcha.ts).
+  // All three must be set to enable verification; otherwise the gate no-ops
+  // (so local dev and the demo keep working without a key). The client sends
+  // the token in the `X-Recaptcha-Token` header.
+  RECAPTCHA_PROJECT_ID: z.string().default(''),
+  RECAPTCHA_SITE_KEY: z.string().default(''),
+  RECAPTCHA_API_KEY: z.string().default(''),
+  // Minimum Enterprise risk score (0..1) to accept; below this is rejected.
+  RECAPTCHA_MIN_SCORE: z.coerce.number().min(0).max(1).default(0.5),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

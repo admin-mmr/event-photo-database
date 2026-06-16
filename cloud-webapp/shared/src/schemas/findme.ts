@@ -71,3 +71,32 @@ export const NoUsableFaceResponseSchema = z.object({
   message: z.string(),
 });
 export type NoUsableFaceResponse = z.infer<typeof NoUsableFaceResponseSchema>;
+
+// ── Reference reuse (D7 / FR-10b) ────────────────────────────────────────────
+
+/** A past reference selfie the signed-in user can reuse to search a new event. */
+export const ReferenceUploadSchema = z.object({
+  uploadId: z.string(),
+  /** Signed, short-lived URL to display the selfie in the picker. */
+  url: z.string(),
+  mode: z.enum(['fused', 'person']),
+  createdAt: z.string(),
+});
+export type ReferenceUpload = z.infer<typeof ReferenceUploadSchema>;
+
+export const ListReferencesResponseSchema = z.object({
+  ok: z.literal(true),
+  uploads: z.array(ReferenceUploadSchema),
+});
+export type ListReferencesResponse = z.infer<typeof ListReferencesResponseSchema>;
+
+/** Body for POST /api/findme/uploads/:uploadId/search — reuse a stored selfie
+ *  against `eventId`. The minor/guardian + consent gating still applies per
+ *  search (the gate runs again server-side). */
+export const SearchByUploadRequestSchema = z.object({
+  eventId: z.string().min(1),
+  mode: z.enum(['fused', 'person']).optional(),
+  subjectIsMinor: z.boolean().optional(),
+  guardianAttested: z.boolean().optional(),
+});
+export type SearchByUploadRequest = z.infer<typeof SearchByUploadRequestSchema>;

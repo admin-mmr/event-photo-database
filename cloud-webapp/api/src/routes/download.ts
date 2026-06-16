@@ -24,6 +24,7 @@ import { DownloadRequestSchema } from '@cloud-webapp/shared';
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
+import { downloadRateLimit } from '../middleware/rateLimit.js';
 import { origFile } from '../services/gcsService.js';
 
 export const downloadRouter = Router();
@@ -38,7 +39,7 @@ function safeEntryName(name: string, photoId: string, fallbackExt: string): stri
   return cleaned || `${photoId}.${fallbackExt}`;
 }
 
-downloadRouter.post('/events/:id/download', requireAuth, async (req, res, next) => {
+downloadRouter.post('/events/:id/download', requireAuth, downloadRateLimit(), async (req, res, next) => {
   try {
     const eventId = String(req.params.id);
 

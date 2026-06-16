@@ -66,16 +66,12 @@ export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
 }
 
 /**
- * POST a JSON body and save the binary response as a file (B1 ZIP download).
- * A plain <a download> can't carry the Firebase bearer header, so we fetch the
- * blob and save it via an object URL. The blob lives in browser memory — the
- * server caps the photo count to keep that bounded.
+ * POST a JSON body and return the binary response as a Blob (B1 ZIP). A plain
+ * <a download> can't carry the Firebase bearer header, so we fetch the bytes
+ * ourselves. The caller decides whether to download or share it (M4.3). The
+ * blob lives in browser memory — the server caps the photo count to bound it.
  */
-export async function apiDownloadFile<B = unknown>(
-  path: string,
-  body: B,
-  filename: string,
-): Promise<void> {
+export async function apiFetchBlob<B = unknown>(path: string, body: B): Promise<Blob> {
   const res = await fetch(path, {
     method: 'POST',
     headers: {
@@ -86,8 +82,16 @@ export async function apiDownloadFile<B = unknown>(
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await parseError(res, `POST ${path} failed: HTTP ${res.status}`);
+  return res.blob();
+}
 
-  const blob = await res.blob();
+/** POST a JSON body and save the binary response as a file (B1 ZIP download). */
+export async function apiDownloadFile<B = unknown>(
+  path: string,
+  body: B,
+  filename: string,
+): Promise<void> {
+  const blob = await apiFetchBlob(path, body);
   const url = URL.createObjectURL(blob);
   try {
     const a = document.createElement('a');

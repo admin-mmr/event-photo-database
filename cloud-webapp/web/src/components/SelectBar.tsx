@@ -10,20 +10,25 @@ interface SelectBarProps {
   total: number;
   selectedCount: number;
   busy?: boolean;
+  /** Show the "Save to phone" action (Web Share L2). Off on desktop. */
+  canSave?: boolean;
   onSelectAll: () => void;
   onSelectNone: () => void;
   onInvert: () => void;
   onDownload: () => void;
+  onSaveToPhone?: () => void;
 }
 
 export function SelectBar({
   total,
   selectedCount,
   busy = false,
+  canSave = false,
   onSelectAll,
   onSelectNone,
   onInvert,
   onDownload,
+  onSaveToPhone,
 }: SelectBarProps): JSX.Element {
   const none = selectedCount === 0;
   const all = selectedCount === total && total > 0;
@@ -45,6 +50,11 @@ export function SelectBar({
         <button className="btn btn-primary btn-sm" onClick={onDownload} disabled={none || busy}>
           {busy ? 'Preparing ZIP…' : `⬇ Download ${selectedCount || ''}`.trim()}
         </button>
+        {canSave && onSaveToPhone && (
+          <button className="btn btn-light btn-sm" onClick={onSaveToPhone} disabled={none || busy}>
+            📲 Save to phone
+          </button>
+        )}
       </div>
     </div>
   );

@@ -5,10 +5,14 @@ import type {
   MatchResult,
   DownloadRequest,
   FeedbackRequest,
+  ListReferencesResponse,
+  ReferenceUpload,
+  SearchByUploadRequest,
 } from '@cloud-webapp/shared';
-import { apiUpload, apiPost, apiDownloadFile, ApiError } from '../lib/api.js';
+import { apiGet, apiUpload, apiPost, apiDownloadFile, apiFetchBlob, ApiError } from '../lib/api.js';
 import { useSelection } from '../lib/selection.js';
 import { combineReferences, visibleResults } from '../lib/results.js';
+import { saveToPhone } from '../lib/share.js';
 import { SelectBar } from '../components/SelectBar.js';
 
 type Phase = 'consent' | 'pick' | 'searching' | 'results';
@@ -43,12 +47,25 @@ export function FindMe(): JSX.Element {
   const { eventId = '' } = useParams();
   const [phase, setPhase] = useState<Phase>('consent');
   const [agreed, setAgreed] = useState(false);
+  const [isMinor, setIsMinor] = useState(false);
+  const [guardianOk, setGuardianOk] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // When a reference has no detectable face we hold it here to offer an
+  // outfit-only retry (FR-7) without making the user re-pick the file.
+  const [noFaceFile, setNoFaceFile] = useState<File | null>(null);
   const [references, setReferences] = useState<Reference[]>([]);
   const [activeId, setActiveId] = useState<string>(COMBINED);
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  // Past reference selfies the user can reuse to search this event (D7/FR-10b).
+  const [pastUploads, setPastUploads] = useState<ReferenceUpload[] | null>(null);
+  const [selectedPast, setSelectedPast] = useState<Set<string>>(new Set());
   const fileInput = useRef<HTMLInputElement>(null);
+
+  // Consent can't be given for a minor without guardian attestation (PRD §8.3).
+  const consentOk = agreed && (!isMinor || guardianOk);
+  const canSavePhotos = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
 
   const activeRef = references.find((r) => r.id === activeId);
   const isCombined = activeId === COMBINED || !activeRef;
@@ -69,33 +86,118 @@ export function FindMe(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
-  async function search(file: File): Promise<void> {
-    setPhase('searching');
-    setError(null);
-    const form = new FormData();
-    form.set('file', file);
-    form.set('eventId', eventId);
-    form.set('consent', 'true');
-    try {
-      const res = await apiUpload<SearchResponse>('/api/findme/search', form);
-      const ref: Reference = {
-        id: res.runId ?? crypto.randomUUID(),
-        previewUrl: URL.createObjectURL(file),
-        label: `Photo ${references.length + 1}`,
+  // Load the user's reusable past selfies the first time they reach "pick".
+  useEffect(() => {
+    if (phase === 'pick') void loadPastUploads();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  /** Append a result set from a search response and make it the active tab. */
+  function pushReference(res: SearchResponse, previewUrl: string, labelPrefix: string): void {
+    const id = res.runId ?? crypto.randomUUID();
+    setReferences((prev) => [
+      ...prev,
+      {
+        id,
+        previewUrl,
+        label: `${labelPrefix} ${prev.length + 1}`,
         ...(res.runId !== undefined ? { runId: res.runId } : {}),
         mode: res.mode,
         results: res.results,
         hidden: new Set(),
-      };
-      setReferences((prev) => [...prev, ref]);
-      setActiveId(ref.id);
+      },
+    ]);
+    setActiveId(id);
+  }
+
+  async function loadPastUploads(force = false): Promise<void> {
+    if (pastUploads !== null && !force) return;
+    try {
+      const res = await apiGet<ListReferencesResponse>('/api/findme/uploads');
+      setPastUploads(res.uploads);
+    } catch {
+      // Non-fatal: if history can't load we just don't show the reuse section.
+      setPastUploads([]);
+    }
+  }
+
+  function togglePast(uploadId: string): void {
+    setSelectedPast((prev) => {
+      const next = new Set(prev);
+      if (next.has(uploadId)) next.delete(uploadId);
+      else next.add(uploadId);
+      return next;
+    });
+  }
+
+  async function searchByUpload(u: ReferenceUpload): Promise<void> {
+    const body: SearchByUploadRequest = {
+      eventId,
+      ...(u.mode === 'person' ? { mode: 'person' as const } : {}),
+      subjectIsMinor: isMinor,
+      guardianAttested: guardianOk,
+    };
+    const res = await apiPost<SearchResponse, SearchByUploadRequest>(
+      `/api/findme/uploads/${encodeURIComponent(u.uploadId)}/search`,
+      body,
+    );
+    pushReference(res, u.url, 'Saved');
+  }
+
+  async function runSelectedPast(): Promise<void> {
+    const chosen = (pastUploads ?? []).filter((u) => selectedPast.has(u.uploadId));
+    if (chosen.length === 0) return;
+    setPhase('searching');
+    setError(null);
+    try {
+      // Sequential: each stored photo produces its own result set (FR-9), and
+      // serial calls keep us under the per-user search rate limit.
+      for (const u of chosen) {
+        // eslint-disable-next-line no-await-in-loop
+        await searchByUpload(u);
+      }
+      setSelectedPast(new Set());
       setPhase('results');
     } catch (e) {
+      if (e instanceof ApiError && e.code === 'guardian_required') setPhase('consent');
+      else setPhase('pick');
+      setError(e instanceof Error ? e.message : 'Search failed');
+    }
+  }
+
+  async function search(file: File, mode: 'fused' | 'person' = 'fused'): Promise<void> {
+    setPhase('searching');
+    setError(null);
+    setNoFaceFile(null);
+    const form = new FormData();
+    form.set('file', file);
+    form.set('eventId', eventId);
+    form.set('consent', 'true');
+    form.set('subjectIsMinor', String(isMinor));
+    form.set('guardianAttested', String(guardianOk));
+    if (mode === 'person') form.set('mode', 'person');
+    try {
+      const res = await apiUpload<SearchResponse>('/api/findme/search', form);
+      pushReference(res, URL.createObjectURL(file), mode === 'person' ? 'Outfit' : 'Photo');
+      setPhase('results');
+      // Refresh history so this just-uploaded photo appears in the reuse picker.
+      void loadPastUploads(true);
+    } catch (e) {
       if (e instanceof ApiError && e.code === 'no_usable_face') {
-        setError('We couldn’t find a clear face in that photo. Try a sharper, front-facing picture with good lighting.');
+        // FR-7: keep the file and offer an outfit/appearance-only retry.
+        setNoFaceFile(file);
+        setError(
+          'We couldn’t find a clear face in that photo. You can search by outfit and appearance instead, or try a sharper, front-facing picture.',
+        );
         setPhase('pick');
+      } else if (e instanceof ApiError && e.code === 'guardian_required') {
+        setError(e.message);
+        setPhase('consent');
       } else if (e instanceof ApiError && e.code === 'event_not_indexed') {
         setError('This event hasn’t been indexed for Find Me yet — ask an admin to run indexing.');
+        setPhase('pick');
+      } else if (e instanceof ApiError && e.code === 'rate_limited') {
+        setError(e.message);
         setPhase('pick');
       } else {
         setError(e instanceof Error ? e.message : 'Search failed');
@@ -156,6 +258,23 @@ export function FindMe(): JSX.Element {
     }
   }
 
+  async function saveSelected(): Promise<void> {
+    if (sel.count === 0) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const body: DownloadRequest = { photoIds: [...sel.selected] };
+      const blob = await apiFetchBlob(`/api/events/${encodeURIComponent(eventId)}/download`, body);
+      // Hands the ZIP to the native share sheet ("Save to Files/Photos"); on
+      // browsers without Web Share L2 this falls back to a download (FR-13).
+      await saveToPhone(blob, 'my-photos.zip', { title: 'My event photos' });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save photos');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div>
       <div className="gallery-header">
@@ -172,14 +291,38 @@ export function FindMe(): JSX.Element {
             Find Me compares a photo of you against this event&rsquo;s photos using face
             matching. Your reference photo is used only for this search.
           </p>
+          {error && <p className="error-text">{error}</p>}
           <label className="consent-row">
             <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
             <span>
-              I consent to the use of my photo for face matching in this event, and I am
-              searching for myself (or as the guardian of the person pictured).
+              I consent to the use of this photo for face matching in this event.
             </span>
           </label>
-          <button className="btn btn-primary" disabled={!agreed} onClick={() => setPhase('pick')}>
+          <label className="consent-row">
+            <input
+              type="checkbox"
+              checked={isMinor}
+              onChange={(e) => {
+                setIsMinor(e.target.checked);
+                if (!e.target.checked) setGuardianOk(false);
+              }}
+            />
+            <span>The person in the photo is under 18.</span>
+          </label>
+          {isMinor && (
+            <label className="consent-row consent-guardian">
+              <input
+                type="checkbox"
+                checked={guardianOk}
+                onChange={(e) => setGuardianOk(e.target.checked)}
+              />
+              <span>
+                I am the parent or legal guardian of this child and I consent to this search on
+                their behalf.
+              </span>
+            </label>
+          )}
+          <button className="btn btn-primary" disabled={!consentOk} onClick={() => { setError(null); setPhase('pick'); }}>
             Continue
           </button>
         </div>
@@ -204,10 +347,46 @@ export function FindMe(): JSX.Element {
           <button className="btn btn-primary" onClick={() => fileInput.current?.click()}>
             Choose / take a photo
           </button>
+          {noFaceFile && (
+            <button className="btn btn-light" onClick={() => void search(noFaceFile, 'person')}>
+              Search by outfit instead
+            </button>
+          )}
           {references.length > 0 && (
             <button className="btn btn-light" onClick={() => setPhase('results')}>
               Cancel
             </button>
+          )}
+
+          {pastUploads && pastUploads.length > 0 && (
+            <div className="past-uploads">
+              <h4>Or reuse a previous photo</h4>
+              <p className="muted">Pick one or more photos you uploaded before to match this event.</p>
+              <div className="past-grid">
+                {pastUploads.map((u) => {
+                  const checked = selectedPast.has(u.uploadId);
+                  return (
+                    <button
+                      key={u.uploadId}
+                      className={`past-cell${checked ? ' selected' : ''}`}
+                      aria-pressed={checked}
+                      onClick={() => togglePast(u.uploadId)}
+                      title={u.mode === 'person' ? 'Outfit match' : 'Face match'}
+                    >
+                      <img src={u.url} alt="A photo you uploaded before" loading="lazy" />
+                      <span className="select-tick">{checked ? '✓' : ''}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                className="btn btn-primary"
+                disabled={selectedPast.size === 0}
+                onClick={() => void runSelectedPast()}
+              >
+                Match this event with selected ({selectedPast.size})
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -270,11 +449,13 @@ export function FindMe(): JSX.Element {
               <SelectBar
                 total={ids.length}
                 selectedCount={sel.count}
-                busy={downloading}
+                busy={downloading || saving}
+                canSave={canSavePhotos}
                 onSelectAll={sel.selectAll}
                 onSelectNone={sel.selectNone}
                 onInvert={sel.invert}
                 onDownload={() => void downloadSelected()}
+                onSaveToPhone={() => void saveSelected()}
               />
               <div className="photo-grid">
                 {visible.map((r) => {
