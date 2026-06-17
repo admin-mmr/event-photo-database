@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import type { ListEventsResponse, EventSummary, TriggerIndexResponse } from '@cloud-webapp/shared';
+import type {
+  ListEventsResponse,
+  EventSummary,
+  TriggerIndexResponse,
+  SyncResponse,
+} from '@cloud-webapp/shared';
 import { apiGet, apiPost, ApiError } from '../lib/api.js';
 import { eventLabel } from '../lib/eventLabel.js';
 
@@ -40,16 +45,48 @@ function pillFor(ev: EventSummary): StatusPill {
   }
 }
 
-export function Events(): JSX.Element {
+interface EventsProps {
+  /** Guests (anonymous sign-in) can browse + Find Me, but not run admin
+   *  actions (Index / Sync). Those controls are hidden for them; the API also
+   *  rejects them since an anonymous session has no admin email. */
+  isGuest?: boolean;
+}
+
+export function Events({ isGuest = false }: EventsProps): JSX.Element {
   const [events, setEvents] = useState<EventSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
 
   const load = useCallback(async () => {
     const r = await apiGet<ListEventsResponse>('/api/events');
     setEvents(r.events);
   }, []);
+
+  async function syncWithDrive(): Promise<void> {
+    setSyncing(true);
+    setNotice(null);
+    try {
+      const r = await apiPost<SyncResponse>('/api/admin/sync', {});
+      setNotice(
+        `Synced with Drive — ${r.created} new, ${r.updated} updated, ${r.unchanged} unchanged` +
+          (r.orphans.length ? `, ${r.orphans.length} not in Sheet` : '') +
+          '.',
+      );
+      await load();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 403) {
+        setNotice('Sync is admin-only — sign in as an admin to run it.');
+      } else if (e instanceof ApiError && e.status === 503) {
+        setNotice('Sync is not configured yet (MASTER_SPREADSHEET_ID is unset on the API).');
+      } else {
+        setNotice(e instanceof Error ? e.message : 'Could not sync with Drive.');
+      }
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   useEffect(() => {
     load().catch((e: Error) => setError(e.message));
@@ -99,7 +136,14 @@ export function Events(): JSX.Element {
 
   return (
     <div>
-      <h2>Events</h2>
+      <div className="page-head">
+        <h2>Events</h2>
+        {!isGuest && (
+          <button className="btn btn-light" onClick={() => void syncWithDrive()} disabled={syncing}>
+            {syncing ? 'Syncing…' : 'Sync with Drive'}
+          </button>
+        )}
+      </div>
       {notice && <p className="error-text">{notice}</p>}
       {events.length === 0 ? (
         <p className="muted">No events yet.</p>
@@ -126,13 +170,15 @@ export function Events(): JSX.Element {
                       <span className="muted event-stat">{photoCount} photos</span>
                     )}
                     {updated && <span className="muted event-stat">updated {updated}</span>}
-                    <button
-                      className="btn btn-light btn-sm"
-                      onClick={() => void indexNow(ev.id)}
-                      disabled={busyId === ev.id || pill.inFlight}
-                    >
-                      {pill.inFlight ? 'Indexing…' : busyId === ev.id ? 'Starting…' : 'Index now'}
-                    </button>
+                    {!isGuest && (
+                      <button
+                        className="btn btn-light btn-sm"
+                        onClick={() => void indexNow(ev.id)}
+                        disabled={busyId === ev.id || pill.inFlight}
+                      >
+                        {pill.inFlight ? 'Indexing…' : busyId === ev.id ? 'Starting…' : 'Index now'}
+                      </button>
+                    )}
                   </div>
                 </div>
               </li>

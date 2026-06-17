@@ -13,6 +13,7 @@ import {
   getAuth,
   GoogleAuthProvider,
   onAuthStateChanged,
+  signInAnonymously,
   signInWithPopup,
   signOut,
   type Auth,
@@ -45,6 +46,20 @@ export function firebaseAuth(): Promise<Auth> {
 export async function signInWithGoogle(): Promise<void> {
   const auth = await firebaseAuth();
   await signInWithPopup(auth, new GoogleAuthProvider());
+}
+
+/**
+ * Continue as a guest — a Firebase anonymous session. The user gets a real uid
+ * (so consent records, per-user rate limits, reference-selfie reuse, and
+ * "delete my data" all keep working) but no email, so admin routes stay closed.
+ *
+ * Requires Anonymous sign-in to be enabled in the Firebase console
+ * (Authentication → Sign-in method → Anonymous). If it isn't, this rejects with
+ * `auth/operation-not-allowed` / `auth/admin-restricted-operation`.
+ */
+export async function continueAsGuest(): Promise<void> {
+  const auth = await firebaseAuth();
+  await signInAnonymously(auth);
 }
 
 export async function signOutUser(): Promise<void> {

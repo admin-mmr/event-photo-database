@@ -49,6 +49,13 @@ pre.error {
   margin-bottom: 12px;
 }
 
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .app-title {
   color: inherit;
   text-decoration: none;

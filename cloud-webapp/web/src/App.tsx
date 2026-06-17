@@ -1,5 +1,6 @@
-import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
-import { signInWithGoogle, signOutUser } from './lib/firebase.js';
+import { useState } from 'react';
+import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom';
+import { continueAsGuest, signInWithGoogle, signOutUser } from './lib/firebase.js';
 import { useAuth } from './lib/useAuth.js';
 import { Events } from './pages/Events.js';
 import { Gallery } from './pages/Gallery.js';
@@ -9,6 +10,21 @@ import { MyData } from './pages/MyData.js';
 
 export function App(): JSX.Element {
   const { user, loading } = useAuth();
+  const [signInError, setSignInError] = useState<string | null>(null);
+  const isGuest = Boolean(user?.isAnonymous);
+
+  async function guest(): Promise<void> {
+    setSignInError(null);
+    try {
+      await continueAsGuest();
+    } catch (err) {
+      // Most likely cause: Anonymous sign-in not enabled in the Firebase console.
+      setSignInError(
+        'Could not start a guest session. Ask an admin to enable Anonymous sign-in in Firebase.',
+      );
+      console.error('anonymous sign-in failed', err);
+    }
+  }
 
   return (
     <BrowserRouter>
@@ -22,12 +38,24 @@ export function App(): JSX.Element {
               <Link to="/me/data" className="muted nav-link">
                 My data
               </Link>
-              <Link to="/admin/feedback" className="muted nav-link">
-                Match feedback
-              </Link>
-              <span className="muted">{user.email}</span>
+              {/* Admin-only; guests have no email so the API blocks them anyway. */}
+              {!isGuest && (
+                <Link to="/admin/feedback" className="muted nav-link">
+                  Match feedback
+                </Link>
+              )}
+              {isGuest ? (
+                <>
+                  <span className="muted">Guest</span>
+                  <button className="btn btn-light" onClick={() => void signInWithGoogle()}>
+                    Sign in with Google
+                  </button>
+                </>
+              ) : (
+                <span className="muted">{user.email}</span>
+              )}
               <button className="btn btn-light" onClick={() => void signOutUser()}>
-                Sign out
+                {isGuest ? 'Exit guest' : 'Sign out'}
               </button>
             </div>
           )}
@@ -37,18 +65,27 @@ export function App(): JSX.Element {
           <p className="muted">Loading…</p>
         ) : user ? (
           <Routes>
-            <Route path="/" element={<Events />} />
+            <Route path="/" element={<Events isGuest={isGuest} />} />
             <Route path="/events/:eventId" element={<Gallery />} />
             <Route path="/events/:eventId/findme" element={<FindMe />} />
-            <Route path="/admin/feedback" element={<FeedbackAdmin />} />
+            {/* Admin-only: guests have no admin email, so bounce them home
+                instead of rendering an empty page the API would 403 anyway. */}
+            <Route
+              path="/admin/feedback"
+              element={isGuest ? <Navigate to="/" replace /> : <FeedbackAdmin />}
+            />
             <Route path="/me/data" element={<MyData />} />
           </Routes>
         ) : (
           <div className="consent-card signin-card">
             <p>Browse event photos and find yourself in them with Find Me.</p>
-            <button className="btn btn-primary" onClick={() => void signInWithGoogle()}>
+            <button className="btn btn-primary" onClick={() => void guest()}>
+              Continue as guest
+            </button>
+            <button className="btn btn-light" onClick={() => void signInWithGoogle()}>
               Sign in with Google
             </button>
+            {signInError && <p className="error-text">{signInError}</p>}
           </div>
         )}
       </main>
