@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import type { ListPhotosResponse, GalleryPhoto, DownloadRequest } from '@cloud-webapp/shared';
-import { apiGet, apiDownloadFile, ApiError } from '../lib/api.js';
+import { apiGet, apiDownloadFile, apiGetBlob, ApiError } from '../lib/api.js';
 import { useSelection } from '../lib/selection.js';
 import { eventLabel } from '../lib/eventLabel.js';
+import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
 import { SelectBar } from '../components/SelectBar.js';
 
 export function Gallery(): JSX.Element {
@@ -15,6 +16,11 @@ export function Gallery(): JSX.Element {
   const [selectMode, setSelectMode] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+
+  function filenameFor(p: GalleryPhoto): string {
+    const base = (p.name || '').split(/[/\\]/).pop()?.trim();
+    return base || `${p.photoId}.jpg`;
+  }
 
   const ids = (photos ?? []).map((p) => p.photoId);
   const sel = useSelection(ids);
@@ -37,6 +43,27 @@ export function Gallery(): JSX.Element {
     try {
       const body: DownloadRequest = { photoIds: [...sel.selected] };
       await apiDownloadFile(`/api/events/${encodeURIComponent(eventId)}/download`, body, `${title}.zip`);
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : 'Download failed');
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  async function downloadIndividual(): Promise<void> {
+    if (sel.count === 0) return;
+    setDownloading(true);
+    setNotice(null);
+    try {
+      const chosen = (photos ?? []).filter((p) => sel.isSelected(p.photoId));
+      const files: NamedBlob[] = [];
+      for (const p of chosen) {
+        const blob = await apiGetBlob(
+          `/api/events/${encodeURIComponent(eventId)}/photos/${encodeURIComponent(p.photoId)}/original`,
+        );
+        files.push({ blob, filename: filenameFor(p) });
+      }
+      await savePhotosIndividually(files, { title });
     } catch (e) {
       setNotice(e instanceof Error ? e.message : 'Download failed');
     } finally {
@@ -85,6 +112,7 @@ export function Gallery(): JSX.Element {
           onSelectNone={sel.selectNone}
           onInvert={sel.invert}
           onDownload={() => void downloadSelected()}
+          onDownloadIndividual={() => void downloadIndividual()}
         />
       )}
 

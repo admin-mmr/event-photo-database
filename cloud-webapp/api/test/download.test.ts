@@ -47,6 +47,7 @@ vi.mock('../src/services/gcsService.js', () => ({
     createReadStream: () =>
       Readable.from([(ORIG_BYTES as Record<string, Buffer>)[photoId] ?? Buffer.from('')]),
   }),
+  origExtForMime: (m: string | undefined) => (m === 'image/png' ? 'png' : 'jpg'),
 }));
 
 const { buildServer } = await import('../src/server.js');
@@ -128,5 +129,46 @@ describe('POST /api/events/:id/download (B1)', () => {
     expect(zip.includes(ORIG_BYTES.p2)).toBe(true);
     // Filenames are present as ZIP entry names.
     expect(zip.includes(Buffer.from('IMG_001.jpg'))).toBe(true);
+  });
+});
+
+describe('GET /api/events/:id/photos/:photoId/original (individual download)', () => {
+  const app = buildServer();
+
+  beforeEach(() => {
+    fakeDb.events.clear();
+    fakeDb.photos.clear();
+    fakeDb.events.set('ev1', { name: 'Spring Run 2026' });
+    fakeDb.photos.set('p1', { eventId: 'ev1', name: 'IMG_001.jpg', mimeType: 'image/jpeg' });
+    fakeDb.photos.set('px', { eventId: 'other', name: 'NOPE.jpg', mimeType: 'image/jpeg' });
+  });
+
+  it('requires auth', async () => {
+    const res = await request(app).get('/api/events/ev1/photos/p1/original');
+    expect(res.status).toBe(401);
+  });
+
+  it('404s when the photo belongs to another event', async () => {
+    const res = await request(app).get('/api/events/ev1/photos/px/original').set('x-test-user', USER);
+    expect(res.status).toBe(404);
+  });
+
+  it('404s for an unknown photo', async () => {
+    const res = await request(app).get('/api/events/ev1/photos/nope/original').set('x-test-user', USER);
+    expect(res.status).toBe(404);
+  });
+
+  it('streams the original bytes as an attachment', async () => {
+    const res = await request(app)
+      .get('/api/events/ev1/photos/p1/original')
+      .set('x-test-user', USER)
+      .buffer(true)
+      .parse(binaryParser as unknown as () => void);
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('image/jpeg');
+    expect(res.headers['content-disposition']).toContain('attachment');
+    expect(res.headers['content-disposition']).toContain('IMG_001.jpg');
+    expect((res.body as Buffer).equals(ORIG_BYTES.p1)).toBe(true);
   });
 });

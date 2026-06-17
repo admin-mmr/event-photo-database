@@ -16,6 +16,8 @@ interface SelectBarProps {
   onSelectNone: () => void;
   onInvert: () => void;
   onDownload: () => void;
+  /** Download the selection as separate files (iPhone Photos-friendly). */
+  onDownloadIndividual?: () => void;
   onSaveToPhone?: () => void;
 }
 
@@ -28,6 +30,7 @@ export function SelectBar({
   onSelectNone,
   onInvert,
   onDownload,
+  onDownloadIndividual,
   onSaveToPhone,
 }: SelectBarProps): JSX.Element {
   const none = selectedCount === 0;
@@ -48,8 +51,17 @@ export function SelectBar({
           Invert
         </button>
         <button className="btn btn-primary btn-sm" onClick={onDownload} disabled={none || busy}>
-          {busy ? 'Preparing ZIP…' : `⬇ Download ${selectedCount || ''}`.trim()}
+          {busy ? 'Preparing ZIP…' : `⬇ Download ZIP ${selectedCount || ''}`.trim()}
         </button>
+        {onDownloadIndividual && (
+          <button
+            className="btn btn-light btn-sm"
+            onClick={onDownloadIndividual}
+            disabled={none || busy}
+          >
+            🖼 Save individually
+          </button>
+        )}
         {canSave && onSaveToPhone && (
           <button className="btn btn-light btn-sm" onClick={onSaveToPhone} disabled={none || busy}>
             📲 Save to phone

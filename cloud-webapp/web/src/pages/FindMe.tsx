@@ -9,10 +9,19 @@ import type {
   ReferenceUpload,
   SearchByUploadRequest,
 } from '@cloud-webapp/shared';
-import { apiGet, apiUpload, apiPost, apiDownloadFile, apiFetchBlob, ApiError } from '../lib/api.js';
+import {
+  apiGet,
+  apiUpload,
+  apiPost,
+  apiDownloadFile,
+  apiFetchBlob,
+  apiGetBlob,
+  ApiError,
+} from '../lib/api.js';
 import { useSelection } from '../lib/selection.js';
 import { combineReferences, visibleResults } from '../lib/results.js';
 import { saveToPhone } from '../lib/share.js';
+import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
 import { SelectBar } from '../components/SelectBar.js';
 
 type Phase = 'consent' | 'pick' | 'searching' | 'results';
@@ -258,6 +267,27 @@ export function FindMe(): JSX.Element {
     }
   }
 
+  async function downloadIndividual(): Promise<void> {
+    if (sel.count === 0) return;
+    setDownloading(true);
+    setError(null);
+    try {
+      const ids = [...sel.selected];
+      const files: NamedBlob[] = [];
+      for (const photoId of ids) {
+        const blob = await apiGetBlob(
+          `/api/events/${encodeURIComponent(eventId)}/photos/${encodeURIComponent(photoId)}/original`,
+        );
+        files.push({ blob, filename: `${photoId}.jpg` });
+      }
+      await savePhotosIndividually(files, { title: 'My event photos' });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Download failed');
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   async function saveSelected(): Promise<void> {
     if (sel.count === 0) return;
     setSaving(true);
@@ -455,6 +485,7 @@ export function FindMe(): JSX.Element {
                 onSelectNone={sel.selectNone}
                 onInvert={sel.invert}
                 onDownload={() => void downloadSelected()}
+                onDownloadIndividual={() => void downloadIndividual()}
                 onSaveToPhone={() => void saveSelected()}
               />
               <div className="photo-grid">

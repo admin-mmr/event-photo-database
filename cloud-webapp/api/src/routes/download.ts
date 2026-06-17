@@ -25,7 +25,7 @@ import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
 import { downloadRateLimit } from '../middleware/rateLimit.js';
-import { origFile } from '../services/gcsService.js';
+import { origFile, origExtForMime } from '../services/gcsService.js';
 
 export const downloadRouter = Router();
 
@@ -135,3 +135,47 @@ downloadRouter.post('/events/:id/download', requireAuth, downloadRateLimit(), as
     next(err);
   }
 });
+
+/**
+ * GET /api/events/:id/photos/:photoId/original — stream a single original as an
+ * attachment (FR-12). Powers the "save photos individually" option, which on
+ * iOS hands the files to the share sheet ("Save N Images to Photos"). Same
+ * auth + rate limit + event-ownership checks as the ZIP route.
+ */
+downloadRouter.get(
+  '/events/:id/photos/:photoId/original',
+  requireAuth,
+  downloadRateLimit(),
+  async (req, res, next) => {
+    try {
+      const eventId = String(req.params.id);
+      const photoId = String(req.params.photoId);
+
+      const doc = await firestore().collection('photos').doc(photoId).get();
+      if (!doc.exists || doc.data()?.eventId !== eventId) {
+        res.status(404).json({ ok: false, error: 'not_found', message: 'Photo not found in this event' });
+        return;
+      }
+      const mimeType = doc.data()?.mimeType as string | undefined;
+      const name = String(doc.data()?.name ?? '');
+      const filename = safeEntryName(name, photoId, origExtForMime(mimeType));
+
+      res.setHeader('Content-Type', mimeType || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Cache-Control', 'no-store');
+
+      const stream = origFile(eventId, photoId, mimeType).createReadStream();
+      stream.on('error', (err) => {
+        logger.warn({ err, eventId, photoId }, 'single orig read failed');
+        if (!res.headersSent) {
+          res.status(502).json({ ok: false, error: 'read_failed', message: 'Could not read photo' });
+        } else {
+          res.destroy(err);
+        }
+      });
+      stream.pipe(res);
+    } catch (err) {
+      next(err);
+    }
+  },
+);

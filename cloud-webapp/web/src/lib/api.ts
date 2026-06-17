@@ -40,6 +40,16 @@ export async function apiGet<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** GET a binary response as a Blob (e.g. a single original photo). */
+export async function apiGetBlob(path: string): Promise<Blob> {
+  const res = await fetch(path, {
+    method: 'GET',
+    headers: { Accept: 'image/*, application/octet-stream', ...(await authHeader()) },
+  });
+  if (!res.ok) throw await parseError(res, `GET ${path} failed: HTTP ${res.status}`);
+  return res.blob();
+}
+
 export async function apiDelete<T>(path: string): Promise<T> {
   const res = await fetch(path, {
     method: 'DELETE',
