@@ -81,8 +81,17 @@ export const ReferenceUploadSchema = z.object({
   url: z.string(),
   mode: z.enum(['fused', 'person']),
   createdAt: z.string(),
+  /** ISO timestamp after which the reference auto-expires (My Data / M3.4). */
+  expiresAt: z.string(),
 });
 export type ReferenceUpload = z.infer<typeof ReferenceUploadSchema>;
+
+/** Response for DELETE /api/findme/uploads/:uploadId (My Data delete, M3.4). */
+export const DeleteReferenceResponseSchema = z.object({
+  ok: z.literal(true),
+  uploadId: z.string(),
+});
+export type DeleteReferenceResponse = z.infer<typeof DeleteReferenceResponseSchema>;
 
 export const ListReferencesResponseSchema = z.object({
   ok: z.literal(true),

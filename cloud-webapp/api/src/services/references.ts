@@ -38,6 +38,12 @@ export async function getReference(uploadId: string): Promise<ReferenceRecord | 
   return doc.exists ? (doc.data() as ReferenceRecord) : null;
 }
 
+/** Delete a reference record (My Data self-service delete, M3.4). Caller is
+ *  responsible for authorizing ownership and for removing the GCS object. */
+export async function deleteReference(uploadId: string): Promise<void> {
+  await firestore().collection(COLLECTION).doc(uploadId).delete();
+}
+
 /**
  * The user's non-expired references, newest first (capped). Filtering/sorting
  * in memory keeps this on a single-field `uid` index.

@@ -25,6 +25,7 @@ import {
   type MatchResult,
   type ListReferencesResponse,
   type ReferenceUpload,
+  type DeleteReferenceResponse,
 } from '@cloud-webapp/shared';
 
 import { env } from '../lib/config.js';
@@ -40,11 +41,13 @@ import {
   uploadReference,
   readReference,
   signReferenceUrl,
+  deleteReferenceObject,
 } from '../services/gcsService.js';
 import {
   createReference,
   getReference,
   listReferencesForUser,
+  deleteReference,
 } from '../services/references.js';
 
 export const findmeRouter = Router();
@@ -277,9 +280,35 @@ findmeRouter.get('/findme/uploads', requireAuth, async (req, res, next) => {
         url: await signReferenceUrl(r.gcsPath),
         mode: r.mode,
         createdAt: r.createdAt,
+        expiresAt: r.expiresAt,
       })),
     );
     const body: ListReferencesResponse = { ok: true, uploads };
+    res.json(body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Delete one of the caller's saved reference selfies (My Data / M3.4). Cascade:
+ * remove the GCS object then the Firestore record. Scoped to the owner — another
+ * user's uploadId returns 404 (not 403) so existence isn't leaked (PRD §8.1).
+ */
+findmeRouter.delete('/findme/uploads/:uploadId', requireAuth, async (req, res, next) => {
+  try {
+    const uploadId = String(req.params.uploadId);
+    const rec = await getReference(uploadId);
+    if (!rec || rec.uid !== req.user!.uid) {
+      res.status(404).json({ ok: false, error: 'not_found', message: 'Reference photo not found' });
+      return;
+    }
+    // Delete the object first; if the record delete fails the bytes are already
+    // gone (the worse leak is bytes-without-record, not record-without-bytes).
+    await deleteReferenceObject(rec.gcsPath);
+    await deleteReference(uploadId);
+    logger.info({ uid: req.user!.uid, uploadId }, 'reference deleted (my data)');
+    const body: DeleteReferenceResponse = { ok: true, uploadId };
     res.json(body);
   } catch (err) {
     next(err);

@@ -5,6 +5,7 @@ import { Events } from './pages/Events.js';
 import { Gallery } from './pages/Gallery.js';
 import { FindMe } from './pages/FindMe.js';
 import { FeedbackAdmin } from './pages/FeedbackAdmin.js';
+import { MyData } from './pages/MyData.js';
 
 export function App(): JSX.Element {
   const { user, loading } = useAuth();
@@ -18,6 +19,9 @@ export function App(): JSX.Element {
           </Link>
           {user && (
             <div className="user-box">
+              <Link to="/me/data" className="muted nav-link">
+                My data
+              </Link>
               <Link to="/admin/feedback" className="muted nav-link">
                 Match feedback
               </Link>
@@ -37,6 +41,7 @@ export function App(): JSX.Element {
             <Route path="/events/:eventId" element={<Gallery />} />
             <Route path="/events/:eventId/findme" element={<FindMe />} />
             <Route path="/admin/feedback" element={<FeedbackAdmin />} />
+            <Route path="/me/data" element={<MyData />} />
           </Routes>
         ) : (
           <div className="consent-card signin-card">

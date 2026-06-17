@@ -137,6 +137,12 @@ export async function readReference(gcsPath: string): Promise<Buffer> {
   return buf;
 }
 
+/** Delete a stored reference selfie's object (My Data delete, M3.4). Uses
+ *  `ignoreNotFound` so a re-delete or an already-expired object is a no-op. */
+export async function deleteReferenceObject(gcsPath: string): Promise<void> {
+  await getStorage().bucket(env.UPLOADS_BUCKET).file(gcsPath).delete({ ignoreNotFound: true });
+}
+
 /** Short-lived signed read URL for displaying a stored reference in the picker. */
 export async function signReferenceUrl(gcsPath: string): Promise<string> {
   const [url] = await getStorage()

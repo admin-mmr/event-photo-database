@@ -39,12 +39,14 @@ vi.mock('../src/services/matcherClient.js', () => ({
 
 const signReferenceUrl = vi.fn();
 const readReference = vi.fn();
+const deleteReferenceObject = vi.fn();
 vi.mock('../src/services/gcsService.js', () => ({
   signPhotoUrls: async (eventId: string, ids: string[]) =>
     ids.map((photoId) => ({ photoId, thumbUrl: `t/${photoId}`, webUrl: `w/${photoId}` })),
   uploadReference: vi.fn(),
   readReference: (...a: unknown[]) => readReference(...(a as [])),
   signReferenceUrl: (...a: unknown[]) => signReferenceUrl(...(a as [])),
+  deleteReferenceObject: (...a: unknown[]) => deleteReferenceObject(...(a as [])),
 }));
 
 interface Rec {
@@ -59,10 +61,14 @@ interface Rec {
   expiresAt: string;
 }
 let store: Rec[] = [];
+const deleteReference = vi.fn(async (id: string) => {
+  store = store.filter((r) => r.uploadId !== id);
+});
 vi.mock('../src/services/references.js', () => ({
   createReference: vi.fn(),
   getReference: vi.fn(async (id: string) => store.find((r) => r.uploadId === id) ?? null),
   listReferencesForUser: vi.fn(async (uid: string) => store.filter((r) => r.uid === uid)),
+  deleteReference: (...a: unknown[]) => deleteReference(...(a as [string])),
 }));
 
 const { buildServer } = await import('../src/server.js');
@@ -96,6 +102,9 @@ describe('Find Me reference reuse (D7)', () => {
     readReference.mockResolvedValue(Buffer.from('stored-selfie-bytes'));
     signReferenceUrl.mockReset();
     signReferenceUrl.mockImplementation(async (p: string) => `https://signed.example/ref?${p}`);
+    deleteReferenceObject.mockReset();
+    deleteReferenceObject.mockResolvedValue(undefined);
+    deleteReference.mockClear();
     store = [];
     fakeDb.events.set('evNew', { name: 'New Event' });
   });
@@ -177,6 +186,38 @@ describe('Find Me reference reuse (D7)', () => {
         .set('x-test-user', USER)
         .send({});
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe('DELETE /api/findme/uploads/:uploadId (My Data, M3.4)', () => {
+    it('requires auth', async () => {
+      const res = await request(app).delete('/api/findme/uploads/up-1');
+      expect(res.status).toBe(401);
+    });
+
+    it("deletes the caller's reference: GCS object then Firestore record", async () => {
+      store = [rec({ uploadId: 'up-1' })];
+      const res = await request(app).delete('/api/findme/uploads/up-1').set('x-test-user', USER);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ ok: true, uploadId: 'up-1' });
+      expect(deleteReferenceObject).toHaveBeenCalledWith('find_me_references/u1/up-1.jpg');
+      expect(deleteReference).toHaveBeenCalledWith('up-1');
+      expect(store.find((r) => r.uploadId === 'up-1')).toBeUndefined();
+    });
+
+    it("404s and deletes nothing when the upload belongs to another user", async () => {
+      store = [rec({ uploadId: 'up-1', uid: 'u1' })];
+      const res = await request(app).delete('/api/findme/uploads/up-1').set('x-test-user', OTHER);
+      expect(res.status).toBe(404);
+      expect(deleteReferenceObject).not.toHaveBeenCalled();
+      expect(deleteReference).not.toHaveBeenCalled();
+    });
+
+    it('404s for an unknown uploadId', async () => {
+      store = [];
+      const res = await request(app).delete('/api/findme/uploads/nope').set('x-test-user', USER);
+      expect(res.status).toBe(404);
+      expect(deleteReferenceObject).not.toHaveBeenCalled();
     });
   });
 });

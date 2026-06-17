@@ -40,6 +40,15 @@ export async function apiGet<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+export async function apiDelete<T>(path: string): Promise<T> {
+  const res = await fetch(path, {
+    method: 'DELETE',
+    headers: { Accept: 'application/json', ...(await authHeader()) },
+  });
+  if (!res.ok) throw await parseError(res, `DELETE ${path} failed: HTTP ${res.status}`);
+  return (await res.json()) as T;
+}
+
 export async function apiPost<T, B = unknown>(path: string, body: B): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
