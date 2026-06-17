@@ -4,6 +4,7 @@ import { useAuth } from './lib/useAuth.js';
 import { Events } from './pages/Events.js';
 import { Gallery } from './pages/Gallery.js';
 import { FindMe } from './pages/FindMe.js';
+import { FeedbackAdmin } from './pages/FeedbackAdmin.js';
 
 export function App(): JSX.Element {
   const { user, loading } = useAuth();
@@ -17,6 +18,9 @@ export function App(): JSX.Element {
           </Link>
           {user && (
             <div className="user-box">
+              <Link to="/admin/feedback" className="muted nav-link">
+                Match feedback
+              </Link>
               <span className="muted">{user.email}</span>
               <button className="btn btn-light" onClick={() => void signOutUser()}>
                 Sign out
@@ -32,6 +36,7 @@ export function App(): JSX.Element {
             <Route path="/" element={<Events />} />
             <Route path="/events/:eventId" element={<Gallery />} />
             <Route path="/events/:eventId/findme" element={<FindMe />} />
+            <Route path="/admin/feedback" element={<FeedbackAdmin />} />
           </Routes>
         ) : (
           <div className="consent-card signin-card">
