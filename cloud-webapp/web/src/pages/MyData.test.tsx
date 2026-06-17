@@ -86,6 +86,36 @@ describe('<MyData />', () => {
     expect(screen.getByText('Photo deleted.')).toBeTruthy();
   });
 
+  it('deletes all data via the danger zone (two-step confirm)', async () => {
+    let purged = false;
+    fetchImpl = async (url, init) => {
+      if (String(url) === '/api/findme/uploads') {
+        return new Response(JSON.stringify(UPLOADS), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (String(url) === '/api/findme/me/data' && init?.method === 'DELETE') {
+        purged = true;
+        return new Response(
+          JSON.stringify({ ok: true, deleted: { references: 2, consents: 3, matchRuns: 1, feedback: 4 } }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    render(<MyData />);
+    await waitFor(() => expect(screen.getAllByRole('img')).toHaveLength(2));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete all my data' }));
+    fireEvent.click(screen.getByRole('button', { name: /Yes, delete everything/i }));
+
+    await waitFor(() => expect(screen.getByText(/All your Find Me data was deleted/i)).toBeTruthy());
+    expect(purged).toBe(true);
+    expect(screen.queryAllByRole('img')).toHaveLength(0);
+  });
+
   it('shows an empty state when there are no saved photos', async () => {
     fetchImpl = async () =>
       new Response(JSON.stringify({ ok: true, uploads: [] }), {

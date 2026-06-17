@@ -26,6 +26,7 @@ import {
   type ListReferencesResponse,
   type ReferenceUpload,
   type DeleteReferenceResponse,
+  type DeleteMyDataResponse,
 } from '@cloud-webapp/shared';
 
 import { env } from '../lib/config.js';
@@ -49,6 +50,7 @@ import {
   listReferencesForUser,
   deleteReference,
 } from '../services/references.js';
+import { deleteAllUserData } from '../services/userData.js';
 
 export const findmeRouter = Router();
 
@@ -309,6 +311,23 @@ findmeRouter.delete('/findme/uploads/:uploadId', requireAuth, async (req, res, n
     await deleteReference(uploadId);
     logger.info({ uid: req.user!.uid, uploadId }, 'reference deleted (my data)');
     const body: DeleteReferenceResponse = { ok: true, uploadId };
+    res.json(body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Erase ALL of the caller's Find Me data — consent revoke + full delete (M5.2 /
+ * PRD §8.5). Cascades across references (+GCS objects), consents, match_runs,
+ * and match_feedback, then writes a `data_deleted` audit record. Scoped to the
+ * caller's own uid; there is no admin/cross-user variant here.
+ */
+findmeRouter.delete('/findme/me/data', requireAuth, async (req, res, next) => {
+  try {
+    const deleted = await deleteAllUserData(req.user!.uid, req.user!.email ?? null);
+    logger.info({ uid: req.user!.uid, deleted }, 'user data erased (revoke/delete-my-data)');
+    const body: DeleteMyDataResponse = { ok: true, deleted };
     res.json(body);
   } catch (err) {
     next(err);

@@ -93,6 +93,18 @@ export const DeleteReferenceResponseSchema = z.object({
 });
 export type DeleteReferenceResponse = z.infer<typeof DeleteReferenceResponseSchema>;
 
+/** Response for DELETE /api/findme/me/data — full erase / consent revoke (M5.2). */
+export const DeleteMyDataResponseSchema = z.object({
+  ok: z.literal(true),
+  deleted: z.object({
+    references: z.number(),
+    consents: z.number(),
+    matchRuns: z.number(),
+    feedback: z.number(),
+  }),
+});
+export type DeleteMyDataResponse = z.infer<typeof DeleteMyDataResponseSchema>;
+
 export const ListReferencesResponseSchema = z.object({
   ok: z.literal(true),
   uploads: z.array(ReferenceUploadSchema),

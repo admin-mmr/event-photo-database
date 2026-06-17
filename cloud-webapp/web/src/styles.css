@@ -110,6 +110,15 @@ pre.error {
   color: #1a1a1a;
 }
 
+.btn-danger {
+  background: #fbe9e9;
+  color: #8a1f1f;
+}
+
+.btn-danger:not(:disabled):hover {
+  background: #f5d4d4;
+}
+
 /* ── Events list ────────────────────────────────────────────────────────── */
 
 .event-list {
@@ -603,4 +612,18 @@ pre.error {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+
+.danger-zone {
+  margin-top: 28px;
+  padding: 16px;
+  border: 1px solid #f1c9c9;
+  border-radius: 10px;
+  background: #fffafa;
+}
+
+.danger-zone h3 {
+  margin: 0 0 6px;
+  font-size: 16px;
+  color: #8a1f1f;
 }

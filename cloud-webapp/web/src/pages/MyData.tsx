@@ -3,6 +3,7 @@ import type {
   ListReferencesResponse,
   ReferenceUpload,
   DeleteReferenceResponse,
+  DeleteMyDataResponse,
 } from '@cloud-webapp/shared';
 import { apiGet, apiDelete, ApiError } from '../lib/api.js';
 
@@ -33,6 +34,8 @@ export function MyData(): JSX.Element {
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [purgeArmed, setPurgeArmed] = useState(false);
+  const [purging, setPurging] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -64,6 +67,25 @@ export function MyData(): JSX.Element {
     } finally {
       setBusyId(null);
       setConfirmId(null);
+    }
+  }
+
+  async function purgeAll(): Promise<void> {
+    setPurging(true);
+    setNotice(null);
+    try {
+      const r = await apiDelete<DeleteMyDataResponse>('/api/findme/me/data');
+      setUploads([]);
+      const { references, matchRuns, feedback } = r.deleted;
+      setNotice(
+        `All your Find Me data was deleted (${references} saved photo${references === 1 ? '' : 's'}, ` +
+          `${matchRuns} search${matchRuns === 1 ? '' : 'es'}, ${feedback} feedback vote${feedback === 1 ? '' : 's'}).`,
+      );
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : 'Could not delete your data.');
+    } finally {
+      setPurging(false);
+      setPurgeArmed(false);
     }
   }
 
@@ -119,6 +141,29 @@ export function MyData(): JSX.Element {
           ))}
         </ul>
       )}
+
+      <section className="danger-zone">
+        <h3>Delete everything</h3>
+        <p className="muted">
+          Permanently delete all your Find Me data — saved photos, search history, and feedback.
+          This revokes your consent and can&rsquo;t be undone.
+        </p>
+        {purgeArmed ? (
+          <div className="mydata-confirm">
+            <span className="event-stat">Delete all your Find Me data?</span>
+            <button className="btn btn-danger btn-sm" onClick={() => void purgeAll()} disabled={purging}>
+              {purging ? 'Deleting…' : 'Yes, delete everything'}
+            </button>
+            <button className="btn btn-light btn-sm" onClick={() => setPurgeArmed(false)} disabled={purging}>
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button className="btn btn-danger btn-sm" onClick={() => setPurgeArmed(true)}>
+            Delete all my data
+          </button>
+        )}
+      </section>
     </div>
   );
 }
