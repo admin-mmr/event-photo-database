@@ -292,19 +292,42 @@ Each phase maps to a PRD milestone and lists ticket-sized tasks. "DoD" = definit
 | 5.6 | **Legal review of consent + minor language (launch gate)** | ⬜ | doc/sign-off — the minor/guardian *mechanism* (3.2) is built; the *wording* still needs counsel |
 | **DoD** | PRD §8/§9 complete; legal sign-off; deletion verified end-to-end | 🟡 | 5.3 done; 5.1/5.2/5.4/5.5/5.6 remain |
 
-### M6 — Pilot & launch (1 week + soak) — ⬜ To do
+### M6 — Pilot & launch (1 week + soak) — 🟡 Partial (flag + metrics + runbook code-complete 2026-06-17f; pilot run + legal gate remain)
 
 | # | Task | Status |
 |---|---|---|
-| 6.1 | Feature-flag Find Me to one real event; invite a small attendee group | ⬜ (informal demo already ran on live event `d2307147-…`) |
-| 6.2 | Measure PRD §2 metrics (precision, latency, deflection, consent coverage) | ⬜ |
-| 6.3 | Write `cloud-webapp/docs/FINDME_RUNBOOK.md` (deploy, re-index, incident, data-deletion) | ⬜ |
-| 6.4 | Remove flag; general rollout to link/login-gated events | ⬜ |
+| 6.1 | Feature-flag Find Me to one real event; invite a small attendee group | 🟢 **mechanism shipped 2026-06-17f** — two-knob flag (`FINDME_ENABLED` global kill switch + `FINDME_EVENT_ALLOWLIST` per-event allowlist) in `config.ts`, enforced in `findme.ts` `runSearch` (`403 feature_unavailable`) before any biometric work; default-permissive so nothing changes until an operator opts in. Not deployed; the actual attendee-invite pilot ⬜. Informal demo already ran on live event `d2307147-…` |
+| 6.2 | Measure PRD §2 metrics (precision, latency, deflection, consent coverage) | 🟢 **data-derived slice shipped 2026-06-17f** — `GET /api/admin/metrics` (admin) rolls up searches, distinct searchers, mode split, minor searches, consent coverage, feedback-judged precision, and erasures over a window. Out-of-band metrics (p95 latency, $ spend, recall, deflection) sourced per `docs/FINDME_RUNBOOK.md` §5. Not deployed |
+| 6.3 | Write `cloud-webapp/docs/FINDME_RUNBOOK.md` (deploy, re-index, incident, data-deletion) | 🟢 **written 2026-06-17f** — `cloud-webapp/docs/FINDME_RUNBOOK.md`: system map, deploy (incl. the `--set-env-vars` survival gotcha), pilot flag, re-index, metrics, incident table, data-deletion/DSR, rollback, pre-launch checklist. Not pushed |
+| 6.4 | Remove flag; general rollout to link/login-gated events | ⬜ (supported by 6.1: clear `FINDME_EVENT_ALLOWLIST` → all events) |
 
 **Rough total:** ~10–12 weeks of focused work for 1–2 engineers — consistent with the "6–10 weeks part-time" envelope in `UX_AND_GCP_ASSESSMENT.md` §2.6, with the extra time attributable to the ML/privacy surface.
 
 ---
 
+> **⚠️ STATUS UPDATE (2026-06-17f) — M6 pilot scaffolding shipped (code): feature flag + metrics + runbook.**
+> Resumes the dev plan at M6. CI-green locally (api typecheck + eslint clean;
+> **api suite 110 tests / 18 files**, +10 new). **M6.1 feature flag:** a two-knob
+> pilot gate — `FINDME_ENABLED` (global kill switch) and `FINDME_EVENT_ALLOWLIST`
+> (comma-separated per-event allowlist) in `api/src/lib/config.ts`
+> (`isFindMeEnabledForEvent`), enforced in `findme.ts` `runSearch` **before any
+> biometric processing** (`403 feature_unavailable`). Default-permissive
+> (`enabled`, empty allowlist = all events) so the demo and existing tests are
+> unaffected until an operator opts in; flip via `--update-env-vars` (transient)
+> or the `deploy-api.yml` `--set-env-vars` list (durable). Tests:
+> `featureFlag` (3, pure helper) + `findmeFeatureFlag` (2, route wiring).
+> **M6.2 metrics:** `GET /api/admin/metrics` (admin-gated; `routes/metrics.ts` +
+> shared `metrics.ts` schema) aggregates `match_runs`/`consents`/`match_feedback`
+> over a window into searches, distinct searchers, mode split, minor searches,
+> consent coverage, feedback-judged precision, and erasures — the data-derivable
+> slice of PRD §2. Tests: `metrics` (5). **M6.3 runbook:**
+> `cloud-webapp/docs/FINDME_RUNBOOK.md` (deploy / pilot-enable / re-index /
+> metrics / incident table / data-deletion / rollback / pre-launch checklist),
+> folding in the `CLAUDE.md` ops notes. **Not deployed/pushed.** Still open:
+> M6.1 actual attendee pilot, M6.4 general rollout, and the M5.6 legal sign-off
+> (launch gate); the unbuilt M5.1 retention Job + missing admin-erasure endpoint
+> are flagged as launch caveats in the runbook §7.
+>
 > **⚠️ STATUS UPDATE (2026-06-16e) — reference reuse / "match this event with a past photo" shipped (code).**
 > Implements the D7/FR-10b reuse half of M3.4 (CI-green locally: api 87 tests /
 > 13 files, web 25 tests, typecheck + eslint clean). Fresh `findme/search`

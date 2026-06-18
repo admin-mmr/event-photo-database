@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "mmr-data-pipeline",
     "public": "web/dist",
     "ignore": [
       "firebase.json",

@@ -57,6 +57,13 @@ jobs:
           # Shared secret for the Cloud Scheduler sync trigger (repo secret);
           # empty = only Firebase admins can trigger a sync.
           SYNC_TRIGGER_TOKEN: ${{ secrets.SYNC_TRIGGER_TOKEN }}
+          # Pilot feature flag (repo variable; dev plan M6.1). Comma-separated
+          # event IDs Find Me search is gated to. EMPTY (default) = all events
+          # allowed. Set it to the pilot event id to launch to one event; clear
+          # it for general rollout (M6.4). Durable here so it survives deploys —
+          # a transient `gcloud run services update --update-env-vars` would be
+          # wiped by the --set-env-vars below on the next deploy.
+          FINDME_EVENT_ALLOWLIST: ${{ vars.FINDME_EVENT_ALLOWLIST }}
         run: |
           gcloud run deploy "$SERVICE" \
             --image="$IMAGE" \
@@ -71,7 +78,7 @@ jobs:
             --min-instances=0 \
             --concurrency=80 \
             --timeout=60 \
-            --set-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=${GITHUB_SHA::7},MATCHER_URL=${MATCHER_URL},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID},SYNC_TRIGGER_TOKEN=${SYNC_TRIGGER_TOKEN}"
+            --set-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=${GITHUB_SHA::7},MATCHER_URL=${MATCHER_URL},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID},SYNC_TRIGGER_TOKEN=${SYNC_TRIGGER_TOKEN},FINDME_EVENT_ALLOWLIST=${FINDME_EVENT_ALLOWLIST}"
 
       - name: Smoke test
         env:

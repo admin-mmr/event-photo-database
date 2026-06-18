@@ -29,7 +29,7 @@ import {
   type DeleteMyDataResponse,
 } from '@cloud-webapp/shared';
 
-import { env } from '../lib/config.js';
+import { env, isFindMeEnabledForEvent } from '../lib/config.js';
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import type { AuthedUser } from '../middleware/auth.js';
@@ -83,6 +83,18 @@ interface RunSearchOpts {
  */
 async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
   const { user, eventId, image, contentType, filename, mode, subjectIsMinor, guardianAttested } = opts;
+
+  // Pilot feature flag (dev plan M6.1). Cheapest check first — no IO. When the
+  // launch is gated to specific events (or switched off globally), a search for
+  // any other event is politely refused rather than processed.
+  if (!isFindMeEnabledForEvent(eventId)) {
+    res.status(403).json({
+      ok: false,
+      error: 'feature_unavailable',
+      message: 'Find Me isn’t available for this event yet.',
+    });
+    return;
+  }
 
   // Minor-subject gate (PRD §8.3 / D8): a search for a minor must be performed
   // by a guardian who attests authority to consent. (Final consent wording is

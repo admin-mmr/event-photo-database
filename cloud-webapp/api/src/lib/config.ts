@@ -102,6 +102,19 @@ const EnvSchema = z.object({
   RECAPTCHA_API_KEY: z.string().default(''),
   // Minimum Enterprise risk score (0..1) to accept; below this is rejected.
   RECAPTCHA_MIN_SCORE: z.coerce.number().min(0).max(1).default(0.5),
+
+  // ── Pilot feature flag (dev plan M6.1 / M6.4) ─────────────────────────
+  // Find Me search gate, evaluated per search in `runSearch`. Two knobs:
+  //   FINDME_ENABLED          global kill switch ('true' | 'false').
+  //   FINDME_EVENT_ALLOWLIST  comma-separated event IDs the search is
+  //                           restricted to. EMPTY (default) = every event is
+  //                           allowed (current behaviour). Set it to the single
+  //                           pilot event id to gate the launch (M6.1); clear it
+  //                           for general rollout (M6.4).
+  // Both fail OPEN of nothing — defaults leave Find Me fully on, so the demo and
+  // existing tests are unaffected until an operator opts into the pilot gate.
+  FINDME_ENABLED: z.enum(['true', 'false']).default('true'),
+  FINDME_EVENT_ALLOWLIST: z.string().default(''),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
@@ -110,3 +123,23 @@ export const env: Env = EnvSchema.parse(process.env);
 
 export const isProd = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
+
+/**
+ * Parsed pilot allowlist (trimmed, blanks dropped). Empty array = no event
+ * restriction. Computed once at load, like the rest of this module.
+ */
+export const findMeEventAllowlist: string[] = env.FINDME_EVENT_ALLOWLIST
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+/**
+ * Whether Find Me search is enabled for a given event under the pilot flag
+ * (dev plan M6.1). Off entirely when `FINDME_ENABLED=false`; otherwise gated to
+ * the allowlist when one is set, and open to all events when it is empty.
+ */
+export function isFindMeEnabledForEvent(eventId: string): boolean {
+  if (env.FINDME_ENABLED === 'false') return false;
+  if (findMeEventAllowlist.length === 0) return true;
+  return findMeEventAllowlist.includes(eventId);
+}
