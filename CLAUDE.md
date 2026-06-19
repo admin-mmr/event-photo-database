@@ -18,6 +18,30 @@
   cleanly when the user pastes them. Keep commands comment-free; put any
   explanation in prose outside the code block.
 
+## Cost policy — zero idle cost
+
+- **Every Google Cloud process must scale to zero when idle.** No service or
+  job should cost money while nothing is happening. Concretely:
+  - Cloud Run **services run with `--min-instances=0`** (no warm instance held
+    24/7). Do NOT set a min-instance count, and leave CPU throttling at the
+    default (CPU only during requests) — an always-allocated/min-instance setup
+    bills for memory + CPU around the clock even when idle. This was the source
+    of a ~$2/day idle charge on the `matcher` service (2 vCPU / 8 GiB held warm)
+    until it was set back to scale-to-zero.
+  - Cloud Run **jobs** (e.g. `photo-indexer`) already cost only while a run is
+    executing — fine as-is; don't add schedules that fire when there's no work.
+  - Accept the tradeoff: scale-to-zero means a cold start on the first request
+    after idle (the matcher reloads vectors into memory). If a service ever
+    needs to stay warm, prefer a scheduled warm window over a permanent
+    min-instance, and document why here.
+- **Verify nothing is silently always-on:** list services with their min-scale
+  and CPU-throttle so a stray warm instance is obvious.
+
+  ```bash
+  gcloud run services list --project=mmr-data-pipeline --region=us-central1 \
+    --format='table(metadata.name, spec.template.metadata.annotations["autoscaling.knative.dev/minScale"]:label=MIN, spec.template.metadata.annotations["run.googleapis.com/cpu-throttling"]:label=CPU_THROTTLE)'
+  ```
+
 ## Monitoring the Cloud Run indexer job
 
 - **Tail logs live** (closest to `tail -f`) with the Logging API:
