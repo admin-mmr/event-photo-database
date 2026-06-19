@@ -41,16 +41,28 @@ export async function getSheetsToken(): Promise<string> {
     exp: now + 3600,
   });
 
+  // Sign the JWT via Node's native fetch, NOT client.request (gaxios → node-fetch@2),
+  // which throws a spurious "Premature close" on Node 18+ when iamcredentials closes
+  // the connection — that 500'd /api/admin/sync. The token exchange below already
+  // uses native fetch, so this keeps the whole mint path on one HTTP client.
   const client = await auth.getClient();
-  const signRes = await client.request<{ signedJwt: string }>({
-    url: `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${sa}:signJwt`,
-    method: 'POST',
-    data: { payload: claims },
-  });
+  const accessToken = (await client.getAccessToken()).token;
+  const signResp = await fetch(
+    `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${sa}:signJwt`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ payload: claims }),
+    },
+  );
+  if (!signResp.ok) {
+    throw new Error(`signJwt failed: ${signResp.status} ${await signResp.text()}`);
+  }
+  const { signedJwt } = (await signResp.json()) as { signedJwt: string };
 
   const body = new URLSearchParams({
     grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-    assertion: signRes.data.signedJwt,
+    assertion: signedJwt,
   });
   const tokenRes = await fetch(TOKEN_URL, { method: 'POST', body });
   if (!tokenRes.ok) {
