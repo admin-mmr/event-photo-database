@@ -13,6 +13,11 @@
 - In zsh, unquoted parentheses are special (globbing). Always quote URLs/args
   containing them, e.g. Firestore REST paths with `databases/(default)/...`.
 
+- **No `#` comments inside bash blocks.** Do not put `#` comment lines or
+  trailing `# ...` inline comments in any bash code block — they don't run
+  cleanly when the user pastes them. Keep commands comment-free; put any
+  explanation in prose outside the code block.
+
 ## Monitoring the Cloud Run indexer job
 
 - **Tail logs live** (closest to `tail -f`) with the Logging API:

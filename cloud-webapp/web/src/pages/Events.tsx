@@ -24,6 +24,24 @@ function timeAgo(iso?: string): string {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
+/** Sort events most-recently-synced first, then newest event date.
+ *  Both keys are ISO strings, so a lexical compare is chronological.
+ *  Missing keys sort to the bottom of their level. */
+function bySyncThenDate(a: EventSummary, b: EventSummary): number {
+  const sa = a.lastSyncedAt ?? '';
+  const sb = b.lastSyncedAt ?? '';
+  if (sa !== sb) {
+    if (sa && sb) return sb.localeCompare(sa);
+    return sa ? -1 : 1;
+  }
+  const da = a.date ?? '';
+  const db = b.date ?? '';
+  if (da && db) return db.localeCompare(da);
+  if (da) return -1;
+  if (db) return 1;
+  return 0;
+}
+
 interface StatusPill {
   label: string;
   className: string;
@@ -61,7 +79,7 @@ export function Events({ isGuest = false }: EventsProps): JSX.Element {
 
   const load = useCallback(async () => {
     const r = await apiGet<ListEventsResponse>('/api/events');
-    setEvents(r.events);
+    setEvents([...r.events].sort(bySyncThenDate));
   }, []);
 
   async function syncWithDrive(): Promise<void> {

@@ -33,6 +33,9 @@ export const EventSummarySchema = z.object({
   /** Distinct photographer/location tags for the event, derived from the
    *  master Sheet's Upload_Links rows by the Drive reconciler (dev plan §8). */
   tags: z.array(z.string()).optional(),
+  /** ISO-8601 timestamp of the last "Sync with Drive" reconcile that touched
+   *  this event (written by reconcileService). Used to sort the events list. */
+  lastSyncedAt: z.string().optional(),
   indexState: IndexStateSchema.optional(),
 });
 export type EventSummary = z.infer<typeof EventSummarySchema>;
