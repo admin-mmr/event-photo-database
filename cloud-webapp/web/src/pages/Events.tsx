@@ -110,17 +110,31 @@ export function Events({ isGuest = false }: EventsProps): JSX.Element {
     load().catch((e: Error) => setError(e.message));
   }, [load]);
 
-  // Poll while any event is queued/running so the card reflects progress and
-  // flips to "Find Me ready" automatically when the job finishes.
+  // Auto-refresh so photo counts / status update without a manual reload:
+  //   • Fast (5s) while a job is queued/running, so progress shows live and the
+  //     pill flips to "Find Me ready" the moment the run finishes.
+  //   • Slow (20s) otherwise, so externally-triggered indexing — e.g. a GAS
+  //     upload firing POST /api/events/:id/index — gets picked up even when this
+  //     tab was idle showing everything "done".
+  //   • Plus an immediate refetch when the tab regains focus/visibility.
+  //   • Gated on document visibility: no polling while the tab is hidden, so we
+  //     don't hold the scale-to-zero API warm in the background (cost policy).
   const anyInFlight = (events ?? []).some((e) => pillFor(e).inFlight);
   const loadRef = useRef(load);
   loadRef.current = load;
   useEffect(() => {
-    if (!anyInFlight) return;
-    const t = setInterval(() => {
-      loadRef.current().catch(() => undefined);
-    }, 5000);
-    return () => clearInterval(t);
+    const refetchIfVisible = (): void => {
+      if (document.visibilityState === 'visible') loadRef.current().catch(() => undefined);
+    };
+    const delay = anyInFlight ? 5000 : 20000;
+    const t = setInterval(refetchIfVisible, delay);
+    document.addEventListener('visibilitychange', refetchIfVisible);
+    window.addEventListener('focus', refetchIfVisible);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener('visibilitychange', refetchIfVisible);
+      window.removeEventListener('focus', refetchIfVisible);
+    };
   }, [anyInFlight]);
 
   async function indexNow(id: string): Promise<void> {
