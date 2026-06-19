@@ -1,3 +1,4 @@
+import './lib/gaxiosNativeFetch.js'; // must run before any google-auth-library / @google-cloud/storage use
 import { buildServer } from './server.js';
 import { env } from './lib/config.js';
 import { logger } from './lib/logger.js';
