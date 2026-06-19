@@ -54,9 +54,12 @@ jobs:
           MATCHER_URL: ${{ vars.MATCHER_URL }}
           # Master Sheet id for "Sync with Drive" (repo variable); empty = sync 503s.
           MASTER_SPREADSHEET_ID: ${{ vars.MASTER_SPREADSHEET_ID }}
-          # Shared secret for the Cloud Scheduler sync trigger (repo secret);
-          # empty = only Firebase admins can trigger a sync.
-          SYNC_TRIGGER_TOKEN: ${{ secrets.SYNC_TRIGGER_TOKEN }}
+          # NOTE: SYNC_TRIGGER_TOKEN is NOT injected here as a literal env var.
+          # It lives in Secret Manager and is wired via --set-secrets below, the
+          # same way deploy-api.sh does it. Passing it as a string literal while
+          # the live service has it secret-backed fails the deploy with
+          # "Cannot update environment variable ... to string literal because it
+          # has already been set with a different type."
           # Pilot feature flag (repo variable; dev plan M6.1). Comma-separated
           # event IDs Find Me search is gated to. EMPTY (default) = all events
           # allowed. Set it to the pilot event id to launch to one event; clear
@@ -70,7 +73,6 @@ jobs:
             --region="$REGION" \
             --project="$PROJECT_ID" \
             --platform=managed \
-            --allow-unauthenticated \
             --port=8080 \
             --memory=512Mi \
             --cpu=1 \
@@ -78,7 +80,14 @@ jobs:
             --min-instances=0 \
             --concurrency=80 \
             --timeout=60 \
-            --set-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=${GITHUB_SHA::7},MATCHER_URL=${MATCHER_URL},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID},SYNC_TRIGGER_TOKEN=${SYNC_TRIGGER_TOKEN},FINDME_EVENT_ALLOWLIST=${FINDME_EVENT_ALLOWLIST}"
+            --update-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=${GITHUB_SHA::7},MATCHER_URL=${MATCHER_URL},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID},FINDME_EVENT_ALLOWLIST=${FINDME_EVENT_ALLOWLIST}" \
+            --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_KEY=RECAPTCHA_KEY:latest"
+          # Auth: deliberately pass NEITHER --allow-unauthenticated nor
+          # --no-allow-unauthenticated, so the deploy leaves the service's IAM
+          # policy untouched (matches deploy-api.sh + CLAUDE.md). --allow-unauthenticated
+          # tries to (re)add the allUsers binding, which the org DRS policy blocks
+          # and which can itself fail the deploy; --no-allow-unauthenticated strips
+          # the allUsers binding the Firebase Hosting rewrite depends on.
 
       - name: Smoke test
         env:
