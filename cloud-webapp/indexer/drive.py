@@ -30,6 +30,20 @@ DRIVE = "https://www.googleapis.com/drive/v3/files"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 
+FOLDER_MIME = "application/vnd.google-apps.folder"
+SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
+
+# Folders that hold shortcuts / duplicate copies rather than original photos.
+# We never recurse into them, so only real photo files in the event's normal
+# folders get indexed (avoids the duplicate-photo inflation those folders cause).
+# Matched case-insensitively on the folder's display name. Override via the
+# SKIP_FOLDER_NAMES env var (comma-separated) if the convention changes.
+SKIP_FOLDER_NAMES = frozenset(
+    n.strip().lower()
+    for n in os.environ.get("SKIP_FOLDER_NAMES", "Photos_zzz").split(",")
+    if n.strip()
+)
+
 
 def _claims(sa: str, subject: str) -> str:
     now = int(time.time())
@@ -121,11 +135,17 @@ class DriveClient:
             return ""
 
     def list_images(self, folder_id: str, rel: str = "") -> list[dict]:
-        """Recursively list image files in a folder.
+        """Recursively list real image files in a folder.
 
         Returns [{id, name, relPath, mimeType, md5Checksum, modifiedTime, size}].
-        Shortcuts are not followed (the gas-app dedupe work showed shortcut
-        targets also appear as real files elsewhere in the tree).
+
+        Two things are deliberately excluded so only real photo files are
+        indexed:
+          - Shortcut files (mimeType application/vnd.google-apps.shortcut) are
+            never indexed — their targets appear as real files elsewhere in the
+            tree, so indexing the shortcut too would double-count the photo.
+          - Folders named in SKIP_FOLDER_NAMES (e.g. "Photos_zzz") are not
+            recursed into; those hold the shortcut/duplicate copies.
         """
         items: list[dict] = []
         page_token = None
@@ -142,10 +162,15 @@ class DriveClient:
                 params["pageToken"] = page_token
             page = self._get_json(f"{DRIVE}?{urllib.parse.urlencode(params)}")
             for f in page.get("files", []):
+                mime = f["mimeType"]
                 rel_path = f"{rel}{f['name']}"
-                if f["mimeType"] == "application/vnd.google-apps.folder":
+                if mime == FOLDER_MIME:
+                    if f["name"].strip().lower() in SKIP_FOLDER_NAMES:
+                        continue  # shortcut/duplicate folder — don't index it
                     items += self.list_images(f["id"], rel=f"{rel_path}/")
-                elif f["mimeType"].startswith("image/"):
+                elif mime == SHORTCUT_MIME:
+                    continue  # never index shortcuts (targets exist as real files)
+                elif mime.startswith("image/"):
                     items.append({**f, "relPath": rel_path})
             page_token = page.get("nextPageToken")
             if not page_token:
