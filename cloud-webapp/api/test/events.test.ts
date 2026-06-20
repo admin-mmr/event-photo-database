@@ -111,6 +111,26 @@ describe('events routes', () => {
     });
   });
 
+  describe('GET /api/events/:id', () => {
+    it('requires auth', async () => {
+      const res = await request(app).get('/api/events/ev1');
+      expect(res.status).toBe(401);
+    });
+
+    it('returns the event summary with unknown fields stripped', async () => {
+      const res = await request(app).get('/api/events/ev1').set('x-test-user', MEMBER);
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.event).toMatchObject({ id: 'ev1', name: 'Spring Run 2026' });
+      expect(res.body.event.legacyGasAppField).toBeUndefined();
+    });
+
+    it('404s on unknown event', async () => {
+      const res = await request(app).get('/api/events/nope').set('x-test-user', MEMBER);
+      expect(res.status).toBe(404);
+    });
+  });
+
   describe('POST /api/events/:id/index', () => {
     it('403s for non-admins and unverified admins', async () => {
       for (const user of [MEMBER, UNVERIFIED]) {

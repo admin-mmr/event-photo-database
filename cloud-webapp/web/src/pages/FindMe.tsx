@@ -21,8 +21,11 @@ import { useSelection } from '../lib/selection.js';
 import { combineReferences, visibleResults, scoreBand, bandLabel } from '../lib/results.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
 import { saveResults, loadResults, clearResults } from '../lib/findmeCache.js';
+import { usePageSize, PAGE_SIZE_OPTIONS } from '../lib/pageSize.js';
 import { SelectBar } from '../components/SelectBar.js';
 import { Lightbox } from '../components/Lightbox.js';
+import { PageSizeSelect } from '../components/PageSizeSelect.js';
+import { LoadMore } from '../components/LoadMore.js';
 
 type Phase = 'consent' | 'pick' | 'searching' | 'results';
 
@@ -94,6 +97,20 @@ export function FindMe(): JSX.Element {
 
   const ids = useMemo(() => visible.map((r) => r.photoId), [visible]);
   const sel = useSelection(ids);
+
+  // Matcher results come back as one ranked list (no server cursor), so we
+  // page the *display* client-side: show `visibleCount`, governed by the same
+  // page-size preference as the gallery, with a "Load more" affordance. Keeps
+  // the initial render light on phones when there are lots of matches.
+  const { pageSize, setPageSize } = usePageSize();
+  const [visibleCount, setVisibleCount] = useState(pageSize);
+  const shown = useMemo(() => visible.slice(0, visibleCount), [visible, visibleCount]);
+
+  // Reset the window when the page size changes or the user switches reference
+  // tabs (a different result set should start from the top).
+  useEffect(() => {
+    setVisibleCount(pageSize);
+  }, [pageSize, activeId]);
 
   // Switching the active reference clears the current selection — selecting in
   // one view shouldn't carry into another (no cross-upload blending).
@@ -520,13 +537,18 @@ export function FindMe(): JSX.Element {
             </p>
           ) : (
             <>
-              <p className="muted">
-                {isCombined
-                  ? `${visible.length} matches across your photos, best first.`
-                  : `${visible.length} possible matches, best first.`}{' '}
-                Tap a photo to enlarge and check it&rsquo;s you; tick the box to select, then
-                download the originals.
-              </p>
+              <div className="results-toolbar">
+                <p className="muted results-count">
+                  {isCombined
+                    ? `${visible.length} matches across your photos, best first.`
+                    : `${visible.length} possible matches, best first.`}{' '}
+                  Tap a photo to enlarge and check it&rsquo;s you; tick the box to select, then
+                  download the originals.
+                </p>
+                {visible.length > PAGE_SIZE_OPTIONS[0] && (
+                  <PageSizeSelect value={pageSize} onChange={setPageSize} label="Matches per page" />
+                )}
+              </div>
               <SelectBar
                 total={ids.length}
                 selectedCount={sel.count}
@@ -539,7 +561,7 @@ export function FindMe(): JSX.Element {
                 onSaveToPhone={() => void saveSelected()}
               />
               <div className="photo-grid">
-                {visible.map((r, i) => {
+                {shown.map((r, i) => {
                   const checked = sel.isSelected(r.photoId);
                   const band = scoreBand(r.score);
                   return (
@@ -585,6 +607,14 @@ export function FindMe(): JSX.Element {
                   );
                 })}
               </div>
+              <LoadMore
+                shownCount={shown.length}
+                total={visible.length}
+                hasMore={shown.length < visible.length}
+                loading={false}
+                onLoadMore={() => setVisibleCount((c) => c + pageSize)}
+                noun="match"
+              />
             </>
           )}
 

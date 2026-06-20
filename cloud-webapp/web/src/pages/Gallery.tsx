@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import type { ListPhotosResponse, GalleryPhoto, DownloadRequest } from '@cloud-webapp/shared';
+import type {
+  ListPhotosResponse,
+  GalleryPhoto,
+  DownloadRequest,
+  GetEventResponse,
+  PhotoWebUrlResponse,
+} from '@cloud-webapp/shared';
 import { apiGet, apiDownloadFile, apiGetBlob, ApiError } from '../lib/api.js';
 import { useSelection } from '../lib/selection.js';
 import { eventLabel } from '../lib/eventLabel.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
 import { saveToPhone } from '../lib/share.js';
+import { usePageSize } from '../lib/pageSize.js';
 import { SelectBar } from '../components/SelectBar.js';
 import { Lightbox } from '../components/Lightbox.js';
+import { PageSizeSelect } from '../components/PageSizeSelect.js';
+import { LoadMore } from '../components/LoadMore.js';
 
 export function Gallery(): JSX.Element {
   const { eventId = '' } = useParams();
@@ -25,6 +34,14 @@ export function Gallery(): JSX.Element {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // Full-size `web` URLs are signed lazily (the list ships thumbnails only), so
+  // we cache them per photo as the lightbox requests them. A ref-set guards
+  // against firing the same fetch twice for one photo.
+  const [webUrls, setWebUrls] = useState<Record<string, string>>({});
+  const webFetching = useRef<Set<string>>(new Set());
+  // How many photos to fetch per page. Smaller = faster first paint; the user
+  // can trade that for fewer "Load more" taps. Persisted + shared with Find Me.
+  const { pageSize, setPageSize } = usePageSize();
 
   // Mobile browsers (Web Share L2) can hand image files to the native share
   // sheet → iOS "Save N Images to Photos". On desktop this is false and ZIP
@@ -43,9 +60,10 @@ export function Gallery(): JSX.Element {
   // Load one page; append unless this is the first page (cursor === null).
   const loadPage = useCallback(
     async (cursor: string | null): Promise<void> => {
-      const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+      const params = new URLSearchParams({ limit: String(pageSize) });
+      if (cursor) params.set('cursor', cursor);
       const r = await apiGet<ListPhotosResponse>(
-        `/api/events/${encodeURIComponent(eventId)}/photos${qs}`,
+        `/api/events/${encodeURIComponent(eventId)}/photos?${params.toString()}`,
       );
       setEventName(r.eventName ?? '');
       setNextCursor(r.nextCursor ?? null);
@@ -56,7 +74,7 @@ export function Gallery(): JSX.Element {
         return [...prev, ...r.photos.filter((p) => !seen.has(p.photoId))];
       });
     },
-    [eventId],
+    [eventId, pageSize],
   );
 
   // First page on mount / event change. Reset paging state first.
@@ -64,8 +82,43 @@ export function Gallery(): JSX.Element {
     setPhotos(null);
     setNextCursor(null);
     setError(null);
+    setWebUrls({});
+    webFetching.current = new Set();
     loadPage(null).catch((e: ApiError | Error) => setError(e.message));
   }, [eventId, loadPage]);
+
+  // Fetch the event name on its own (cheap, no photo signing) so the title
+  // shows immediately instead of reading "Untitled event" until the slower
+  // photo list resolves. Best-effort: the photos response also carries the
+  // name, so a failure here just falls back to that.
+  useEffect(() => {
+    let cancelled = false;
+    apiGet<GetEventResponse>(`/api/events/${encodeURIComponent(eventId)}`)
+      .then((r) => {
+        if (!cancelled && r.event.name) setEventName(r.event.name);
+      })
+      .catch(() => {
+        /* non-fatal: title falls back to the photos response / eventLabel */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [eventId]);
+
+  // Lazily load the full-size URL for whichever photo the lightbox is showing
+  // (and we keep them once fetched). Until it arrives the lightbox shows the
+  // thumbnail as a placeholder.
+  useEffect(() => {
+    if (lightboxIndex === null) return;
+    const p = list[lightboxIndex];
+    if (!p || webUrls[p.photoId] || webFetching.current.has(p.photoId)) return;
+    webFetching.current.add(p.photoId);
+    apiGet<PhotoWebUrlResponse>(
+      `/api/events/${encodeURIComponent(eventId)}/photos/${encodeURIComponent(p.photoId)}/web`,
+    )
+      .then((r) => setWebUrls((prev) => ({ ...prev, [p.photoId]: r.webUrl })))
+      .catch(() => webFetching.current.delete(p.photoId));
+  }, [lightboxIndex, list, webUrls, eventId]);
 
   const loadMore = useCallback((): void => {
     if (!nextCursor || loadingMore) return;
@@ -202,6 +255,7 @@ export function Gallery(): JSX.Element {
       <div className="gallery-header">
         <h2>{title}</h2>
         <div className="gallery-actions">
+          <PageSizeSelect value={pageSize} onChange={setPageSize} />
           <button
             className={`btn btn-sm ${selectMode ? 'btn-primary' : 'btn-light'}`}
             onClick={() => {
@@ -270,27 +324,22 @@ export function Gallery(): JSX.Element {
         })}
       </div>
 
-      {list.length > 0 && (
-        <div className="load-more" ref={sentinelRef}>
-          {nextCursor ? (
-            <button
-              className="btn btn-light"
-              onClick={loadMore}
-              disabled={loadingMore}
-            >
-              {loadingMore ? 'Loading…' : 'Load more photos'}
-            </button>
-          ) : (
-            <p className="muted">
-              Showing all {list.length} photo{list.length === 1 ? '' : 's'}.
-            </p>
-          )}
-        </div>
-      )}
+      <LoadMore
+        ref={sentinelRef}
+        shownCount={list.length}
+        hasMore={nextCursor !== null}
+        loading={loadingMore}
+        onLoadMore={loadMore}
+        noun="photo"
+      />
 
       {lightboxIndex !== null && list[lightboxIndex] && (
         <Lightbox
-          items={list.map((p) => ({ key: p.photoId, src: p.webUrl, alt: p.name }))}
+          items={list.map((p) => ({
+            key: p.photoId,
+            src: webUrls[p.photoId] ?? p.thumbUrl,
+            alt: p.name,
+          }))}
           index={lightboxIndex}
           onClose={() => setLightboxIndex(null)}
           onNavigate={setLightboxIndex}

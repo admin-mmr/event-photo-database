@@ -1,0 +1,52 @@
+name: Deploy indexer to Cloud Run Jobs
+
+# Builds and deploys the `photo-indexer` Cloud Run Job. Unlike the api/web
+# deploys this reuses infra/scripts/deploy-indexer.sh, because the build pulls
+# ~184 MB of ONNX model weights from GCS into the build context IN-CLOUD (via
+# Cloud Build) — keeping the runner upload to source only and the deploy logic
+# in one place.
+#
+# One-time IAM the deployer service account needs for this workflow (grant as an
+# owner; the api/web deployer SA doesn't have these by default):
+#   roles/cloudbuild.builds.editor            (submit the in-cloud build)
+#   roles/storage.objectViewer on gs://<project>-models  (read staged weights)
+#   roles/run.admin                           (deploy the Cloud Run Job)
+#   roles/iam.serviceAccountUser on indexer-runtime@<project>.iam.gserviceaccount.com
+#                                             (deploy a job that runs AS that SA)
+# Models must already be staged in GCS (see docs/DEPLOYMENT.md §6b); the script
+# preflights this and fails early if the bucket is empty.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloud-webapp/indexer/**'
+      - 'cloud-webapp/infra/scripts/deploy-indexer.sh'
+      - '.github/workflows/deploy-indexer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required for Workload Identity Federation OIDC token
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDP }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and deploy the photo-indexer job
+        working-directory: cloud-webapp
+        env:
+          REGION: ${{ secrets.GCP_REGION }}
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          ./infra/scripts/deploy-indexer.sh "$PROJECT_ID" "$REGION"

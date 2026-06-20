@@ -171,3 +171,24 @@ export async function signPhotoUrls(
     }),
   );
 }
+
+/**
+ * Sign ONLY the thumbnail for a batch of photos. Order preserved.
+ *
+ * The gallery grid shows thumbnails; the full-size `web` derivative is only
+ * needed when a photo is opened in the lightbox. Signing thumbs alone halves
+ * the per-page IAM signBlob round-trips (V4 signing under ADC on Cloud Run is
+ * one IAM call per signature), so the first page of photos paints noticeably
+ * faster. The `web` URL is signed on demand via `signPhotoUrl(..., 'web')`.
+ */
+export async function signThumbUrls(
+  eventId: string,
+  photoIds: string[],
+): Promise<Array<{ photoId: string; thumbUrl: string }>> {
+  return Promise.all(
+    photoIds.map(async (photoId) => ({
+      photoId,
+      thumbUrl: await signPhotoUrl(eventId, photoId, 'thumb'),
+    })),
+  );
+}

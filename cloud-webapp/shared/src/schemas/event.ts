@@ -46,6 +46,15 @@ export const ListEventsResponseSchema = z.object({
 });
 export type ListEventsResponse = z.infer<typeof ListEventsResponseSchema>;
 
+/** GET /api/events/:id — a single event's summary (cheap; no photo signing).
+ *  Lets the gallery show the event name immediately instead of waiting for the
+ *  (slower) photo list to load. */
+export const GetEventResponseSchema = z.object({
+  ok: z.literal(true),
+  event: EventSummarySchema,
+});
+export type GetEventResponse = z.infer<typeof GetEventResponseSchema>;
+
 export const TriggerIndexRequestSchema = z.object({
   force: z.boolean().optional().default(false),
 });

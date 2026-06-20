@@ -3,6 +3,7 @@ import {
   EventSummarySchema,
   TriggerIndexRequestSchema,
   type ListEventsResponse,
+  type GetEventResponse,
   type TriggerIndexResponse,
 } from '@cloud-webapp/shared';
 
@@ -50,6 +51,27 @@ eventsRouter.get('/events', requireAuth, async (_req, res, next) => {
       EventSummarySchema.parse({ id: d.id, ...d.data() }),
     );
     const body: ListEventsResponse = { ok: true, events };
+    res.json(body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/events/:id — a single event's summary. Cheap (one Firestore doc
+ * read, no photo signing) so the gallery can render the event title
+ * immediately rather than waiting for the photo list to load.
+ */
+eventsRouter.get('/events/:id', requireAuth, async (req, res, next) => {
+  try {
+    const eventId = String(req.params.id);
+    const doc = await firestore().collection('events').doc(eventId).get();
+    if (!doc.exists) {
+      res.status(404).json({ ok: false, error: 'not_found', message: `Unknown event '${eventId}'` });
+      return;
+    }
+    const event = EventSummarySchema.parse({ id: eventId, ...doc.data() });
+    const body: GetEventResponse = { ok: true, event };
     res.json(body);
   } catch (err) {
     next(err);

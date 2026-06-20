@@ -328,6 +328,22 @@ pre.error {
   margin: 8px 0 24px;
 }
 
+/* "Loading more…" row: small spinner next to the label, centred. */
+.load-more-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  color: #475467;
+  font-size: 14px;
+}
+
+.spinner-sm {
+  width: 18px;
+  height: 18px;
+  border-width: 2px;
+}
+
 .lightbox {
   position: fixed;
   inset: 0;
@@ -465,6 +481,56 @@ pre.error {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.page-size {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Styled to read as a peer of the .btn-sm controls beside it. */
+.page-size-select {
+  cursor: pointer;
+  font-size: 13px;
+  padding: 6px 28px 6px 12px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  line-height: 1.2;
+  /* Native arrow varies by platform; keep our own so it lines up across them. */
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23667085' d='M6 8.5 1.5 4h9z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+
+/* Results toolbar (Find Me): count line + per-page select side by side, wrapping
+   on narrow screens so the select drops below the text rather than overflowing. */
+.results-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+}
+
+.results-count {
+  flex: 1 1 220px;
+  margin: 8px 0;
+}
+
+/* Visually hidden but available to screen readers. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .select-bar {
@@ -917,5 +983,35 @@ img {
 
   .consent-card {
     padding: 18px 16px;
+  }
+
+  /* Toolbars: let controls wrap and give the per-page select a full-size tap
+     target. 16px font stops iOS Safari from zooming the page on focus. */
+  .gallery-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .page-size-select {
+    min-height: 44px;
+    font-size: 16px;
+    padding: 10px 32px 10px 14px;
+  }
+
+  /* Find Me toolbar: per-page select spans the row, under the count text. */
+  .results-toolbar .page-size {
+    width: 100%;
+  }
+
+  .results-toolbar .page-size-select {
+    width: 100%;
+  }
+
+  /* A full-width, thumb-friendly "Load more" target — the primary way to page
+     on a phone, so make it easy to hit. */
+  .load-more-btn {
+    width: 100%;
+    min-height: 48px;
+    font-size: 16px;
   }
 }
