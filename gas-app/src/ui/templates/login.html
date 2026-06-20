@@ -243,7 +243,7 @@
 
       <!-- Sign-In Button — triggers OAuth redirect via window.top -->
       <? if (typeof clientId !== 'undefined' && clientId) { ?>
-      <div style="display:flex;justify-content:center;margin-bottom:20px;">
+      <div id="google-signin-block" style="display:flex;justify-content:center;margin-bottom:20px;">
         <button onclick="startOAuthFlow()"
                 class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored fallback-btn"
                 style="display:flex;align-items:center;gap:10px;padding:0 24px;height:44px;font-size:15px;">
@@ -256,7 +256,7 @@
           Sign in with Google
         </button>
       </div>
-      <p style="font-size:12px;color:#999;margin:-8px 0 20px;line-height:1.5;">
+      <p id="google-signin-tip" style="font-size:12px;color:#999;margin:-8px 0 20px;line-height:1.5;">
         <i class="material-icons" style="font-size:14px;vertical-align:middle;">tips_and_updates</i>
         登录遇到问题？请用浏览器的<strong>无痕 / 隐身窗口</strong>打开此链接。<br>
         Trouble signing in? Open this link in a <strong>private / Incognito window</strong> in Safari or Chrome.
@@ -375,6 +375,21 @@
       if (isInApp) {
         var el = document.getElementById('inapp-warning');
         if (el) el.style.display = 'block';
+
+        // Hide the Google sign-in button and its tip. Google rejects OAuth in
+        // these webviews (403 disallowed_useragent), so leaving the button
+        // active just sends users to an opaque dead-end error page. Removing it
+        // forces the only path that works: reopen in Safari/Chrome (the warning
+        // above explains how).
+        var signinBlock = document.getElementById('google-signin-block');
+        if (signinBlock) signinBlock.style.display = 'none';
+        var signinTip = document.getElementById('google-signin-tip');
+        if (signinTip) signinTip.style.display = 'none';
+
+        // Bring the warning into view in case the card scrolled past it.
+        if (el && el.scrollIntoView) {
+          try { el.scrollIntoView({ block: 'start' }); } catch (e) { el.scrollIntoView(); }
+        }
       }
     })();
 
