@@ -30,7 +30,7 @@ COPY matcher/pipeline.py matcher/quality.py matcher/store.py matcher/fusion.py m
 # matcher/Dockerfile).
 COPY matcher/model_files/ matcher/model_files/
 
-COPY indexer/job.py indexer/drive.py indexer/blobs.py indexer/derivatives.py ./
+COPY indexer/job.py indexer/drive.py indexer/blobs.py indexer/derivatives.py indexer/capture_time.py ./
 
 ENV MATCHER_DIR=/app/matcher \
     MODEL_DIR=/app/matcher/model_files \
