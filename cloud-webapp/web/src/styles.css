@@ -479,6 +479,50 @@ pre.error {
   font-weight: 600;
 }
 
+/* ── Reuse a previous photo (D7/FR-10b) ─────────────────────────────────────
+   Small, constrained thumbnails. The <img> here previously had no rules, so it
+   rendered at full natural size — huge on mobile. Cap each cell to a square
+   thumbnail and let the grid wrap responsively. */
+
+.past-uploads {
+  display: grid;
+  gap: 10px;
+}
+
+.past-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 8px;
+}
+
+.past-cell {
+  position: relative;
+  display: block;
+  padding: 0;
+  margin: 0;
+  border: 2px solid #e4e7ec;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  background: #e8ebf0;
+  aspect-ratio: 1;
+}
+
+.past-cell img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.past-cell.selected {
+  border-color: #2563eb;
+}
+
+.past-cell.selected img {
+  filter: brightness(0.82);
+}
+
 /* ── Consent / cards ────────────────────────────────────────────────────── */
 
 .consent-card {
@@ -633,4 +677,82 @@ pre.error {
   margin: 0 0 6px;
   font-size: 16px;
   color: #8a1f1f;
+}
+
+/* ── Mobile / small screens ──────────────────────────────────────────────────
+   Most users open Find Me from their phone, so the layout has to hold up at
+   ~360–430px wide. The desktop styles above use fixed flex rows with
+   `justify-content: space-between` and no wrapping; on a narrow screen those
+   rows squish or overflow. This breakpoint lets the chrome wrap, tightens
+   padding, and shrinks the photo grids. */
+
+* {
+  box-sizing: border-box;
+}
+
+img {
+  max-width: 100%;
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: 16px 14px;
+  }
+
+  .app-title h1 {
+    font-size: 19px;
+  }
+
+  /* Header: title on its own row, account controls wrap onto the next line(s)
+     instead of being crushed against the title. */
+  .app-header {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .user-box {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+  }
+
+  /* The signed-in email can be long; let it shrink and wrap rather than push
+     the Sign out button off-screen. */
+  .user-box .muted {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* Page-level heads (gallery title + back button, "My data" + actions) wrap
+     so the action button drops below the title instead of overflowing. */
+  .gallery-header,
+  .page-head {
+    flex-wrap: wrap;
+  }
+
+  /* Slightly smaller minimum so phones still show 3 columns of thumbnails. */
+  .photo-grid {
+    grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+    gap: 6px;
+  }
+
+  .mydata-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+
+  /* Reusable past selfies: keep them small (4+ per row) on phones. */
+  .past-grid {
+    grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  }
+
+  /* Sticky action bar: stack the count above the wrapped action buttons. */
+  .select-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .consent-card {
+    padding: 18px 16px;
+  }
 }
