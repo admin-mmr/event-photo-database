@@ -13,3 +13,4 @@ export * from './schemas/findme.js';
 export * from './schemas/feedback.js';
 export * from './schemas/metrics.js';
 export * from './schemas/sync.js';
+export * from './schemas/upload.js';

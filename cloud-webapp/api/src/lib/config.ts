@@ -77,6 +77,20 @@ const EnvSchema = z.object({
   REFERENCE_RETENTION_DAYS_ADULT: z.coerce.number().int().positive().default(90),
   REFERENCE_RETENTION_DAYS_MINOR: z.coerce.number().int().positive().default(30),
 
+  // ── Volunteer resumable uploads (UPLOAD_RESUMABLE_NOTES) ──────────────
+  // Staging bucket where the browser PUTs raw uploads via a GCS resumable
+  // session, BEFORE they are copied into Drive + indexed. Defaults to the
+  // uploads bucket so a fresh deploy works; give it its own bucket in prod so
+  // a lifecycle rule can auto-purge half-finished sessions (GCS keeps an
+  // unfinalized resumable upload for ~7 days). Objects live under
+  // `<prefix>/<eventId>/<batchId>/<uploadId>.<ext>`.
+  VOLUNTEER_STAGING_BUCKET: z.string().default('mmr-data-pipeline-uploads'),
+  VOLUNTEER_STAGING_PREFIX: z.string().default('volunteer_uploads'),
+  // The web origin allowed to PUT chunks to the resumable session. Must match
+  // the CORS config applied to the staging bucket (see UPLOAD_RESUMABLE_NOTES).
+  // Empty = same-origin prod (Firebase Hosting rewrite) only.
+  VOLUNTEER_UPLOAD_ORIGIN: z.string().default(''),
+
   // Signed-URL lifetime. PRD §4.2 caps this at 60 minutes.
   SIGNED_URL_TTL_MINUTES: z.coerce.number().int().positive().max(60).default(60),
 
