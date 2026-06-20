@@ -30,7 +30,12 @@ COPY matcher/pipeline.py matcher/quality.py matcher/store.py matcher/fusion.py m
 # matcher/Dockerfile).
 COPY matcher/model_files/ matcher/model_files/
 
-COPY indexer/job.py indexer/drive.py indexer/blobs.py indexer/derivatives.py indexer/capture_time.py ./
+# Copy ALL indexer modules via glob, not an explicit filename list. A hand-kept
+# list silently breaks every time a new module is added (job.py imported a new
+# capture_time.py that wasn't in the list -> ModuleNotFoundError at startup).
+# Test files (test_*.py, conftest.py) are excluded by .dockerignore so they
+# don't ship in the image.
+COPY indexer/*.py ./
 
 ENV MATCHER_DIR=/app/matcher \
     MODEL_DIR=/app/matcher/model_files \

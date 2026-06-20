@@ -115,6 +115,22 @@
   body (e.g. `{"force":true}` silently became `force=false`).
 - A stale `indexState: "running"` (from a crashed run) blocks new triggers with
   `409 already_running`; clear it by triggering once with `{"force":true}`.
+- **Dockerfiles must COPY source by glob, never a hand-kept filename list.** The
+  indexer image shipped without `capture_time.py` because the Dockerfile had an
+  explicit `COPY indexer/job.py indexer/drive.py …` list that nobody updated when
+  the module was added — the build succeeded and the job only crashed at runtime
+  with `ModuleNotFoundError: No module named 'capture_time'`. Use
+  `COPY indexer/*.py ./` (and the matcher equivalent) so new modules are included
+  automatically; keep tests out of the image via `.dockerignore`
+  (`**/test_*.py`, `**/conftest.py`) rather than by curating the COPY line. When
+  adding a new local module, also confirm it isn't excluded by `.gcloudignore`
+  (the Cloud Build upload filter) or it won't reach the build context at all.
+  - **`.dockerignore` is resolved at each image's build-context root, and our
+    contexts differ:** the api/indexer build from `cloud-webapp/` (use
+    `cloud-webapp/.dockerignore`), but the matcher builds from `cloud-webapp/matcher/`
+    (`deploy-matcher.sh` submits `$REPO_ROOT/matcher`) so it needs its own
+    `cloud-webapp/matcher/.dockerignore` — the parent one does NOT apply. Keep
+    both in sync when changing exclude rules.
 
 ## Indexer notes
 

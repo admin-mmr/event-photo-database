@@ -29,7 +29,10 @@ RUN if [ "$FETCH_MODELS" = "1" ]; then \
 COPY model_files/ model_files/
 
 COPY models/ models/
-COPY main.py pipeline.py store.py fusion.py quality.py ./
+# Glob all matcher modules, not a hand-kept filename list — a curated list
+# silently omits any new module that main.py starts importing, crashing only at
+# runtime. Tests are kept out by .dockerignore (**/test_*.py, **/conftest.py).
+COPY *.py ./
 
 ENV PORT=8080 MODEL_DIR=/app/model_files
 # 1 worker × few threads: model + event-embedding cache is per-process.

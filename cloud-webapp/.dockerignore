@@ -17,6 +17,9 @@ coverage
 *.log
 .env*
 **/test
+**/test_*.py
+**/conftest.py
+**/requirements-test.txt
 **/.pytest_cache
 **/__pycache__
 **/.venv
