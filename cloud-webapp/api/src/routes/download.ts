@@ -24,7 +24,7 @@ import { DownloadRequestSchema } from '@cloud-webapp/shared';
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
-import { downloadRateLimit } from '../middleware/rateLimit.js';
+import { downloadRateLimit, originalFetchRateLimit } from '../middleware/rateLimit.js';
 import { origFile, origExtForMime } from '../services/gcsService.js';
 
 export const downloadRouter = Router();
@@ -140,12 +140,14 @@ downloadRouter.post('/events/:id/download', requireAuth, downloadRateLimit(), as
  * GET /api/events/:id/photos/:photoId/original — stream a single original as an
  * attachment (FR-12). Powers the "save photos individually" option, which on
  * iOS hands the files to the share sheet ("Save N Images to Photos"). Same
- * auth + rate limit + event-ownership checks as the ZIP route.
+ * auth + event-ownership checks as the ZIP route, but its OWN rate-limit bucket
+ * (§5B C1): one user save fans out into N of these, so it must not draw down the
+ * bulk-ZIP `download` budget.
  */
 downloadRouter.get(
   '/events/:id/photos/:photoId/original',
   requireAuth,
-  downloadRateLimit(),
+  originalFetchRateLimit(),
   async (req, res, next) => {
     try {
       const eventId = String(req.params.id);

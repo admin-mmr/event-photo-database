@@ -263,6 +263,61 @@ pre.error {
   padding: 2px 8px;
 }
 
+/* C7: confidence-band variants of the score chip (the raw % stays as detail). */
+.score-chip.band-strong {
+  background: rgba(21, 128, 61, 0.88);
+}
+
+.score-chip.band-possible {
+  background: rgba(180, 83, 9, 0.88);
+}
+
+/* C8: search loading state — the matcher scales to zero, so the first request
+   after idle has a real cold-start latency worth signalling. */
+.searching {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 24px 4px;
+}
+
+.searching-title {
+  margin: 0 0 2px;
+  font-weight: 600;
+}
+
+.spinner {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 3px solid #d0d5dd;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2s;
+  }
+}
+
+/* C9: transient success line after a save/download. */
+.status-text {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #ecfdf3;
+  color: #027a48;
+  font-size: 14px;
+}
+
 .lightbox {
   position: fixed;
   inset: 0;
@@ -280,6 +335,104 @@ pre.error {
   max-width: 100%;
   max-height: 80vh;
   border-radius: 8px;
+}
+
+/* ── Lightbox chrome: navigation + per-photo action bar (§5B C4) ─────────── */
+
+.lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lightbox-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+}
+
+.lightbox-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+}
+
+.lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lightbox-prev {
+  left: -8px;
+}
+
+.lightbox-next {
+  right: -8px;
+}
+
+.lightbox-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+
+.lightbox-count {
+  color: #e4e7ec;
+  font-size: 14px;
+}
+
+.lightbox-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* C5: selection is its own corner checkbox so tapping the photo enlarges it. */
+.select-box {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 26px;
+  height: 26px;
+  border: 2px solid #fff;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.result-cell.selected .select-box {
+  background: #2563eb;
+  border-color: #2563eb;
 }
 
 /* ── Breadcrumb + selection (B2/B4/B5) ──────────────────────────────────── */

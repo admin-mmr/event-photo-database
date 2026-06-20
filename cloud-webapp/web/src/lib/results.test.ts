@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import type { MatchResult } from '@cloud-webapp/shared';
-import { combineReferences, visibleResults } from './results.js';
+import {
+  combineReferences,
+  visibleResults,
+  scoreBand,
+  bandLabel,
+  STRONG_MATCH_THRESHOLD,
+} from './results.js';
 
 function mr(photoId: string, score: number): MatchResult {
   return { photoId, score, faceScore: score, personScore: null, thumbUrl: '', webUrl: '' };
@@ -37,5 +43,19 @@ describe('results helpers (B3)', () => {
     // Removed from both → gone.
     const refB2 = { results: [mr('p', 0.8)], hidden: new Set(['p']) };
     expect(combineReferences([refA, refB2])).toEqual([]);
+  });
+});
+
+describe('scoreBand (C7)', () => {
+  it('bands at/above the threshold as strong, below as possible', () => {
+    expect(scoreBand(STRONG_MATCH_THRESHOLD)).toBe('strong');
+    expect(scoreBand(0.97)).toBe('strong');
+    expect(scoreBand(STRONG_MATCH_THRESHOLD - 0.001)).toBe('possible');
+    expect(scoreBand(0.2)).toBe('possible');
+  });
+
+  it('maps bands to human labels', () => {
+    expect(bandLabel('strong')).toBe('Strong');
+    expect(bandLabel('possible')).toBe('Possible');
   });
 });

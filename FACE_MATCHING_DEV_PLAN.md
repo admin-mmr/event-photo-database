@@ -431,6 +431,61 @@ Tickets from hands-on use of the shipped demo (PRD §4.8). Priority is **P0** (s
 
 ---
 
+## 5B. Find Me results UX & save-to-phone backlog (2026-06-20)
+
+Tickets from hands-on mobile use (iPhone Safari) of the deployed Find Me flow. Same priority scheme as §5A (**P0** ship next → **P2**). These slot into M4 (download/save) and M3 (frontend results); none add a milestone. Grouped into **three rounds** so they ship incrementally.
+
+**Root-cause note — the "Too many requests … 24814s" banner is the DOWNLOAD limiter, not search.** Verified against the deployed service (2026-06-20): neither `FINDME_SEARCH_LIMIT/WINDOW` nor `DOWNLOAD_LIMIT_PER_DAY` is set on `event-photo-api`, so both run on **code defaults** (search = 20 / 60s; download = **50 / 86400s**, a 1-day window). The single-original endpoint `GET /events/:id/photos/:photoId/original` (powers "Save individually" / "Save to phone") carries `downloadRateLimit()`, so a single N-photo save fires **N separate GETs**, each counting against the daily 50. A 22-photo "save individually" burns 22; two attempts (~44) plus a couple ZIP tries exceed 50 → locked out ~6.9h (24814s left in the day window). A 24814s reset is *impossible* on the 60s search window — confirming it is the download bucket.
+
+| # | Item | Type | Priority | Round | Files | Notes |
+|---|---|---|---|---|---|---|
+| C1 | Per-photo save shouldn't exhaust the daily download quota | **bug** | **P0** | 1 | `api/src/routes/download.ts`, `api/src/middleware/rateLimit.ts`, `api/src/lib/config.ts`, `web/src/pages/FindMe.tsx` | Root cause above. Options: (a) give single-original GETs their own, much higher bucket (e.g. `ORIGINAL_FETCH_LIMIT` ~ a few hundred/day) separate from bulk-ZIP; or (b) count one multi-photo save as one logical unit, not N; or (c) prefer the single-ZIP path (1 hit) on platforms where it works. Also format the reset (`24814s` → "~7 hours") and consider a much shorter window. |
+| C2 | Explicitly set rate-limit env in deploy | config | **P0** | 1 | `infra/scripts/deploy-api.sh`, `api/.env.example` | Both limits are unset in prod (running on defaults). Decide intended values and set them explicitly so behaviour isn't an accident of the schema default. Pairs with C1. |
+| C3 | One-tap "Save to Photos" on iPhone | feature | **P0** | 1 | `web/src/lib/share.ts`, `web/src/lib/downloads.ts`, `web/src/pages/FindMe.tsx`, `components/SelectBar.tsx` | **The headline ask.** A web app cannot silently write to the iOS photo library (OS sandbox) — true one-click is only possible from a native app or an iOS Shortcut. Closest is **Web Share L2 sharing the actual image `File` objects** → iOS sheet offers "Save N Images to Photos" (one tap in the sheet). Today `saveToPhone` shares a **ZIP** blob, which iOS can't expand into Photos — switch the "Save to phone" button to the `savePhotosIndividually` (image-files) path. Make **"Save to Photos" the primary CTA on mobile** and demote "Download ZIP" (ZIP is the worst case on iOS — lands in Files, can't unzip into Photos). Note the C1 interaction: the image-files path still fetches each original. |
+| C4 | Tap-to-enlarge lightbox on results | feature | **P1** | 2 | `web/src/pages/FindMe.tsx`, new `components/Lightbox.tsx`, `api` original/large-derivative serving | **Cannot currently enlarge a result to verify "is this me."** Result tiles are select-only `<button className="result-thumb">` rendering only `thumbUrl`. Add a lightbox: larger/original derivative, swipe between results, with Select / Not me / That's me actions inside. Highest-value results fix; makes the existing B7 feedback usable. |
+| C5 | Separate view-vs-select interaction | feature | **P1** | 2 | `web/src/pages/FindMe.tsx`, `styles.css` | One tap currently both selects and is the only affordance. Image tap = enlarge (C4); a corner checkbox = select. Stops accidental toggles. |
+| C6 | Persist results across reload | feature | **P1** | 2 | `web/src/pages/FindMe.tsx`, `web/src/lib/results.ts` | Results live only in React state; a refresh (or the iOS download/share bounce) wipes the match set → forces a re-search → burns search/download limits. Cache the last result set (in-memory store / sessionStorage-equivalent per artifact rules in-app). |
+| C7 | Score banding instead of bare % | feature | **P2** | 3 | `web/src/pages/FindMe.tsx`, `web/src/lib/results.ts` | A 51% and a 97% render as equally "matched." Band into Strong / Possible (keep the % as detail) so users focus verification. |
+| C8 | Search loading state | feature | **P2** | 3 | `web/src/pages/FindMe.tsx`, `styles.css` | `phase === 'searching'` is just the text "Searching the event photos…". Add spinner/skeleton — matcher scales to zero (per `CLAUDE.md` cost policy) so first search has real cold-start latency. |
+| C9 | Empty-selection guards + post-save confirmation | feature | **P2** | 3 | `web/src/pages/FindMe.tsx`, `components/SelectBar.tsx` | Disable Download/Save when nothing selected; confirm after success ("22 photos saved"). Fold the friendlier rate-limit copy here if not done in C1. |
+
+**Status (2026-06-20a) — Round 1 (C1–C3) 🟢 code-complete, not deployed.**
+- **C1** new `original_fetch` rate-limit bucket (`ORIGINAL_FETCH_LIMIT`, default 500/day) on `GET /events/:id/photos/:photoId/original`, split out from the bulk `download` bucket so a multi-photo save no longer drains the 50/day ZIP budget; 429 message humanized via `humanizeRetry()` ("about 7 hours", not "24814s"). Files: `api/src/middleware/rateLimit.ts`, `api/src/lib/config.ts`, `api/src/routes/download.ts`. New unit test in `api/test/rateLimit.test.ts`.
+- **C2** `deploy-api.sh` now sets `FINDME_SEARCH_LIMIT=20`, `FINDME_SEARCH_WINDOW_SEC=60`, `DOWNLOAD_LIMIT_PER_DAY=50`, `ORIGINAL_FETCH_LIMIT=500` explicitly (override-able shell vars, merged via `--update-env-vars`); documented in `api/.env.example`.
+- **C3** `FindMe.saveSelected` now fetches the selected originals and shares the actual image **files** (`savePhotosIndividually`) instead of a ZIP blob → iOS "Save N Images to Photos"; redundant ZIP-share + "Save individually" removed from Find Me. `SelectBar` makes "📲 Save N to Photos" the **primary** action when Web Share L2 is available and demotes "Download ZIP" to secondary; Gallery unchanged (still ZIP-primary + "Save individually"). Files: `web/src/pages/FindMe.tsx`, `web/src/components/SelectBar.tsx`.
+- **Verification:** all three workspaces typecheck + lint clean; 117 api + 38 web unit tests green.
+- **Remaining:** deploy api + web; on a real iPhone confirm the share sheet offers "Save N Images to Photos" and a 22-photo save no longer trips the limiter.
+
+**Status (2026-06-20b) — Round 2 (C4–C6) 🟢 code-complete, not deployed.**
+- **C4** new reusable `web/src/components/Lightbox.tsx`: full-size `webUrl` viewer with prev/next (on-screen arrows, ←/→ keys, touch swipe), an `n of N` counter, Esc/backdrop close, and a footer slot for per-photo actions. Wired into Find Me results.
+- **C5** result tiles now separate **view** from **select**: tapping the photo opens the lightbox; a dedicated corner checkbox (`.select-box`) toggles selection. Select / Not me / That's me are also available inside the lightbox footer, so verify-and-decide happens in one place. Helper copy updated.
+- **C6** new `web/src/lib/findmeCache.ts`: persists references/activeId/confirmed to `sessionStorage` keyed by eventId, restored on mount so a reload (or the iOS share/download bounce) no longer wipes matches and forces a re-search. TTL is 50 min (under the api's 60-min signed-URL cap) so restored thumbnails still load; dead `blob:` preview URLs are dropped on save (matches still restore, sans the tiny selfie thumb). Files: `web/src/pages/FindMe.tsx`, `web/src/styles.css`.
+- **Verification:** web typecheck + lint clean; 44 web unit tests green (incl. 6 new `findmeCache` tests); production `vite build` succeeds (61 modules).
+- **Remaining:** deploy web; on-device check of lightbox swipe/keys and that a reload restores the result set within the TTL.
+
+**Status (2026-06-20c) — Round 3 (C7–C9) 🟢 code-complete, not deployed.**
+- **C7** score banding: `scoreBand()` / `bandLabel()` + `STRONG_MATCH_THRESHOLD` (0.6) in `web/src/lib/results.ts`. The result chip now reads "Strong · 87%" / "Possible · 54%" (raw % kept as detail), colour-coded green/amber, on both the tile and the lightbox badge. Threshold is one tunable constant — retune against the eval harness.
+- **C8** search loading state: the bare "Searching…" text is now a spinner + "the first search can take a few seconds to warm up" (the matcher scales to zero per the cost policy, so the first request cold-starts). `role="status"`; respects `prefers-reduced-motion`.
+- **C9** post-action confirmation: a transient aria-live status line — "Downloaded N photos as a ZIP." / "Sent N photos to your share sheet — choose Save to Photos." (and a download-fallback variant); a cancelled share says nothing. SelectBar already disables the actions when nothing is selected and the handlers early-return on an empty selection, so the guard is belt-and-suspenders.
+- **Verification:** web typecheck + lint clean; 46 web unit tests green (incl. new `scoreBand` tests); production `vite build` succeeds (61 modules).
+- **Remaining:** deploy web. With Round 1–3 code-complete, the §5B backlog is closed pending a single api + web deploy and an on-device pass.
+
+**Rounds.**
+
+1. **P0 / unblock real attendees + the save ask.** C1 (stop per-photo saves from eating the daily quota) + C2 (set the limits explicitly) + C3 (one-tap Save to Photos via image-file share, make it the mobile primary). Ship together — C3's per-file fetch is exactly what C1 must protect. ✅ **code-complete 2026-06-20a.**
+2. **P1 / core results UX.** C4 lightbox → C5 view-vs-select (depends on C4) → C6 persist results. ✅ **code-complete 2026-06-20b.**
+3. **P2 / polish.** C7 score banding, C8 loading state, C9 guards + confirmation/copy. ✅ **code-complete 2026-06-20c.**
+
+**One-click Save-to-Photos — what's actually achievable (C3).** Ranked by how close to "one click":
+
+- **Web Share L2 with image files (recommended):** button → native sheet → "Save N Images to Photos." ~2 taps, no extra install, works in iOS Safari. This is the realistic best.
+- **iOS Shortcut / native wrapper:** the only way to get truly silent one-tap save, but requires the user to install something — out of scope for the web app.
+- **ZIP (current default):** worst on iOS — `.zip` to Files, no path into Photos. Demote, don't remove (still useful on desktop).
+
+**Test additions (extend §6).** C1: an N-photo individual save consumes at most one (or a bounded count) of the download bucket, not N; reset message formats seconds to a human duration. C3: `saveToPhone`/save-to-Photos shares image `File`s (not a ZIP) when Web Share L2 is available, and falls back to per-file download otherwise. C4: lightbox opens the larger derivative and exposes Select/Not me/That's me without toggling selection on open. C6: a reload after a search restores the prior result set without re-hitting the matcher.
+
+---
+
 ## 6. Test strategy ("create all tests")
 
 Testing is built per-phase, not bolted on at the end. CI must be green before any deploy.

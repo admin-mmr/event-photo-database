@@ -63,6 +63,20 @@ else
 fi
 
 if [[ -n "${MASTER_SPREADSHEET_ID:-}" ]]; then ENV_VARS="${ENV_VARS},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID}"; fi
+
+# Rate limits (dev plan §5B C2). Set EXPLICITLY so behaviour isn't an accident
+# of the schema defaults in config.ts (these were unset on the live service,
+# which is how the "Save individually" path quietly burned the daily download
+# budget). Override any of them by exporting the matching shell var.
+#   FINDME_SEARCH_LIMIT / _WINDOW_SEC  searches per window, keyed by uid.
+#   DOWNLOAD_LIMIT_PER_DAY             bulk ZIP downloads/day (one ZIP = one).
+#   ORIGINAL_FETCH_LIMIT               single-photo fetches/day — its OWN bucket
+#                                      because one save fans out into N of them.
+ENV_VARS="${ENV_VARS},FINDME_SEARCH_LIMIT=${FINDME_SEARCH_LIMIT:-20}"
+ENV_VARS="${ENV_VARS},FINDME_SEARCH_WINDOW_SEC=${FINDME_SEARCH_WINDOW_SEC:-60}"
+ENV_VARS="${ENV_VARS},DOWNLOAD_LIMIT_PER_DAY=${DOWNLOAD_LIMIT_PER_DAY:-50}"
+ENV_VARS="${ENV_VARS},ORIGINAL_FETCH_LIMIT=${ORIGINAL_FETCH_LIMIT:-500}"
+
 echo "==> Setting env vars: ${ENV_VARS}"
 
 gcloud run deploy "$SERVICE" \

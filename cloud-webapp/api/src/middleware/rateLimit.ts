@@ -32,6 +32,20 @@ export interface RateLimitDecision {
 }
 
 /**
+ * Render a retry delay as a coarse, human-friendly phrase for the user-facing
+ * 429 message — "about 7 hours" reads far better than "in about 24814s". The
+ * machine `Retry-After` header still carries exact seconds (HTTP spec).
+ */
+export function humanizeRetry(sec: number): string {
+  const s = Math.max(0, Math.ceil(sec));
+  if (s < 60) return `about ${s} second${s === 1 ? '' : 's'}`;
+  const mins = Math.round(s / 60);
+  if (mins < 60) return `about ${mins} minute${mins === 1 ? '' : 's'}`;
+  const hours = Math.round(s / 3600);
+  return `about ${hours} hour${hours === 1 ? '' : 's'}`;
+}
+
+/**
  * Increments and checks the counter for one (bucket, key) in the current
  * fixed window. `limit <= 0` disables the bucket (always allowed). Never throws
  * — backend errors fail open.
@@ -108,7 +122,7 @@ export function rateLimit(opts: { bucket: string; limit: number; windowSec: numb
     res.status(429).json({
       ok: false,
       error: 'rate_limited',
-      message: `Too many requests — please try again in about ${decision.resetSec}s.`,
+      message: `Too many requests — please try again in ${humanizeRetry(decision.resetSec)}.`,
     });
   };
 }
@@ -123,3 +137,11 @@ export const findmeSearchRateLimit = (): RequestHandler =>
 
 export const downloadRateLimit = (): RequestHandler =>
   rateLimit({ bucket: 'download', limit: env.DOWNLOAD_LIMIT_PER_DAY, windowSec: 24 * 60 * 60 });
+
+/**
+ * Per-photo original fetches (the "Save individually" / "Save to Photos" path).
+ * Own bucket with a generous limit — one user save fans out into N requests, so
+ * this must not share the bulk-ZIP `download` budget (dev plan §5B C1).
+ */
+export const originalFetchRateLimit = (): RequestHandler =>
+  rateLimit({ bucket: 'original_fetch', limit: env.ORIGINAL_FETCH_LIMIT, windowSec: 24 * 60 * 60 });

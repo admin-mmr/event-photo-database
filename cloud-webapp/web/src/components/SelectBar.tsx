@@ -10,14 +10,20 @@ interface SelectBarProps {
   total: number;
   selectedCount: number;
   busy?: boolean;
-  /** Show the "Save to phone" action (Web Share L2). Off on desktop. */
+  /**
+   * The browser can share files (Web Share L2 — i.e. mobile). When true, the
+   * iPhone-friendly "Save to Photos" action becomes the PRIMARY button and the
+   * ZIP download is demoted to secondary (§5B C3): a ZIP is the worst case on
+   * iOS (lands in Files, can't expand into Photos).
+   */
   canSave?: boolean;
   onSelectAll: () => void;
   onSelectNone: () => void;
   onInvert: () => void;
   onDownload: () => void;
-  /** Download the selection as separate files (iPhone Photos-friendly). */
+  /** Save the selection as separate image files (iPhone "Save N to Photos"). */
   onDownloadIndividual?: () => void;
+  /** Primary mobile save: hands the image files to the native share sheet. */
   onSaveToPhone?: () => void;
 }
 
@@ -35,6 +41,10 @@ export function SelectBar({
 }: SelectBarProps): JSX.Element {
   const none = selectedCount === 0;
   const all = selectedCount === total && total > 0;
+  // On mobile (Web Share L2) the one-tap "Save to Photos" is the headline action
+  // and ZIP is the fallback; on desktop ZIP stays primary (§5B C3).
+  const saveToPhotos = canSave && onSaveToPhone;
+  const zipClass = saveToPhotos ? 'btn btn-light btn-sm' : 'btn btn-primary btn-sm';
   return (
     <div className="select-bar" role="toolbar" aria-label="Photo selection">
       <span className="select-count" aria-live="polite">
@@ -50,8 +60,17 @@ export function SelectBar({
         <button className="btn btn-light btn-sm" onClick={onInvert} disabled={total === 0 || busy}>
           Invert
         </button>
-        <button className="btn btn-primary btn-sm" onClick={onDownload} disabled={none || busy}>
-          {busy ? 'Preparing ZIP…' : `⬇ Download ZIP ${selectedCount || ''}`.trim()}
+        {saveToPhotos && (
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={onSaveToPhone}
+            disabled={none || busy}
+          >
+            {busy ? 'Saving…' : `📲 Save ${selectedCount || ''} to Photos`.replace('  ', ' ').trim()}
+          </button>
+        )}
+        <button className={zipClass} onClick={onDownload} disabled={none || busy}>
+          {busy && !saveToPhotos ? 'Preparing ZIP…' : `⬇ Download ZIP ${selectedCount || ''}`.trim()}
         </button>
         {onDownloadIndividual && (
           <button
@@ -60,11 +79,6 @@ export function SelectBar({
             disabled={none || busy}
           >
             🖼 Save individually
-          </button>
-        )}
-        {canSave && onSaveToPhone && (
-          <button className="btn btn-light btn-sm" onClick={onSaveToPhone} disabled={none || busy}>
-            📲 Save to phone
           </button>
         )}
       </div>

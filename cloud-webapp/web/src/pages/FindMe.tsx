@@ -14,15 +14,15 @@ import {
   apiUpload,
   apiPost,
   apiDownloadFile,
-  apiFetchBlob,
   apiGetBlob,
   ApiError,
 } from '../lib/api.js';
 import { useSelection } from '../lib/selection.js';
-import { combineReferences, visibleResults } from '../lib/results.js';
-import { saveToPhone } from '../lib/share.js';
+import { combineReferences, visibleResults, scoreBand, bandLabel } from '../lib/results.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
+import { saveResults, loadResults, clearResults } from '../lib/findmeCache.js';
 import { SelectBar } from '../components/SelectBar.js';
+import { Lightbox } from '../components/Lightbox.js';
 
 type Phase = 'consent' | 'pick' | 'searching' | 'results';
 
@@ -67,10 +67,17 @@ export function FindMe(): JSX.Element {
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Transient success line after a save/download (C9), announced via aria-live.
+  const [status, setStatus] = useState<string | null>(null);
+  // Index into `visible` of the photo open in the lightbox, or null (C4/C5).
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   // Past reference selfies the user can reuse to search this event (D7/FR-10b).
   const [pastUploads, setPastUploads] = useState<ReferenceUpload[] | null>(null);
   const [selectedPast, setSelectedPast] = useState<Set<string>>(new Set());
   const fileInput = useRef<HTMLInputElement>(null);
+  // Set once we've attempted to restore cached results, so the save effect
+  // doesn't overwrite the cache before the restore has run (C6).
+  const restored = useRef(false);
 
   // Consent can't be given for a minor without guardian attestation (PRD §8.3).
   const consentOk = agreed && (!isMinor || guardianOk);
@@ -100,6 +107,36 @@ export function FindMe(): JSX.Element {
     if (phase === 'pick') void loadPastUploads();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
+
+  // C6: restore cached results on mount so a reload (or the iOS share/download
+  // bounce) doesn't wipe the matches and force a re-search. Runs once.
+  useEffect(() => {
+    const cached = loadResults(eventId);
+    if (cached && cached.references.length > 0) {
+      setReferences(cached.references);
+      setActiveId(cached.activeId);
+      setConfirmed(cached.confirmed);
+      setPhase('results');
+    }
+    restored.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventId]);
+
+  // C6: persist whenever the result set changes (after the initial restore).
+  // Clear the cache once everything is gone.
+  useEffect(() => {
+    if (!restored.current) return;
+    if (references.length > 0) saveResults(eventId, { references, activeId, confirmed });
+    else clearResults(eventId);
+  }, [eventId, references, activeId, confirmed]);
+
+  // Close the lightbox if its target scrolls out of the current result set
+  // (e.g. after "Not me" removes it, or switching reference tabs).
+  useEffect(() => {
+    if (lightboxIndex !== null && lightboxIndex >= visible.length) {
+      setLightboxIndex(visible.length > 0 ? visible.length - 1 : null);
+    }
+  }, [visible.length, lightboxIndex]);
 
   /** Append a result set from a search response and make it the active tab. */
   function pushReference(res: SearchResponse, previewUrl: string, labelPrefix: string): void {
@@ -251,8 +288,10 @@ export function FindMe(): JSX.Element {
 
   async function downloadSelected(): Promise<void> {
     if (sel.count === 0) return;
+    const n = sel.count;
     setDownloading(true);
     setError(null);
+    setStatus(null);
     try {
       const body: DownloadRequest = { photoIds: [...sel.selected] };
       await apiDownloadFile(
@@ -260,6 +299,7 @@ export function FindMe(): JSX.Element {
         body,
         'my-photos.zip',
       );
+      setStatus(`Downloaded ${n} photo${n === 1 ? '' : 's'} as a ZIP.`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Download failed');
     } finally {
@@ -267,37 +307,34 @@ export function FindMe(): JSX.Element {
     }
   }
 
-  async function downloadIndividual(): Promise<void> {
+  /**
+   * One-tap "Save to Photos" (§5B C3). Fetches each selected original, then
+   * hands the actual image FILES to the native share sheet — on iOS that yields
+   * "Save N Images to Photos". A ZIP can't be expanded into the iOS photo
+   * library, so we deliberately share images, not the ZIP. On a browser without
+   * Web Share L2 this degrades to per-file downloads (handled in the helper).
+   */
+  async function saveSelected(): Promise<void> {
     if (sel.count === 0) return;
-    setDownloading(true);
+    const n = sel.count;
+    setSaving(true);
     setError(null);
+    setStatus(null);
     try {
-      const ids = [...sel.selected];
       const files: NamedBlob[] = [];
-      for (const photoId of ids) {
+      for (const photoId of [...sel.selected]) {
+        // eslint-disable-next-line no-await-in-loop
         const blob = await apiGetBlob(
           `/api/events/${encodeURIComponent(eventId)}/photos/${encodeURIComponent(photoId)}/original`,
         );
         files.push({ blob, filename: `${photoId}.jpg` });
       }
-      await savePhotosIndividually(files, { title: 'My event photos' });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Download failed');
-    } finally {
-      setDownloading(false);
-    }
-  }
-
-  async function saveSelected(): Promise<void> {
-    if (sel.count === 0) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const body: DownloadRequest = { photoIds: [...sel.selected] };
-      const blob = await apiFetchBlob(`/api/events/${encodeURIComponent(eventId)}/download`, body);
-      // Hands the ZIP to the native share sheet ("Save to Files/Photos"); on
-      // browsers without Web Share L2 this falls back to a download (FR-13).
-      await saveToPhone(blob, 'my-photos.zip', { title: 'My event photos' });
+      const outcome = await savePhotosIndividually(files, { title: 'My event photos' });
+      const photos = `${n} photo${n === 1 ? '' : 's'}`;
+      // 'shared' → went to the share sheet (iOS "Save to Photos"); 'cancelled' →
+      // user dismissed, say nothing; otherwise it fell back to file downloads.
+      if (outcome === 'shared') setStatus(`Sent ${photos} to your share sheet — choose Save to Photos.`);
+      else if (outcome !== 'cancelled') setStatus(`Downloaded ${photos}.`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save photos');
     } finally {
@@ -421,7 +458,15 @@ export function FindMe(): JSX.Element {
         </div>
       )}
 
-      {phase === 'searching' && <p className="muted">Searching the event photos…</p>}
+      {phase === 'searching' && (
+        <div className="searching" role="status" aria-live="polite">
+          <span className="spinner" aria-hidden="true" />
+          <div>
+            <p className="searching-title">Searching the event photos…</p>
+            <p className="muted">The first search can take a few seconds to warm up.</p>
+          </div>
+        </div>
+      )}
 
       {phase === 'results' && (
         <div>
@@ -436,7 +481,7 @@ export function FindMe(): JSX.Element {
                   onClick={() => setActiveId(r.id)}
                   title={r.label}
                 >
-                  <img src={r.previewUrl} alt={r.label} />
+                  {r.previewUrl && <img src={r.previewUrl} alt={r.label} />}
                   <span>{r.label}</span>
                 </button>
               ))}
@@ -453,12 +498,17 @@ export function FindMe(): JSX.Element {
 
           {references.length === 1 && activeRef && (
             <div className="ref-current">
-              <img src={activeRef.previewUrl} alt="Your reference photo" />
+              {activeRef.previewUrl && <img src={activeRef.previewUrl} alt="Your reference photo" />}
               <span className="muted">Results for this photo</span>
             </div>
           )}
 
           {error && <p className="error-text">{error}</p>}
+          {status && (
+            <p className="status-text" role="status" aria-live="polite">
+              {status}
+            </p>
+          )}
 
           {visible.length === 0 ? (
             <p className="muted">
@@ -474,7 +524,8 @@ export function FindMe(): JSX.Element {
                 {isCombined
                   ? `${visible.length} matches across your photos, best first.`
                   : `${visible.length} possible matches, best first.`}{' '}
-                Tap to select, then download the originals.
+                Tap a photo to enlarge and check it&rsquo;s you; tick the box to select, then
+                download the originals.
               </p>
               <SelectBar
                 total={ids.length}
@@ -485,22 +536,34 @@ export function FindMe(): JSX.Element {
                 onSelectNone={sel.selectNone}
                 onInvert={sel.invert}
                 onDownload={() => void downloadSelected()}
-                onDownloadIndividual={() => void downloadIndividual()}
                 onSaveToPhone={() => void saveSelected()}
               />
               <div className="photo-grid">
-                {visible.map((r) => {
+                {visible.map((r, i) => {
                   const checked = sel.isSelected(r.photoId);
+                  const band = scoreBand(r.score);
                   return (
                     <div key={r.photoId} className={`result-cell${checked ? ' selected' : ''}`}>
+                      {/* C5: tapping the photo VIEWS it (lightbox); selection is
+                          the separate checkbox so the two don't collide. */}
                       <button
                         className="result-thumb"
-                        aria-pressed={checked}
-                        onClick={() => sel.toggle(r.photoId)}
+                        aria-label="Enlarge photo"
+                        onClick={() => setLightboxIndex(i)}
                       >
                         <img src={r.thumbUrl} alt="" loading="lazy" />
-                        <span className="score-chip">{Math.round(r.score * 100)}%</span>
-                        <span className="select-tick">{checked ? '✓' : ''}</span>
+                        {/* C7: confidence band (the raw % stays as detail). */}
+                        <span className={`score-chip band-${band}`}>
+                          {bandLabel(band)} · {Math.round(r.score * 100)}%
+                        </span>
+                      </button>
+                      <button
+                        className="select-box"
+                        aria-pressed={checked}
+                        aria-label={checked ? 'Deselect photo' : 'Select photo'}
+                        onClick={() => sel.toggle(r.photoId)}
+                      >
+                        {checked ? '✓' : ''}
                       </button>
                       {!isCombined && activeRef && (
                         <div className="feedback-row">
@@ -528,6 +591,56 @@ export function FindMe(): JSX.Element {
           <button className="btn btn-light" onClick={() => setPhase('pick')}>
             + Add another photo
           </button>
+
+          {lightboxIndex !== null && visible[lightboxIndex] && (
+            <Lightbox
+              items={visible.map((r) => {
+                const band = scoreBand(r.score);
+                return {
+                  key: r.photoId,
+                  src: r.webUrl,
+                  alt: '',
+                  badge: (
+                    <span className={`score-chip band-${band}`}>
+                      {bandLabel(band)} · {Math.round(r.score * 100)}%
+                    </span>
+                  ),
+                };
+              })}
+              index={lightboxIndex}
+              onClose={() => setLightboxIndex(null)}
+              onNavigate={setLightboxIndex}
+              renderFooter={(item) => {
+                const checked = sel.isSelected(item.key);
+                return (
+                  <>
+                    <button
+                      className={`btn btn-sm ${checked ? 'btn-primary' : 'btn-light'}`}
+                      onClick={() => sel.toggle(item.key)}
+                    >
+                      {checked ? '✓ Selected' : 'Select'}
+                    </button>
+                    {!isCombined && activeRef && (
+                      <>
+                        <button
+                          className="btn btn-light btn-sm"
+                          onClick={() => handleNotMe(activeRef, item.key)}
+                        >
+                          Not me
+                        </button>
+                        <button
+                          className={`btn btn-sm ${confirmed.has(item.key) ? 'btn-primary' : 'btn-light'}`}
+                          onClick={() => handleConfirm(activeRef, item.key)}
+                        >
+                          {confirmed.has(item.key) ? '✓ Me' : "That's me"}
+                        </button>
+                      </>
+                    )}
+                  </>
+                );
+              }}
+            />
+          )}
         </div>
       )}
     </div>

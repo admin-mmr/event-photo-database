@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Firestore } from '@google-cloud/firestore';
 
-import { consumeRateLimit } from '../src/middleware/rateLimit.js';
+import { consumeRateLimit, humanizeRetry } from '../src/middleware/rateLimit.js';
 
 /**
  * Minimal in-memory Firestore double: collection().doc(id) returns a ref whose
@@ -73,6 +73,17 @@ describe('consumeRateLimit', () => {
     expect(a.allowed).toBe(true);
     expect(blockedSameWindow.allowed).toBe(false);
     expect(nextWindow.allowed).toBe(true);
+  });
+
+  it('humanizes the retry delay for the user-facing message (§5B C1)', () => {
+    expect(humanizeRetry(1)).toBe('about 1 second');
+    expect(humanizeRetry(45)).toBe('about 45 seconds');
+    expect(humanizeRetry(90)).toBe('about 2 minutes');
+    expect(humanizeRetry(60)).toBe('about 1 minute');
+    // the real-world bug case: a ~6.9h reset should read as hours, not "24814s".
+    expect(humanizeRetry(24814)).toBe('about 7 hours');
+    expect(humanizeRetry(3600)).toBe('about 1 hour');
+    expect(humanizeRetry(-5)).toBe('about 0 seconds');
   });
 
   it('fails OPEN when the transaction throws', async () => {

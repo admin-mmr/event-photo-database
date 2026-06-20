@@ -90,8 +90,16 @@ const EnvSchema = z.object({
   // Searches per FINDME_SEARCH_WINDOW_SEC, keyed by uid.
   FINDME_SEARCH_LIMIT: z.coerce.number().int().min(0).default(20),
   FINDME_SEARCH_WINDOW_SEC: z.coerce.number().int().positive().default(60),
-  // Bulk ZIP downloads per rolling day, keyed by uid.
+  // Bulk ZIP downloads per rolling day, keyed by uid. One ZIP = one logical
+  // action regardless of how many photos it contains, so this stays modest.
   DOWNLOAD_LIMIT_PER_DAY: z.coerce.number().int().min(0).default(50),
+  // Single-original fetches per rolling day, keyed by uid (its own bucket — dev
+  // plan §5B C1). The "Save individually" / "Save to Photos" path fetches each
+  // selected photo separately, so ONE user save fans out into N of these. If
+  // they shared the bulk DOWNLOAD bucket, a single 22-photo save would burn 22
+  // of 50 and lock the user out for the rest of the day. Generous limit + own
+  // bucket so a normal multi-photo save never trips it.
+  ORIGINAL_FETCH_LIMIT: z.coerce.number().int().min(0).default(500),
 
   // reCAPTCHA Enterprise on the upload/search action (services/recaptcha.ts).
   // All three must be set to enable verification; otherwise the gate no-ops
