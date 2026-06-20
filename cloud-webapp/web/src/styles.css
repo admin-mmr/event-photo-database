@@ -318,6 +318,16 @@ pre.error {
   font-size: 14px;
 }
 
+/* Pagination footer: centred "Load more" button / "showing all" line. It also
+   doubles as the infinite-scroll sentinel, so give it height to intersect. */
+.load-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  margin: 8px 0 24px;
+}
+
 .lightbox {
   position: fixed;
   inset: 0;

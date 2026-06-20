@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import type { ListPhotosResponse, GalleryPhoto, DownloadRequest } from '@cloud-webapp/shared';
 import { apiGet, apiDownloadFile, apiGetBlob, ApiError } from '../lib/api.js';
@@ -21,6 +21,10 @@ export function Gallery(): JSX.Element {
   // Transient success line after a save/download (announced via aria-live).
   const [status, setStatus] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Pagination: cursor for the next page (null = no more), plus a load guard.
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   // Mobile browsers (Web Share L2) can hand image files to the native share
   // sheet → iOS "Save N Images to Photos". On desktop this is false and ZIP
@@ -36,14 +40,54 @@ export function Gallery(): JSX.Element {
   const ids = useMemo(() => list.map((p) => p.photoId), [list]);
   const sel = useSelection(ids);
 
+  // Load one page; append unless this is the first page (cursor === null).
+  const loadPage = useCallback(
+    async (cursor: string | null): Promise<void> => {
+      const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+      const r = await apiGet<ListPhotosResponse>(
+        `/api/events/${encodeURIComponent(eventId)}/photos${qs}`,
+      );
+      setEventName(r.eventName ?? '');
+      setNextCursor(r.nextCursor ?? null);
+      setPhotos((prev) => {
+        if (cursor === null || prev === null) return r.photos;
+        // Guard against any cross-page id overlap so keys stay unique.
+        const seen = new Set(prev.map((p) => p.photoId));
+        return [...prev, ...r.photos.filter((p) => !seen.has(p.photoId))];
+      });
+    },
+    [eventId],
+  );
+
+  // First page on mount / event change. Reset paging state first.
   useEffect(() => {
-    apiGet<ListPhotosResponse>(`/api/events/${encodeURIComponent(eventId)}/photos`)
-      .then((r) => {
-        setPhotos(r.photos);
-        setEventName(r.eventName ?? '');
-      })
-      .catch((e: ApiError | Error) => setError(e.message));
-  }, [eventId]);
+    setPhotos(null);
+    setNextCursor(null);
+    setError(null);
+    loadPage(null).catch((e: ApiError | Error) => setError(e.message));
+  }, [eventId, loadPage]);
+
+  const loadMore = useCallback((): void => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    loadPage(nextCursor)
+      .catch((e: ApiError | Error) => setError(e.message))
+      .finally(() => setLoadingMore(false));
+  }, [nextCursor, loadingMore, loadPage]);
+
+  // Infinite scroll: auto-load the next page when the sentinel scrolls into view.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !nextCursor) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) loadMore();
+      },
+      { rootMargin: '600px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [nextCursor, loadMore]);
 
   const title = eventLabel({ name: eventName, id: eventId, hasPhotos: list.length > 0 });
 
@@ -225,6 +269,24 @@ export function Gallery(): JSX.Element {
           );
         })}
       </div>
+
+      {list.length > 0 && (
+        <div className="load-more" ref={sentinelRef}>
+          {nextCursor ? (
+            <button
+              className="btn btn-light"
+              onClick={loadMore}
+              disabled={loadingMore}
+            >
+              {loadingMore ? 'Loading…' : 'Load more photos'}
+            </button>
+          ) : (
+            <p className="muted">
+              Showing all {list.length} photo{list.length === 1 ? '' : 's'}.
+            </p>
+          )}
+        </div>
+      )}
 
       {lightboxIndex !== null && list[lightboxIndex] && (
         <Lightbox

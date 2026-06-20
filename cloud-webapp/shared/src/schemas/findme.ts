@@ -24,6 +24,9 @@ export const ListPhotosResponseSchema = z.object({
    *  the event has no name yet — the UI applies its own fallback (B5). */
   eventName: z.string().default(''),
   photos: z.array(GalleryPhotoSchema),
+  /** Opaque cursor for the next page (the last photoId of this page), or null
+   *  when this is the final page. Pass it back as `?cursor=` to fetch more. */
+  nextCursor: z.string().nullable().default(null),
 });
 export type ListPhotosResponse = z.infer<typeof ListPhotosResponseSchema>;
 

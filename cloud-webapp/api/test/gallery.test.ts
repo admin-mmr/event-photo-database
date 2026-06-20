@@ -32,17 +32,27 @@ vi.mock('../src/lib/firestore.js', () => ({
         };
       }
       if (name === 'photos') {
-        return {
-          where: (_field: string, _op: string, eventId: string) => ({
-            limit: (n: number) => ({
-              get: async () => ({
-                docs: fakeDb.photos
-                  .filter((p) => p.data.eventId === eventId)
-                  .slice(0, n)
-                  .map((p) => ({ id: p.id, data: () => p.data })),
-              }),
-            }),
+        // Chainable query stub: where → orderBy → [startAfter] → limit → get.
+        // Mirrors the real route (ordered by document id, cursor = last id).
+        const makeQuery = (eventId: string, after: string | null) => ({
+          orderBy: () => makeQuery(eventId, after),
+          startAfter: (cursor: string) => makeQuery(eventId, cursor),
+          limit: (n: number) => ({
+            get: async () => {
+              const all = fakeDb.photos
+                .filter((p) => p.data.eventId === eventId)
+                .sort((a, b) => a.id.localeCompare(b.id));
+              const start = after ? all.findIndex((p) => p.id === after) + 1 : 0;
+              const page = all.slice(start, start + n);
+              return {
+                size: page.length,
+                docs: page.map((p) => ({ id: p.id, data: () => p.data })),
+              };
+            },
           }),
+        });
+        return {
+          where: (_field: string, _op: string, eventId: string) => makeQuery(eventId, null),
         };
       }
       throw new Error(`unexpected collection ${name}`);
@@ -95,5 +105,32 @@ describe('GET /api/events/:id/photos', () => {
     expect(res.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['p1', 'p2']);
     expect(res.body.photos[0].thumbUrl).toContain('/ev1/thumb/p1.jpg');
     expect(res.body.photos[0].webUrl).toContain('/ev1/web/p1.jpg');
+    expect(res.body.nextCursor).toBeNull();
+  });
+
+  it('paginates with limit + cursor and reports nextCursor', async () => {
+    fakeDb.photos.length = 0;
+    for (let i = 1; i <= 5; i += 1) {
+      fakeDb.photos.push({ id: `p${i}`, data: { eventId: 'ev1', name: `IMG_${i}.jpg` } });
+    }
+
+    const page1 = await request(app)
+      .get('/api/events/ev1/photos?limit=2')
+      .set('x-test-user', USER);
+    expect(page1.status).toBe(200);
+    expect(page1.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['p1', 'p2']);
+    expect(page1.body.nextCursor).toBe('p2');
+
+    const page2 = await request(app)
+      .get('/api/events/ev1/photos?limit=2&cursor=p2')
+      .set('x-test-user', USER);
+    expect(page2.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['p3', 'p4']);
+    expect(page2.body.nextCursor).toBe('p4');
+
+    const page3 = await request(app)
+      .get('/api/events/ev1/photos?limit=2&cursor=p4')
+      .set('x-test-user', USER);
+    expect(page3.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['p5']);
+    expect(page3.body.nextCursor).toBeNull();
   });
 });
