@@ -6,13 +6,26 @@ name: Deploy indexer to Cloud Run Jobs
 # Cloud Build) — keeping the runner upload to source only and the deploy logic
 # in one place.
 #
-# One-time IAM the deployer service account needs for this workflow (grant as an
-# owner; the api/web deployer SA doesn't have these by default):
-#   roles/cloudbuild.builds.editor            (submit the in-cloud build)
-#   roles/storage.objectViewer on gs://<project>-models  (read staged weights)
-#   roles/run.admin                           (deploy the Cloud Run Job)
-#   roles/iam.serviceAccountUser on indexer-runtime@<project>.iam.gserviceaccount.com
-#                                             (deploy a job that runs AS that SA)
+# One-time IAM (grant as an owner; the api/web deployer SA doesn't have these by
+# default). Two distinct identities are involved:
+#
+# A) The DEPLOYER SA (secrets.GCP_SERVICE_ACCOUNT, e.g. cloud-webapp-deployer@) —
+#    submits the build and deploys the job:
+#      roles/cloudbuild.builds.editor          (submit the in-cloud build)
+#      roles/run.admin                         (deploy the Cloud Run Job)
+#      roles/iam.serviceAccountUser on indexer-runtime@<project>.iam...
+#                                              (deploy a job that runs AS it)
+#      roles/iam.serviceAccountUser on the BUILD SA below
+#                                              (submit a build that runs AS it)
+#
+# B) The BUILD SA — the SA the in-cloud build runs as. The script now sets this
+#    explicitly via --service-account (default: the Compute Engine default SA,
+#    <projectNumber>-compute@developer.gserviceaccount.com; override with
+#    BUILD_SA). It needs:
+#      roles/storage.objectViewer on gs://<project>-models  (read staged weights)
+#      roles/artifactregistry.writer                        (push the image)
+#      write access to gs://<project>_cloudbuild  (build logs/source staging)
+#
 # Models must already be staged in GCS (see docs/DEPLOYMENT.md §6b); the script
 # preflights this and fails early if the bucket is empty.
 

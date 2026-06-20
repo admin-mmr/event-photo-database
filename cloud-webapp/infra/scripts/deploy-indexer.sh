@@ -67,9 +67,24 @@ if ! gcloud storage ls "$MODELS_GCS/" --project="$PROJECT_ID" >/dev/null 2>&1; t
   exit 1
 fi
 
+# Service account the in-cloud build RUNS AS. We set this explicitly instead of
+# relying on Cloud Build's implicit default (which is the legacy
+# <projectNumber>@cloudbuild SA on older projects, but the Compute Engine
+# default SA on projects created after the 2024 Cloud Build change — a silent,
+# project-dependent difference). Override with BUILD_SA=<email> if you stand up
+# a dedicated, least-privilege build SA. This SA needs, on $PROJECT_ID:
+#   roles/storage.objectViewer on gs://${PROJECT_ID}-models  (gsutil step)
+#   roles/artifactregistry.writer                            (docker push)
+#   roles/logging.logWriter + write to the logs bucket below (build logs)
+# And the CALLER submitting the build (the GitHub Actions deployer SA) needs
+# roles/iam.serviceAccountUser on this SA to run a build as it.
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+BUILD_SA="${BUILD_SA:-${PROJECT_NUMBER}-compute@developer.gserviceaccount.com}"
+
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${JOB}:$(date +%Y%m%d-%H%M%S)"
 
 echo "==> Building image $IMAGE (context: cloud-webapp/, models from $MODELS_GCS)"
+echo "    build runs as: $BUILD_SA"
 CLOUDBUILD_CONFIG="$(mktemp -t cloudbuild-XXXXXX.yaml)"
 trap 'rm -f "$CLOUDBUILD_CONFIG"' EXIT
 # Step 1 pulls the model files from GCS into matcher/model_files/ within the
@@ -85,6 +100,7 @@ images: ['$IMAGE']
 EOF
 gcloud builds submit "$REPO_ROOT" \
   --project="$PROJECT_ID" \
+  --service-account="projects/${PROJECT_ID}/serviceAccounts/${BUILD_SA}" \
   --gcs-log-dir="gs://${PROJECT_ID}_cloudbuild/logs" \
   --config="$CLOUDBUILD_CONFIG"
 
