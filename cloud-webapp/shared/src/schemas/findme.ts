@@ -11,11 +11,28 @@ import { z } from 'zod';
 export const GalleryPhotoSchema = z.object({
   photoId: z.string(),
   name: z.string().default(''),
-  /** Short-lived V4 signed URLs into the derivatives bucket. */
+  /** Short-lived V4 signed URL for the thumbnail (always present). */
   thumbUrl: z.string(),
-  webUrl: z.string(),
+  /** Full-size `web` derivative URL. Optional: the gallery list omits it (it's
+   *  signed lazily when a photo is opened in the lightbox). Find Me results
+   *  still include it inline. */
+  webUrl: z.string().optional(),
+  /** Capture time (CAPTURE_TIME_SORT_DESIGN), ISO-8601 zone-less wall-clock,
+   *  e.g. "2026-06-20T14:30:52". Null when no time tier resolved. */
+  takenAt: z.string().nullable().default(null),
+  /** Which tier produced takenAt: "exif" | "drive_exif" | "created" |
+   *  "modified" | "none". Lets the UI flag best-guesses ("approx"). */
+  takenAtSource: z.string().default(''),
 });
 export type GalleryPhoto = z.infer<typeof GalleryPhotoSchema>;
+
+/** GET /api/events/:id/photos/:photoId/web — lazily signed full-size URL. */
+export const PhotoWebUrlResponseSchema = z.object({
+  ok: z.literal(true),
+  photoId: z.string(),
+  webUrl: z.string(),
+});
+export type PhotoWebUrlResponse = z.infer<typeof PhotoWebUrlResponseSchema>;
 
 export const ListPhotosResponseSchema = z.object({
   ok: z.literal(true),

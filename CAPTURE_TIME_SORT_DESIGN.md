@@ -1,6 +1,32 @@
 # Capture-Time Sorting — Design
 
-**Status:** proposal · **Date:** 2026-06-20 · **Owner:** admin@mmrunners.org
+**Status:** implemented (indexer-centric) · **Date:** 2026-06-20 · **Owner:** admin@mmrunners.org
+
+> **Implementation note (built 2026-06-20).** Since the upload flow moved off
+> the gas-app into cloud-webapp, capture time is computed in **one place — the
+> indexer** (`cloud-webapp/indexer/`), which already downloads every photo's
+> bytes and ships Pillow + pillow-heif (reads JPEG *and* HEIC EXIF). This
+> replaces §4a/§4b (browser/GAS rename) with a single self-healing pass that
+> runs on new uploads *and* a forced reindex:
+>
+> - `capture_time.py` — EXIF DateTimeOriginal/SubSec → Drive
+>   `imageMediaMetadata.time` → `createdTime` → `modifiedTime` fallback chain;
+>   `YYYYMMDD-HHMMSS[_SSS]` prefix build/strip helpers (idempotent).
+> - `job.py` — writes `takenAt` + `takenAtSource` to every photo doc (the in-app
+>   sort, **no Drive mutation**); and, behind `CAPTURE_TIME_RENAME=1`, renames
+>   the Drive file + stamps its `modifiedTime` (Drive-direct browsing).
+> - `drive.py` — `imageMediaMetadata(time)`/`createdTime` added to the listing;
+>   `rename()` via files.update on a lazily-minted read-write DWD token.
+> - `api/routes/gallery.ts` — `?sort=time|name` (default time), `orderBy`,
+>   returns `takenAt`/`takenAtSource`; composite indexes in
+>   `infra/firestore.indexes.json`.
+> - Backfill: `infra/scripts/backfill-capture-time.sh` force-reindexes all
+>   events (dry-run by default).
+>
+> Operator prerequisites for the Drive-direct surface: grant the read-write
+> Drive scope to the DWD client (Workspace Admin console) and set
+> `CAPTURE_TIME_RENAME=1` on the photo-indexer job. The in-app time sort needs
+> neither — just a reindex to populate `takenAt`.
 
 Goal: let people view event photos in the order they were *taken* (not uploaded),
 on **two surfaces**:

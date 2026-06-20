@@ -38,8 +38,17 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from derivatives import make_derivatives
+from capture_time import read_exif_datetime, resolve_taken_at, prefix_for, apply_prefix
 
 log = logging.getLogger("indexer")
+
+# Drive-direct browsing: when set, the indexer renames each file to a
+# `YYYYMMDD-HHMMSS[_NNN]_<name>` prefix and stamps its Drive modifiedTime to the
+# capture time, so "Sort by Name"/"Last modified" in the Drive UI become
+# chronological (CAPTURE_TIME_SORT_DESIGN §3/§6). Off by default — it mutates
+# Drive and needs the read-write Drive scope on the DWD client. The backfill
+# turns it on. Setting takenAt in Firestore (the in-app sort) does NOT need it.
+RENAME_ENABLED = os.environ.get("CAPTURE_TIME_RENAME", "") == "1"
 
 # Default fan-out for the download+embed+upload stage. The work is dominated by
 # Drive download + 3 GCS uploads (I/O) and ONNX inference (native, releases the
@@ -237,6 +246,8 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
         pid = f["id"]
         data = drive.download(pid)
         result = embed(data)
+        # Read capture time from the bytes we already have (authoritative tier).
+        result["exif"] = read_exif_datetime(data)
         ext = ORIG_EXT_BY_MIME.get(f["mimeType"], "bin")
         blobs.write(f"{cfg.event_id}/photos/orig/{pid}.{ext}", data, f["mimeType"])
         deriv = make_derivatives(data)
@@ -263,18 +274,85 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
             if done % 25 == 0:
                 log.info("  %d/%d changed photos processed", done, len(changed))
 
+    # ── Capture time (CAPTURE_TIME_SORT_DESIGN) ──────────────────────────────
+    # Resolve takenAt + source per photo: EXIF (from the bytes _process read) →
+    # Drive imageMediaMetadata.time → createdTime → modifiedTime. Reused photos
+    # carry their value forward from the previous manifest.
+    taken: dict[str, tuple] = {}
+    for f in files:
+        pid = f["id"]
+        ex_iso, ex_sub = (results.get(pid) or {}).get("exif", (None, None)) if pid in results else (None, None)
+        if pid in prev_photos and pid not in results:
+            prev = prev_photos[pid]
+            taken[pid] = (prev.get("takenAt"), prev.get("takenAtSource") or "modified", None)
+        else:
+            iso, src = resolve_taken_at(ex_iso, f)
+            taken[pid] = (iso, src, ex_sub)
+
+    # Plan Drive renames (only when enabled). Same-second collisions without a
+    # sub-second EXIF tag get a per-second _NNN sequence (relPath order) so the
+    # name-sort never relies on Drive's own "(1)" suffix.
+    rename_to: dict[str, str] = {}
+    if RENAME_ENABLED:
+        sec_counts: dict[str, int] = {}
+        for f in files:
+            iso = taken[f["id"]][0]
+            secp = prefix_for(iso) if iso else None
+            if secp:
+                sec_counts[secp] = sec_counts.get(secp, 0) + 1
+        sec_seq: dict[str, int] = {}
+        for f in files:
+            pid = f["id"]
+            iso, _src, sub = taken[pid]
+            if not iso:
+                continue
+            secp = prefix_for(iso)
+            if sub:
+                prefix = prefix_for(iso, subsec=sub)
+            elif sec_counts.get(secp, 0) > 1:
+                i = sec_seq.get(secp, 0)
+                sec_seq[secp] = i + 1
+                prefix = f"{secp}_{i:03d}"
+            else:
+                prefix = secp
+            desired = apply_prefix(f["name"], prefix)
+            if desired != f["name"]:
+                rename_to[pid] = desired
+
     # Assemble vectors/manifest/Firestore in Drive-listing order so the stored
     # arrays are identical regardless of which worker finished first.
     for f in files:
         pid, md5 = f["id"], f.get("md5Checksum", "")
         unchanged = (pid in prev_photos and md5 and prev_photos[pid].get("md5") == md5)
 
+        # Apply the planned Drive rename + capture-time modifiedTime, then carry
+        # the new name into the manifest/Firestore. Best-effort: a rename hiccup
+        # must not fail indexing.
+        if pid in rename_to:
+            new_name = rename_to[pid]
+            taken_iso = taken[pid][0]
+            try:
+                drive.rename(pid, new_name, modified_time=taken_iso)
+                rel = f.get("relPath", f["name"])
+                slash = rel.rfind("/")
+                f["relPath"] = (rel[: slash + 1] + new_name) if slash >= 0 else new_name
+                f["name"] = new_name
+            except Exception as exc:  # noqa: BLE001
+                log.warning("rename SKIP %s (%s): %s", f["name"], pid, exc)
+
         if unchanged and pid in prev_rows:
             for meta, vec in prev_rows[pid]["face"]:
                 faces_meta.append(meta), faces_vecs.append(vec)
             for meta, vec in prev_rows[pid]["person"]:
                 persons_meta.append(meta), persons_vecs.append(vec)
-            photos_map[pid] = prev_photos[pid]
+            carried = prev_photos[pid]
+            # A reused (byte-unchanged) photo that we just renamed on Drive needs
+            # its stored name/relPath refreshed (the bytes/vectors are reused but
+            # the filename changed). Patch the manifest entry + Firestore doc.
+            if pid in rename_to:
+                carried = {**carried, "name": f["name"], "relPath": f["relPath"]}
+                fs.upsert_photo(pid, {"name": f["name"], "relPath": f["relPath"]})
+            photos_map[pid] = carried
             reused += 1
             continue
 
@@ -292,9 +370,11 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
                                  "score": person["score"],
                                  "source": person.get("source", "detector")})
         dup_n = len(dup_map.get(pid, []))
+        taken_at, taken_src, _sub = taken[pid]
         photos_map[pid] = {"md5": md5, "name": f["name"], "relPath": f["relPath"],
                            "mimeType": f["mimeType"], "modifiedTime": f.get("modifiedTime", ""),
-                           "contentHash": md5, "duplicateCount": dup_n}
+                           "contentHash": md5, "duplicateCount": dup_n,
+                           "takenAt": taken_at, "takenAtSource": taken_src}
         embedded += 1
 
         fs.upsert_photo(pid, {
@@ -305,6 +385,8 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
             "contentHash": md5, "duplicateCount": dup_n,
             "faceCount": len(result["faces"]), "personCount": len(result["persons"]),
             "modelVersion": model_version,
+            # Capture-time sort (CAPTURE_TIME_SORT_DESIGN §4c/§5).
+            "takenAt": taken_at, "takenAtSource": taken_src,
         })
 
     # Photos that disappeared from Drive: drop their rows + Firestore docs.

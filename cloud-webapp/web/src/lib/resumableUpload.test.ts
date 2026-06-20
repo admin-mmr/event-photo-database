@@ -60,7 +60,7 @@ describe('queryOffset', () => {
   });
 
   it('sends a Content-Range status probe (bytes */total)', async () => {
-    const fetchMock = vi.fn(async () => res(308, 'bytes=0-0'));
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => res(308, 'bytes=0-0'));
     vi.stubGlobal('fetch', fetchMock);
     await queryOffset('https://gcs/session', 4096);
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;

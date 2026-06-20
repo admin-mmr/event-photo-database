@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -45,10 +46,16 @@ SKIP_FOLDER_NAMES = frozenset(
 )
 
 
-def _claims(sa: str, subject: str) -> str:
+# Read-write scope, needed only for the capture-time rename (files.update).
+# Must be added to the DWD client's allowed scopes in the Workspace Admin
+# console alongside the read-only one (UPLOAD_RESUMABLE_NOTES / CAPTURE_TIME).
+SCOPE_RW = "https://www.googleapis.com/auth/drive"
+
+
+def _claims(sa: str, subject: str, scope: str = SCOPE) -> str:
     now = int(time.time())
     return json.dumps(
-        {"iss": sa, "sub": subject, "scope": SCOPE, "aud": TOKEN_URL, "iat": now, "exp": now + 3600}
+        {"iss": sa, "sub": subject, "scope": scope, "aud": TOKEN_URL, "iat": now, "exp": now + 3600}
     )
 
 
@@ -82,11 +89,11 @@ def _sign_jwt_gcloud(sa: str, claims: str) -> str:
         os.unlink(path)
 
 
-def dwd_token(sa: str | None = None, subject: str | None = None) -> str:
+def dwd_token(sa: str | None = None, subject: str | None = None, scope: str = SCOPE) -> str:
     """Mint a Drive access token via keyless DWD."""
     sa = sa or os.environ.get("DWD_SA", DEFAULT_SA)
     subject = subject or os.environ.get("DWD_SUBJECT", DEFAULT_SUBJECT)
-    claims = _claims(sa, subject)
+    claims = _claims(sa, subject, scope)
     try:
         jwt = _sign_jwt_iam(sa, claims)
     except Exception:
@@ -103,11 +110,20 @@ class DriveClient:
 
     def __init__(self, token: str | None = None):
         self._token = token
+        self._rw_token: str | None = None
 
     def _auth(self) -> str:
         if self._token is None:
             self._token = dwd_token()
         return self._token
+
+    def _auth_rw(self) -> str:
+        """Read-write token, minted lazily — only the rename path needs it, so
+        a read-only deployment (no rw scope granted yet) is unaffected until
+        CAPTURE_TIME_RENAME is turned on."""
+        if self._rw_token is None:
+            self._rw_token = dwd_token(scope=SCOPE_RW)
+        return self._rw_token
 
     def _get_json(self, url: str) -> dict:
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {self._auth()}"})
@@ -153,7 +169,8 @@ class DriveClient:
             params = {
                 "q": f"'{folder_id}' in parents and trashed=false",
                 "fields": ("nextPageToken,files(id,name,mimeType,md5Checksum,"
-                           "modifiedTime,size)"),
+                           "modifiedTime,createdTime,size,"
+                           "imageMediaMetadata(time))"),
                 "pageSize": 1000,
                 "supportsAllDrives": "true",
                 "includeItemsFromAllDrives": "true",
@@ -195,3 +212,34 @@ class DriveClient:
                     continue
                 raise
         raise RuntimeError("unreachable")  # loop always returns or raises
+
+    def rename(self, file_id: str, new_name: str, modified_time: str | None = None) -> None:
+        """Rename a Drive file (and optionally stamp its modifiedTime) via
+        files.update. Needs the read-write scope. `modified_time` is normalized
+        to RFC3339 (a zone-less capture time is labelled 'Z' so Drive accepts
+        it; ordering is preserved since all files are treated alike)."""
+        body: dict = {"name": new_name}
+        if modified_time:
+            ts = modified_time
+            if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", ts):
+                ts = ts + "Z"
+            body["modifiedTime"] = ts
+        params = {"supportsAllDrives": "true", "fields": "id,name"}
+        url = f"{DRIVE}/{file_id}?{urllib.parse.urlencode(params)}"
+        data = json.dumps(body).encode("utf-8")
+        for attempt in (1, 2):
+            req = urllib.request.Request(
+                url, data=data, method="PATCH",
+                headers={"Authorization": f"Bearer {self._auth_rw()}",
+                         "Content-Type": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    json.load(resp)
+                    return
+            except urllib.error.HTTPError as e:
+                if e.code == 401 and attempt == 1:
+                    self._rw_token = None
+                    continue
+                raise
+        raise RuntimeError("unreachable")

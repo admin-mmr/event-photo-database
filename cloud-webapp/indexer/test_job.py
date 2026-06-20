@@ -33,6 +33,7 @@ class FakeDrive:
         """files: id → {name, relPath, mimeType, md5Checksum, data}"""
         self.files = files
         self.downloads: list[str] = []
+        self.renames: list = []
 
     def list_images(self, folder_id: str) -> list[dict]:
         return [{k: v for k, v in f.items() if k != "data"} | {"id": fid}
@@ -46,6 +47,10 @@ class FakeDrive:
         return self.folder_names.get(folder_id, "")
 
     folder_names: dict[str, str] = {}
+
+    def rename(self, file_id: str, new_name: str, modified_time: str | None = None) -> None:
+        self.renames.append((file_id, new_name, modified_time))
+        self.files[file_id]["name"] = new_name
 
 
 class FakeFS:
@@ -265,3 +270,84 @@ def test_byte_identical_duplicates_collapse_to_one_photo(tmp_path):
 
     manifest = json.loads(blobs.read(f"ev1/{EMB_DIR}/{MANIFEST}"))
     assert manifest["duplicates"] == {"f1": ["f3"]}
+
+
+# ── capture time (CAPTURE_TIME_SORT_DESIGN) ──────────────────────────────────
+
+def _jpeg_with_dt(value: str, color=(30, 60, 90)) -> bytes:
+    from PIL import Image
+
+    img = Image.new("RGB", (32, 24), color)
+    exif = img.getexif()
+    exif[36867] = value  # DateTimeOriginal
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", exif=exif)
+    return buf.getvalue()
+
+
+def test_taken_at_falls_back_to_modified_time(env):
+    """PNG with no EXIF → takenAt from Drive modifiedTime, source 'modified'."""
+    drive, fs, blobs = env
+    _run(drive, fs, blobs)
+    assert fs.photos["f1"]["takenAt"] == "2026-06-01T00:00:00Z"
+    assert fs.photos["f1"]["takenAtSource"] == "modified"
+
+
+def test_taken_at_from_exif(tmp_path):
+    drive = FakeDrive({
+        "p1": {"name": "shot.jpg", "relPath": "shot.jpg", "mimeType": "image/jpeg",
+               "md5Checksum": "md5-p1", "modifiedTime": "2026-06-01T00:00:00Z",
+               "data": _jpeg_with_dt("2026:06:20 14:30:52")},
+    })
+    fs = FakeFS(events={"ev1": {"driveFolderId": "folder123"}})
+    blobs = BlobStore(str(tmp_path))
+    _run(drive, fs, blobs)
+    assert fs.photos["p1"]["takenAt"] == "2026-06-20T14:30:52"
+    assert fs.photos["p1"]["takenAtSource"] == "exif"
+
+
+def test_no_rename_when_flag_disabled(env):
+    """Default: takenAt is written but Drive is never mutated."""
+    drive, fs, blobs = env
+    _run(drive, fs, blobs)
+    assert drive.renames == []
+
+
+def test_rename_applies_prefix_when_enabled(tmp_path, monkeypatch):
+    import job
+
+    monkeypatch.setattr(job, "RENAME_ENABLED", True)
+    drive = FakeDrive({
+        "p1": {"name": "MMR_Jane_IMG1.jpg", "relPath": "MMR_Jane_IMG1.jpg",
+               "mimeType": "image/jpeg", "md5Checksum": "md5-p1",
+               "modifiedTime": "2026-06-01T00:00:00Z",
+               "data": _jpeg_with_dt("2026:06:20 14:30:52")},
+    })
+    fs = FakeFS(events={"ev1": {"driveFolderId": "folder123"}})
+    blobs = BlobStore(str(tmp_path))
+    _run(drive, fs, blobs)
+
+    assert len(drive.renames) == 1
+    fid, new_name, mtime = drive.renames[0]
+    assert fid == "p1"
+    assert new_name == "20260620-143052_MMR_Jane_IMG1.jpg"
+    assert mtime == "2026-06-20T14:30:52"
+    # The new name propagates to Firestore.
+    assert fs.photos["p1"]["name"] == "20260620-143052_MMR_Jane_IMG1.jpg"
+
+
+def test_rename_is_idempotent_when_already_prefixed(tmp_path, monkeypatch):
+    import job
+
+    monkeypatch.setattr(job, "RENAME_ENABLED", True)
+    drive = FakeDrive({
+        "p1": {"name": "20260620-143052_MMR_Jane_IMG1.jpg",
+               "relPath": "20260620-143052_MMR_Jane_IMG1.jpg",
+               "mimeType": "image/jpeg", "md5Checksum": "md5-p1",
+               "modifiedTime": "2026-06-01T00:00:00Z",
+               "data": _jpeg_with_dt("2026:06:20 14:30:52")},
+    })
+    fs = FakeFS(events={"ev1": {"driveFolderId": "folder123"}})
+    blobs = BlobStore(str(tmp_path))
+    _run(drive, fs, blobs)
+    assert drive.renames == []  # already prefixed → no rename
