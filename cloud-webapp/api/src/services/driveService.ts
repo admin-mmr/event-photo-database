@@ -15,12 +15,27 @@
  *     --role="roles/iam.serviceAccountTokenCreator"
  */
 
+import { randomUUID } from 'node:crypto';
+
 import { GoogleAuth } from 'google-auth-library';
 import { env } from '../lib/config.js';
 
 const DRIVE = 'https://www.googleapis.com/drive/v3/files';
+const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+
+/** Read-only scope used by the listing/metadata calls (the indexer's scope). */
+export const DRIVE_SCOPE_READONLY = 'https://www.googleapis.com/auth/drive.readonly';
+/**
+ * Read-write scope needed to copy volunteer uploads INTO an event's Drive
+ * folder (volunteerUploadService.enqueueStagedBatch). `drive.file` is too
+ * narrow — it only grants access to files the app itself created, so it cannot
+ * add a file to a pre-existing event folder. With domain-wide delegation
+ * (sub=admin@) the full `drive` scope mirrors the read path's domain reach.
+ * OPERATOR: this scope must be added to the DWD client's allowed scopes in the
+ * Workspace Admin console (same client id) — see UPLOAD_RESUMABLE_NOTES.
+ */
+export const DRIVE_SCOPE_READWRITE = 'https://www.googleapis.com/auth/drive';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
@@ -53,18 +68,23 @@ export interface DriveImage {
   size?: string;
 }
 
-let cached: { token: string; expiresAt: number } | null = null;
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
 
-/** Mint (and cache) a Drive access token via keyless DWD. */
-export async function getDriveToken(): Promise<string> {
-  if (cached && Date.now() < cached.expiresAt - 60_000) return cached.token;
+/**
+ * Mint (and cache) a Drive access token via keyless DWD. Tokens are cached per
+ * scope so the read path (drive.readonly) and the upload path (drive) don't
+ * clobber each other.
+ */
+export async function getDriveToken(scope: string = DRIVE_SCOPE_READONLY): Promise<string> {
+  const hit = tokenCache.get(scope);
+  if (hit && Date.now() < hit.expiresAt - 60_000) return hit.token;
 
   const sa = env.DWD_SA;
   const now = Math.floor(Date.now() / 1000);
   const claims = JSON.stringify({
     iss: sa,
     sub: env.DWD_SUBJECT,
-    scope: SCOPE,
+    scope,
     aud: TOKEN_URL,
     iat: now,
     exp: now + 3600,
@@ -86,8 +106,9 @@ export async function getDriveToken(): Promise<string> {
     throw new Error(`DWD token exchange failed: ${tokenRes.status} ${await tokenRes.text()}`);
   }
   const json = (await tokenRes.json()) as { access_token: string; expires_in: number };
-  cached = { token: json.access_token, expiresAt: Date.now() + json.expires_in * 1000 };
-  return cached.token;
+  const entry = { token: json.access_token, expiresAt: Date.now() + json.expires_in * 1000 };
+  tokenCache.set(scope, entry);
+  return entry.token;
 }
 
 async function driveGet(url: string, token: string): Promise<Record<string, unknown>> {
@@ -147,4 +168,52 @@ export async function getFileMetadata(fileId: string, opts?: { token?: string })
   });
   const f = (await driveGet(`${DRIVE}/${fileId}?${params}`, token)) as Omit<DriveImage, 'relPath'>;
   return { ...f, relPath: f.name };
+}
+
+export interface UploadedDriveFile {
+  id: string;
+  name: string;
+}
+
+/**
+ * Create a new file inside a Drive folder from raw bytes (multipart upload).
+ * Used by the volunteer-upload handoff to copy a staged original into the
+ * event's Drive folder. Requires a write-scoped token (DRIVE_SCOPE_READWRITE);
+ * pass `token` explicitly in tests. `supportsAllDrives` so shared-drive folders
+ * work the same as My Drive ones.
+ */
+export async function uploadFileToDrive(
+  folderId: string,
+  name: string,
+  mimeType: string,
+  bytes: Uint8Array,
+  opts?: { token?: string },
+): Promise<UploadedDriveFile> {
+  const token = opts?.token ?? (await getDriveToken(DRIVE_SCOPE_READWRITE));
+  const boundary = `mmr_${randomUUID()}`;
+  const metadata = { name, parents: [folderId] };
+  const head =
+    `--${boundary}\r\n` +
+    `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+    `${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\n` +
+    `Content-Type: ${mimeType || 'application/octet-stream'}\r\n\r\n`;
+  const tail = `\r\n--${boundary}--`;
+  const body = Buffer.concat([Buffer.from(head, 'utf8'), Buffer.from(bytes), Buffer.from(tail, 'utf8')]);
+
+  const params = new URLSearchParams({
+    uploadType: 'multipart',
+    supportsAllDrives: 'true',
+    fields: 'id,name',
+  });
+  const res = await fetch(`${DRIVE_UPLOAD}?${params}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': `multipart/related; boundary=${boundary}`,
+    },
+    body,
+  });
+  if (!res.ok) throw new Error(`Drive upload ${res.status}: ${await res.text()}`);
+  return (await res.json()) as UploadedDriveFile;
 }

@@ -14,8 +14,12 @@ endpoints, plus the accepted-MIME allowlist and per-file size cap.
 **API**
 - `services/volunteerUploadService.ts` — validates the upload-link token
   against the master Sheet's `Upload_Links` tab, mints a GCS resumable session
-  with ADC (no credential ever reaches the browser), and exposes
-  `enqueueStagedBatch` (the Drive-copy + index handoff — currently a stub).
+  with ADC (no credential ever reaches the browser), and `enqueueStagedBatch`
+  copies each staged original into the event's Drive folder then triggers the
+  indexer (see "Handoff" below).
+- `services/driveService.ts` — `getDriveToken(scope)` now mints per-scope DWD
+  tokens, and `uploadFileToDrive()` does a multipart create into a Drive folder
+  with the read-write scope.
 - `routes/volunteerUpload.ts` — `POST /api/volunteer/upload/session` and
   `POST /api/volunteer/upload/complete`. Public (no Firebase auth); the link
   token is the gate.
@@ -42,64 +46,68 @@ endpoints, plus the accepted-MIME allowlist and per-file size cap.
    sends `Content-Range: bytes */<total>` to learn the committed offset and
    resumes. Session URI + offset persist in IndexedDB.
 3. On finish, browser `POST /api/volunteer/upload/complete` with the staged
-   object names → server records the batch and (TODO) copies to Drive + indexes.
+   object names → `enqueueStagedBatch` copies each original into the event's
+   Drive folder and triggers the indexer.
 
-## Required infra (NOT done by the code — operator steps)
+## Handoff (`enqueueStagedBatch`) — wired
 
-### 1. Bucket CORS on the staging bucket
+For each staged object name from `/complete`:
+1. Resolve the event's Drive folder id from the `events` Firestore doc
+   (`driveFolderId`); a missing folder raises `not_configured` (→ 503).
+2. Verify the object exists and is non-zero (guards a client that called
+   `/complete` before its PUTs finished); missing/empty are logged + skipped.
+3. `download()` the bytes and `uploadFileToDrive()` them into the folder,
+   naming the Drive file from the `originalName` object metadata stamped at
+   session-create time, then `delete()` the staged copy (lifecycle is the
+   backstop).
+4. Trigger `photo-indexer` once for the event — only if ≥1 file was copied.
 
-The browser PUTs cross-origin to `storage.googleapis.com` and must be able to
-read the `Range` response header to resume. Apply CORS to
-`VOLUNTEER_STAGING_BUCKET`:
+A single file's copy failure is logged and skipped, not fatal to the batch;
+the returned count drives the receipt. Each object is buffered in memory for
+the copy (fine for photos; revisit with a streamed copy if large videos become
+common). The Drive write uses the new `drive` scope — operator step A below.
 
-```json
-[
-  {
-    "origin": ["https://<your-web-origin>"],
-    "method": ["PUT", "POST", "GET", "HEAD"],
-    "responseHeader": ["Content-Type", "Range", "Location", "x-goog-resumable"],
-    "maxAgeSeconds": 3600
-  }
-]
-```
+## Required infra (operator steps)
 
-Apply with:
+Run the provisioning script — it creates a dedicated staging bucket, applies
+CORS, grants `roles/storage.objectAdmin` to `api-runtime@`, and sets a 7-day
+delete + abort-incomplete-upload lifecycle:
 
 ```bash
-gcloud storage buckets update gs://mmr-data-pipeline-uploads --cors-file=cors.json
+./infra/scripts/provision-volunteer-uploads.sh mmr-data-pipeline https://mmr-data-pipeline.web.app
 ```
 
-Set `VOLUNTEER_UPLOAD_ORIGIN` to the same origin so the signed session is bound
-to it.
+The bucket is dedicated (`<project>-uploads-staging`) rather than the Find Me
+uploads bucket so the purge lifecycle never touches reference selfies. The
+script prints the two steps it cannot do for you:
 
-### 2. IAM
+- **A. Drive write scope (Workspace Admin console).** The copy step needs the
+  read-write Drive scope; the read path keeps `drive.readonly`. Add
+  `https://www.googleapis.com/auth/drive` to the DWD client (same client id as
+  the indexer) under Security → API controls → Domain-wide delegation.
+- **B. api env vars.** `gcloud run services update event-photo-api
+  --update-env-vars=VOLUNTEER_STAGING_BUCKET=…,VOLUNTEER_UPLOAD_ORIGIN=…`
+  (merge — never `--set-env-vars`, which blanks `MATCHER_URL`/sync token).
 
-`createResumableUpload()` with ADC needs the api runtime SA to write to the
-staging bucket: grant `roles/storage.objectAdmin` (or objectCreator + a way to
-query offsets) on the bucket to `api-runtime@`.
+## Tests (added)
 
-### 3. Lifecycle rule (cost hygiene)
-
-Give the staging bucket a lifecycle rule to delete objects (and abort
-unfinished multipart/resumable uploads) after ~7 days, so abandoned sessions
-don't accumulate. Prefer a dedicated `*-uploads-staging` bucket over reusing the
-Find Me uploads bucket so the rule doesn't touch reference selfies.
+- `web/src/lib/resumableUpload.test.ts` — `committedFromRange` offset parsing,
+  `backoffMs` exponential-backoff schedule, and `queryOffset` resume-probe
+  behaviour (308/200/201/5xx) with `fetch` stubbed.
+- `api/test/volunteerUploadService.test.ts` — link validation (valid / invalid
+  / revoked / non-fatal name lookup), the staging-name helpers, and
+  `enqueueStagedBatch` (copy + delete + single index trigger, skip
+  missing/empty, basename fallback, no-trigger-when-nothing-copied,
+  `not_configured` when the event has no Drive folder).
 
 ## TODO before production
 
-- **Wire `enqueueStagedBatch`**: verify each staged object exists + is non-zero,
-  copy originals from staging into the event's Drive folder (preserving the
-  credited filename), then trigger `photo-indexer`. NOTE: `driveService` only
-  requests `drive.readonly` today — the copy needs a `drive` write scope on the
-  DWD client (Workspace Admin console, same client id), or write directly to a
-  GCS-native originals path and skip Drive.
 - **Abuse protection**: add reCAPTCHA Enterprise + a per-token rate limit on
   `/session` (a leaked link otherwise lets anyone fill the bucket).
 - **EXIF/GPS scrub**: the gas-app client strips GPS before upload
   (`sanitizeJpegMetadata`). Port that into `resumableUpload.ts` (sanitize the
   ArrayBuffer before slicing chunks) or do it server-side during the Drive copy.
-- **Tests**: unit-test the offset parser + retry logic in `resumableUpload.ts`
-  and the link validation in `volunteerUploadService.ts`.
 - **Duplicate check + credited filename**: the gas-app flow renames files to the
-  photographer credit and skips duplicates; fold that into the session request.
+  photographer credit and skips duplicates; fold that into the session request
+  (`enqueueStagedBatch` currently keeps the uploaded `originalName` as-is).
 ```

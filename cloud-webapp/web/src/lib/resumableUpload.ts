@@ -88,10 +88,15 @@ async function ensureSession(
 }
 
 /** Parse the committed byte count from a GCS `Range: bytes=0-N` header. */
-function committedFromRange(rangeHeader: string | null): number {
+export function committedFromRange(rangeHeader: string | null): number {
   if (!rangeHeader) return 0;
   const m = /bytes=0-(\d+)/.exec(rangeHeader);
   return m ? Number(m[1]) + 1 : 0;
+}
+
+/** Exponential backoff (capped at 15 s) for retry attempt N (1-based). */
+export function backoffMs(attempt: number): number {
+  return Math.min(1000 * 2 ** (attempt - 1), 15_000);
 }
 
 /**
@@ -99,7 +104,7 @@ function committedFromRange(rangeHeader: string | null): number {
  * Returns the byte offset to resume from, or -1 if the upload is already
  * complete (GCS answers 200/201 to the status probe).
  */
-async function queryOffset(sessionUri: string, total: number): Promise<number> {
+export async function queryOffset(sessionUri: string, total: number): Promise<number> {
   const res = await fetch(sessionUri, {
     method: 'PUT',
     headers: { 'Content-Range': `bytes */${total}` },
@@ -195,7 +200,7 @@ export async function uploadFileResumable(
     } catch (err) {
       if (err instanceof AbortError) throw err;
       if (++attempt > MAX_RETRIES) throw err;
-      await sleep(Math.min(1000 * 2 ** (attempt - 1), 15_000));
+      await sleep(backoffMs(attempt));
       // Re-sync the offset from GCS before retrying (it may have committed
       // part of the failed chunk).
       const q = await queryOffset(sessionUri, total);
