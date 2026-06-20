@@ -54,6 +54,22 @@ vi.mock('../src/services/indexerJob.js', () => ({
   triggerIndexJob: (...args: unknown[]) => triggerIndexJob(...(args as [])),
 }));
 
+// Drive fingerprint source. Default: a single image at a fixed modifiedTime, so
+// computeDriveSig() yields the deterministic sig '1:2026-06-19T00:00:00.000Z'.
+// Tests override per-call with mockResolvedValueOnce to simulate change.
+const SIG_IMAGE = {
+  id: 'i1',
+  name: 'a.jpg',
+  relPath: 'a.jpg',
+  mimeType: 'image/jpeg',
+  modifiedTime: '2026-06-19T00:00:00.000Z',
+};
+const FIXED_SIG = '1:2026-06-19T00:00:00.000Z';
+const listEventImages = vi.fn(async () => [SIG_IMAGE]);
+vi.mock('../src/services/driveService.js', () => ({
+  listEventImages: (...args: unknown[]) => listEventImages(...(args as [])),
+}));
+
 const { buildServer } = await import('../src/server.js');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -69,6 +85,7 @@ describe('events routes', () => {
     fakeDb.events.clear();
     fakeDb.sets.length = 0;
     triggerIndexJob.mockClear();
+    listEventImages.mockClear();
     fakeDb.events.set('ev1', {
       name: 'Spring Run 2026',
       driveFolderId: 'folder123',
@@ -112,6 +129,8 @@ describe('events routes', () => {
       const queued = fakeDb.sets.find((s) => s.id === 'ev1');
       expect(queued?.data).toMatchObject({ indexState: { status: 'queued' } });
       expect((queued?.data.indexState as { updatedAt?: string }).updatedAt).toBeTruthy();
+      // The direct trigger records the fingerprint so the next scan can skip it.
+      expect(queued?.data.lastIndexSig).toBe(FIXED_SIG);
     });
 
     it('passes force through', async () => {
@@ -190,6 +209,74 @@ describe('events routes', () => {
         .post('/api/admin/index-scan?activeWithinDays=7')
         .set('X-Sync-Token', 'cron-secret');
       expect(res.body.skipped).toContainEqual({ eventId: 'ev1', reason: 'outside_active_window' });
+    });
+
+    it('skips events whose Drive fingerprint is unchanged since the last done index', async () => {
+      fakeDb.events.set('ev1', {
+        driveFolderId: 'f',
+        indexState: { status: 'done' },
+        lastIndexSig: FIXED_SIG,
+      });
+      const res = await request(app).post('/api/admin/index-scan').set('X-Sync-Token', 'cron-secret');
+      expect(res.status).toBe(200);
+      expect(res.body.triggered).toEqual([]);
+      expect(res.body.skipped).toContainEqual({ eventId: 'ev1', reason: 'unchanged' });
+      expect(triggerIndexJob).not.toHaveBeenCalled();
+    });
+
+    it('re-triggers when the Drive fingerprint changed, recording the new sig', async () => {
+      fakeDb.events.set('ev1', {
+        driveFolderId: 'f',
+        indexState: { status: 'done' },
+        lastIndexSig: '1:2025-01-01T00:00:00.000Z',
+      });
+      const res = await request(app).post('/api/admin/index-scan').set('X-Sync-Token', 'cron-secret');
+      expect(res.body.triggered).toEqual(['ev1']);
+      const queued = fakeDb.sets.find((s) => s.id === 'ev1');
+      expect(queued?.data.lastIndexSig).toBe(FIXED_SIG);
+    });
+
+    it('re-triggers a matching fingerprint when the last run did not reach done', async () => {
+      fakeDb.events.set('ev1', {
+        driveFolderId: 'f',
+        indexState: { status: 'failed' },
+        lastIndexSig: FIXED_SIG,
+      });
+      const res = await request(app).post('/api/admin/index-scan').set('X-Sync-Token', 'cron-secret');
+      expect(res.body.triggered).toEqual(['ev1']);
+    });
+
+    it('does not double-fire: after a direct /index trigger, the next scan skips the unchanged event', async () => {
+      // A direct trigger (e.g. the gas-app volunteer/admin upload hook) records
+      // lastIndexSig and queues the event.
+      const trigger = await request(app).post('/api/events/ev1/index').set('x-test-user', ADMIN);
+      expect(trigger.status).toBe(202);
+      const recordedSig = fakeDb.sets.find((s) => s.id === 'ev1')?.data.lastIndexSig;
+      expect(recordedSig).toBe(FIXED_SIG);
+
+      // The indexer finishes (status → done); fingerprint is unchanged.
+      fakeDb.events.set('ev1', {
+        driveFolderId: 'folder123',
+        indexState: { status: 'done' },
+        lastIndexSig: recordedSig,
+      });
+      triggerIndexJob.mockClear();
+
+      const scan = await request(app).post('/api/admin/index-scan').set('X-Sync-Token', 'cron-secret');
+      expect(scan.body.triggered).toEqual([]);
+      expect(scan.body.skipped).toContainEqual({ eventId: 'ev1', reason: 'unchanged' });
+      expect(triggerIndexJob).not.toHaveBeenCalled();
+    });
+
+    it('triggers (does not skip) when the Drive fingerprint cannot be read', async () => {
+      fakeDb.events.set('ev1', {
+        driveFolderId: 'f',
+        indexState: { status: 'done' },
+        lastIndexSig: FIXED_SIG,
+      });
+      listEventImages.mockRejectedValueOnce(new Error('drive down'));
+      const res = await request(app).post('/api/admin/index-scan').set('X-Sync-Token', 'cron-secret');
+      expect(res.body.triggered).toEqual(['ev1']);
     });
   });
 });

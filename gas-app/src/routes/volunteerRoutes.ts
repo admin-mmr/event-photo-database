@@ -48,6 +48,7 @@ import {
   tryRebuildPublicFoldersIndex,
 } from '../services/publicSpreadsheetService';
 import { tryRebuildSpecialFoldersForBatch } from '../services/specialFoldersService';
+import { triggerEventIndex } from '../services/indexTriggerClient';
 import { getCanonicalScriptUrl } from '../utils/scriptUrl';
 import { buildLayer3FolderName } from '../utils/folderNameValidator';
 import { toBatchTimestamp } from '../utils/dateFormatter';
@@ -651,6 +652,18 @@ export function serverCompleteVolunteerUpload(
       Logger.log(
         `[VolunteerRoutes.serverCompleteVolunteerUpload] ` +
         `tryRebuildPublicFoldersIndex threw (non-fatal): ${String(err)}`
+      );
+    }
+    // Fire the cloud indexer for this event so Find Me matches appear on
+    // arrival (same hook as the admin path serverCompleteUpload). Best-effort:
+    // triggerEventIndex swallows its own errors, and the Cloud Scheduler
+    // index-scan backstop catches any miss — never roll back a completed upload.
+    try {
+      triggerEventIndex(link.eventId);
+    } catch (err) {
+      Logger.log(
+        `[VolunteerRoutes.serverCompleteVolunteerUpload] ` +
+        `triggerEventIndex threw (non-fatal): ${String(err)}`
       );
     }
 

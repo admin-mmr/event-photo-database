@@ -12,12 +12,31 @@ import { requireAuth } from '../middleware/auth.js';
 import { requireAdmin } from '../middleware/admin.js';
 import { allowCronOrAdmin } from '../middleware/cronAuth.js';
 import { triggerIndexJob } from '../services/indexerJob.js';
+import { listEventImages } from '../services/driveService.js';
 
 export const eventsRouter = Router();
 
 /** Index-state values that mean "a run is already in flight" — skipped by the
  *  scan so we never stack executions on the same event. */
 const IN_FLIGHT = new Set(['queued', 'running']);
+
+/**
+ * A cheap fingerprint of an event's Drive image set: total image count plus the
+ * latest `modifiedTime` across all images (listEventImages recurses, so nested
+ * upload buckets are covered). The value changes whenever a photo is added,
+ * removed, or modified — exactly the cases that warrant a re-index. The scan
+ * compares this against the `lastIndexSig` we persisted on the previous trigger
+ * to skip events whose Drive content hasn't changed since they were last
+ * indexed, avoiding a redundant Cloud Run execution per scan tick.
+ */
+async function computeDriveSig(folderId: string): Promise<string> {
+  const images = await listEventImages(folderId);
+  let maxModified = '';
+  for (const img of images) {
+    if (img.modifiedTime && img.modifiedTime > maxModified) maxModified = img.modifiedTime;
+  }
+  return `${images.length}:${maxModified}`;
+}
 
 /**
  * GET /api/events — list events visible to a signed-in user (M1 minimal:
@@ -108,11 +127,27 @@ eventsRouter.post('/events/:id/index', allowCronOrAdmin, async (req, res, next) 
       return;
     }
 
+    // Capture the Drive fingerprint we're about to index so the scan can skip
+    // this event next tick if nothing changed. Best-effort: a Drive read
+    // failure must not block an explicitly requested index.
+    let driveSig = '';
+    try {
+      driveSig = await computeDriveSig(String(doc.data()?.driveFolderId));
+    } catch (err) {
+      logger.warn({ err, eventId }, 'index trigger: drive fingerprint failed (non-fatal)');
+    }
+
     const { execution } = await triggerIndexJob(eventId, { force });
     await firestore()
       .collection('events')
       .doc(eventId)
-      .set({ indexState: { status: 'queued', updatedAt: new Date().toISOString() } }, { merge: true });
+      .set(
+        {
+          indexState: { status: 'queued', updatedAt: new Date().toISOString() },
+          ...(driveSig ? { lastIndexSig: driveSig } : {}),
+        },
+        { merge: true },
+      );
 
     logger.info({ eventId, execution, admin: req.user?.email ?? 'machine' }, 'index job triggered');
     const body: TriggerIndexResponse = { ok: true, eventId, execution };
@@ -173,12 +208,35 @@ eventsRouter.post('/admin/index-scan', allowCronOrAdmin, async (req, res, next) 
         }
       }
 
+      // Skip events whose Drive content is unchanged since the last completed
+      // index. We re-index only when the fingerprint differs OR the previous
+      // run didn't reach 'done' (so failed/never-run events still get picked
+      // up). A Drive read failure falls through to triggering, to be safe.
+      let driveSig = '';
+      try {
+        driveSig = await computeDriveSig(String(data.driveFolderId));
+      } catch (err) {
+        logger.warn({ err, eventId }, 'index-scan: drive fingerprint failed; triggering to be safe');
+      }
+      const lastSig = typeof data?.lastIndexSig === 'string' ? data.lastIndexSig : '';
+      const lastRunDone = data?.indexState?.status === 'done';
+      if (driveSig && lastSig && driveSig === lastSig && lastRunDone) {
+        skipped.push({ eventId, reason: 'unchanged' });
+        continue;
+      }
+
       try {
         const { execution } = await triggerIndexJob(eventId);
         await firestore()
           .collection('events')
           .doc(eventId)
-          .set({ indexState: { status: 'queued', updatedAt: new Date().toISOString() } }, { merge: true });
+          .set(
+            {
+              indexState: { status: 'queued', updatedAt: new Date().toISOString() },
+              ...(driveSig ? { lastIndexSig: driveSig } : {}),
+            },
+            { merge: true },
+          );
         triggered.push(eventId);
         logger.info({ eventId, execution }, 'index-scan triggered event');
       } catch (err) {

@@ -22,6 +22,25 @@ const DRIVE = 'https://www.googleapis.com/drive/v3/files';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+/**
+ * Folders that hold shortcuts / duplicate copies rather than original photos
+ * (e.g. the "Photos_zzz" album-copy folders the gas-app special-folders rebuild
+ * creates). The Python indexer (indexer/drive.py) never recurses into these, so
+ * this listing — and the index-scan fingerprint built from it — must skip them
+ * too. Otherwise the fingerprint churns every time those derived folders get
+ * rebuilt and the scan re-indexes an unchanged event. Matched case-insensitively
+ * on the folder display name; override via SKIP_FOLDER_NAMES (comma-separated),
+ * the same env var the indexer reads, so both stay in lockstep.
+ */
+const SKIP_FOLDER_NAMES = new Set(
+  (process.env.SKIP_FOLDER_NAMES ?? 'Photos_zzz')
+    .split(',')
+    .map((n) => n.trim().toLowerCase())
+    .filter((n) => n.length > 0),
+);
+
 const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
 
 export interface DriveImage {
@@ -80,7 +99,9 @@ async function driveGet(url: string, token: string): Promise<Record<string, unkn
 /**
  * Recursively list image files in a Drive folder.
  * Mirrors indexer/drive.py `list_images` — same fields, same shortcut policy
- * (shortcuts not followed). Pass `token` explicitly in tests.
+ * (shortcuts not followed), and the same SKIP_FOLDER_NAMES exclusion so the
+ * derived duplicate/album-copy folders are not double-counted. Pass `token`
+ * explicitly in tests.
  */
 export async function listEventImages(folderId: string, opts?: { token?: string; rel?: string }): Promise<DriveImage[]> {
   const token = opts?.token ?? (await getDriveToken());
@@ -104,7 +125,8 @@ export async function listEventImages(folderId: string, opts?: { token?: string;
     };
     for (const f of page.files ?? []) {
       const relPath = `${rel}${f.name}`;
-      if (f.mimeType === 'application/vnd.google-apps.folder') {
+      if (f.mimeType === FOLDER_MIME) {
+        if (SKIP_FOLDER_NAMES.has(f.name.trim().toLowerCase())) continue;
         items.push(...(await listEventImages(f.id, { token, rel: `${relPath}/` })));
       } else if (f.mimeType.startsWith('image/')) {
         items.push({ ...f, relPath });

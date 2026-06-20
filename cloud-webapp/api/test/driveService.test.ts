@@ -39,6 +39,28 @@ describe('listEventImages', () => {
     expect(images.every((i) => i.mimeType.startsWith('image/'))).toBe(true);
   });
 
+  it('does not recurse into SKIP_FOLDER_NAMES folders (e.g. Photos_zzz)', async () => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      const u = String(url);
+      if (u.includes('%27root%27')) {
+        return drivePage([
+          { id: 'real', name: 'real.jpg', mimeType: 'image/jpeg', md5Checksum: 'mr' },
+          { id: 'dup', name: 'Photos_zzz', mimeType: 'application/vnd.google-apps.folder' },
+        ]);
+      }
+      // If recursion into the skipped folder ever happens, this would add a
+      // phantom image and inflate the fingerprint — the test asserts it doesn't.
+      if (u.includes('%27dup%27')) {
+        return drivePage([{ id: 'copy', name: 'real.jpg', mimeType: 'image/jpeg', md5Checksum: 'mr' }]);
+      }
+      throw new Error(`unexpected fetch ${u}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const images = await listEventImages('root', { token: 't' });
+    expect(images.map((i) => i.id)).toEqual(['real']);
+  });
+
   it('follows nextPageToken', async () => {
     let call = 0;
     vi.stubGlobal(
