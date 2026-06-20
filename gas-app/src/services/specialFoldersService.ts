@@ -559,7 +559,7 @@ type MaterializeOutcome = 'copied' | 'converted' | 'shortcut' | 'skipped' | 'fai
  * Updates ctx.usedNames so subsequent photos in the same bucket avoid name
  * collisions. Soft errors are pushed onto `warnings`; never throws.
  */
-function materializePhotoIntoBucket(
+export function materializePhotoIntoBucket(
   photo: MediaFile,
   ctx: PhotoBucketCtx,
   cloudRunReady: boolean,
@@ -631,6 +631,10 @@ function materializePhotoIntoBucket(
     );
     return 'failed';
   }
+  // The shortcut inherits the target's permissions, so share the target itself
+  // (the Photos_NNN folder share does NOT cover a shortcut's external target).
+  // Idempotent — re-granting an already-public target returns 'exists'.
+  tryGrantAnyoneRead(photo.id);
   if (photo.name) ctx.usedNames.add(photo.name);
   return 'shortcut';
 }
@@ -882,6 +886,71 @@ const ALBUM_FOLDER_SPEC: ClubScopedFolderSpec = {
   logName: 'rebuildClubAlbumFolder',
 };
 
+/** Side-effecting collaborators for {@link linkTargetsIntoShortcutFolder},
+ *  injected so the linking logic can be unit-tested without Drive. */
+export interface LinkTargetsDeps {
+  /** Create a shortcut in `folderId` pointing at `targetId`. */
+  readonly createShortcut: (
+    folderId: string,
+    targetId: string,
+    name: string
+  ) => { ok: boolean; error?: string };
+  /** Grant Anyone→reader on a target file. Should be idempotent. */
+  readonly grantTarget: (targetId: string) => void;
+}
+
+/** Counts + soft warnings from a link pass. */
+export interface LinkTargetsResult {
+  shortcutsCreated: number;
+  shortcutsExisting: number;
+  warnings: string[];
+}
+
+/**
+ * Links every target into a shortcut folder, creating a shortcut only for
+ * targets that don't already have one.
+ *
+ * Permissions: a native Drive shortcut inherits the TARGET file's permissions,
+ * NOT the containing folder's — so sharing the folder is not enough for
+ * anyone-with-link viewers to open/download. This grants Anyone→reader on
+ * EVERY target (including ones whose shortcut already exists), so pre-existing
+ * shortcuts self-heal on the next sync. `grantTarget` must be idempotent.
+ *
+ * Pure aside from the injected `deps`; unit-tested directly.
+ */
+export function linkTargetsIntoShortcutFolder(
+  shortcutFolderId: string,
+  folderLabel: string,
+  targets: ReadonlyArray<{ id: string; name: string }>,
+  existingTargetIds: ReadonlySet<string>,
+  deps: LinkTargetsDeps
+): LinkTargetsResult {
+  const warnings: string[] = [];
+  let shortcutsCreated = 0;
+  let shortcutsExisting = 0;
+  const linked = new Set(existingTargetIds);
+
+  for (const f of targets) {
+    deps.grantTarget(f.id);
+
+    if (linked.has(f.id)) {
+      shortcutsExisting++;
+      continue;
+    }
+    const created = deps.createShortcut(shortcutFolderId, f.id, f.name);
+    if (!created.ok) {
+      warnings.push(
+        `Failed to link ${f.name} (${f.id}) into ${folderLabel}: ${created.error}`
+      );
+      continue;
+    }
+    shortcutsCreated++;
+    linked.add(f.id);
+  }
+
+  return { shortcutsCreated, shortcutsExisting, warnings };
+}
+
 /**
  * Shared rebuild for one per-(event, club, tag) shortcut folder (Videos or
  * Album).
@@ -986,21 +1055,16 @@ function rebuildClubScopedFolder(
     dedupeFolderShortcuts(existingRaw, spec.folderName, warnings);
   const linkedTargetIds = new Set(existing.map((s) => s.targetId));
 
-  for (const f of targets) {
-    if (linkedTargetIds.has(f.id)) {
-      shortcutsExisting++;
-      continue;
-    }
-    const created = createDriveShortcut(shortcutFolderId, f.id, f.name);
-    if (!created.ok) {
-      warnings.push(
-        `Failed to link ${f.name} (${f.id}) into ${spec.folderName}: ${created.error}`
-      );
-      continue;
-    }
-    shortcutsCreated++;
-    linkedTargetIds.add(f.id);
-  }
+  const linkResult = linkTargetsIntoShortcutFolder(
+    shortcutFolderId,
+    spec.folderName,
+    targets,
+    linkedTargetIds,
+    { createShortcut: createDriveShortcut, grantTarget: tryGrantAnyoneRead }
+  );
+  shortcutsCreated += linkResult.shortcutsCreated;
+  shortcutsExisting += linkResult.shortcutsExisting;
+  for (const w of linkResult.warnings) warnings.push(w);
 
   upsertSpecialFolderRow({
     folderId: shortcutFolderId,
