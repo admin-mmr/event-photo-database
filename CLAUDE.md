@@ -141,3 +141,29 @@
   modest `INDEX_CONCURRENCY` (≈4 to avoid OOM), and the Drive-token refresh on
   401 (the access token expires ~1h mid-run). Follow-up worth doing:
   incremental checkpointing so interrupted runs persist progress.
+
+## Indexer speed vs. free tier
+
+- **Embedding is CPU-bound ONNX**, so throughput scales ~linearly with vCPUs.
+  `deploy-indexer.sh` now defaults to `--cpu=8 --memory=12Gi` and
+  `INDEX_CONCURRENCY=8` (was 4 / 8 GiB / 4). For a one-off bigger/faster run
+  without redeploying, override at execute time:
+
+  ```bash
+  gcloud run jobs update photo-indexer --region=us-central1 --project=mmr-data-pipeline --cpu=8 --memory=12Gi --update-env-vars=INDEX_CONCURRENCY=8
+  ```
+
+- **Bumping CPU is free-tier-neutral; bumping memory is not (unless it speeds up
+  the run).** Cloud Run **Jobs** have their own monthly free tier in us-central1
+  (Tier 1), separate from the services pool: **240,000 vCPU-seconds and 450,000
+  GiB-seconds**. Billing is resource × wall-time, so doubling CPU while halving
+  runtime leaves vCPU-seconds ≈ unchanged — work is constant. A ~1,134-photo
+  event run costs ≈ 9,600 vCPU-s and ≈ 19,200 GiB-s either way, so ~20–25 such
+  runs/month stay free (memory/450k GiB-s is the binding constraint). The trap:
+  raising memory without a matching runtime drop (e.g. if a run is I/O-bound on
+  Drive) just burns more GiB-seconds — so raise CPU/`INDEX_CONCURRENCY` freely
+  but keep memory only as high as needed to avoid OOM (12 GiB at concurrency 8).
+- **GPU is never free.** An L4 is ~$0.000187/sec (~$0.67/hr) on top of CPU+memory
+  and isn't covered by any free tier; reserve it for events large enough to
+  justify a few cents each. Jobs bill the full instance lifetime (model load +
+  startup), minimum 1 minute. Source: https://cloud.google.com/run/pricing
