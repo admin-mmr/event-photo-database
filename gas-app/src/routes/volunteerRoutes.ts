@@ -425,17 +425,68 @@ export function linkErrorPage(
 // ─── Server functions (called via google.script.run) ─────────────────────────
 
 /**
- * Validates the volunteer session, creates the Drive batch folder, and returns
- * a short-lived Drive access token for client-side direct upload.
+ * Validates that `folderId` is a direct child of `expectedParentId` and, if so,
+ * returns its name + the names of the files it already contains. Returns null
+ * when the id is invalid, inaccessible, or not parented under the expected
+ * folder. Best-effort: any Drive error is swallowed and treated as "not
+ * reusable" so the caller falls back to creating a fresh folder.
+ *
+ * File listing is capped so a pathological folder can't blow the GAS quota; a
+ * single volunteer batch is at most a few hundred files in practice.
+ */
+function reuseBatchFolderIfValid(
+  folderId: string,
+  expectedParentId: string
+): { folderId: string; folderName: string; fileNames: string[] } | null {
+  try {
+    const folder = DriveApp.getFolderById(folderId);
+
+    let parentMatches = false;
+    const parents = folder.getParents();
+    while (parents.hasNext()) {
+      if (parents.next().getId() === expectedParentId) {
+        parentMatches = true;
+        break;
+      }
+    }
+    if (!parentMatches) return null;
+
+    const fileNames: string[] = [];
+    const MAX_LIST = 5000;
+    const files = folder.getFiles();
+    while (files.hasNext() && fileNames.length < MAX_LIST) {
+      fileNames.push(files.next().getName());
+    }
+
+    return { folderId, folderName: folder.getName(), fileNames };
+  } catch (err) {
+    Logger.log(`[VolunteerRoutes.reuseBatchFolderIfValid] ${folderId}: ${String(err)}`);
+    return null;
+  }
+}
+
+/**
+ * Validates the volunteer session, creates (or resumes) the Drive batch
+ * folder, and returns a short-lived Drive access token for client-side direct
+ * upload.
  *
  * Per DESIGN_DECISIONS.md §12: upload bytes go directly from the browser to
  * Drive via the REST API; GAS only handles the token exchange and metadata.
  *
- * @returns { accessToken, batchFolderId, batchFolderName, linkId } on success,
- *          or { error } on failure.
+ * If `existingBatchFolderId` is supplied AND it is a direct child of the
+ * computed club/tag parent for this link, the existing folder is reused
+ * instead of creating a new one — this lets the client RESUME a previous
+ * upload (e.g. after a tab close / failed batch) and skip files that already
+ * landed on Drive. The response then includes `existingFiles` (the names
+ * already present in the folder) so the client can dedup. A supplied id that
+ * fails validation is ignored and a fresh folder is created (safe fallback).
+ *
+ * @returns { accessToken, batchFolderId, batchFolderName, linkId, resumed,
+ *            existingFiles } on success, or { error } on failure.
  */
 export function serverGetVolunteerDriveToken(
-  vsession: string
+  vsession: string,
+  existingBatchFolderId = ''
 ): Record<string, unknown> {
   try {
     const sessionData = lookupVolunteerSession(vsession);
@@ -485,18 +536,53 @@ export function serverGetVolunteerDriveToken(
       );
     }
 
-    // Create the batch folder (Layer 3: YYYYMMDD-HHMMSS_username)
-    const batchTimestamp  = toBatchTimestamp(new Date());
-    const batchFolderName = buildLayer3FolderName(batchTimestamp, email);
-    const batchResult     = createBatchFolder(uploadParentFolderId, batchFolderName);
-    if (batchResult.status !== ResultStatus.SUCCESS || !batchResult.data) {
-      return { error: `Could not create upload folder: ${batchResult.message}` };
+    // Try to RESUME an existing batch folder if the client supplied one.
+    // Security: only reuse a folder that is a DIRECT CHILD of the parent we
+    // just computed for this link — otherwise a caller could point uploads (or
+    // a file listing) at an arbitrary folder the script owner can access.
+    let batchFolderId   = '';
+    let batchFolderName = '';
+    let resumed         = false;
+    let existingFiles: string[] = [];
+
+    const wantResumeId = String(existingBatchFolderId ?? '').trim();
+    if (wantResumeId) {
+      const reused = reuseBatchFolderIfValid(wantResumeId, uploadParentFolderId);
+      if (reused) {
+        batchFolderId   = reused.folderId;
+        batchFolderName = reused.folderName;
+        existingFiles   = reused.fileNames;
+        resumed         = true;
+        Logger.log(
+          `[VolunteerRoutes.serverGetVolunteerDriveToken] RESUMED batch folder ` +
+          `"${batchFolderName}" (${batchFolderId}) for ${email} — ` +
+          `${existingFiles.length} file(s) already present`
+        );
+      } else {
+        Logger.log(
+          `[VolunteerRoutes.serverGetVolunteerDriveToken] resume id ${wantResumeId} ` +
+          `rejected (not a child of ${uploadParentFolderId}) — creating fresh folder`
+        );
+      }
+    }
+
+    // No valid folder to resume → create a fresh batch folder
+    // (Layer 3: YYYYMMDD-HHMMSS_username).
+    if (!batchFolderId) {
+      const batchTimestamp  = toBatchTimestamp(new Date());
+      const newFolderName   = buildLayer3FolderName(batchTimestamp, email);
+      const batchResult     = createBatchFolder(uploadParentFolderId, newFolderName);
+      if (batchResult.status !== ResultStatus.SUCCESS || !batchResult.data) {
+        return { error: `Could not create upload folder: ${batchResult.message}` };
+      }
+      batchFolderId   = batchResult.data.folderId;
+      batchFolderName = newFolderName;
     }
 
     const accessToken = ScriptApp.getOAuthToken();
     Logger.log(
-      `[VolunteerRoutes.serverGetVolunteerDriveToken] batch folder created: ` +
-      `"${batchFolderName}" (${batchResult.data.folderId}) for ${email}` +
+      `[VolunteerRoutes.serverGetVolunteerDriveToken] batch folder ` +
+      `${resumed ? 'reused' : 'created'}: "${batchFolderName}" (${batchFolderId}) for ${email}` +
       (tag ? ` [tag: ${tag}]` : '') +
       ` | eventDriveFolderId=${event.driveFolderId}` +
       ` | uploadParentFolderId=${uploadParentFolderId}` +
@@ -505,9 +591,11 @@ export function serverGetVolunteerDriveToken(
 
     return {
       accessToken,
-      batchFolderId:  batchResult.data.folderId,
+      batchFolderId,
       batchFolderName,
       linkId:         link.linkId,
+      resumed,
+      existingFiles,
     };
   } catch (err) {
     Logger.log(`[VolunteerRoutes.serverGetVolunteerDriveToken] error: ${String(err)}`);

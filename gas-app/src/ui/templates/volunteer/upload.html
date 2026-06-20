@@ -509,6 +509,9 @@
         <button class="btn btn-secondary" id="clearBtn" style="display:none" onclick="clearFiles()">
           Clear
         </button>
+        <button class="btn btn-primary" id="retryBtn" style="display:none" onclick="retryFailed()">
+          🔄 Retry failed / 重试失败
+        </button>
       </div>
     </div>
 
@@ -666,6 +669,47 @@
     var selectedFiles = [];
     var uploadAborted = false;
 
+    // Per-file outcome, parallel to selectedFiles. One of:
+    //   'pending' | 'uploading' | 'success' | 'error' | 'skip-dup' | 'skip-type'
+    var fileStatus = [];
+
+    // Context for the current/last batch so "Retry failed" can re-upload into
+    // the SAME Drive folder (no duplicates) and dedup against what's there.
+    //   { batchFolderId, batchFolderName, linkId, existingNames:Set }
+    var lastBatch = null;
+
+    // Cumulative tallies across the initial run + any retries, so the receipt
+    // reflects the whole batch rather than just the last pass.
+    var cumUploaded = 0, cumBytes = 0, cumSkipDup = 0, cumSkipNon = 0;
+
+    // ── Resume across sessions (skip already-uploaded files) ──────────────────
+    // We remember the batch folder for this uploader+club in localStorage so
+    // that re-opening the link (or re-selecting the whole album after some files
+    // failed) reuses the same Drive folder and skips files already uploaded.
+    var RESUME_KEY = 'mmr_resume:v1:' + UPLOADER_EMAIL + ':' + CLUB_NAME;
+    var RESUME_TTL_MS = 7 * 24 * 60 * 60 * 1000;  // forget after a week
+
+    function loadResumeFolderId() {
+      try {
+        var raw = window.localStorage.getItem(RESUME_KEY);
+        if (!raw) return '';
+        var rec = JSON.parse(raw);
+        if (!rec || !rec.batchFolderId) return '';
+        if (rec.ts && (Date.now() - rec.ts) > RESUME_TTL_MS) return '';
+        return rec.batchFolderId;
+      } catch (e) { return ''; }
+    }
+
+    function saveResumeFolder(batchFolderId, batchFolderName) {
+      try {
+        window.localStorage.setItem(RESUME_KEY, JSON.stringify({
+          batchFolderId: batchFolderId,
+          batchFolderName: batchFolderName,
+          ts: Date.now(),
+        }));
+      } catch (e) { /* private mode / disabled storage — resume just won't persist */ }
+    }
+
     // ── Client error reporting ────────────────────────────────────────────────
     // Only send the FIRST Drive error per upload session to avoid flooding
     // admins when all files fail for the same root cause (e.g. expired token).
@@ -787,6 +831,7 @@
 
     function handleFiles(files) {
       selectedFiles = files;
+      fileStatus = files.map(function() { return 'pending'; });
       renderFileList();
       document.getElementById('uploadBtn').disabled = files.length === 0;
       document.getElementById('clearBtn').style.display = files.length > 0 ? '' : 'none';
@@ -812,10 +857,12 @@
 
     function clearFiles() {
       selectedFiles = [];
+      fileStatus = [];
       fileInput.value = '';
       document.getElementById('fileList').style.display = 'none';
       document.getElementById('uploadBtn').disabled = true;
       document.getElementById('clearBtn').style.display = 'none';
+      document.getElementById('retryBtn').style.display = 'none';
       dropZone.classList.remove('has-files');
       document.getElementById('dropHint').textContent = 'or click to browse · JPG, PNG, HEIC, WEBP, MP4, MOV';
       hideStatus();
@@ -826,10 +873,16 @@
     function startUpload() {
       if (selectedFiles.length === 0) return;
       uploadAborted = false;
+      cumUploaded = 0; cumBytes = 0; cumSkipDup = 0; cumSkipNon = 0;
       setUiState('uploading');
+      document.getElementById('retryBtn').style.display = 'none';
       showProgress(0, 'Getting upload token…');
 
-      // Step 1: get Drive access token + batch folder from server
+      var resumeId = loadResumeFolderId();
+
+      // Step 1: get Drive access token + batch folder from server. Passing the
+      // saved resumeId lets the server reuse the same Drive folder (if still
+      // valid) and return the names already on Drive, so we can skip them.
       google.script.run
         .withSuccessHandler(function(result) {
           if (result.error) {
@@ -837,27 +890,42 @@
             showStatus('error', result.error);
             return;
           }
-          uploadFiles(result.accessToken, result.batchFolderId, result.batchFolderName, result.linkId);
+          saveResumeFolder(result.batchFolderId, result.batchFolderName);
+          var existingNames = {};
+          (result.existingFiles || []).forEach(function(n) { existingNames[n] = true; });
+          lastBatch = {
+            batchFolderId:   result.batchFolderId,
+            batchFolderName: result.batchFolderName,
+            linkId:          result.linkId,
+            existingNames:   existingNames,
+          };
+          var allIdx = selectedFiles.map(function(_, i) { return i; });
+          uploadFiles(result.accessToken, allIdx);
         })
         .withFailureHandler(function(err) {
           setUiState('idle');
           showStatus('error', 'Failed to get upload token: ' + err.message);
         })
-        .serverGetVolunteerDriveToken(VSESSION);
+        .serverGetVolunteerDriveToken(VSESSION, resumeId);
     }
 
-    function uploadFiles(accessToken, batchFolderId, batchFolderName, linkId) {
-      var files = selectedFiles;
-      var total = files.length;
-      var uploaded = 0;
-      var skippedNonMedia = 0;
-      var skippedDuplicates = 0;
-      var totalBytes = 0;
-      var nextIdx    = 0;   // next file index to dispatch
-      var activeCount = 0;  // currently in-flight XHR calls
-      var doneCount   = 0;  // files fully settled (success, skip, or error)
+    /**
+     * Uploads the files at the given `indices` into lastBatch's Drive folder.
+     * Used both for the initial run (all indices) and for "Retry failed" (only
+     * the failed indices). Skips files already on Drive (dedup by credited
+     * name) and unsupported types. Tallies are cumulative across runs.
+     */
+    function uploadFiles(accessToken, indices) {
+      var batchFolderId   = lastBatch.batchFolderId;
+      var batchFolderName = lastBatch.batchFolderName;
+      var existingNames   = lastBatch.existingNames;
 
-      _etaStart(files);
+      var total = indices.length;
+      var nextPos     = 0;  // position within `indices` to dispatch next
+      var activeCount = 0;  // currently in-flight XHR calls
+      var doneCount   = 0;  // files settled this run (success, skip, or error)
+
+      _etaStart(indices.map(function(i) { return selectedFiles[i]; }));
 
       // Called once per file when it finishes (any outcome).
       function settle(fileSize) {
@@ -866,11 +934,7 @@
         _etaTick(fileSize);
         showProgress(doneCount / total,
           'Uploading… ' + doneCount + ' / ' + total + '  (' + VOLUNTEER_CONCURRENCY + '× parallel)');
-        if (doneCount >= total) {
-          completeUpload(batchFolderName, batchFolderId, linkId,
-            uploaded, totalBytes, skippedDuplicates, skippedNonMedia);
-          return;
-        }
+        if (doneCount >= total) { completeUpload(countFailed()); return; }
         pump();
       }
 
@@ -882,27 +946,41 @@
           return;
         }
 
-        var file = files[idx];
+        var file = selectedFiles[idx];
+        fileStatus[idx] = 'uploading';
         updateFileStatus(idx, '⏫');
+
+        // Already on Drive from a previous round → skip (no re-upload).
+        var driveName = getCreditedNameFor(file);
+        if (existingNames[driveName]) {
+          cumSkipDup++;
+          fileStatus[idx] = 'skip-dup';
+          updateFileStatus(idx, '⏭️');
+          settle(file.size);
+          return;
+        }
 
         // Skip unsupported file types
         if (file.type && ACCEPTED_TYPES.indexOf(file.type) < 0) {
-          skippedNonMedia++;
-          updateFileStatus(idx, '⏭️');
+          cumSkipNon++;
+          fileStatus[idx] = 'skip-type';
+          updateFileStatus(idx, '🚫');
           settle(file.size);
           return;
         }
 
         uploadToDrive(file, accessToken, batchFolderId)
           .then(function() {
-            uploaded++;
-            totalBytes += file.size;
+            cumUploaded++;
+            cumBytes += file.size;
+            existingNames[driveName] = true;  // so a later retry won't re-upload it
+            fileStatus[idx] = 'success';
             updateFileStatus(idx, '✅');
             settle(file.size);
           })
           .catch(function(err) {
+            fileStatus[idx] = 'error';
             updateFileStatus(idx, '❌');
-            skippedNonMedia++;   // count errors as skipped so receipt is accurate
             // Report first Drive error back to server for audit log + admin email.
             reportClientError(
               file.name,
@@ -917,14 +995,61 @@
       // Launch up to VOLUNTEER_CONCURRENCY slots at once; called after each
       // file settles to refill the pool.
       function pump() {
-        while (activeCount < VOLUNTEER_CONCURRENCY && nextIdx < total) {
+        while (activeCount < VOLUNTEER_CONCURRENCY && nextPos < total) {
           activeCount++;
-          processFile(nextIdx++);
+          processFile(indices[nextPos++]);
         }
       }
 
       showProgress(0, 'Starting ' + VOLUNTEER_CONCURRENCY + ' parallel uploads…');
       pump();
+    }
+
+    // Indices of files that failed to upload (eligible for retry).
+    function failedIndices() {
+      var out = [];
+      for (var i = 0; i < fileStatus.length; i++) {
+        if (fileStatus[i] === 'error') out.push(i);
+      }
+      return out;
+    }
+    function countFailed() { return failedIndices().length; }
+
+    /**
+     * Re-uploads ONLY the failed files into the SAME Drive folder. Fetches a
+     * fresh token first (most batch failures are an expired token), so this
+     * also recovers from token expiry — no re-picking files from the album.
+     */
+    function retryFailed() {
+      var idxs = failedIndices();
+      if (idxs.length === 0) return;
+      uploadAborted = false;
+      setUiState('uploading');
+      document.getElementById('retryBtn').style.display = 'none';
+      hideStatus();
+      showProgress(0, 'Retrying ' + idxs.length + ' failed file' + (idxs.length === 1 ? '' : 's') + '…');
+      idxs.forEach(function(i) { fileStatus[i] = 'pending'; updateFileStatus(i, '📎'); });
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.error) {
+            setUiState('done');
+            showStatus('error', result.error);
+            document.getElementById('retryBtn').style.display = '';
+            return;
+          }
+          saveResumeFolder(result.batchFolderId, result.batchFolderName);
+          (result.existingFiles || []).forEach(function(n) { lastBatch.existingNames[n] = true; });
+          lastBatch.batchFolderId   = result.batchFolderId;
+          lastBatch.batchFolderName = result.batchFolderName;
+          uploadFiles(result.accessToken, idxs);
+        })
+        .withFailureHandler(function(err) {
+          setUiState('done');
+          showStatus('error', 'Retry failed to get token: ' + err.message);
+          document.getElementById('retryBtn').style.display = '';
+        })
+        .serverGetVolunteerDriveToken(VSESSION, lastBatch.batchFolderId);
     }
 
     /**
@@ -1192,10 +1317,18 @@
       });
     }
 
-    function completeUpload(batchFolderName, batchFolderId, linkId, fileCount, totalBytes, skippedDuplicates, skippedNonMedia) {
-      showProgress(0.95, 'Saving upload record…');
+    // Called when a run (initial or retry) finishes. `failedCount` is how many
+    // files are still in the error state. Tallies come from the cumulative
+    // module vars so retries add to (not replace) the totals. The Drive record
+    // is persisted on every run so progress is never lost; the success panel is
+    // only shown once nothing is left failing — otherwise we surface a "Retry
+    // failed" affordance and keep the file list (with its ❌ rows) visible.
+    function completeUpload(failedCount) {
+      var partial = failedCount > 0;
+      showProgress(partial ? 1 : 0.95,
+        partial ? 'Some files failed — you can retry them' : 'Saving upload record…');
 
-      var totalSizeMb = Math.round(totalBytes / (1024 * 1024) * 100) / 100;
+      var totalSizeMb = Math.round(cumBytes / (1024 * 1024) * 100) / 100;
 
       // Client-side wall-clock duration: from the moment the first byte left
       // the browser (recorded in _etaStart) to now. Null-safe: if the ETA
@@ -1203,12 +1336,27 @@
       // server record "unknown".
       var durationMs = _etaStartTime ? (Date.now() - _etaStartTime) : 0;
 
+      function showRetryUi(msg) {
+        setUiState('done');
+        showStatus('error', msg);
+        var btn = document.getElementById('retryBtn');
+        btn.textContent = '🔄 Retry failed (' + failedCount + ') / 重试失败 (' + failedCount + ')';
+        btn.style.display = '';
+      }
+
       google.script.run
         .withSuccessHandler(function(result) {
           if (result.error) {
-            showProgress(1, 'Upload complete (receipt save failed)');
+            showProgress(1, 'Upload saved (receipt save failed)');
             showStatus('error', 'Photos uploaded but the record could not be saved: ' + result.error);
             setUiState('done');
+            if (partial) document.getElementById('retryBtn').style.display = '';
+            return;
+          }
+          if (partial) {
+            showRetryUi(failedCount + ' file' + (failedCount === 1 ? '' : 's') +
+              ' failed to upload. Tap “Retry failed” — already-uploaded photos are skipped automatically. / ' +
+              failedCount + ' 个文件上传失败。点击"重试失败"，已上传的照片会自动跳过。');
             return;
           }
           showProgress(1, 'Done!');
@@ -1216,19 +1364,20 @@
           setUiState('done');
         })
         .withFailureHandler(function(err) {
-          showProgress(1, 'Upload complete (receipt save failed)');
+          showProgress(1, 'Upload saved (receipt save failed)');
           showStatus('error', 'Photos uploaded but the record could not be saved: ' + err.message);
           setUiState('done');
+          if (partial) document.getElementById('retryBtn').style.display = '';
         })
         .serverCompleteVolunteerUpload({
           vsession:        VSESSION,
-          batchFolderId:   batchFolderId,
-          batchFolderName: batchFolderName,
-          linkId:          linkId,
-          fileCount:       fileCount,
+          batchFolderId:   lastBatch.batchFolderId,
+          batchFolderName: lastBatch.batchFolderName,
+          linkId:          lastBatch.linkId,
+          fileCount:       cumUploaded,
           totalSizeMb:     totalSizeMb,
-          skippedDuplicates: skippedDuplicates,
-          skippedNonMedia:   skippedNonMedia,
+          skippedDuplicates: cumSkipDup,
+          skippedNonMedia:   cumSkipNon,
           durationMs:      durationMs,
         });
     }
@@ -1331,6 +1480,8 @@
       document.getElementById('completePanel').style.display  = 'none';
       document.getElementById('uploadCard').style.display     = '';
       document.getElementById('actions').style.display        = '';
+      document.getElementById('uploadBtn').style.display      = '';
+      document.getElementById('retryBtn').style.display       = 'none';
       document.getElementById('receiptSection').style.display = 'none';
 
       // setUiState('idle') would re-enable the Upload button — but the file
@@ -1362,9 +1513,12 @@
       if (isUploading) bar.classList.add('animating');
       else             bar.classList.remove('animating');
 
-      if (isDone) {
-        document.getElementById('actions').style.display = 'none';
-      }
+      // On 'done' keep the actions row visible (it may host the "Retry failed"
+      // button) but hide the now-irrelevant Upload button. The success path
+      // hides the whole upload card via showReceipt(), so this only affects the
+      // partial-failure state.
+      document.getElementById('uploadBtn').style.display = isDone ? 'none' : '';
+      document.getElementById('actions').style.display = '';
     }
 
     function showProgress(fraction, text) {
