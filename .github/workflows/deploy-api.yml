@@ -67,7 +67,15 @@ jobs:
           # a transient `gcloud run services update --update-env-vars` would be
           # wiped by the --set-env-vars below on the next deploy.
           FINDME_EVENT_ALLOWLIST: ${{ vars.FINDME_EVENT_ALLOWLIST }}
+          # Upload-to-worker dispatch (Cloud Tasks). Queue/location are static;
+          # UPLOAD_WORKER_URL is derived from the live service URL in the run
+          # step below (it's stable across deploys, so describing the existing
+          # service before the deploy is safe).
+          UPLOAD_DISPATCH_TO_WORKER: "true"
+          UPLOAD_TASKS_QUEUE: upload-process
+          UPLOAD_TASKS_LOCATION: us-central1
         run: |
+          UPLOAD_WORKER_URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)')"
           gcloud run deploy "$SERVICE" \
             --image="$IMAGE" \
             --region="$REGION" \
@@ -80,7 +88,7 @@ jobs:
             --min-instances=0 \
             --concurrency=80 \
             --timeout=60 \
-            --update-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=${GITHUB_SHA::7},MATCHER_URL=${MATCHER_URL},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID},FINDME_EVENT_ALLOWLIST=${FINDME_EVENT_ALLOWLIST}" \
+            --update-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=${GITHUB_SHA::7},MATCHER_URL=${MATCHER_URL},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID},FINDME_EVENT_ALLOWLIST=${FINDME_EVENT_ALLOWLIST},UPLOAD_DISPATCH_TO_WORKER=${UPLOAD_DISPATCH_TO_WORKER},UPLOAD_TASKS_QUEUE=${UPLOAD_TASKS_QUEUE},UPLOAD_TASKS_LOCATION=${UPLOAD_TASKS_LOCATION},UPLOAD_WORKER_URL=${UPLOAD_WORKER_URL}" \
             --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_KEY=RECAPTCHA_KEY:latest"
           # Auth: deliberately pass NEITHER --allow-unauthenticated nor
           # --no-allow-unauthenticated, so the deploy leaves the service's IAM
