@@ -27,10 +27,40 @@ import {
   getDriveToken,
   uploadFileToDrive,
   listEventImages,
+  getOrCreateSubfolder,
   DRIVE_SCOPE_READWRITE,
 } from './driveService.js';
 import { triggerIndexJob } from './indexerJob.js';
+import { appendUploadLog } from './uploadLogService.js';
 import { buildCreditedFileName } from '../lib/creditedFileName.js';
+
+/**
+ * Tag substituted when an upload link carries no tag, so the Drive hierarchy
+ * stays uniform (Event/Club/tag/batch). Mirrors the gas-app `DEFAULT_TAG`.
+ */
+const DEFAULT_TAG = 'ALL';
+
+/** Compact UTC batch timestamp `YYYYMMDD-HHMMSS` — mirrors gas-app toBatchTimestamp. */
+export function batchTimestamp(date: Date): string {
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return (
+    `${date.getUTCFullYear()}${p(date.getUTCMonth() + 1)}${p(date.getUTCDate())}` +
+    `-${p(date.getUTCHours())}${p(date.getUTCMinutes())}${p(date.getUTCSeconds())}`
+  );
+}
+
+/**
+ * Layer-3 batch folder name `YYYYMMDD-HHMMSS_<username>`. The volunteer flow is
+ * unauthenticated, so the username segment derives from the typed photographer
+ * name (lowercased, reduced to the safe `[a-z0-9._-]` class like gas-app
+ * buildLayer3FolderName), falling back to `volunteer` when blank or fully
+ * stripped. Always starts with a letter so it satisfies the Layer-3 convention.
+ */
+export function buildBatchFolderName(photographerName: string, now: Date = new Date()): string {
+  const safe = (photographerName || '').toLowerCase().replace(/[^a-z0-9._-]/g, '');
+  const username = /^[a-z]/.test(safe) ? safe : `volunteer${safe ? `_${safe}` : ''}`;
+  return `${batchTimestamp(now)}_${username}`;
+}
 
 // Upload_Links column indices — mirror gas-app constants.ts SheetColumns.UPLOAD_LINKS.
 const LINKS_COL = {
@@ -239,6 +269,14 @@ function dedupKey(name: string, size: number): string {
  *      folder and delete the staged copy.
  *   4. Trigger the photo-indexer job once for the event — only if ≥1 file landed.
  *
+ * Files land in the gas-app folder hierarchy
+ *   Event(driveFolderId) / Club_Name / tag (DEFAULT_TAG when blank) /
+ *   YYYYMMDD-HHMMSS_<photographer|volunteer>
+ * so the drive-tree view, special-folders rebuild, and public-sheet index see
+ * the same layout the legacy Apps Script upload produced. The Club/tag/batch
+ * folders are created lazily on the first non-duplicate file, so an all-duplicate
+ * batch never leaves an empty folder behind.
+ *
  * Returns `{ copied, skippedDuplicates }` so the receipt can report both. A
  * failed Drive copy for one file is logged and skipped rather than failing the
  * whole batch.
@@ -268,7 +306,26 @@ export async function enqueueStagedBatch(
     logger.warn({ err, eventId: link.eventId, folderId }, 'duplicate-check listing failed (proceeding without dedup)');
   }
 
+  // Lazily build Event/Club/tag/batch and memoize the batch folder id, so the
+  // path is only created when at least one real (non-duplicate) file needs it.
+  // `photographerName` names the batch folder; the whole session shares one name.
+  let batchFolderId: string | null = null;
+  let batchFolderName = '';
+  const ensureBatchFolder = async (photographerName: string): Promise<string> => {
+    if (batchFolderId) return batchFolderId;
+    let parent = folderId;
+    if (link.clubName) parent = (await getOrCreateSubfolder(parent, link.clubName, { token: driveToken })).id;
+    const tag = (link.tag || '').trim() || DEFAULT_TAG;
+    parent = (await getOrCreateSubfolder(parent, tag, { token: driveToken })).id;
+    const batchName = buildBatchFolderName(photographerName);
+    batchFolderId = (await getOrCreateSubfolder(parent, batchName, { token: driveToken })).id;
+    batchFolderName = batchName;
+    logger.info({ eventId: link.eventId, batchId, batchFolderId, batchName, tag }, 'volunteer batch folder ready');
+    return batchFolderId;
+  };
+
   let copied = 0;
+  let copiedBytes = 0;
   let skippedDuplicates = 0;
   for (const objectName of objectNames) {
     try {
@@ -309,10 +366,12 @@ export async function enqueueStagedBatch(
         continue;
       }
 
+      const destFolderId = await ensureBatchFolder(custom.photographerName ?? '');
       const [bytes] = await file.download();
-      await uploadFileToDrive(folderId, name, contentType, bytes, { token: driveToken });
+      await uploadFileToDrive(destFolderId, name, contentType, bytes, { token: driveToken });
       seen.add(key);
       copied += 1;
+      copiedBytes += size;
 
       // Best-effort cleanup; the bucket lifecycle rule is the backstop.
       await file
@@ -340,6 +399,23 @@ export async function enqueueStagedBatch(
       'volunteer batch: no files copied',
     );
   }
+
+  // Record the completed session in the master Sheet's Upload_Log tab so the
+  // cloud webapp populates the same analytics surface as the legacy gas-app.
+  // Best-effort: the files are already in Drive, so a failed log row must not
+  // fail the upload. Logged for an all-duplicate batch too (copied === 0), with
+  // empty batch-folder fields since no folder was created in that case.
+  await appendUploadLog({
+    eventId: link.eventId,
+    clubName: link.clubName,
+    batchFolderName,
+    batchFolderId: batchFolderId ?? '',
+    fileCount: copied,
+    totalSizeMb: copiedBytes / (1024 * 1024),
+    skippedDuplicates,
+    source: 'link',
+    linkId: link.linkId,
+  });
 
   return { copied, skippedDuplicates };
 }

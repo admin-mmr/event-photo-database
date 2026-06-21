@@ -11,6 +11,11 @@ process.env.VOLUNTEER_STAGING_PREFIX = 'vol';
 const sheetData: Record<string, string[][]> = {};
 vi.mock('../src/services/sheetsService.js', () => ({
   getSheetValues: async (_spreadsheetId: string, range: string) => sheetData[range] ?? [],
+  // The Upload_Log append (appendUploadLog → appendSheetValues) runs after a
+  // batch is copied to Drive. Stubbed so the best-effort logging path succeeds
+  // quietly instead of hitting its non-fatal catch on a missing mock export.
+  appendSheetValues: async (_spreadsheetId: string, _range: string, rows: unknown[][]) =>
+    rows.length,
 }));
 
 const eventDocs: Record<string, Record<string, unknown> | undefined> = {};
@@ -26,6 +31,8 @@ vi.mock('../src/lib/firestore.js', () => ({
 }));
 
 const driveUploads: Array<{ folderId: string; name: string; mimeType: string; size: number }> = [];
+// Folder get-or-create calls, in order, so tests can assert the Club/tag/batch path.
+const folderCreates: Array<{ parent: string; name: string }> = [];
 // Existing Drive files the duplicate-check lists (name + size). Mutated per test.
 const existingDriveFiles: Array<{ name: string; size: string }> = [];
 vi.mock('../src/services/driveService.js', () => ({
@@ -34,6 +41,12 @@ vi.mock('../src/services/driveService.js', () => ({
   uploadFileToDrive: async (folderId: string, name: string, mimeType: string, bytes: Uint8Array) => {
     driveUploads.push({ folderId, name, mimeType, size: bytes.length });
     return { id: `drive-${name}`, name };
+  },
+  // Deterministic, traceable folder id: `<parent>><name>` so a test can read the
+  // full path back off the upload target.
+  getOrCreateSubfolder: async (parent: string, name: string) => {
+    folderCreates.push({ parent, name });
+    return { id: `${parent}>${name}`, name };
   },
   listEventImages: async () =>
     existingDriveFiles.map((f) => ({ id: `id-${f.name}`, name: f.name, relPath: f.name, mimeType: 'image/jpeg', size: f.size })),
@@ -106,6 +119,7 @@ beforeEach(() => {
   for (const k of Object.keys(eventDocs)) delete eventDocs[k];
   for (const k of Object.keys(objects)) delete objects[k];
   driveUploads.length = 0;
+  folderCreates.length = 0;
   existingDriveFiles.length = 0;
   indexTriggers.length = 0;
   deleted.length = 0;
@@ -115,10 +129,12 @@ beforeEach(() => {
     row('link1', 'ev1', 'ClubA', 'tok-good', '', 'tagX'),
     row('link2', 'ev2', 'ClubB', 'tok-revoked', '2026-01-01', 'tagY'),
     row('link3', 'ev3', 'ClubC', 'tok-nofolder', '', 'tagZ'),
+    row('link4', 'ev4', 'ClubD', 'tok-notag', '', ''),
   ];
   eventDocs['ev1'] = { name: 'Spring Run', driveFolderId: 'folder-ev1' };
   eventDocs['ev2'] = { name: 'Revoked Event', driveFolderId: 'folder-ev2' };
   eventDocs['ev3'] = { name: 'Unconfigured Event' }; // no driveFolderId
+  eventDocs['ev4'] = { name: 'No Tag Event', driveFolderId: 'folder-ev4' };
 });
 
 // ── pure helpers ─────────────────────────────────────────────────────────────
@@ -174,8 +190,8 @@ describe('validateUploadLink', () => {
 // ── enqueueStagedBatch ──────────────────────────────────────────────────────
 
 describe('enqueueStagedBatch', () => {
-  it('copies valid staged objects to Drive with credited names, deletes them, triggers the indexer once', async () => {
-    const link = await validateUploadLink('tok-good'); // clubName ClubA
+  it('copies into the Event/Club/tag/batch hierarchy with credited names, deletes staged, triggers once', async () => {
+    const link = await validateUploadLink('tok-good'); // clubName ClubA, tag tagX
     objects['vol/ev1/b1/u1.jpg'] = {
       exists: true,
       size: 100,
@@ -192,12 +208,45 @@ describe('enqueueStagedBatch', () => {
     const res = await enqueueStagedBatch(link, 'b1', ['vol/ev1/b1/u1.jpg', 'vol/ev1/b1/u2.jpg']);
 
     expect(res).toEqual({ copied: 2, skippedDuplicates: 0 });
+
+    // Path built once and reused: Club → tag → batch (one each), batch named from photographer.
+    expect(folderCreates).toHaveLength(3);
+    expect(folderCreates[0]).toEqual({ parent: 'folder-ev1', name: 'ClubA' });
+    expect(folderCreates[1]).toEqual({ parent: 'folder-ev1>ClubA', name: 'tagX' });
+    expect(folderCreates[2]?.parent).toBe('folder-ev1>ClubA>tagX');
+    expect(folderCreates[2]?.name).toMatch(/^\d{8}-\d{6}_janedoe$/);
+
+    const batchFolderId = `folder-ev1>ClubA>tagX>${folderCreates[2]?.name}`;
     expect(driveUploads).toEqual([
-      { folderId: 'folder-ev1', name: 'ClubA_JaneDoe_race-001.jpg', mimeType: 'image/jpeg', size: 100 },
-      { folderId: 'folder-ev1', name: 'ClubA_JaneDoe_race-002.jpg', mimeType: 'image/jpeg', size: 200 },
+      { folderId: batchFolderId, name: 'ClubA_JaneDoe_race-001.jpg', mimeType: 'image/jpeg', size: 100 },
+      { folderId: batchFolderId, name: 'ClubA_JaneDoe_race-002.jpg', mimeType: 'image/jpeg', size: 200 },
     ]);
     expect(deleted.sort()).toEqual(['vol/ev1/b1/u1.jpg', 'vol/ev1/b1/u2.jpg']);
     expect(indexTriggers).toEqual(['ev1']);
+  });
+
+  it('substitutes the DEFAULT_TAG (ALL) when the link has no tag', async () => {
+    const link = await validateUploadLink('tok-notag'); // ClubD, empty tag
+    objects['vol/ev4/bt/u1.jpg'] = { exists: true, size: 10, contentType: 'image/jpeg', metadata: { originalName: 'x.jpg' } };
+    await enqueueStagedBatch(link, 'bt', ['vol/ev4/bt/u1.jpg']);
+    expect(folderCreates[0]).toEqual({ parent: 'folder-ev4', name: 'ClubD' });
+    expect(folderCreates[1]).toEqual({ parent: 'folder-ev4>ClubD', name: 'ALL' });
+  });
+
+  it('names the batch folder "volunteer" when no photographer name was given', async () => {
+    const link = await validateUploadLink('tok-good');
+    objects['vol/ev1/bv/u1.jpg'] = { exists: true, size: 10, contentType: 'image/jpeg', metadata: { originalName: 'x.jpg' } };
+    await enqueueStagedBatch(link, 'bv', ['vol/ev1/bv/u1.jpg']);
+    expect(folderCreates[2]?.name).toMatch(/^\d{8}-\d{6}_volunteer$/);
+  });
+
+  it('creates no folders when every file is a duplicate (no empty batch folder)', async () => {
+    const link = await validateUploadLink('tok-good');
+    existingDriveFiles.push({ name: 'ClubA_dup.jpg', size: '5' });
+    objects['vol/ev1/bz/u1.jpg'] = { exists: true, size: 5, contentType: 'image/jpeg', metadata: { originalName: 'dup.jpg' } };
+    const res = await enqueueStagedBatch(link, 'bz', ['vol/ev1/bz/u1.jpg']);
+    expect(res).toEqual({ copied: 0, skippedDuplicates: 1 });
+    expect(folderCreates).toHaveLength(0);
   });
 
   it('credits with the club-only prefix when no photographer name was stamped', async () => {

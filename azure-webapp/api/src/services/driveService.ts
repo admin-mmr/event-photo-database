@@ -217,3 +217,44 @@ export async function uploadFileToDrive(
   if (!res.ok) throw new Error(`Drive upload ${res.status}: ${await res.text()}`);
   return (await res.json()) as UploadedDriveFile;
 }
+
+/**
+ * Find a child folder by exact name under `parentId`, creating it if absent.
+ * Used by the volunteer-upload handoff to rebuild the gas-app
+ * Event/Club/tag/batch hierarchy (driveService.ts §"Drive layout"): one call
+ * per layer. Idempotent — concurrent batches reuse the same club/tag folders.
+ * Requires a write-scoped token (DRIVE_SCOPE_READWRITE); `supportsAllDrives`
+ * so shared-drive event folders behave like My Drive ones.
+ *
+ * The Drive `q` filter matches the immediate children of `parentId` only
+ * (`'<id>' in parents`), so a same-named folder elsewhere is never reused. A
+ * single-quote in the name is escaped per Drive query syntax (`\'`).
+ */
+export async function getOrCreateSubfolder(
+  parentId: string,
+  name: string,
+  opts?: { token?: string },
+): Promise<UploadedDriveFile> {
+  const token = opts?.token ?? (await getDriveToken(DRIVE_SCOPE_READWRITE));
+  const safe = name.replace(/'/g, "\\'");
+
+  const params = new URLSearchParams({
+    q: `'${parentId}' in parents and name='${safe}' and mimeType='${FOLDER_MIME}' and trashed=false`,
+    fields: 'files(id,name)',
+    pageSize: '1',
+    supportsAllDrives: 'true',
+    includeItemsFromAllDrives: 'true',
+  });
+  const found = (await driveGet(`${DRIVE}?${params}`, token)) as { files?: UploadedDriveFile[] };
+  const existing = found.files?.[0];
+  if (existing) return existing;
+
+  const createParams = new URLSearchParams({ supportsAllDrives: 'true', fields: 'id,name' });
+  const res = await fetch(`${DRIVE}?${createParams}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] }),
+  });
+  if (!res.ok) throw new Error(`Drive folder create ${res.status}: ${await res.text()}`);
+  return (await res.json()) as UploadedDriveFile;
+}
