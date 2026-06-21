@@ -19,6 +19,9 @@ vi.mock('../src/middleware/auth.js', () => ({
 const fakeDb = {
   events: new Map<string, Record<string, unknown>>(),
   photos: [] as Array<{ id: string; data: Record<string, unknown> }>,
+  // When true, querying by `addedAt` throws — simulates the composite index not
+  // existing yet (Firestore FAILED_PRECONDITION) so we can test the fallback.
+  failAddedAt: false,
 };
 
 vi.mock('../src/lib/firestore.js', () => ({
@@ -36,32 +39,48 @@ vi.mock('../src/lib/firestore.js', () => ({
         // [startAfter(val, id)] → limit → get. Tracks the primary order-by
         // field and the cursor's id; sorts by (primary value, id) and slices
         // after the cursor id — mirroring the route's value+__name__ paging.
-        const makeQuery = (eventId: string, orderField: string | null, afterId: string | null) => ({
-          orderBy: (field: unknown) => {
+        const makeQuery = (
+          eventId: string,
+          orderField: string | null,
+          orderDir: 'asc' | 'desc',
+          afterId: string | null,
+        ) => ({
+          orderBy: (field: unknown, dir?: unknown) => {
             const f = typeof field === 'string' ? field : '__name__';
-            // First orderBy wins as the primary key; the second is the id tiebreak.
-            return makeQuery(eventId, orderField ?? (f === '__name__' ? null : f), afterId);
+            // First string orderBy wins as the primary key + direction; the
+            // __name__ tiebreak and any later orderBy leave it unchanged.
+            if (orderField === null && f !== '__name__') {
+              return makeQuery(eventId, f, dir === 'desc' ? 'desc' : 'asc', afterId);
+            }
+            return makeQuery(eventId, orderField, orderDir, afterId);
           },
           startAfter: (...args: unknown[]) =>
-            makeQuery(eventId, orderField, String(args[args.length - 1] ?? '')),
+            makeQuery(eventId, orderField, orderDir, String(args[args.length - 1] ?? '')),
           limit: (n: number) => ({
             get: async () => {
+              if (orderField === 'addedAt' && fakeDb.failAddedAt) {
+                throw new Error('9 FAILED_PRECONDITION: The query requires an index');
+              }
               const key = (p: { id: string; data: Record<string, unknown> }) =>
                 orderField ? String(p.data[orderField] ?? '') : '';
-              const all = fakeDb.photos
-                .filter((p) => p.data.eventId === eventId)
-                .sort((a, b) => key(a).localeCompare(key(b)) || a.id.localeCompare(b.id));
+              let all = fakeDb.photos.filter((p) => p.data.eventId === eventId);
+              // Firestore excludes docs that lack the orderBy field.
+              if (orderField) all = all.filter((p) => p.data[orderField] != null);
+              all = all.sort((a, b) => key(a).localeCompare(key(b)) || a.id.localeCompare(b.id));
+              if (orderDir === 'desc') all.reverse();
               const start = afterId ? all.findIndex((p) => p.id === afterId) + 1 : 0;
               const page = all.slice(start, start + n);
               return {
                 size: page.length,
+                empty: page.length === 0,
                 docs: page.map((p) => ({ id: p.id, data: () => p.data })),
               };
             },
           }),
         });
         return {
-          where: (_field: string, _op: string, eventId: string) => makeQuery(eventId, null, null),
+          where: (_field: string, _op: string, eventId: string) =>
+            makeQuery(eventId, null, 'asc', null),
         };
       }
       throw new Error(`unexpected collection ${name}`);
@@ -89,11 +108,12 @@ describe('GET /api/events/:id/photos', () => {
   beforeEach(() => {
     fakeDb.events.clear();
     fakeDb.photos.length = 0;
+    fakeDb.failAddedAt = false;
     fakeDb.events.set('ev1', { name: 'Spring Run 2026' });
     fakeDb.photos.push(
-      { id: 'p1', data: { eventId: 'ev1', name: 'IMG_001.jpg' } },
-      { id: 'p2', data: { eventId: 'ev1', name: 'IMG_002.jpg' } },
-      { id: 'px', data: { eventId: 'other', name: 'IMG_999.jpg' } },
+      { id: 'p1', data: { eventId: 'ev1', name: 'IMG_001.jpg', addedAt: '2026-06-20T10:00:00' } },
+      { id: 'p2', data: { eventId: 'ev1', name: 'IMG_002.jpg', addedAt: '2026-06-20T09:00:00' } },
+      { id: 'px', data: { eventId: 'other', name: 'IMG_999.jpg', addedAt: '2026-06-20T11:00:00' } },
     );
   });
 
@@ -132,7 +152,11 @@ describe('GET /api/events/:id/photos', () => {
   it('paginates with limit + cursor and reports nextCursor', async () => {
     fakeDb.photos.length = 0;
     for (let i = 1; i <= 5; i += 1) {
-      fakeDb.photos.push({ id: `p${i}`, data: { eventId: 'ev1', name: `IMG_${i}.jpg` } });
+      // addedAt descends with i so the newest-first default yields p1..p5.
+      fakeDb.photos.push({
+        id: `p${i}`,
+        data: { eventId: 'ev1', name: `IMG_${i}.jpg`, addedAt: `2026-06-${String(30 - i).padStart(2, '0')}T00:00:00` },
+      });
     }
 
     const page1 = await request(app)
@@ -155,17 +179,53 @@ describe('GET /api/events/:id/photos', () => {
     expect(page3.body.nextCursor).toBeNull();
   });
 
-  it('default sort=time orders by takenAt and returns it', async () => {
+  it('default sort=recent orders by addedAt, newest first', async () => {
+    fakeDb.photos.length = 0;
+    fakeDb.photos.push(
+      // pNew was uploaded later but TAKEN earlier — proves we sort on upload time.
+      { id: 'pOld', data: { eventId: 'ev1', name: 'z.jpg', addedAt: '2026-06-20T08:00:00', takenAt: '2026-06-01T08:00:00' } },
+      { id: 'pNew', data: { eventId: 'ev1', name: 'a.jpg', addedAt: '2026-06-20T09:00:00', takenAt: '2026-05-01T08:00:00' } },
+    );
+    const res = await request(app).get('/api/events/ev1/photos').set('x-test-user', USER);
+    expect(res.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['pNew', 'pOld']);
+    expect(res.body.photos[0].addedAt).toBe('2026-06-20T09:00:00');
+  });
+
+  it('sort=time orders by takenAt ascending', async () => {
     fakeDb.photos.length = 0;
     fakeDb.photos.push(
       { id: 'pA', data: { eventId: 'ev1', name: 'z.jpg', takenAt: '2026-06-20T09:00:00', takenAtSource: 'exif' } },
       { id: 'pB', data: { eventId: 'ev1', name: 'a.jpg', takenAt: '2026-06-20T08:00:00', takenAtSource: 'exif' } },
     );
-    const res = await request(app).get('/api/events/ev1/photos').set('x-test-user', USER);
+    const res = await request(app).get('/api/events/ev1/photos?sort=time').set('x-test-user', USER);
     // Earlier capture time first, regardless of filename.
     expect(res.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['pB', 'pA']);
     expect(res.body.photos[0].takenAt).toBe('2026-06-20T08:00:00');
     expect(res.body.photos[0].takenAtSource).toBe('exif');
+  });
+
+  it('sort=recent falls back to takenAt desc (no 500) when the addedAt index is missing', async () => {
+    fakeDb.failAddedAt = true; // simulate Firestore FAILED_PRECONDITION
+    fakeDb.photos.length = 0;
+    fakeDb.photos.push(
+      { id: 'pEarly', data: { eventId: 'ev1', name: 'z.jpg', takenAt: '2026-06-20T08:00:00', addedAt: '2026-06-20T08:00:00' } },
+      { id: 'pLate', data: { eventId: 'ev1', name: 'a.jpg', takenAt: '2026-06-20T09:00:00', addedAt: '2026-06-20T09:00:00' } },
+    );
+    const res = await request(app).get('/api/events/ev1/photos').set('x-test-user', USER);
+    expect(res.status).toBe(200);
+    // Even though docs HAVE addedAt, the index error forces the takenAt-desc path.
+    expect(res.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['pLate', 'pEarly']);
+  });
+
+  it('sort=recent falls back to takenAt desc when no photo has addedAt', async () => {
+    fakeDb.photos.length = 0;
+    fakeDb.photos.push(
+      { id: 'pEarly', data: { eventId: 'ev1', name: 'z.jpg', takenAt: '2026-06-20T08:00:00' } },
+      { id: 'pLate', data: { eventId: 'ev1', name: 'a.jpg', takenAt: '2026-06-20T09:00:00' } },
+    );
+    const res = await request(app).get('/api/events/ev1/photos').set('x-test-user', USER);
+    // Event not yet backfilled → fall back to capture time, newest first.
+    expect(res.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['pLate', 'pEarly']);
   });
 
   it('sort=name orders by filename', async () => {

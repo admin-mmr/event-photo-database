@@ -15,6 +15,7 @@ import { FieldPath, type Query } from '@google-cloud/firestore';
 import type { ListPhotosResponse, GalleryPhoto } from '@cloud-webapp/shared';
 
 import { firestore } from '../lib/firestore.js';
+import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
 import { signThumbUrls, signPhotoUrl } from '../services/gcsService.js';
 
@@ -35,21 +36,37 @@ function pageSize(raw: unknown): number {
   return Math.min(n, MAX_PAGE);
 }
 
-type SortMode = 'time' | 'name';
-/** `?sort=time|name`, default `time` (CAPTURE_TIME_SORT_DESIGN §5). */
+type SortMode = 'recent' | 'time' | 'name';
+/**
+ * `?sort=recent|time|name`, default `recent`.
+ *
+ * - `recent` (default): newest-first by `addedAt` (upload/added time = Drive
+ *   createdTime). Surfaces freshly uploaded photos at the top so it's obvious
+ *   when there are new photos to Find Me. Falls back to `takenAt` desc for
+ *   events not yet reindexed (no `addedAt` written) — see the route below.
+ * - `time`: oldest-first by capture time (`takenAt`), CAPTURE_TIME_SORT_DESIGN §5.
+ * - `name`: by filename.
+ */
 function parseSort(raw: unknown): SortMode {
-  return String(raw ?? '').toLowerCase() === 'name' ? 'name' : 'time';
+  const s = String(raw ?? '').toLowerCase();
+  if (s === 'time') return 'time';
+  if (s === 'name') return 'name';
+  return 'recent';
 }
 
 /** Opaque, base64url page cursor carrying the last doc's primary sort value
  *  plus its id (the implicit __name__ tiebreak), so paging is stable even
- *  across photos that share a takenAt/name. */
+ *  across photos that share a value. The key identifies which sort produced it:
+ *  `a` = addedAt (recent), `t` = takenAt (time / recent-fallback), `n` = name. */
 function encodeCursor(obj: Record<string, unknown>): string {
   return Buffer.from(JSON.stringify(obj), 'utf8').toString('base64url');
 }
-function decodeCursor(raw: string): { t?: string | null; n?: string; id?: string } | null {
+function decodeCursor(
+  raw: string,
+): { a?: string | null; t?: string | null; n?: string; id?: string } | null {
   try {
     return JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as {
+      a?: string | null;
       t?: string | null;
       n?: string;
       id?: string;
@@ -74,29 +91,83 @@ galleryRouter.get('/events/:id/photos', requireAuth, async (req, res, next) => {
 
     // Order by the chosen key then document id (Firestore's implicit __name__
     // tiebreak, made explicit so the value-based cursor below is stable). Needs
-    // the photos(eventId, takenAt) / photos(eventId, name) composite indexes in
-    // firestore.indexes.json. Photos whose takenAt was never written (legacy,
-    // pre-backfill) are excluded from time-sort — the backfill reindex sets it.
-    let query: Query = firestore().collection('photos').where('eventId', '==', eventId);
-    if (sort === 'name') {
-      query = query.orderBy('name').orderBy(FieldPath.documentId());
-      if (cursor) query = query.startAfter(cursor.n ?? '', cursor.id ?? '');
-    } else {
-      query = query.orderBy('takenAt').orderBy(FieldPath.documentId());
-      if (cursor) query = query.startAfter(cursor.t ?? null, cursor.id ?? '');
-    }
+    // the photos(eventId, takenAt) / (eventId, name) / (eventId, addedAt desc)
+    // composite indexes in firestore.indexes.json. Firestore excludes docs that
+    // lack the orderBy field, so an event reindexed before `addedAt` existed
+    // returns nothing under `recent`; the fallback below handles that.
+    const base = (): Query => firestore().collection('photos').where('eventId', '==', eventId);
+    // `recentFallback` tracks when a `recent` request is actually being served
+    // by the takenAt-desc fallback, so the cursor below is tagged correctly.
+    let recentFallback = false;
 
-    const snap = await query.limit(limit).get();
+    const buildQuery = (mode: SortMode, useFallback: boolean): Query => {
+      let q = base();
+      if (mode === 'name') {
+        q = q.orderBy('name').orderBy(FieldPath.documentId());
+        if (cursor) q = q.startAfter(cursor.n ?? '', cursor.id ?? '');
+      } else if (mode === 'time') {
+        q = q.orderBy('takenAt').orderBy(FieldPath.documentId());
+        if (cursor) q = q.startAfter(cursor.t ?? null, cursor.id ?? '');
+      } else if (useFallback || cursor?.t !== undefined) {
+        // recent, served via takenAt-desc fallback (event not yet backfilled).
+        // A `t`-tagged cursor means we're continuing that fallback across pages.
+        q = q.orderBy('takenAt', 'desc').orderBy(FieldPath.documentId());
+        if (cursor) q = q.startAfter(cursor.t ?? null, cursor.id ?? '');
+      } else {
+        // recent, normal path: newest-first by addedAt.
+        q = q.orderBy('addedAt', 'desc').orderBy(FieldPath.documentId());
+        if (cursor?.a !== undefined) q = q.startAfter(cursor.a ?? null, cursor.id ?? '');
+      }
+      return q.limit(limit);
+    };
+
+    let snap;
+    if (sort === 'recent' && cursor?.t !== undefined) {
+      // Continuing the takenAt-desc fallback across pages (the previous page was
+      // served by the fallback and handed back a `t`-tagged cursor).
+      recentFallback = true;
+      snap = await buildQuery(sort, true).get();
+    } else {
+      try {
+        snap = await buildQuery(sort, false).get();
+        // Recover an event that has photos but no `addedAt` yet (indexed before
+        // the field existed): an empty FIRST page of a `recent` request means
+        // "not backfilled" → re-query by takenAt desc so the gallery is never
+        // blank. Subsequent pages stay in fallback via the `t`-tagged cursor.
+        if (sort === 'recent' && !cursor && snap.empty) {
+          recentFallback = true;
+          snap = await buildQuery(sort, true).get();
+        }
+      } catch (err) {
+        // The addedAt composite index may not exist yet (a deploy that shipped
+        // this route before `firebase deploy --only firestore:indexes`, or the
+        // index is still building → Firestore FAILED_PRECONDITION). Degrade to
+        // capture-time desc, which the existing (eventId, takenAt) index serves,
+        // so the gallery keeps working until the index is live. Other sorts use
+        // already-built indexes, so their errors are real → rethrow.
+        if (sort === 'recent') {
+          logger.warn({ err, eventId }, 'gallery: addedAt query failed, falling back to takenAt desc');
+          recentFallback = true;
+          snap = await buildQuery(sort, true).get();
+        } else {
+          throw err;
+        }
+      }
+    }
 
     // A full page means there may be more; the cursor is the last doc we saw
     // (taken BEFORE de-dupe so we never skip a photo across the page boundary).
     const lastDoc = snap.docs[snap.docs.length - 1];
     let nextCursor: string | null = null;
     if (snap.size === limit && lastDoc) {
-      nextCursor =
-        sort === 'name'
-          ? encodeCursor({ n: String(lastDoc.data().name ?? ''), id: lastDoc.id })
-          : encodeCursor({ t: (lastDoc.data().takenAt as string | null) ?? null, id: lastDoc.id });
+      const d = lastDoc.data();
+      if (sort === 'name') {
+        nextCursor = encodeCursor({ n: String(d.name ?? ''), id: lastDoc.id });
+      } else if (sort === 'time' || recentFallback) {
+        nextCursor = encodeCursor({ t: (d.takenAt as string | null) ?? null, id: lastDoc.id });
+      } else {
+        nextCursor = encodeCursor({ a: (d.addedAt as string | null) ?? null, id: lastDoc.id });
+      }
     }
 
     const allMetas = snap.docs.map((d) => ({
@@ -105,6 +176,7 @@ galleryRouter.get('/events/:id/photos', requireAuth, async (req, res, next) => {
       contentHash: String(d.data().contentHash ?? ''),
       takenAt: (d.data().takenAt as string | null) ?? null,
       takenAtSource: String(d.data().takenAtSource ?? ''),
+      addedAt: (d.data().addedAt as string | null) ?? null,
     }));
 
     // Defensive de-dupe at list time (B6 / FR-2c): the indexer already collapses
@@ -131,6 +203,7 @@ galleryRouter.get('/events/:id/photos', requireAuth, async (req, res, next) => {
       thumbUrl: urlsById.get(m.photoId) ?? '',
       takenAt: m.takenAt,
       takenAtSource: m.takenAtSource,
+      addedAt: m.addedAt,
     }));
 
     const eventName = String(eventDoc.data()?.name ?? '');

@@ -13,9 +13,11 @@ import { eventLabel } from '../lib/eventLabel.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
 import { saveToPhone, type ShareOutcome } from '../lib/share.js';
 import { usePageSize } from '../lib/pageSize.js';
+import { useSortMode } from '../lib/sortMode.js';
 import { SelectBar } from '../components/SelectBar.js';
 import { Lightbox } from '../components/Lightbox.js';
 import { PageSizeSelect } from '../components/PageSizeSelect.js';
+import { SortSelect } from '../components/SortSelect.js';
 import { LoadMore } from '../components/LoadMore.js';
 
 export function Gallery(): JSX.Element {
@@ -60,6 +62,9 @@ export function Gallery(): JSX.Element {
   // How many photos to fetch per page. Smaller = faster first paint; the user
   // can trade that for fewer "Load more" taps. Persisted + shared with Find Me.
   const { pageSize, setPageSize } = usePageSize();
+  // Sort order (Newest first / Oldest first / By name). Persisted; changing it
+  // re-fires the reset effect below (via loadPage's deps) to reload from page 1.
+  const { sort, setSort } = useSortMode();
 
   // Mobile browsers (Web Share L2) can hand image files to the native share
   // sheet → iOS "Save N Images to Photos". On desktop this is false and ZIP
@@ -98,7 +103,7 @@ export function Gallery(): JSX.Element {
   // Load one page; append unless this is the first page (cursor === null).
   const loadPage = useCallback(
     async (cursor: string | null): Promise<void> => {
-      const params = new URLSearchParams({ limit: String(pageSize) });
+      const params = new URLSearchParams({ limit: String(pageSize), sort });
       if (cursor) params.set('cursor', cursor);
       const r = await apiGet<ListPhotosResponse>(
         `/api/events/${encodeURIComponent(eventId)}/photos?${params.toString()}`,
@@ -112,7 +117,7 @@ export function Gallery(): JSX.Element {
         return [...prev, ...r.photos.filter((p) => !seen.has(p.photoId))];
       });
     },
-    [eventId, pageSize],
+    [eventId, pageSize, sort],
   );
 
   // First page on mount / event change. Reset paging state first.
@@ -419,6 +424,7 @@ export function Gallery(): JSX.Element {
       <div className="gallery-header">
         <h2>{title}</h2>
         <div className="gallery-actions">
+          <SortSelect value={sort} onChange={setSort} />
           <PageSizeSelect value={pageSize} onChange={setPageSize} />
           <button
             className={`btn btn-sm ${selectMode ? 'btn-primary' : 'btn-light'}`}

@@ -16,6 +16,10 @@
     [
       { "path": "/eventId", "order": "ascending" },
       { "path": "/name", "order": "ascending" }
+    ],
+    [
+      { "path": "/eventId", "order": "ascending" },
+      { "path": "/addedAt", "order": "descending" }
     ]
   ]
 }
