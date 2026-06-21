@@ -4,11 +4,11 @@ import { useCallback, useState } from 'react';
  * Gallery sort-order preference (matches the API's `?sort=` values in
  * api/src/routes/gallery.ts).
  *
- * - `added_desc` (default): upload time, newest first (addedAt / Drive
+ * - `added_desc` (default): time uploaded, newest first (addedAt / Drive
  *   createdTime).
- * - `added_asc`: upload time, oldest first.
- * - `taken_desc`: capture time, newest first.
- * - `taken_asc`: capture time, oldest first.
+ * - `added_asc`: time uploaded, oldest first.
+ * - `taken_desc`: time taken, newest first.
+ * - `taken_asc`: time taken, oldest first.
  * - `name`: by filename.
  *
  * Persisted in localStorage so the choice sticks across visits. Default is
@@ -17,8 +17,8 @@ import { useCallback, useState } from 'react';
 export type GallerySort = 'added_desc' | 'added_asc' | 'taken_desc' | 'taken_asc' | 'name';
 
 export const SORT_OPTIONS: ReadonlyArray<{ value: GallerySort; label: string }> = [
-  { value: 'added_desc', label: 'Upload time — newest first' },
-  { value: 'added_asc', label: 'Upload time — oldest first' },
+  { value: 'added_desc', label: 'Time uploaded — newest first' },
+  { value: 'added_asc', label: 'Time uploaded — oldest first' },
   { value: 'taken_desc', label: 'Time taken — newest first' },
   { value: 'taken_asc', label: 'Time taken — oldest first' },
   { value: 'name', label: 'By name' },
