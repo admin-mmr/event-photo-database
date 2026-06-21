@@ -15,6 +15,7 @@ import { FieldPath, type Query } from '@google-cloud/firestore';
 import type { ListPhotosResponse, GalleryPhoto } from '@cloud-webapp/shared';
 
 import { firestore } from '../lib/firestore.js';
+import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
 import { signThumbUrls, signPhotoUrl } from '../services/gcsService.js';
 
@@ -120,16 +121,38 @@ galleryRouter.get('/events/:id/photos', requireAuth, async (req, res, next) => {
       return q.limit(limit);
     };
 
-    let snap = await buildQuery(sort, false).get();
-    // Recover an event that has photos but no `addedAt` yet (indexed before the
-    // field existed): on the FIRST page of a `recent` request, an empty result
-    // means "not backfilled" → re-query by takenAt desc so the gallery is never
-    // blank. Subsequent pages stay in fallback via the `t`-tagged cursor.
-    if (sort === 'recent' && !cursor && snap.empty) {
+    let snap;
+    if (sort === 'recent' && cursor?.t !== undefined) {
+      // Continuing the takenAt-desc fallback across pages (the previous page was
+      // served by the fallback and handed back a `t`-tagged cursor).
       recentFallback = true;
       snap = await buildQuery(sort, true).get();
-    } else if (sort === 'recent' && cursor?.t !== undefined) {
-      recentFallback = true;
+    } else {
+      try {
+        snap = await buildQuery(sort, false).get();
+        // Recover an event that has photos but no `addedAt` yet (indexed before
+        // the field existed): an empty FIRST page of a `recent` request means
+        // "not backfilled" → re-query by takenAt desc so the gallery is never
+        // blank. Subsequent pages stay in fallback via the `t`-tagged cursor.
+        if (sort === 'recent' && !cursor && snap.empty) {
+          recentFallback = true;
+          snap = await buildQuery(sort, true).get();
+        }
+      } catch (err) {
+        // The addedAt composite index may not exist yet (a deploy that shipped
+        // this route before `firebase deploy --only firestore:indexes`, or the
+        // index is still building → Firestore FAILED_PRECONDITION). Degrade to
+        // capture-time desc, which the existing (eventId, takenAt) index serves,
+        // so the gallery keeps working until the index is live. Other sorts use
+        // already-built indexes, so their errors are real → rethrow.
+        if (sort === 'recent') {
+          logger.warn({ err, eventId }, 'gallery: addedAt query failed, falling back to takenAt desc');
+          recentFallback = true;
+          snap = await buildQuery(sort, true).get();
+        } else {
+          throw err;
+        }
+      }
     }
 
     // A full page means there may be more; the cursor is the last doc we saw

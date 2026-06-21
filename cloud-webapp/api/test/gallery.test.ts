@@ -19,6 +19,9 @@ vi.mock('../src/middleware/auth.js', () => ({
 const fakeDb = {
   events: new Map<string, Record<string, unknown>>(),
   photos: [] as Array<{ id: string; data: Record<string, unknown> }>,
+  // When true, querying by `addedAt` throws — simulates the composite index not
+  // existing yet (Firestore FAILED_PRECONDITION) so we can test the fallback.
+  failAddedAt: false,
 };
 
 vi.mock('../src/lib/firestore.js', () => ({
@@ -55,6 +58,9 @@ vi.mock('../src/lib/firestore.js', () => ({
             makeQuery(eventId, orderField, orderDir, String(args[args.length - 1] ?? '')),
           limit: (n: number) => ({
             get: async () => {
+              if (orderField === 'addedAt' && fakeDb.failAddedAt) {
+                throw new Error('9 FAILED_PRECONDITION: The query requires an index');
+              }
               const key = (p: { id: string; data: Record<string, unknown> }) =>
                 orderField ? String(p.data[orderField] ?? '') : '';
               let all = fakeDb.photos.filter((p) => p.data.eventId === eventId);
@@ -102,6 +108,7 @@ describe('GET /api/events/:id/photos', () => {
   beforeEach(() => {
     fakeDb.events.clear();
     fakeDb.photos.length = 0;
+    fakeDb.failAddedAt = false;
     fakeDb.events.set('ev1', { name: 'Spring Run 2026' });
     fakeDb.photos.push(
       { id: 'p1', data: { eventId: 'ev1', name: 'IMG_001.jpg', addedAt: '2026-06-20T10:00:00' } },
@@ -195,6 +202,19 @@ describe('GET /api/events/:id/photos', () => {
     expect(res.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['pB', 'pA']);
     expect(res.body.photos[0].takenAt).toBe('2026-06-20T08:00:00');
     expect(res.body.photos[0].takenAtSource).toBe('exif');
+  });
+
+  it('sort=recent falls back to takenAt desc (no 500) when the addedAt index is missing', async () => {
+    fakeDb.failAddedAt = true; // simulate Firestore FAILED_PRECONDITION
+    fakeDb.photos.length = 0;
+    fakeDb.photos.push(
+      { id: 'pEarly', data: { eventId: 'ev1', name: 'z.jpg', takenAt: '2026-06-20T08:00:00', addedAt: '2026-06-20T08:00:00' } },
+      { id: 'pLate', data: { eventId: 'ev1', name: 'a.jpg', takenAt: '2026-06-20T09:00:00', addedAt: '2026-06-20T09:00:00' } },
+    );
+    const res = await request(app).get('/api/events/ev1/photos').set('x-test-user', USER);
+    expect(res.status).toBe(200);
+    // Even though docs HAVE addedAt, the index error forces the takenAt-desc path.
+    expect(res.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['pLate', 'pEarly']);
   });
 
   it('sort=recent falls back to takenAt desc when no photo has addedAt', async () => {
