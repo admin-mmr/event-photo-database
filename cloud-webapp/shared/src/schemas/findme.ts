@@ -64,6 +64,33 @@ export const DownloadRequestSchema = z.object({
 });
 export type DownloadRequest = z.infer<typeof DownloadRequestSchema>;
 
+// ── Admin delete (POST /api/events/:id/photos/delete) ────────────────────────
+
+/** Hard cap on photos per delete request — bounds the Drive/GCS/Firestore
+ *  fan-out per call. Admins remove a handful of mistakes at a time. */
+export const MAX_DELETE_PHOTOS = 200;
+
+/** Body for the admin "remove these photos" action. */
+export const DeletePhotosRequestSchema = z.object({
+  photoIds: z.array(z.string().min(1)).min(1).max(MAX_DELETE_PHOTOS),
+});
+export type DeletePhotosRequest = z.infer<typeof DeletePhotosRequestSchema>;
+
+export const DeletePhotosResponseSchema = z.object({
+  ok: z.literal(true),
+  eventId: z.string(),
+  /** photoIds fully removed: Drive original trashed + index doc + derivatives. */
+  deleted: z.array(z.string()),
+  /** photoIds that could not be deleted, each with a short reason. */
+  failed: z
+    .array(z.object({ photoId: z.string(), reason: z.string() }))
+    .default([]),
+  /** Indexer execution name if a re-index was triggered to refresh Find Me,
+   *  else null (nothing deleted, or the trigger failed — non-fatal). */
+  reindex: z.string().nullable().default(null),
+});
+export type DeletePhotosResponse = z.infer<typeof DeletePhotosResponseSchema>;
+
 // ── Search (POST /api/findme/search, multipart) ──────────────────────────────
 
 export const MatchResultSchema = z.object({

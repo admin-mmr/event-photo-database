@@ -22,6 +22,13 @@ const fakeDb = {
   // When true, querying by `addedAt` throws — simulates the composite index not
   // existing yet (Firestore FAILED_PRECONDITION) so we can test the fallback.
   failAddedAt: false,
+  // When true, the Drive trash call throws — exercises the per-photo failure
+  // path in the admin delete endpoint.
+  failTrash: false,
+  // Records calls so a test can assert the side effects of admin delete.
+  trashed: [] as string[],
+  deletedDerivatives: [] as string[],
+  reindexed: [] as string[],
 };
 
 vi.mock('../src/lib/firestore.js', () => ({
@@ -31,6 +38,10 @@ vi.mock('../src/lib/firestore.js', () => ({
         return {
           doc: (id: string) => ({
             get: async () => ({ exists: fakeDb.events.has(id), data: () => fakeDb.events.get(id) }),
+            // merge-set used by the delete endpoint to flag indexState=queued.
+            set: async (patch: Record<string, unknown>) => {
+              fakeDb.events.set(id, { ...(fakeDb.events.get(id) ?? {}), ...patch });
+            },
           }),
         };
       }
@@ -81,6 +92,17 @@ vi.mock('../src/lib/firestore.js', () => ({
         return {
           where: (_field: string, _op: string, eventId: string) =>
             makeQuery(eventId, null, 'asc', null),
+          // doc(id).get()/delete() back the admin delete + download lookups.
+          doc: (id: string) => ({
+            get: async () => {
+              const hit = fakeDb.photos.find((p) => p.id === id);
+              return { exists: Boolean(hit), id, data: () => hit?.data };
+            },
+            delete: async () => {
+              const i = fakeDb.photos.findIndex((p) => p.id === id);
+              if (i >= 0) fakeDb.photos.splice(i, 1);
+            },
+          }),
         };
       }
       throw new Error(`unexpected collection ${name}`);
@@ -96,11 +118,33 @@ vi.mock('../src/services/gcsService.js', () => ({
     })),
   signPhotoUrl: async (eventId: string, photoId: string, kind = 'thumb', ext = 'jpg') =>
     `https://signed.example/${eventId}/${kind}/${photoId}.${ext}`,
+  deletePhotoDerivatives: async (_eventId: string, photoId: string) => {
+    fakeDb.deletedDerivatives.push(photoId);
+  },
 }));
+
+vi.mock('../src/services/driveService.js', () => ({
+  trashFile: async (fileId: string) => {
+    if (fakeDb.failTrash) throw new Error('Drive trash 500');
+    fakeDb.trashed.push(fileId);
+  },
+}));
+
+vi.mock('../src/services/indexerJob.js', () => ({
+  triggerIndexJob: async (eventId: string) => {
+    fakeDb.reindexed.push(eventId);
+    return { execution: `projects/p/locations/us-central1/jobs/photo-indexer/executions/${eventId}` };
+  },
+}));
+
+// requireAdmin reads ADMIN_EMAILS (parsed once at config load), so set it before
+// importing the server. The default admin (member@) matches USER below.
+process.env.ADMIN_EMAILS = 'member@mmrunners.org';
 
 const { buildServer } = await import('../src/server.js');
 
 const USER = JSON.stringify({ uid: 'u1', email: 'member@mmrunners.org', emailVerified: true });
+const NON_ADMIN = JSON.stringify({ uid: 'u2', email: 'rando@mmrunners.org', emailVerified: true });
 
 describe('GET /api/events/:id/photos', () => {
   const app = buildServer();
@@ -109,7 +153,11 @@ describe('GET /api/events/:id/photos', () => {
     fakeDb.events.clear();
     fakeDb.photos.length = 0;
     fakeDb.failAddedAt = false;
-    fakeDb.events.set('ev1', { name: 'Spring Run 2026' });
+    fakeDb.failTrash = false;
+    fakeDb.trashed.length = 0;
+    fakeDb.deletedDerivatives.length = 0;
+    fakeDb.reindexed.length = 0;
+    fakeDb.events.set('ev1', { name: 'Spring Run 2026', driveFolderId: 'folder1' });
     fakeDb.photos.push(
       { id: 'p1', data: { eventId: 'ev1', name: 'IMG_001.jpg', addedAt: '2026-06-20T10:00:00' } },
       { id: 'p2', data: { eventId: 'ev1', name: 'IMG_002.jpg', addedAt: '2026-06-20T09:00:00' } },
@@ -278,5 +326,100 @@ describe('GET /api/events/:id/photos', () => {
     );
     const res = await request(app).get('/api/events/ev1/photos?sort=name').set('x-test-user', USER);
     expect(res.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['pB', 'pA']);
+  });
+});
+
+describe('POST /api/events/:id/photos/delete (admin)', () => {
+  const app = buildServer();
+
+  beforeEach(() => {
+    fakeDb.events.clear();
+    fakeDb.photos.length = 0;
+    fakeDb.failTrash = false;
+    fakeDb.trashed.length = 0;
+    fakeDb.deletedDerivatives.length = 0;
+    fakeDb.reindexed.length = 0;
+    fakeDb.events.set('ev1', { name: 'Spring Run 2026', driveFolderId: 'folder1' });
+    fakeDb.photos.push(
+      { id: 'p1', data: { eventId: 'ev1', name: 'IMG_001.jpg', mimeType: 'image/jpeg' } },
+      { id: 'p2', data: { eventId: 'ev1', name: 'IMG_002.jpg', mimeType: 'image/jpeg' } },
+      { id: 'px', data: { eventId: 'other', name: 'IMG_999.jpg', mimeType: 'image/jpeg' } },
+    );
+  });
+
+  it('requires auth', async () => {
+    const res = await request(app).post('/api/events/ev1/photos/delete').send({ photoIds: ['p1'] });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects a non-admin with 403', async () => {
+    const res = await request(app)
+      .post('/api/events/ev1/photos/delete')
+      .set('x-test-user', NON_ADMIN)
+      .send({ photoIds: ['p1'] });
+    expect(res.status).toBe(403);
+    expect(fakeDb.trashed).toEqual([]); // nothing touched
+  });
+
+  it('400s when photoIds is missing/empty', async () => {
+    const res = await request(app)
+      .post('/api/events/ev1/photos/delete')
+      .set('x-test-user', USER)
+      .send({ photoIds: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it('404s on unknown event', async () => {
+    const res = await request(app)
+      .post('/api/events/nope/photos/delete')
+      .set('x-test-user', USER)
+      .send({ photoIds: ['p1'] });
+    expect(res.status).toBe(404);
+  });
+
+  it('trashes the Drive original, clears derivatives + index doc, and re-indexes', async () => {
+    const res = await request(app)
+      .post('/api/events/ev1/photos/delete')
+      .set('x-test-user', USER)
+      .send({ photoIds: ['p1', 'p2'] });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.deleted.sort()).toEqual(['p1', 'p2']);
+    expect(res.body.failed).toEqual([]);
+    expect(res.body.reindex).toContain('photo-indexer');
+    // Side effects: both originals trashed, derivatives cleared, docs gone.
+    expect(fakeDb.trashed.sort()).toEqual(['p1', 'p2']);
+    expect(fakeDb.deletedDerivatives.sort()).toEqual(['p1', 'p2']);
+    expect(fakeDb.photos.find((p) => p.id === 'p1')).toBeUndefined();
+    expect(fakeDb.photos.find((p) => p.id === 'p2')).toBeUndefined();
+    expect(fakeDb.reindexed).toEqual(['ev1']);
+    // The event isn't a different one's photo: px untouched.
+    expect(fakeDb.photos.find((p) => p.id === 'px')).toBeTruthy();
+  });
+
+  it('reports photos not in this event as failed (and does not trash them)', async () => {
+    const res = await request(app)
+      .post('/api/events/ev1/photos/delete')
+      .set('x-test-user', USER)
+      .send({ photoIds: ['p1', 'px', 'ghost'] });
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toEqual(['p1']);
+    expect(res.body.failed.map((f: { photoId: string }) => f.photoId).sort()).toEqual(['ghost', 'px']);
+    expect(fakeDb.trashed).toEqual(['p1']);
+  });
+
+  it('collects a Drive failure as failed without aborting and skips re-index when nothing deleted', async () => {
+    fakeDb.failTrash = true;
+    const res = await request(app)
+      .post('/api/events/ev1/photos/delete')
+      .set('x-test-user', USER)
+      .send({ photoIds: ['p1'] });
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toEqual([]);
+    expect(res.body.failed[0].photoId).toBe('p1');
+    expect(res.body.reindex).toBeNull();
+    expect(fakeDb.reindexed).toEqual([]);
+    // The index doc survives a failed trash (we delete it only after Drive succeeds).
+    expect(fakeDb.photos.find((p) => p.id === 'p1')).toBeTruthy();
   });
 });

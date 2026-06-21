@@ -12,12 +12,20 @@
 
 import { Router } from 'express';
 import { FieldPath, type Query } from '@google-cloud/firestore';
-import type { ListPhotosResponse, GalleryPhoto } from '@cloud-webapp/shared';
+import {
+  DeletePhotosRequestSchema,
+  type ListPhotosResponse,
+  type GalleryPhoto,
+  type DeletePhotosResponse,
+} from '@cloud-webapp/shared';
 
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
-import { signThumbUrls, signPhotoUrl } from '../services/gcsService.js';
+import { requireAdmin } from '../middleware/admin.js';
+import { signThumbUrls, signPhotoUrl, deletePhotoDerivatives } from '../services/gcsService.js';
+import { trashFile } from '../services/driveService.js';
+import { triggerIndexJob } from '../services/indexerJob.js';
 
 export const galleryRouter = Router();
 
@@ -259,6 +267,98 @@ galleryRouter.get('/events/:id/photos/:photoId/web', requireAuth, async (req, re
     const photoId = String(req.params.photoId);
     const webUrl = await signPhotoUrl(eventId, photoId, 'web');
     res.json({ ok: true, photoId, webUrl });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /events/:id/photos/delete — admin-only "remove these photos" (the
+ * gallery's Select → Delete action). A photo lives in four places; this removes
+ * the first three synchronously and refreshes the fourth via a re-index:
+ *   1. Drive original → moved to Trash (recoverable ~30 days). photoId === fileId.
+ *   2. GCS derivatives (orig/web/thumb) → deleted.
+ *   3. Firestore `photos/<photoId>` doc → deleted (drops it from the gallery now).
+ *   4. Matcher Find-Me vectors → refreshed by triggering a re-index, which lists
+ *      Drive (the trashed originals are gone), drops their manifest rows, and
+ *      rewrites the per-event vector store without them.
+ *
+ * Per-photo failures are collected (not fatal) so one bad id doesn't abort the
+ * batch. The re-index is best-effort — the photos are already gone from the
+ * gallery, and the scheduled change-scan would catch the Drive change anyway.
+ */
+galleryRouter.post('/events/:id/photos/delete', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const eventId = String(req.params.id);
+
+    const parsed = DeletePhotosRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({
+        ok: false,
+        error: 'invalid_request',
+        message: parsed.error.issues[0]?.message ?? 'photoIds is required (1..200)',
+      });
+      return;
+    }
+
+    const eventDoc = await firestore().collection('events').doc(eventId).get();
+    if (!eventDoc.exists) {
+      res.status(404).json({ ok: false, error: 'not_found', message: `Unknown event '${eventId}'` });
+      return;
+    }
+
+    const uniqueIds = [...new Set(parsed.data.photoIds)];
+    const deleted: string[] = [];
+    const failed: { photoId: string; reason: string }[] = [];
+
+    for (const photoId of uniqueIds) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const doc = await firestore().collection('photos').doc(photoId).get();
+        if (!doc.exists || doc.data()?.eventId !== eventId) {
+          failed.push({ photoId, reason: 'not_found' });
+          continue;
+        }
+        const mimeType = doc.data()?.mimeType as string | undefined;
+        // 1. Drive original → Trash (photoId is the Drive fileId).
+        // eslint-disable-next-line no-await-in-loop
+        await trashFile(photoId);
+        // 2. GCS derivatives. 3. Firestore index doc.
+        // eslint-disable-next-line no-await-in-loop
+        await deletePhotoDerivatives(eventId, photoId, mimeType);
+        // eslint-disable-next-line no-await-in-loop
+        await firestore().collection('photos').doc(photoId).delete();
+        deleted.push(photoId);
+      } catch (err) {
+        logger.warn({ err, eventId, photoId }, 'admin delete: photo removal failed');
+        failed.push({ photoId, reason: err instanceof Error ? err.message : 'delete_failed' });
+      }
+    }
+
+    // 4. Refresh Find Me by re-indexing (best-effort; non-fatal on error).
+    let reindex: string | null = null;
+    if (deleted.length > 0 && eventDoc.data()?.driveFolderId) {
+      try {
+        const { execution } = await triggerIndexJob(eventId);
+        reindex = execution;
+        await firestore()
+          .collection('events')
+          .doc(eventId)
+          .set(
+            { indexState: { status: 'queued', updatedAt: new Date().toISOString() } },
+            { merge: true },
+          );
+      } catch (err) {
+        logger.warn({ err, eventId }, 'admin delete: reindex trigger failed (non-fatal)');
+      }
+    }
+
+    logger.info(
+      { eventId, deleted: deleted.length, failed: failed.length, by: req.user?.email },
+      'admin photo delete',
+    );
+    const body: DeletePhotosResponse = { ok: true, eventId, deleted, failed, reindex };
+    res.json(body);
   } catch (err) {
     next(err);
   }

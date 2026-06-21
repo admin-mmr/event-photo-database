@@ -126,6 +126,15 @@ pre.error {
   background: #f5d4d4;
 }
 
+/* Admin "Delete selected" row beneath the select bar in the gallery. */
+.admin-delete-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 0.5rem 0;
+}
+
 /* ── Events list ────────────────────────────────────────────────────────── */
 
 .event-list {

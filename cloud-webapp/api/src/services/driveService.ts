@@ -170,6 +170,24 @@ export async function getFileMetadata(fileId: string, opts?: { token?: string })
   return { ...f, relPath: f.name };
 }
 
+/**
+ * Move a Drive file to Trash (recoverable for ~30 days). Used by the admin
+ * photo-delete tool to remove an event's original (photoId === Drive fileId).
+ * Trashing, not permanent deletion, so an accidental delete can be restored.
+ * Requires a write-scoped token (DRIVE_SCOPE_READWRITE); `supportsAllDrives` so
+ * shared-drive originals trash the same as My Drive ones. Pass `token` in tests.
+ */
+export async function trashFile(fileId: string, opts?: { token?: string }): Promise<void> {
+  const token = opts?.token ?? (await getDriveToken(DRIVE_SCOPE_READWRITE));
+  const params = new URLSearchParams({ supportsAllDrives: 'true', fields: 'id,trashed' });
+  const res = await fetch(`${DRIVE}/${fileId}?${params}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trashed: true }),
+  });
+  if (!res.ok) throw new Error(`Drive trash ${res.status}: ${await res.text()}`);
+}
+
 export interface UploadedDriveFile {
   id: string;
   name: string;

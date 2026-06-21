@@ -96,6 +96,27 @@ export async function signPhotoUrl(
   return url;
 }
 
+/**
+ * Delete every stored byte for a photo (admin delete): the original plus the
+ * `web` and `thumb` derivatives. `ignoreNotFound` makes a partially-indexed
+ * photo or a re-delete a no-op. `mimeType` reconstructs the orig extension the
+ * indexer wrote (`origExtForMime`); web/thumb are always `.jpg`.
+ */
+export async function deletePhotoDerivatives(
+  eventId: string,
+  photoId: string,
+  mimeType: string | undefined,
+): Promise<void> {
+  const bucket = getStorage().bucket(env.DERIVATIVES_BUCKET);
+  await Promise.all([
+    bucket
+      .file(objectPath(eventId, photoId, 'orig', origExtForMime(mimeType)))
+      .delete({ ignoreNotFound: true }),
+    bucket.file(objectPath(eventId, photoId, 'web')).delete({ ignoreNotFound: true }),
+    bucket.file(objectPath(eventId, photoId, 'thumb')).delete({ ignoreNotFound: true }),
+  ]);
+}
+
 // ── Reference selfies (uploads bucket; PRD §6.1, D7 reuse) ───────────────────
 
 /** MIME → extension for stored reference selfies (uploads bucket). */

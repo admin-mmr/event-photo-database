@@ -6,8 +6,10 @@ import type {
   DownloadRequest,
   GetEventResponse,
   PhotoWebUrlResponse,
+  DeletePhotosResponse,
 } from '@cloud-webapp/shared';
-import { apiGet, apiDownloadFile, apiGetBlob, ApiError } from '../lib/api.js';
+import { apiGet, apiPost, apiDownloadFile, apiGetBlob, ApiError } from '../lib/api.js';
+import { useAuth } from '../lib/useAuth.js';
 import { useSelection } from '../lib/selection.js';
 import { eventLabel } from '../lib/eventLabel.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
@@ -29,6 +31,11 @@ export function Gallery(): JSX.Element {
   const [selectMode, setSelectMode] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  // Admin-only delete: guests (anonymous) never see the control; the API is the
+  // real gate (requireAdmin → 403), matching the Index/Sync pattern on Events.
+  const { user } = useAuth();
+  const isAdmin = Boolean(user) && !user?.isAnonymous;
   // Transient success line after a save/download (announced via aria-live).
   const [status, setStatus] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -292,6 +299,50 @@ export function Gallery(): JSX.Element {
   }
 
   /**
+   * Admin "Delete" — remove the selected photos for good. Moves each Drive
+   * original to Trash (recoverable ~30 days) and clears the index + derivatives,
+   * then the API re-indexes so Find Me drops them too. Optimistically removes the
+   * deleted ids from the on-screen list; a 403 means the signed-in user isn't an
+   * admin (the control only shows for non-guests, but the server is the real gate).
+   */
+  async function deleteSelected(): Promise<void> {
+    if (sel.count === 0) return;
+    const n = sel.count;
+    const ok = window.confirm(
+      `Delete ${n} photo${n === 1 ? '' : 's'}?\n\n` +
+        `This moves the original${n === 1 ? '' : 's'} to Google Drive Trash ` +
+        `(recoverable for ~30 days) and removes ${n === 1 ? 'it' : 'them'} from ` +
+        `the gallery and Find Me.`,
+    );
+    if (!ok) return;
+
+    const ids = [...sel.selected];
+    setDeleting(true);
+    setNotice(null);
+    setStatus(null);
+    try {
+      const r = await apiPost<DeletePhotosResponse>(
+        `/api/events/${encodeURIComponent(eventId)}/photos/delete`,
+        { photoIds: ids },
+      );
+      const removed = new Set(r.deleted);
+      setPhotos((prev) => (prev ?? []).filter((p) => !removed.has(p.photoId)));
+      sel.selectNone();
+      const failedNote = r.failed.length ? ` ${r.failed.length} could not be deleted.` : '';
+      const findMeNote = r.reindex ? ' Find Me is updating.' : '';
+      setStatus(`Deleted ${r.deleted.length} photo${r.deleted.length === 1 ? '' : 's'}.${findMeNote}${failedNote}`);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 403) {
+        setNotice('Deleting photos is admin-only — sign in with an admin account.');
+      } else {
+        setNotice(e instanceof Error ? e.message : 'Could not delete photos.');
+      }
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  /**
    * One-tap "Save to Photos" (the mobile headline action). Hands the actual
    * image FILES to the native share sheet — on iOS that yields "Save N Images to
    * Photos". A ZIP can't be expanded into the iOS photo library, so we
@@ -465,7 +516,7 @@ export function Gallery(): JSX.Element {
           <SelectBar
             total={ids.length}
             selectedCount={sel.count}
-            busy={downloading || saving}
+            busy={downloading || saving || deleting}
             canSave={canSavePhotos}
             savePreparing={savePreparing}
             onSelectAll={sel.selectAll}
@@ -475,6 +526,18 @@ export function Gallery(): JSX.Element {
             onSaveToPhone={() => void saveSelected()}
             {...(canSavePhotos ? {} : { onDownloadIndividual: () => void downloadIndividual() })}
           />
+          {isAdmin && (
+            <div className="admin-delete-row">
+              <button
+                className="btn btn-sm btn-danger"
+                disabled={sel.count === 0 || downloading || saving || deleting}
+                onClick={() => void deleteSelected()}
+              >
+                {deleting ? 'Deleting…' : `🗑 Delete${sel.count ? ` ${sel.count}` : ''}`}
+              </button>
+              <span className="muted">Admin only — moves originals to Drive Trash.</span>
+            </div>
+          )}
         </>
       )}
 
