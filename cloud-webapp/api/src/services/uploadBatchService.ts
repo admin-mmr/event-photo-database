@@ -17,6 +17,7 @@
  */
 
 import type { UploadBatchPhase } from '@cloud-webapp/shared';
+// (UploadBatchPhase includes 'received' for the queued-but-not-yet-processed state.)
 
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
@@ -39,12 +40,14 @@ export interface UploadBatchDoc {
   updatedAt: string;
 }
 
-/** Create the batch doc at phase `saving`. Best-effort. */
+/** Create the batch doc. Defaults to phase `saving` (inline path); the async
+ *  dispatch path passes `received` (queued, not yet processed). Best-effort. */
 export async function initUploadBatch(
   batchId: string,
   eventId: string,
   linkId: string,
   total: number,
+  phase: UploadBatchPhase = 'saving',
 ): Promise<void> {
   const now = new Date().toISOString();
   try {
@@ -56,7 +59,7 @@ export async function initUploadBatch(
           batchId,
           eventId,
           linkId,
-          phase: 'saving',
+          phase,
           total,
           copied: 0,
           skippedDuplicates: 0,

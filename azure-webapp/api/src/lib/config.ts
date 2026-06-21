@@ -70,6 +70,13 @@ const EnvSchema = z.object({
   // path. The worker endpoint itself exists regardless (added in step 2); this
   // flag only controls how /complete dispatches once Cloud Tasks is wired.
   UPLOAD_DISPATCH_TO_WORKER: z.enum(['true', 'false']).default('false'),
+  // Cloud Tasks queue the worker dispatch targets, and the absolute base URL of
+  // this api service (the task's HTTP target). All required (plus the flag and
+  // SYNC_TRIGGER_TOKEN) for dispatch to be active; otherwise /complete copies
+  // inline. LOCATION defaults to the GCP region.
+  UPLOAD_TASKS_QUEUE: z.string().default(''),
+  UPLOAD_TASKS_LOCATION: z.string().default('us-central1'),
+  UPLOAD_WORKER_URL: z.string().default(''),
 
   // ── Find Me search (dev plan M2) ──────────────────────────────────────
   // Base URL of the private matcher Cloud Run service. Empty until the

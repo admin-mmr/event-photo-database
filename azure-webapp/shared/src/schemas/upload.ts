@@ -115,7 +115,14 @@ export type CompleteUploadResponse = z.infer<typeof CompleteUploadResponseSchema
 
 /** Lifecycle of a volunteer upload batch after the bytes are in cloud storage:
  *  saving (copying to Drive) → indexing (indexer triggered) → done/ready, or error. */
-export const UploadBatchPhaseSchema = z.enum(['saving', 'indexing', 'done', 'ready', 'error']);
+export const UploadBatchPhaseSchema = z.enum([
+  'received',
+  'saving',
+  'indexing',
+  'done',
+  'ready',
+  'error',
+]);
 export type UploadBatchPhase = z.infer<typeof UploadBatchPhaseSchema>;
 
 /** GET /api/volunteer/upload/status/:batchId — observable batch status so the

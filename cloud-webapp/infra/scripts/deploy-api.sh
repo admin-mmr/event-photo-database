@@ -88,6 +88,17 @@ ENV_VARS="${ENV_VARS},RECAPTCHA_PROJECT_ID=${RECAPTCHA_PROJECT_ID:-${PROJECT_ID}
 if [[ -n "${RECAPTCHA_SITE_KEY:-}" ]]; then ENV_VARS="${ENV_VARS},RECAPTCHA_SITE_KEY=${RECAPTCHA_SITE_KEY}"; fi
 ENV_VARS="${ENV_VARS},RECAPTCHA_MIN_SCORE=${RECAPTCHA_MIN_SCORE:-0.5}"
 
+# Volunteer upload background worker (UPLOAD_ASYNC_QUEUE_DESIGN.md step 3).
+# Dispatch is OFF unless the flag is 'true' AND the queue + worker URL are set
+# (see UPLOAD_WORKER_RUNBOOK.md for one-time provisioning). The flag is set
+# explicitly so its state isn't an accident of the schema default; QUEUE and
+# WORKER_URL are only added when exported so an empty shell var can't blank a
+# live value (merge preserves it). LOCATION defaults to the deploy region.
+ENV_VARS="${ENV_VARS},UPLOAD_DISPATCH_TO_WORKER=${UPLOAD_DISPATCH_TO_WORKER:-false}"
+if [[ -n "${UPLOAD_TASKS_QUEUE:-}" ]]; then ENV_VARS="${ENV_VARS},UPLOAD_TASKS_QUEUE=${UPLOAD_TASKS_QUEUE}"; fi
+ENV_VARS="${ENV_VARS},UPLOAD_TASKS_LOCATION=${UPLOAD_TASKS_LOCATION:-${REGION}}"
+if [[ -n "${UPLOAD_WORKER_URL:-}" ]]; then ENV_VARS="${ENV_VARS},UPLOAD_WORKER_URL=${UPLOAD_WORKER_URL}"; fi
+
 echo "==> Setting env vars: ${ENV_VARS}"
 
 gcloud run deploy "$SERVICE" \

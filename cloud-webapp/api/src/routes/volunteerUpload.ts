@@ -36,7 +36,8 @@ import {
   enqueueStagedBatch,
   UploadLinkError,
 } from '../services/volunteerUploadService.js';
-import { getUploadBatch } from '../services/uploadBatchService.js';
+import { getUploadBatch, initUploadBatch } from '../services/uploadBatchService.js';
+import { isUploadDispatchConfigured, enqueueProcessBatchTask } from '../services/uploadDispatch.js';
 
 export const volunteerUploadRouter = Router();
 
@@ -134,18 +135,40 @@ volunteerUploadRouter.post('/volunteer/upload/complete', async (req, res, next) 
     const { token, batchId, items } = parsed.data;
 
     const link = await validateUploadLink(token);
-    // Step 2: the copy still runs inline here. In step 3, when
-    // UPLOAD_DISPATCH_TO_WORKER is 'true', this becomes: write the batch doc as
-    // `received`, enqueue a Cloud Tasks task → POST /api/internal/process-batch
-    // (which runs the same enqueueStagedBatch), and return `received`
-    // immediately so a large batch can't hit the 60s request timeout.
+    const objectNames = items.map((i) => i.objectName);
+    const where = link.eventName || link.eventId;
+
+    // Background path (step 3): bytes are already safely staged in GCS, so mark
+    // the batch `received`, hand the copy to Cloud Tasks, and return immediately
+    // — a large batch can't hit the 60s request timeout. The worker
+    // (/api/internal/process-batch) runs the same copy and advances the status
+    // doc, which the client polls. If enqueue fails we fall through to inline so
+    // an upload is never stranded.
+    if (isUploadDispatchConfigured()) {
+      await initUploadBatch(batchId, link.eventId, link.linkId, objectNames.length, 'received');
+      try {
+        await enqueueProcessBatchTask({ token, batchId, objectNames });
+        const queued: CompleteUploadResponse = {
+          ok: true,
+          batchId,
+          accepted: 0,
+          skippedDuplicates: 0,
+          skippedDuplicateNames: [],
+          message: `Received ${objectNames.length} file${objectNames.length === 1 ? '' : 's'} for "${where}" — saving in the background.`,
+        };
+        res.json(queued);
+        return;
+      } catch (err) {
+        logger.error({ err, batchId, eventId: link.eventId }, 'process-batch enqueue failed; copying inline');
+        // fall through to the inline copy below
+      }
+    }
+
     const { copied, skippedDuplicates, skippedDuplicateNames } = await enqueueStagedBatch(
       link,
       batchId,
-      items.map((i) => i.objectName),
+      objectNames,
     );
-
-    const where = link.eventName || link.eventId;
     const dupNote =
       skippedDuplicates > 0
         ? ` (${skippedDuplicates} duplicate${skippedDuplicates === 1 ? '' : 's'} skipped)`

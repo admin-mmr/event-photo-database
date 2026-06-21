@@ -118,6 +118,9 @@ export function VolunteerUpload(): JSX.Element {
             `/api/volunteer/upload/status/${encodeURIComponent(id)}?token=${encodeURIComponent(token)}`,
           );
           setServerPhase(s.phase);
+          // In the background path the skipped duplicates are only known after
+          // the worker runs, so surface them from the status doc when present.
+          if (s.skippedDuplicateNames?.length) setSkipped(s.skippedDuplicateNames);
           if (s.phase === 'done' || s.phase === 'ready' || s.phase === 'error') return;
         } catch {
           /* transient — keep trying until the cap */
@@ -339,11 +342,13 @@ export function VolunteerUpload(): JSX.Element {
           <strong>✅ Upload received!</strong>
           <p style={{ margin: '4px 0 0' }}>{receipt}</p>
           <p style={{ margin: '8px 0 0', color: '#555' }}>
-            {serverPhase === 'saving'
-              ? 'Saving your photos to the event library… · 正在保存到相册…'
-              : serverPhase === 'error'
-                ? 'Saved to the cloud, but the library step hit a snag — an admin will reconcile it. · 已上传到云端，保存步骤出现问题，管理员会处理。'
-                : 'Your photos are saved. They’ll appear in the event gallery in a few minutes, once indexing finishes. · 照片已保存，索引完成后几分钟内即可在相册中查看。'}
+            {serverPhase === 'received'
+              ? 'Queued — saving your photos shortly… · 已接收，正在排队保存…'
+              : serverPhase === 'saving'
+                ? 'Saving your photos to the event library… · 正在保存到相册…'
+                : serverPhase === 'error'
+                  ? 'Saved to the cloud, but the library step hit a snag — an admin will reconcile it. · 已上传到云端，保存步骤出现问题，管理员会处理。'
+                  : 'Your photos are saved. They’ll appear in the event gallery in a few minutes, once indexing finishes. · 照片已保存，索引完成后几分钟内即可在相册中查看。'}
           </p>
           {skipped.length > 0 && (
             <details style={{ marginTop: 10 }}>
