@@ -87,6 +87,16 @@ export const CompleteUploadRequestSchema = z.object({
 });
 export type CompleteUploadRequest = z.infer<typeof CompleteUploadRequestSchema>;
 
+/** Body of the internal worker endpoint (POST /api/internal/process-batch) that
+ *  copies a staged batch to Drive. In step 3 this is the Cloud Tasks payload;
+ *  for now it's the seam the worker shares with /complete. */
+export const ProcessBatchRequestSchema = z.object({
+  token: z.string().min(1),
+  batchId: z.string().min(1),
+  objectNames: z.array(z.string().min(1)).min(1),
+});
+export type ProcessBatchRequest = z.infer<typeof ProcessBatchRequestSchema>;
+
 export const CompleteUploadResponseSchema = z.object({
   ok: z.literal(true),
   batchId: z.string(),

@@ -19,6 +19,7 @@ import { Router } from 'express';
 import {
   CreateUploadSessionRequestSchema,
   CompleteUploadRequestSchema,
+  ProcessBatchRequestSchema,
   ACCEPTED_UPLOAD_MIME,
   type CreateUploadSessionResponse,
   type CompleteUploadResponse,
@@ -28,6 +29,7 @@ import {
 import { logger } from '../lib/logger.js';
 import { volunteerUploadRateLimit } from '../middleware/rateLimit.js';
 import { requireRecaptcha } from '../middleware/recaptcha.js';
+import { validCronToken } from '../middleware/cronAuth.js';
 import {
   validateUploadLink,
   createResumableSession,
@@ -132,6 +134,11 @@ volunteerUploadRouter.post('/volunteer/upload/complete', async (req, res, next) 
     const { token, batchId, items } = parsed.data;
 
     const link = await validateUploadLink(token);
+    // Step 2: the copy still runs inline here. In step 3, when
+    // UPLOAD_DISPATCH_TO_WORKER is 'true', this becomes: write the batch doc as
+    // `received`, enqueue a Cloud Tasks task → POST /api/internal/process-batch
+    // (which runs the same enqueueStagedBatch), and return `received`
+    // immediately so a large batch can't hit the 60s request timeout.
     const { copied, skippedDuplicates, skippedDuplicateNames } = await enqueueStagedBatch(
       link,
       batchId,
@@ -194,6 +201,45 @@ volunteerUploadRouter.get('/volunteer/upload/status/:batchId', async (req, res, 
       updatedAt: batch.updatedAt,
     };
     res.json(body);
+  } catch (err) {
+    if (err instanceof UploadLinkError) {
+      res.status(linkErrorStatus(err.code)).json({ ok: false, error: err.code, message: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
+/**
+ * POST /api/internal/process-batch  (UPLOAD_ASYNC_QUEUE_DESIGN.md step 2)
+ * Body: { token, batchId, objectNames }
+ *
+ * The background worker: copies a staged batch to Drive (the same
+ * `enqueueStagedBatch` the inline /complete path uses) and advances the status
+ * doc. This is the endpoint Cloud Tasks will call in step 3. It is NOT public —
+ * machine callers present the `X-Sync-Token` shared secret (Cloud Tasks can set
+ * a custom header; an OIDC check can be added alongside in step 3). When no
+ * token is configured, the endpoint is closed.
+ */
+volunteerUploadRouter.post('/internal/process-batch', async (req, res, next) => {
+  try {
+    if (!validCronToken(req.header('x-sync-token'))) {
+      res.status(401).json({ ok: false, error: 'unauthorized', message: 'machine token required' });
+      return;
+    }
+    const parsed = ProcessBatchRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'bad_request', message: parsed.error.message });
+      return;
+    }
+    const { token, batchId, objectNames } = parsed.data;
+    const link = await validateUploadLink(token);
+    const result = await enqueueStagedBatch(link, batchId, objectNames);
+    logger.info(
+      { eventId: link.eventId, batchId, copied: result.copied, skipped: result.skippedDuplicates },
+      'worker processed staged batch',
+    );
+    res.json({ ok: true, ...result });
   } catch (err) {
     if (err instanceof UploadLinkError) {
       res.status(linkErrorStatus(err.code)).json({ ok: false, error: err.code, message: err.message });

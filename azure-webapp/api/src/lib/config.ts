@@ -63,6 +63,14 @@ const EnvSchema = z.object({
   // admin token. Empty = only Firebase admins can trigger a sync.
   SYNC_TRIGGER_TOKEN: z.string().default(''),
 
+  // ── Volunteer upload background worker (UPLOAD_ASYNC_QUEUE_DESIGN.md) ──
+  // When 'true', /complete will (step 3) enqueue a Cloud Tasks task targeting
+  // POST /api/internal/process-batch and return `received` immediately, instead
+  // of copying to Drive inline. Default 'false' = the current synchronous inline
+  // path. The worker endpoint itself exists regardless (added in step 2); this
+  // flag only controls how /complete dispatches once Cloud Tasks is wired.
+  UPLOAD_DISPATCH_TO_WORKER: z.enum(['true', 'false']).default('false'),
+
   // ── Find Me search (dev plan M2) ──────────────────────────────────────
   // Base URL of the private matcher Cloud Run service. Empty until the
   // matcher is deployed — the /api/findme routes 503 with a clear message
