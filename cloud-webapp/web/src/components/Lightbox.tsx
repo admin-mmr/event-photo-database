@@ -14,8 +14,12 @@ import { useEffect, useRef, type ReactNode } from 'react';
 export interface LightboxItem {
   /** Stable key (photoId). */
   key: string;
-  /** Full-size image URL (the `webUrl` derivative). */
+  /** Full-size image URL. On mobile this is the original (full-resolution)
+   *  object URL; elsewhere the `web` derivative. */
   src: string;
+  /** Optional smaller URL to fall back to if `src` fails to decode (e.g. a HEIC
+   *  original on a browser that can't render it → use the JPEG `web`/thumb). */
+  fallbackSrc?: string;
   alt?: string;
   /** Optional overlay (e.g. the match-confidence band chip). */
   badge?: ReactNode;
@@ -82,8 +86,17 @@ export function Lightbox({
           </button>
         )}
         <img
+          key={item.key}
           src={item.src}
           alt={item.alt ?? ''}
+          onError={(e) => {
+            // Original failed to decode (e.g. HEIC on a non-Safari browser):
+            // fall back to the JPEG derivative once, guarding against a loop.
+            const img = e.currentTarget;
+            if (item.fallbackSrc && img.src !== item.fallbackSrc) {
+              img.src = item.fallbackSrc;
+            }
+          }}
           onTouchStart={(e) => {
             touchX.current = e.touches[0]?.clientX ?? null;
           }}

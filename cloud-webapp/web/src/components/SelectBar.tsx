@@ -17,6 +17,13 @@ interface SelectBarProps {
    * iOS (lands in Files, can't expand into Photos).
    */
   canSave?: boolean;
+  /**
+   * The selected originals are still being fetched into memory, so the one-tap
+   * "Save to Photos" can't fire a synchronous share yet (iOS requires
+   * `navigator.share` to run inside the tap's user activation — see Gallery).
+   * While true the Save button shows "Preparing…" and is disabled.
+   */
+  savePreparing?: boolean;
   onSelectAll: () => void;
   onSelectNone: () => void;
   onInvert: () => void;
@@ -32,6 +39,7 @@ export function SelectBar({
   selectedCount,
   busy = false,
   canSave = false,
+  savePreparing = false,
   onSelectAll,
   onSelectNone,
   onInvert,
@@ -64,9 +72,13 @@ export function SelectBar({
           <button
             className="btn btn-primary btn-sm"
             onClick={onSaveToPhone}
-            disabled={none || busy}
+            disabled={none || busy || savePreparing}
           >
-            {busy ? 'Saving…' : `📲 Save ${selectedCount || ''} to Photos`.replace('  ', ' ').trim()}
+            {busy
+              ? 'Saving…'
+              : savePreparing
+                ? `Preparing ${selectedCount || ''}…`.replace('  ', ' ').trim()
+                : `📲 Save ${selectedCount || ''} to Photos`.replace('  ', ' ').trim()}
           </button>
         )}
         <button className={zipClass} onClick={onDownload} disabled={none || busy}>
