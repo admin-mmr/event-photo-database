@@ -11,6 +11,8 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
+import type { CompleteUploadResponse } from '@cloud-webapp/shared';
+
 import { uploadFileResumable, AbortError, type UploadResult } from '../lib/resumableUpload.js';
 import { apiPost } from '../lib/api.js';
 
@@ -36,7 +38,9 @@ interface Item {
   result?: UploadResult;
 }
 
-type Phase = 'idle' | 'uploading' | 'done';
+// idle → uploading (bytes → cloud, safe to close tab) → finalizing (saving to
+// Drive + queuing indexing) → done (received; gallery appears after indexing).
+type Phase = 'idle' | 'uploading' | 'finalizing' | 'done';
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -70,6 +74,7 @@ export function VolunteerUpload(): JSX.Element {
   const [phase, setPhase] = useState<Phase>('idle');
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<string | null>(null);
+  const [skipped, setSkipped] = useState<string[]>([]);
 
   const batchId = useMemo(() => crypto.randomUUID(), []);
   const abortRef = useRef<AbortController | null>(null);
@@ -151,7 +156,10 @@ export function VolunteerUpload(): JSX.Element {
         setPhase('idle');
         return;
       }
-      const res = await apiPost<{ ok: true; message: string }>('/api/volunteer/upload/complete', {
+      // Bytes are now safely in the cloud; this step files them into Drive and
+      // queues indexing. Show it as its own phase rather than a blank wait.
+      setPhase('finalizing');
+      const res = await apiPost<CompleteUploadResponse>('/api/volunteer/upload/complete', {
         token,
         batchId,
         items: results.map((r) => ({
@@ -162,6 +170,7 @@ export function VolunteerUpload(): JSX.Element {
         })),
       });
       setReceipt(res.message);
+      setSkipped(res.skippedDuplicateNames ?? []);
       setPhase('done');
     } catch (err) {
       setFatalError(err instanceof Error ? err.message : String(err));
@@ -187,6 +196,19 @@ export function VolunteerUpload(): JSX.Element {
           <strong>Uploading…</strong> You can safely close this tab and come back —
           reopening this page and re-selecting the same files resumes where you left off.
           {eta && <div style={{ marginTop: 4, color: '#555' }}>{eta}</div>}
+        </div>
+      )}
+
+      {phase === 'finalizing' && (
+        <div
+          role="status"
+          style={{ background: '#e8f5e9', border: '1px solid #a5d6a7', borderRadius: 8, padding: 12, margin: '12px 0' }}
+        >
+          <strong>Saving to the event library…</strong> Your files are safely uploaded — we&rsquo;re
+          filing them into Google Drive and queuing them for indexing.
+          <div className="muted" style={{ marginTop: 4 }}>
+            文件已安全上传，正在保存到 Google Drive 并排队建立索引…
+          </div>
         </div>
       )}
 
@@ -284,17 +306,41 @@ export function VolunteerUpload(): JSX.Element {
 
       {phase === 'done' ? (
         <div style={{ background: '#e8f5e9', borderRadius: 8, padding: 16, marginTop: 12 }}>
-          <strong>✅ Done!</strong>
+          <strong>✅ Upload received!</strong>
           <p style={{ margin: '4px 0 0' }}>{receipt}</p>
+          <p style={{ margin: '8px 0 0', color: '#555' }}>
+            Your photos are saved. They&rsquo;ll appear in the event gallery in a few minutes, once
+            indexing finishes.
+            <br />
+            照片已保存，索引完成后几分钟内即可在相册中查看。
+          </p>
+          {skipped.length > 0 && (
+            <details style={{ marginTop: 10 }}>
+              <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+                {skipped.length} already uploaded — skipped · {skipped.length} 个已上传，已跳过
+              </summary>
+              <ul style={{ margin: '6px 0 0', paddingLeft: 20 }}>
+                {skipped.map((n) => (
+                  <li key={n} className="muted">
+                    {n}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </div>
       ) : (
         <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
           <button
             className="btn btn-primary"
-            disabled={items.length === 0 || phase === 'uploading'}
+            disabled={items.length === 0 || phase === 'uploading' || phase === 'finalizing'}
             onClick={() => void startUpload()}
           >
-            {phase === 'uploading' ? 'Uploading…' : `Upload ${items.length || ''} file${items.length === 1 ? '' : 's'}`}
+            {phase === 'uploading'
+              ? 'Uploading…'
+              : phase === 'finalizing'
+                ? 'Finalizing…'
+                : `Upload ${items.length || ''} file${items.length === 1 ? '' : 's'}`}
           </button>
           {phase === 'uploading' && (
             <button className="btn btn-light" onClick={cancel}>

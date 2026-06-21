@@ -242,6 +242,8 @@ async function resolveEventFolderId(eventId: string): Promise<string> {
 export interface BatchResult {
   copied: number;
   skippedDuplicates: number;
+  /** Credited filenames skipped as duplicates (same length as skippedDuplicates). */
+  skippedDuplicateNames: string[];
 }
 
 /**
@@ -289,7 +291,7 @@ export async function enqueueStagedBatch(
   batchId: string,
   objectNames: string[],
 ): Promise<BatchResult> {
-  if (objectNames.length === 0) return { copied: 0, skippedDuplicates: 0 };
+  if (objectNames.length === 0) return { copied: 0, skippedDuplicates: 0, skippedDuplicateNames: [] };
 
   const folderId = await resolveEventFolderId(link.eventId);
   const bucket = getStorage().bucket(env.VOLUNTEER_STAGING_BUCKET);
@@ -327,6 +329,7 @@ export async function enqueueStagedBatch(
   let copied = 0;
   let copiedBytes = 0;
   let skippedDuplicates = 0;
+  const skippedDuplicateNames: string[] = [];
   for (const objectName of objectNames) {
     try {
       const file = bucket.file(objectName);
@@ -359,6 +362,7 @@ export async function enqueueStagedBatch(
       const key = dedupKey(name, size);
       if (seen.has(key)) {
         skippedDuplicates += 1;
+        skippedDuplicateNames.push(name);
         logger.info({ eventId: link.eventId, batchId, objectName, name }, 'duplicate skipped');
         await file
           .delete({ ignoreNotFound: true })
@@ -417,5 +421,5 @@ export async function enqueueStagedBatch(
     linkId: link.linkId,
   });
 
-  return { copied, skippedDuplicates };
+  return { copied, skippedDuplicates, skippedDuplicateNames };
 }

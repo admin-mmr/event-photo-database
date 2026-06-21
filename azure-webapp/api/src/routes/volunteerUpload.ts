@@ -130,7 +130,7 @@ volunteerUploadRouter.post('/volunteer/upload/complete', async (req, res, next) 
     const { token, batchId, items } = parsed.data;
 
     const link = await validateUploadLink(token);
-    const { copied, skippedDuplicates } = await enqueueStagedBatch(
+    const { copied, skippedDuplicates, skippedDuplicateNames } = await enqueueStagedBatch(
       link,
       batchId,
       items.map((i) => i.objectName),
@@ -146,6 +146,7 @@ volunteerUploadRouter.post('/volunteer/upload/complete', async (req, res, next) 
       batchId,
       accepted: copied,
       skippedDuplicates,
+      skippedDuplicateNames,
       message: `Received ${copied} file${copied === 1 ? '' : 's'} for "${where}"${dupNote}.`,
     };
     res.json(body);

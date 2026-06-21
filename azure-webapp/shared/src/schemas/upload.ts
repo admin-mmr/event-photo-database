@@ -95,6 +95,9 @@ export const CompleteUploadResponseSchema = z.object({
   /** How many staged objects were skipped as duplicates of a file already in
    *  the event's Drive folder (matched on credited name + byte size). */
   skippedDuplicates: z.number().int().nonnegative().default(0),
+  /** The credited filenames skipped as duplicates, so the UI can name them.
+   *  Same length as `skippedDuplicates`. */
+  skippedDuplicateNames: z.array(z.string()).default([]),
   /** Human-readable confirmation for the receipt screen. */
   message: z.string(),
 });

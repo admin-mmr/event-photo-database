@@ -207,7 +207,7 @@ describe('enqueueStagedBatch', () => {
 
     const res = await enqueueStagedBatch(link, 'b1', ['vol/ev1/b1/u1.jpg', 'vol/ev1/b1/u2.jpg']);
 
-    expect(res).toEqual({ copied: 2, skippedDuplicates: 0 });
+    expect(res).toMatchObject({ copied: 2, skippedDuplicates: 0 });
 
     // Path built once and reused: Club → tag → batch (one each), batch named from photographer.
     expect(folderCreates).toHaveLength(3);
@@ -245,7 +245,7 @@ describe('enqueueStagedBatch', () => {
     existingDriveFiles.push({ name: 'ClubA_dup.jpg', size: '5' });
     objects['vol/ev1/bz/u1.jpg'] = { exists: true, size: 5, contentType: 'image/jpeg', metadata: { originalName: 'dup.jpg' } };
     const res = await enqueueStagedBatch(link, 'bz', ['vol/ev1/bz/u1.jpg']);
-    expect(res).toEqual({ copied: 0, skippedDuplicates: 1 });
+    expect(res).toMatchObject({ copied: 0, skippedDuplicates: 1 });
     expect(folderCreates).toHaveLength(0);
   });
 
@@ -269,7 +269,7 @@ describe('enqueueStagedBatch', () => {
 
     const res = await enqueueStagedBatch(link, 'bd', ['vol/ev1/bd/u1.jpg']);
 
-    expect(res).toEqual({ copied: 0, skippedDuplicates: 1 });
+    expect(res).toMatchObject({ copied: 0, skippedDuplicates: 1 });
     expect(driveUploads).toHaveLength(0);
     expect(deleted).toEqual(['vol/ev1/bd/u1.jpg']); // duplicate staged copy cleaned up
     expect(indexTriggers).toHaveLength(0); // nothing copied → no trigger
@@ -283,7 +283,9 @@ describe('enqueueStagedBatch', () => {
 
     const res = await enqueueStagedBatch(link, 'bw', ['vol/ev1/bw/u1.jpg', 'vol/ev1/bw/u2.jpg']);
 
-    expect(res).toEqual({ copied: 1, skippedDuplicates: 1 });
+    expect(res).toMatchObject({ copied: 1, skippedDuplicates: 1 });
+    // The new per-file skipped list names the duplicate that was skipped.
+    expect(res.skippedDuplicateNames).toEqual(['ClubA_JaneDoe_dup.jpg']);
     expect(driveUploads).toHaveLength(1);
     expect(driveUploads[0]?.name).toBe('ClubA_JaneDoe_dup.jpg');
   });
@@ -298,7 +300,7 @@ describe('enqueueStagedBatch', () => {
       metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
     };
     const res = await enqueueStagedBatch(link, 'bs', ['vol/ev1/bs/u1.jpg']);
-    expect(res).toEqual({ copied: 1, skippedDuplicates: 0 });
+    expect(res).toMatchObject({ copied: 1, skippedDuplicates: 0 });
   });
 
   it('skips missing and empty objects without failing the batch', async () => {
@@ -313,7 +315,7 @@ describe('enqueueStagedBatch', () => {
       'vol/ev1/b2/missing.jpg',
     ]);
 
-    expect(res).toEqual({ copied: 1, skippedDuplicates: 0 });
+    expect(res).toMatchObject({ copied: 1, skippedDuplicates: 0 });
     expect(driveUploads).toHaveLength(1);
     expect(driveUploads[0]?.name).toBe('ClubA_ok.jpg');
     expect(indexTriggers).toEqual(['ev1']);
@@ -329,14 +331,14 @@ describe('enqueueStagedBatch', () => {
   it('does not trigger the indexer when nothing was copied', async () => {
     const link = await validateUploadLink('tok-good');
     const res = await enqueueStagedBatch(link, 'b4', ['vol/ev1/b4/missing.jpg']);
-    expect(res).toEqual({ copied: 0, skippedDuplicates: 0 });
+    expect(res).toMatchObject({ copied: 0, skippedDuplicates: 0 });
     expect(driveUploads).toHaveLength(0);
     expect(indexTriggers).toHaveLength(0);
   });
 
   it('returns zero counts for an empty batch without touching Drive', async () => {
     const link = await validateUploadLink('tok-good');
-    expect(await enqueueStagedBatch(link, 'b5', [])).toEqual({ copied: 0, skippedDuplicates: 0 });
+    expect(await enqueueStagedBatch(link, 'b5', [])).toMatchObject({ copied: 0, skippedDuplicates: 0 });
     expect(driveUploads).toHaveLength(0);
   });
 
