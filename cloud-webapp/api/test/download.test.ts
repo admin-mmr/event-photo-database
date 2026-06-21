@@ -48,23 +48,15 @@ vi.mock('../src/services/gcsService.js', () => ({
       Readable.from([(ORIG_BYTES as Record<string, Buffer>)[photoId] ?? Buffer.from('')]),
   }),
   origExtForMime: (m: string | undefined) => (m === 'image/png' ? 'png' : 'jpg'),
+  // The single-original route now 302s to a signed URL instead of streaming, so
+  // the bytes go GCS → browser directly (off the Hosting egress line).
+  signOrigUrl: async (eventId: string, photoId: string, _m: string | undefined) =>
+    `https://storage.example/signed/${eventId}/${photoId}?sig=abc`,
 }));
 
 const { buildServer } = await import('../src/server.js');
 
 const USER = JSON.stringify({ uid: 'u1', email: 'member@mmrunners.org', emailVerified: true });
-
-// Accumulate the binary response body so we can inspect ZIP bytes. Typed
-// loosely because superagent's `.parse()` parameter is an overloaded union.
-function binaryParser(
-  res: NodeJS.ReadableStream,
-  cb: (err: Error | null, body: Buffer) => void,
-): void {
-  const chunks: Buffer[] = [];
-  res.on('data', (c: Buffer) => chunks.push(Buffer.from(c)));
-  res.on('end', () => cb(null, Buffer.concat(chunks)));
-  res.on('error', (e) => cb(e as Error, Buffer.alloc(0)));
-}
 
 describe('POST /api/events/:id/download (B1)', () => {
   const app = buildServer();
@@ -109,26 +101,24 @@ describe('POST /api/events/:id/download (B1)', () => {
     expect(res.body.error).toBe('no_photos');
   });
 
-  it('streams a ZIP of the original bytes for photos in the event', async () => {
+  it('returns signed URLs (not bytes) for photos in the event', async () => {
     const res = await request(app)
       .post('/api/events/ev1/download')
       .set('x-test-user', USER)
-      .send({ photoIds: ['p1', 'p2', 'px'] }) // px belongs to another event → excluded
-      .buffer(true)
-      .parse(binaryParser as unknown as () => void);
+      .send({ photoIds: ['p1', 'p2', 'px'] }); // px belongs to another event → excluded
 
     expect(res.status).toBe(200);
-    expect(res.headers['content-type']).toContain('application/zip');
-    expect(res.headers['content-disposition']).toContain('Spring Run 2026-photos.zip');
+    expect(res.headers['content-type']).toContain('application/json');
+    expect(res.headers['cache-control']).toContain('no-store');
+    expect(res.body.ok).toBe(true);
 
-    const zip = res.body as Buffer;
-    expect(zip.length).toBeGreaterThan(0);
-    expect(zip.subarray(0, 2).toString('latin1')).toBe('PK'); // local-file-header magic
-    // Stored uncompressed (level 0) → original bytes appear verbatim in the ZIP.
-    expect(zip.includes(ORIG_BYTES.p1)).toBe(true);
-    expect(zip.includes(ORIG_BYTES.p2)).toBe(true);
-    // Filenames are present as ZIP entry names.
-    expect(zip.includes(Buffer.from('IMG_001.jpg'))).toBe(true);
+    const files = res.body.files as Array<{ photoId: string; url: string; filename: string }>;
+    // px excluded (other event); only p1 + p2 signed.
+    expect(files.map((f) => f.photoId).sort()).toEqual(['p1', 'p2']);
+    for (const f of files) {
+      expect(f.url).toMatch(/^https:\/\/storage\.example\/signed\//);
+    }
+    expect(files.find((f) => f.photoId === 'p1')?.filename).toBe('IMG_001.jpg');
   });
 });
 
@@ -158,17 +148,15 @@ describe('GET /api/events/:id/photos/:photoId/original (individual download)', (
     expect(res.status).toBe(404);
   });
 
-  it('streams the original bytes as an attachment', async () => {
+  it('302-redirects to a signed GCS URL instead of streaming bytes', async () => {
     const res = await request(app)
       .get('/api/events/ev1/photos/p1/original')
       .set('x-test-user', USER)
-      .buffer(true)
-      .parse(binaryParser as unknown as () => void);
+      .redirects(0); // assert the redirect itself, don't follow it
 
-    expect(res.status).toBe(200);
-    expect(res.headers['content-type']).toContain('image/jpeg');
-    expect(res.headers['content-disposition']).toContain('attachment');
-    expect(res.headers['content-disposition']).toContain('IMG_001.jpg');
-    expect((res.body as Buffer).equals(ORIG_BYTES.p1)).toBe(true);
+    expect(res.status).toBe(302);
+    expect(res.headers['location']).toBe('https://storage.example/signed/ev1/p1?sig=abc');
+    // No photo bytes flow through the service / Hosting rewrite.
+    expect(res.headers['cache-control']).toContain('no-store');
   });
 });

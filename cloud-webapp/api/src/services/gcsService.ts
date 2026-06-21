@@ -69,13 +69,23 @@ export function origFile(eventId: string, photoId: string, mimeType: string | un
     .file(objectPath(eventId, photoId, 'orig', origExtForMime(mimeType)));
 }
 
-/** Signed URL for a single original (e.g. "download this one" on Results). */
+/**
+ * Signed URL for a single original (e.g. "download this one" on Results, or the
+ * gallery "Save to Photos" / full-res lightbox). Bytes flow GCS → browser
+ * directly, so they bill as GCS egress instead of being proxied through Cloud
+ * Run + the Firebase Hosting `/api/**` rewrite (which is what made a single
+ * live event day spike the Hosting line). `disposition`, when set, attaches an
+ * RFC-5987 `Content-Disposition` so a direct browser navigation saves with the
+ * original filename; the blob-fetch path names the File itself, so it's
+ * optional there.
+ */
 export async function signOrigUrl(
   eventId: string,
   photoId: string,
   mimeType: string | undefined,
+  opts?: { disposition?: string },
 ): Promise<string> {
-  return signPhotoUrl(eventId, photoId, 'orig', origExtForMime(mimeType));
+  return signPhotoUrl(eventId, photoId, 'orig', origExtForMime(mimeType), opts);
 }
 
 export async function signPhotoUrl(
@@ -83,6 +93,7 @@ export async function signPhotoUrl(
   photoId: string,
   kind: DerivativeKind = 'thumb',
   ext = 'jpg',
+  opts?: { disposition?: string },
 ): Promise<string> {
   const objectPath = `${eventId}/photos/${kind}/${photoId}.${ext}`;
   const [url] = await getStorage()
@@ -92,6 +103,9 @@ export async function signPhotoUrl(
       version: 'v4',
       action: 'read',
       expires: Date.now() + env.SIGNED_URL_TTL_MINUTES * 60 * 1000,
+      ...(opts?.disposition
+        ? { responseDisposition: `attachment; filename*=UTF-8''${opts.disposition}` }
+        : {}),
     });
   return url;
 }

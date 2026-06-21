@@ -3,16 +3,16 @@ import { Link, useParams } from 'react-router-dom';
 import type {
   ListPhotosResponse,
   GalleryPhoto,
-  DownloadRequest,
   GetEventResponse,
   PhotoWebUrlResponse,
   DeletePhotosResponse,
 } from '@cloud-webapp/shared';
-import { apiGet, apiPost, apiDownloadFile, apiGetBlob, ApiError } from '../lib/api.js';
+import { apiGet, apiPost, apiGetBlob, ApiError } from '../lib/api.js';
 import { useAuth } from '../lib/useAuth.js';
 import { useSelection } from '../lib/selection.js';
 import { eventLabel } from '../lib/eventLabel.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
+import { downloadOriginalsZip } from '../lib/zipDownload.js';
 import { saveToPhone, type ShareOutcome } from '../lib/share.js';
 import { usePageSize } from '../lib/pageSize.js';
 import { useSortMode } from '../lib/sortMode.js';
@@ -333,17 +333,18 @@ export function Gallery(): JSX.Element {
   }
 
   /** B1 ZIP download — the right call on desktop, the worst case on iOS (lands
-   *  in Files, can't expand into Photos), so it's demoted on mobile. */
+   *  in Files, can't expand into Photos), so it's demoted on mobile. The ZIP is
+   *  assembled in the browser from signed GCS URLs, so the originals bypass the
+   *  Hosting `/api/**` rewrite (see lib/zipDownload). */
   async function downloadSelected(): Promise<void> {
     if (sel.count === 0) return;
-    const n = sel.count;
     setDownloading(true);
     setNotice(null);
     setStatus(null);
     try {
-      const body: DownloadRequest = { photoIds: [...sel.selected] };
-      await apiDownloadFile(`/api/events/${encodeURIComponent(eventId)}/download`, body, `${title}.zip`);
-      setStatus(`Downloaded ${n} photo${n === 1 ? '' : 's'} as a ZIP.`);
+      const { included, failed } = await downloadOriginalsZip(eventId, [...sel.selected], `${title}.zip`);
+      const skipped = failed > 0 ? ` (${failed} couldn't be loaded and were skipped)` : '';
+      setStatus(`Downloaded ${included} photo${included === 1 ? '' : 's'} as a ZIP.${skipped}`);
     } catch (e) {
       setNotice(e instanceof Error ? e.message : 'Download failed');
     } finally {

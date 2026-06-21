@@ -64,6 +64,27 @@ export const DownloadRequestSchema = z.object({
 });
 export type DownloadRequest = z.infer<typeof DownloadRequestSchema>;
 
+/**
+ * Response of POST /api/events/:id/download. The endpoint no longer streams a
+ * server-assembled ZIP (which proxied every original byte through Cloud Run +
+ * the Firebase Hosting `/api/**` rewrite, billing them as Hosting egress).
+ * Instead it returns short-lived signed GCS URLs and the client assembles the
+ * ZIP in the browser, so the heavy bytes flow GCS → browser directly. One call
+ * signs the whole selection (keeps the dedicated bulk-download rate budget).
+ */
+export const SignedOriginalSchema = z.object({
+  photoId: z.string(),
+  url: z.string().url(),
+  filename: z.string(),
+});
+export type SignedOriginal = z.infer<typeof SignedOriginalSchema>;
+
+export const DownloadSignResponseSchema = z.object({
+  ok: z.literal(true),
+  files: z.array(SignedOriginalSchema),
+});
+export type DownloadSignResponse = z.infer<typeof DownloadSignResponseSchema>;
+
 // ── Admin delete (POST /api/events/:id/photos/delete) ────────────────────────
 
 /** Hard cap on photos per delete request — bounds the Drive/GCS/Firestore

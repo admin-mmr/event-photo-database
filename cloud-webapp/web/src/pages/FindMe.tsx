@@ -3,7 +3,6 @@ import { Link, useParams } from 'react-router-dom';
 import type {
   SearchResponse,
   MatchResult,
-  DownloadRequest,
   FeedbackRequest,
   ListReferencesResponse,
   ReferenceUpload,
@@ -13,7 +12,6 @@ import {
   apiGet,
   apiUpload,
   apiPost,
-  apiDownloadFile,
   apiGetBlob,
   ApiError,
 } from '../lib/api.js';
@@ -21,6 +19,7 @@ import { getRecaptchaToken } from '../lib/recaptcha.js';
 import { useSelection } from '../lib/selection.js';
 import { combineReferences, visibleResults, scoreBand, bandLabel } from '../lib/results.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
+import { downloadOriginalsZip } from '../lib/zipDownload.js';
 import { type ShareOutcome } from '../lib/share.js';
 import { saveResults, loadResults, clearResults } from '../lib/findmeCache.js';
 import { usePageSize, PAGE_SIZE_OPTIONS } from '../lib/pageSize.js';
@@ -371,18 +370,17 @@ export function FindMe(): JSX.Element {
 
   async function downloadSelected(): Promise<void> {
     if (sel.count === 0) return;
-    const n = sel.count;
     setDownloading(true);
     setError(null);
     setStatus(null);
     try {
-      const body: DownloadRequest = { photoIds: [...sel.selected] };
-      await apiDownloadFile(
-        `/api/events/${encodeURIComponent(eventId)}/download`,
-        body,
+      const { included, failed } = await downloadOriginalsZip(
+        eventId,
+        [...sel.selected],
         'my-photos.zip',
       );
-      setStatus(`Downloaded ${n} photo${n === 1 ? '' : 's'} as a ZIP.`);
+      const skipped = failed > 0 ? ` (${failed} couldn't be loaded and were skipped)` : '';
+      setStatus(`Downloaded ${included} photo${included === 1 ? '' : 's'} as a ZIP.${skipped}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Download failed');
     } finally {

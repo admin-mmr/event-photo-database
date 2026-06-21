@@ -42,6 +42,42 @@
     --format='table(metadata.name, spec.template.metadata.annotations["autoscaling.knative.dev/minScale"]:label=MIN, spec.template.metadata.annotations["run.googleapis.com/cpu-throttling"]:label=CPU_THROTTLE)'
   ```
 
+## Never serve photo bytes through the Firebase Hosting `/api/**` rewrite
+
+- **The web app reaches the api via the Firebase Hosting rewrite (`/api/**` →
+  `event-photo-api`), so every byte the api streams in a response is billed
+  twice: once as Cloud Run egress and again as Firebase Hosting data transfer
+  ($0.15/GB after the 10 GB/mo free tier).** Originals are the heavy bytes in
+  this app. A single live event day of attendees using "Save to Photos" and the
+  full-res lightbox — which used to fetch originals *through* the api — spiked
+  the Hosting line to ~$3 in one day (it looked tiny only because a 13-month
+  billing chart averaged it away). Hosting is **not** a per-day/idle cost; it's
+  pure egress, and the spike scales with originals downloaded per event.
+- **Rule: deliver originals only via short-lived signed GCS URLs, never by
+  piping `createReadStream()`/`archiver` into the response.** Thumbnails/`web`
+  derivatives already do this (signed URLs straight from GCS → browser, which
+  also dodges Hosting). The originals paths now match:
+  - `GET /api/events/:id/photos/:photoId/original` **302-redirects** to a signed
+    URL (`signOrigUrl`). The client's `fetch(...).blob()` follows it; the browser
+    drops `Authorization` on the cross-origin hop and the signed URL carries its
+    own auth.
+  - `POST /api/events/:id/download` returns **JSON of signed URLs** (one call
+    signs the whole selection, keeping the `downloadRateLimit` budget). The
+    browser assembles the ZIP itself via `web/src/lib/zip.ts` (dependency-free,
+    STORE method — photos are already compressed) + `lib/zipDownload.ts`. The old
+    server-side `archiver` ZIP was removed (dep dropped from `api/package.json`).
+- **Signed-URL blob reads need bucket CORS.** `<img>`/thumbnail loads don't, but
+  `fetch(signedUrl).blob()`/`.arrayBuffer()` is a cross-origin read of
+  `storage.googleapis.com`, so the **derivatives bucket needs a CORS policy**.
+  Apply/refresh it (idempotent) with:
+
+  ```bash
+  ./cloud-webapp/infra/scripts/provision-derivatives-cors.sh mmr-data-pipeline https://mmr-data-pipeline.web.app
+  ```
+
+  Symptom of missing CORS: Save-to-Photos / Download-ZIP fail in the browser
+  console with a CORS error while the signed URL itself opens fine in a new tab.
+
 ## Monitoring the Cloud Run indexer job
 
 - **Tail logs live** (closest to `tail -f`) with the Logging API:
