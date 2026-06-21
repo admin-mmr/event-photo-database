@@ -20,7 +20,19 @@ REPO_ROOT="$(cd "${INFRA_DIR}/.." && pwd)"
 
 echo "==> Building web bundle"
 cd "$REPO_ROOT"
-npm run build -w @cloud-webapp/web
+# VITE_RECAPTCHA_SITE_KEY is baked into the bundle at build time and must match
+# the api service's RECAPTCHA_SITE_KEY, or /api/findme/search returns 403
+# ("We could not verify this request"). It is a public value. Export it before
+# running this script, e.g.:
+#   export VITE_RECAPTCHA_SITE_KEY="$(gcloud run services describe event-photo-api \
+#     --region=us-central1 --project="$PROJECT_ID" \
+#     --format='value(spec.template.spec.containers[0].env)' \
+#     | tr ',' '\n' | sed -n 's/.*RECAPTCHA_SITE_KEY=//p')"
+if [[ -z "${VITE_RECAPTCHA_SITE_KEY:-}" ]]; then
+  echo "WARNING: VITE_RECAPTCHA_SITE_KEY is not set — Find Me search will 403 if" >&2
+  echo "         the api service has reCAPTCHA enabled. Export it before deploying." >&2
+fi
+VITE_RECAPTCHA_SITE_KEY="${VITE_RECAPTCHA_SITE_KEY:-}" npm run build -w @cloud-webapp/web
 
 echo "==> Deploying to Firebase Hosting + Firestore rules + Storage rules"
 # firebase.json lives at the repo root (cloud-webapp/) because the CLI requires

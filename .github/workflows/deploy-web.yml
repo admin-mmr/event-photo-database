@@ -38,7 +38,15 @@ jobs:
       # ../shared and fails (TS6305) if shared/dist is missing on a clean clone.
       - run: npm run build -w @cloud-webapp/shared
 
+      # VITE_RECAPTCHA_SITE_KEY is baked into the bundle at build time. It is a
+      # PUBLIC value (it ships in client JS), so it lives in a repo variable, not
+      # a secret. It MUST match the api service's RECAPTCHA_SITE_KEY or
+      # /api/findme/search rejects every search with a 403 ("We could not verify
+      # this request"). When the var is unset the client token helper no-ops,
+      # which is the correct behaviour for environments with the gate turned off.
       - run: npm run build -w @cloud-webapp/web
+        env:
+          VITE_RECAPTCHA_SITE_KEY: ${{ vars.VITE_RECAPTCHA_SITE_KEY }}
 
       - id: auth
         uses: google-github-actions/auth@v2

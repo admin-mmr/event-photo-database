@@ -17,6 +17,7 @@ import {
   apiGetBlob,
   ApiError,
 } from '../lib/api.js';
+import { getRecaptchaToken } from '../lib/recaptcha.js';
 import { useSelection } from '../lib/selection.js';
 import { combineReferences, visibleResults, scoreBand, bandLabel } from '../lib/results.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
@@ -240,7 +241,12 @@ export function FindMe(): JSX.Element {
     form.set('guardianAttested', String(guardianOk));
     if (mode === 'person') form.set('mode', 'person');
     try {
-      const res = await apiUpload<SearchResponse>('/api/findme/search', form);
+      const recaptchaToken = await getRecaptchaToken('findme_search');
+      const res = await apiUpload<SearchResponse>(
+        '/api/findme/search',
+        form,
+        recaptchaToken ? { headers: { 'X-Recaptcha-Token': recaptchaToken } } : undefined,
+      );
       pushReference(res, URL.createObjectURL(file), mode === 'person' ? 'Outfit' : 'Photo');
       setPhase('results');
       // Refresh history so this just-uploaded photo appears in the reuse picker.

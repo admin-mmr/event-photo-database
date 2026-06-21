@@ -77,6 +77,17 @@ ENV_VARS="${ENV_VARS},FINDME_SEARCH_WINDOW_SEC=${FINDME_SEARCH_WINDOW_SEC:-60}"
 ENV_VARS="${ENV_VARS},DOWNLOAD_LIMIT_PER_DAY=${DOWNLOAD_LIMIT_PER_DAY:-50}"
 ENV_VARS="${ENV_VARS},ORIGINAL_FETCH_LIMIT=${ORIGINAL_FETCH_LIMIT:-500}"
 
+# reCAPTCHA Enterprise (services/recaptcha.ts). The gate runs only when all of
+# RECAPTCHA_PROJECT_ID + _SITE_KEY + _API_KEY are non-empty. PROJECT_ID and the
+# SITE_KEY are NOT secret (the site key ships in the client bundle), so they live
+# as plain env vars; the API_KEY is sensitive and comes from Secret Manager (see
+# --set-secrets below). RECAPTCHA_SITE_KEY must equal the web build's
+# VITE_RECAPTCHA_SITE_KEY. SITE_KEY is only added when exported, so an empty
+# shell var can't blank a live value (merge preserves it).
+ENV_VARS="${ENV_VARS},RECAPTCHA_PROJECT_ID=${RECAPTCHA_PROJECT_ID:-${PROJECT_ID}}"
+if [[ -n "${RECAPTCHA_SITE_KEY:-}" ]]; then ENV_VARS="${ENV_VARS},RECAPTCHA_SITE_KEY=${RECAPTCHA_SITE_KEY}"; fi
+ENV_VARS="${ENV_VARS},RECAPTCHA_MIN_SCORE=${RECAPTCHA_MIN_SCORE:-0.5}"
+
 echo "==> Setting env vars: ${ENV_VARS}"
 
 gcloud run deploy "$SERVICE" \
@@ -93,7 +104,7 @@ gcloud run deploy "$SERVICE" \
   --concurrency=80 \
   --timeout=60 \
   --update-env-vars="$ENV_VARS" \
-  --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_KEY=RECAPTCHA_KEY:latest"
+  --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_API_KEY=RECAPTCHA_KEY:latest"
 # Auth: we deliberately pass NEITHER --allow-unauthenticated nor
 #   --no-allow-unauthenticated, so deploy leaves the service's IAM policy
 #   untouched. Classic Firebase Hosting → Cloud Run rewrites require the service

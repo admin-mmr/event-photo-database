@@ -79,10 +79,14 @@ export async function apiPost<T, B = unknown>(
 }
 
 /** Multipart POST (Find Me reference upload). */
-export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
+export async function apiUpload<T>(
+  path: string,
+  form: FormData,
+  opts?: { headers?: Record<string, string> },
+): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
-    headers: { Accept: 'application/json', ...(await authHeader()) },
+    headers: { Accept: 'application/json', ...(await authHeader()), ...(opts?.headers ?? {}) },
     body: form,
   });
   if (!res.ok) throw await parseError(res, `POST ${path} failed: HTTP ${res.status}`);
