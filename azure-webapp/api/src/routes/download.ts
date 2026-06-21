@@ -39,6 +39,23 @@ function safeEntryName(name: string, photoId: string, fallbackExt: string): stri
   return cleaned || `${photoId}.${fallbackExt}`;
 }
 
+/**
+ * Build a header-safe `Content-Disposition` value. HTTP header values must be
+ * Latin-1, but photo/event names are frequently Unicode (e.g. CJK), which makes
+ * `res.setHeader` throw `ERR_INVALID_CHAR` and 500 the request. We emit an
+ * ASCII-only `filename=` fallback for old clients plus an RFC 5987
+ * `filename*=UTF-8''…` form so modern clients still get the original name.
+ */
+function contentDisposition(filename: string): string {
+  // eslint-disable-next-line no-control-regex
+  const asciiFallback = filename.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
+  const utf8 = encodeURIComponent(filename).replace(
+    /['()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${utf8}`;
+}
+
 downloadRouter.post('/events/:id/download', requireAuth, downloadRateLimit(), async (req, res, next) => {
   try {
     const eventId = String(req.params.id);
@@ -90,7 +107,7 @@ downloadRouter.post('/events/:id/download', requireAuth, downloadRateLimit(), as
       '_',
     );
     res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
+    res.setHeader('Content-Disposition', contentDisposition(zipName));
     res.setHeader('Cache-Control', 'no-store');
 
     const archive = archiver('zip', { zlib: { level: 0 } }); // photos are already compressed
@@ -163,7 +180,7 @@ downloadRouter.get(
       const filename = safeEntryName(name, photoId, origExtForMime(mimeType));
 
       res.setHeader('Content-Type', mimeType || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Content-Disposition', contentDisposition(filename));
       res.setHeader('Cache-Control', 'no-store');
 
       const stream = origFile(eventId, photoId, mimeType).createReadStream();
