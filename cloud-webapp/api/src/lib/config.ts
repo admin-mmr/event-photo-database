@@ -54,6 +54,10 @@ const EnvSchema = z.object({
   // Tab names within the master Sheet (gas-app SHEET_NAMES).
   EVENTS_SHEET_NAME: z.string().default('Events'),
   UPLOAD_LINKS_SHEET_NAME: z.string().default('Upload_Links'),
+  // Tab the volunteer upload flow appends a completed-batch summary row to.
+  // Mirrors gas-app SHEET_NAMES.UPLOAD_LOG. Writing needs the read/write
+  // `spreadsheets` scope on the DWD client (see sheetsService header).
+  UPLOAD_LOG_SHEET_NAME: z.string().default('Upload_Log'),
   // Optional shared secret that lets a machine caller (Cloud Scheduler) invoke
   // POST /api/admin/sync via the `X-Sync-Token` header instead of a Firebase
   // admin token. Empty = only Firebase admins can trigger a sync.

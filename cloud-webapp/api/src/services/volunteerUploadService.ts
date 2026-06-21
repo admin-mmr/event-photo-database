@@ -31,6 +31,7 @@ import {
   DRIVE_SCOPE_READWRITE,
 } from './driveService.js';
 import { triggerIndexJob } from './indexerJob.js';
+import { appendUploadLog } from './uploadLogService.js';
 import { buildCreditedFileName } from '../lib/creditedFileName.js';
 
 /**
@@ -309,6 +310,7 @@ export async function enqueueStagedBatch(
   // path is only created when at least one real (non-duplicate) file needs it.
   // `photographerName` names the batch folder; the whole session shares one name.
   let batchFolderId: string | null = null;
+  let batchFolderName = '';
   const ensureBatchFolder = async (photographerName: string): Promise<string> => {
     if (batchFolderId) return batchFolderId;
     let parent = folderId;
@@ -317,11 +319,13 @@ export async function enqueueStagedBatch(
     parent = (await getOrCreateSubfolder(parent, tag, { token: driveToken })).id;
     const batchName = buildBatchFolderName(photographerName);
     batchFolderId = (await getOrCreateSubfolder(parent, batchName, { token: driveToken })).id;
+    batchFolderName = batchName;
     logger.info({ eventId: link.eventId, batchId, batchFolderId, batchName, tag }, 'volunteer batch folder ready');
     return batchFolderId;
   };
 
   let copied = 0;
+  let copiedBytes = 0;
   let skippedDuplicates = 0;
   for (const objectName of objectNames) {
     try {
@@ -367,6 +371,7 @@ export async function enqueueStagedBatch(
       await uploadFileToDrive(destFolderId, name, contentType, bytes, { token: driveToken });
       seen.add(key);
       copied += 1;
+      copiedBytes += size;
 
       // Best-effort cleanup; the bucket lifecycle rule is the backstop.
       await file
@@ -394,6 +399,23 @@ export async function enqueueStagedBatch(
       'volunteer batch: no files copied',
     );
   }
+
+  // Record the completed session in the master Sheet's Upload_Log tab so the
+  // cloud webapp populates the same analytics surface as the legacy gas-app.
+  // Best-effort: the files are already in Drive, so a failed log row must not
+  // fail the upload. Logged for an all-duplicate batch too (copied === 0), with
+  // empty batch-folder fields since no folder was created in that case.
+  await appendUploadLog({
+    eventId: link.eventId,
+    clubName: link.clubName,
+    batchFolderName,
+    batchFolderId: batchFolderId ?? '',
+    fileCount: copied,
+    totalSizeMb: copiedBytes / (1024 * 1024),
+    skippedDuplicates,
+    source: 'link',
+    linkId: link.linkId,
+  });
 
   return { copied, skippedDuplicates };
 }
