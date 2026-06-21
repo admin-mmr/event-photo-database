@@ -71,6 +71,8 @@ export function FindMe(): JSX.Element {
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Save-to-Photos progress (C9): how many originals have been fetched so far.
+  const [saveProgress, setSaveProgress] = useState<{ done: number; total: number } | null>(null);
   // Transient success line after a save/download (C9), announced via aria-live.
   const [status, setStatus] = useState<string | null>(null);
   // Index into `visible` of the photo open in the lightbox, or null (C4/C5).
@@ -339,29 +341,64 @@ export function FindMe(): JSX.Element {
    */
   async function saveSelected(): Promise<void> {
     if (sel.count === 0) return;
-    const n = sel.count;
+    const ids = [...sel.selected];
+    const n = ids.length;
     setSaving(true);
     setError(null);
     setStatus(null);
+    setSaveProgress({ done: 0, total: n });
     try {
-      const files: NamedBlob[] = [];
-      for (const photoId of [...sel.selected]) {
-        // eslint-disable-next-line no-await-in-loop
-        const blob = await apiGetBlob(
-          `/api/events/${encodeURIComponent(eventId)}/photos/${encodeURIComponent(photoId)}/original`,
-        );
-        files.push({ blob, filename: `${photoId}.jpg` });
+      // Fetch the originals with a small concurrency pool (much faster than the
+      // old one-at-a-time loop for large selections) and tolerate per-photo
+      // failures: one unreadable original must not sink the whole save. Slots
+      // preserve order so filenames stay stable.
+      const slots: (NamedBlob | null)[] = new Array<NamedBlob | null>(n).fill(null);
+      let done = 0;
+      let failed = 0;
+      let cursor = 0;
+      const CONCURRENCY = 5;
+      const worker = async (): Promise<void> => {
+        while (cursor < n) {
+          const i = cursor;
+          cursor += 1;
+          const photoId = ids[i];
+          try {
+            if (photoId === undefined) throw new Error('missing id');
+            // eslint-disable-next-line no-await-in-loop
+            const blob = await apiGetBlob(
+              `/api/events/${encodeURIComponent(eventId)}/photos/${encodeURIComponent(photoId)}/original`,
+            );
+            slots[i] = { blob, filename: `${photoId}.jpg` };
+          } catch {
+            failed += 1;
+          } finally {
+            done += 1;
+            setSaveProgress({ done, total: n });
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, n) }, () => worker()));
+
+      const files = slots.filter((f): f is NamedBlob => f !== null);
+      if (files.length === 0) {
+        setError('Could not load any of the selected photos. Please try again in a moment.');
+        return;
       }
       const outcome = await savePhotosIndividually(files, { title: 'My event photos' });
-      const photos = `${n} photo${n === 1 ? '' : 's'}`;
+      const photos = `${files.length} photo${files.length === 1 ? '' : 's'}`;
+      const skipped = failed > 0 ? ` (${failed} couldn't be loaded and were skipped)` : '';
       // 'shared' → went to the share sheet (iOS "Save to Photos"); 'cancelled' →
       // user dismissed, say nothing; otherwise it fell back to file downloads.
-      if (outcome === 'shared') setStatus(`Sent ${photos} to your share sheet — choose Save to Photos.`);
-      else if (outcome !== 'cancelled') setStatus(`Downloaded ${photos}.`);
+      if (outcome === 'shared') {
+        setStatus(`Sent ${photos} to your share sheet — choose Save to Photos.${skipped}`);
+      } else if (outcome !== 'cancelled') {
+        setStatus(`Downloaded ${photos}.${skipped}`);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save photos');
     } finally {
       setSaving(false);
+      setSaveProgress(null);
     }
   }
 
@@ -558,6 +595,7 @@ export function FindMe(): JSX.Element {
                 total={ids.length}
                 selectedCount={sel.count}
                 busy={downloading || saving}
+                saveProgress={saveProgress}
                 canSave={canSavePhotos}
                 onSelectAll={sel.selectAll}
                 onSelectNone={sel.selectNone}

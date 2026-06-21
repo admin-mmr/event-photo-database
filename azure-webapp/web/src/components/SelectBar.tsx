@@ -24,6 +24,12 @@ interface SelectBarProps {
    * While true the Save button shows "Preparing…" and is disabled.
    */
   savePreparing?: boolean;
+  /**
+   * Live progress while the selected originals are being fetched for "Save to
+   * Photos". When set, the Save button shows "Saving N of M…" so a large
+   * selection doesn't look frozen.
+   */
+  saveProgress?: { done: number; total: number } | null;
   onSelectAll: () => void;
   onSelectNone: () => void;
   onInvert: () => void;
@@ -40,6 +46,7 @@ export function SelectBar({
   busy = false,
   canSave = false,
   savePreparing = false,
+  saveProgress = null,
   onSelectAll,
   onSelectNone,
   onInvert,
@@ -75,7 +82,9 @@ export function SelectBar({
             disabled={none || busy || savePreparing}
           >
             {busy
-              ? 'Saving…'
+              ? saveProgress
+                ? `Saving ${saveProgress.done} of ${saveProgress.total}…`
+                : 'Saving…'
               : savePreparing
                 ? `Preparing ${selectedCount || ''}…`.replace('  ', ' ').trim()
                 : `📲 Save ${selectedCount || ''} to Photos`.replace('  ', ' ').trim()}
