@@ -149,20 +149,6 @@ const EnvSchema = z.object({
   // existing tests are unaffected until an operator opts into the pilot gate.
   FINDME_ENABLED: z.enum(['true', 'false']).default('true'),
   FINDME_EVENT_ALLOWLIST: z.string().default(''),
-
-  // ── Error-alert email (services/alertService.ts) ──────────────────────
-  // When an unhandled error reaches the Express error handler, we email an
-  // operator. Sent via SendGrid's HTTPS API (no SMTP egress). Alerting runs
-  // only when SENDGRID_API_KEY + ALERT_EMAIL_FROM + ALERT_EMAIL_TO are all set
-  // (so dev/CI/tests stay silent). ALERT_EMAIL_FROM must be a SendGrid-verified
-  // sender. Throttling avoids error-storm spam: at most one mail per distinct
-  // error signature per ALERT_THROTTLE_SEC, and at most ALERT_MAX_PER_HOUR mails
-  // overall per instance.
-  SENDGRID_API_KEY: z.string().default(''),
-  ALERT_EMAIL_TO: z.string().default('admin@mmrunners.org'),
-  ALERT_EMAIL_FROM: z.string().default(''),
-  ALERT_THROTTLE_SEC: z.coerce.number().int().min(0).default(900),
-  ALERT_MAX_PER_HOUR: z.coerce.number().int().min(0).default(20),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

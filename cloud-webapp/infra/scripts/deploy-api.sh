@@ -88,25 +88,7 @@ ENV_VARS="${ENV_VARS},RECAPTCHA_PROJECT_ID=${RECAPTCHA_PROJECT_ID:-${PROJECT_ID}
 if [[ -n "${RECAPTCHA_SITE_KEY:-}" ]]; then ENV_VARS="${ENV_VARS},RECAPTCHA_SITE_KEY=${RECAPTCHA_SITE_KEY}"; fi
 ENV_VARS="${ENV_VARS},RECAPTCHA_MIN_SCORE=${RECAPTCHA_MIN_SCORE:-0.5}"
 
-# Error-alert email (services/alertService.ts). Recipient + sender are not
-# secret, so they're plain env vars; the SendGrid API key is a secret (handled
-# below). Alerting stays OFF until the SENDGRID_API_KEY secret exists AND
-# ALERT_EMAIL_FROM is a SendGrid-verified sender. ALERT_EMAIL_FROM is only added
-# when exported, so an empty shell var can't blank a live value (merge).
-ENV_VARS="${ENV_VARS},ALERT_EMAIL_TO=${ALERT_EMAIL_TO:-admin@mmrunners.org}"
-if [[ -n "${ALERT_EMAIL_FROM:-}" ]]; then ENV_VARS="${ENV_VARS},ALERT_EMAIL_FROM=${ALERT_EMAIL_FROM}"; fi
-
 echo "==> Setting env vars: ${ENV_VARS}"
-
-# Build the secret list. SENDGRID_API_KEY is included only when the secret
-# already exists, so a project that hasn't set up alerting still deploys cleanly
-# (--set-secrets fails hard on a missing secret). All other secrets are required.
-SECRETS="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_API_KEY=RECAPTCHA_KEY:latest"
-if gcloud secrets describe SENDGRID_API_KEY --project="$PROJECT_ID" >/dev/null 2>&1; then
-  SECRETS="${SECRETS},SENDGRID_API_KEY=SENDGRID_API_KEY:latest"
-else
-  echo "NOTE: SENDGRID_API_KEY secret not found — error-alert email stays OFF. Create it to enable (see header)." >&2
-fi
 
 gcloud run deploy "$SERVICE" \
   --image="$IMAGE" \
@@ -122,7 +104,7 @@ gcloud run deploy "$SERVICE" \
   --concurrency=80 \
   --timeout=60 \
   --update-env-vars="$ENV_VARS" \
-  --set-secrets="$SECRETS"
+  --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_API_KEY=RECAPTCHA_KEY:latest"
 # Auth: we deliberately pass NEITHER --allow-unauthenticated nor
 #   --no-allow-unauthenticated, so deploy leaves the service's IAM policy
 #   untouched. Classic Firebase Hosting → Cloud Run rewrites require the service
