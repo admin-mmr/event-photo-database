@@ -7,6 +7,7 @@ import { healthRouter } from './routes/health.js';
 import { eventsRouter } from './routes/events.js';
 import { galleryRouter } from './routes/gallery.js';
 import { findmeRouter } from './routes/findme.js';
+import { adminFindmeRouter } from './routes/adminFindme.js';
 import { downloadRouter } from './routes/download.js';
 import { feedbackRouter } from './routes/feedback.js';
 import { metricsRouter } from './routes/metrics.js';
@@ -71,6 +72,7 @@ export function buildServer(): express.Express {
   app.use('/api', eventsRouter);
   app.use('/api', galleryRouter);
   app.use('/api', findmeRouter);
+  app.use('/api', adminFindmeRouter);
   app.use('/api', downloadRouter);
   app.use('/api', feedbackRouter);
   app.use('/api', metricsRouter);

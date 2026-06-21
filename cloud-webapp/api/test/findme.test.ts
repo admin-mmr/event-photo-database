@@ -66,9 +66,15 @@ const { buildServer } = await import('../src/server.js');
 const USER = JSON.stringify({ uid: 'u1', email: 'member@mmrunners.org', emailVerified: true });
 const JPEG = Buffer.from('fake-jpeg-bytes');
 
-function search(app: ReturnType<typeof buildServer>, fields: Record<string, string>, withFile = true) {
+function search(
+  app: ReturnType<typeof buildServer>,
+  fields: Record<string, string>,
+  opts: { withFile?: boolean; withName?: boolean } = {},
+) {
+  const { withFile = true, withName = true } = opts;
   let req = request(app).post('/api/findme/search').set('x-test-user', USER);
-  for (const [k, v] of Object.entries(fields)) req = req.field(k, v);
+  const all = { ...(withName ? { name: 'Test Runner' } : {}), ...fields };
+  for (const [k, v] of Object.entries(all)) req = req.field(k, v);
   if (withFile) req = req.attach('file', JPEG, { filename: 'selfie.jpg', contentType: 'image/jpeg' });
   return req;
 }
@@ -90,9 +96,17 @@ describe('POST /api/findme/search', () => {
   });
 
   it('rejects missing file', async () => {
-    const res = await search(app, { eventId: 'ev1', consent: 'true' }, false);
+    const res = await search(app, { eventId: 'ev1', consent: 'true' }, { withFile: false });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('missing_file');
+  });
+
+  it('requires a non-empty name and records nothing', async () => {
+    const res = await search(app, { eventId: 'ev1', consent: 'true', name: '   ' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('name_required');
+    expect(fakeDb.added).toHaveLength(0);
+    expect(matcherSearch).not.toHaveBeenCalled();
   });
 
   it('rejects missing eventId', async () => {
@@ -155,9 +169,18 @@ describe('POST /api/findme/search', () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]?.data).toMatchObject({ uid: 'u1', eventId: 'ev1', resultPhotoIds: ['p1', 'p2'] });
 
-    // Fresh uploads are persisted for reuse (D7).
+    // Fresh uploads are persisted for reuse (D7) with the searcher name + outcome.
     expect(createReference).toHaveBeenCalledTimes(1);
-    expect(createReference.mock.calls[0]?.[0]).toMatchObject({ uid: 'u1', eventId: 'ev1', mode: 'fused' });
+    expect(createReference.mock.calls[0]?.[0]).toMatchObject({
+      uid: 'u1',
+      eventId: 'ev1',
+      mode: 'fused',
+      outcome: 'matched',
+      name: 'Test Runner',
+      email: 'member@mmrunners.org',
+    });
+    // The captured name is recorded on the consent doc too.
+    expect(consents[0]?.data).toMatchObject({ name: 'Test Runner', isGuest: false });
   });
 
   it('maps no_usable_face to a friendly 422', async () => {
@@ -170,6 +193,28 @@ describe('POST /api/findme/search', () => {
     const res = await search(app, { eventId: 'ev1', consent: 'true' });
     expect(res.status).toBe(422);
     expect(res.body.error).toBe('no_usable_face');
+  });
+
+  it('persists the selfie even on a failed search, so admins can reproduce it', async () => {
+    matcherSearch.mockResolvedValue({
+      ok: false,
+      status: 422,
+      error: 'no_usable_face',
+      message: 'no usable face',
+    });
+    const res = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(res.status).toBe(422);
+    // The reference is stored with mode=null and the failure outcome.
+    expect(createReference).toHaveBeenCalledTimes(1);
+    expect(createReference.mock.calls[0]?.[0]).toMatchObject({
+      uid: 'u1',
+      eventId: 'ev1',
+      mode: null,
+      outcome: 'no_usable_face',
+      name: 'Test Runner',
+    });
+    // A failed search records no match_runs doc (nothing to feed the eval loop).
+    expect(fakeDb.added.filter((a) => a.collection === 'match_runs')).toHaveLength(0);
   });
 
   it('maps event_not_indexed to 409', async () => {

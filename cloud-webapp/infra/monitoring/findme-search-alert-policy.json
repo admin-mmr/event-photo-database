@@ -1,0 +1,23 @@
+{
+  "displayName": "Find Me search alert (guest identification)",
+  "documentation": {
+    "content": "A Find Me search ran on event-photo-api. The log entry's jsonPayload carries `guestName` (the name the searcher entered — required at search time), `isGuest`, `uid`, `email`, `eventId`, `outcome`, and `resultCount`. Open the incident / log entry to see who searched. To alert on GUEST searches only, append `AND jsonPayload.isGuest=true` to the filter below.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Find Me search log lines from event-photo-api",
+      "conditionMatchedLog": {
+        "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"event-photo-api\" AND jsonPayload.alert=\"findme_search\""
+      }
+    }
+  ],
+  "alertStrategy": {
+    "notificationRateLimit": { "period": "300s" },
+    "autoClose": "1800s"
+  },
+  "notificationChannels": [
+    "projects/mmr-data-pipeline/notificationChannels/2707820505476417914"
+  ]
+}

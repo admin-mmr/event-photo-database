@@ -21,6 +21,7 @@ import { getRecaptchaToken } from '../lib/recaptcha.js';
 import { useSelection } from '../lib/selection.js';
 import { combineReferences, visibleResults, scoreBand, bandLabel } from '../lib/results.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
+import { reportClientError } from '../lib/reportError.js';
 import { saveResults, loadResults, clearResults } from '../lib/findmeCache.js';
 import { usePageSize, PAGE_SIZE_OPTIONS } from '../lib/pageSize.js';
 import { SelectBar } from '../components/SelectBar.js';
@@ -60,6 +61,9 @@ export function FindMe(): JSX.Element {
   const { eventId = '' } = useParams();
   const [phase, setPhase] = useState<Phase>('consent');
   const [agreed, setAgreed] = useState(false);
+  // Required: Find Me is open to guests, so we capture who is searching (feeds
+  // the admin alert). Entered once here and sent on every search this session.
+  const [name, setName] = useState('');
   const [isMinor, setIsMinor] = useState(false);
   const [guardianOk, setGuardianOk] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -85,8 +89,10 @@ export function FindMe(): JSX.Element {
   // doesn't overwrite the cache before the restore has run (C6).
   const restored = useRef(false);
 
-  // Consent can't be given for a minor without guardian attestation (PRD §8.3).
-  const consentOk = agreed && (!isMinor || guardianOk);
+  // A non-empty name is required, alongside consent. Consent can't be given for
+  // a minor without guardian attestation (PRD §8.3).
+  const nameOk = name.trim().length > 0;
+  const consentOk = agreed && nameOk && (!isMinor || guardianOk);
   const canSavePhotos = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
 
   const activeRef = references.find((r) => r.id === activeId);
@@ -199,6 +205,7 @@ export function FindMe(): JSX.Element {
   async function searchByUpload(u: ReferenceUpload): Promise<void> {
     const body: SearchByUploadRequest = {
       eventId,
+      name: name.trim(),
       ...(u.mode === 'person' ? { mode: 'person' as const } : {}),
       subjectIsMinor: isMinor,
       guardianAttested: guardianOk,
@@ -238,6 +245,7 @@ export function FindMe(): JSX.Element {
     const form = new FormData();
     form.set('file', file);
     form.set('eventId', eventId);
+    form.set('name', name.trim());
     form.set('consent', 'true');
     form.set('subjectIsMinor', String(isMinor));
     form.set('guardianAttested', String(guardianOk));
@@ -326,6 +334,10 @@ export function FindMe(): JSX.Element {
       );
       setStatus(`Downloaded ${n} photo${n === 1 ? '' : 's'} as a ZIP.`);
     } catch (e) {
+      reportClientError('download_failed', 'ZIP download failed', {
+        stack: e instanceof Error ? e.stack : undefined,
+        context: { eventId, requested: n, reason: e instanceof Error ? e.message : String(e) },
+      });
       setError(e instanceof Error ? e.message : 'Download failed');
     } finally {
       setDownloading(false);
@@ -381,6 +393,9 @@ export function FindMe(): JSX.Element {
 
       const files = slots.filter((f): f is NamedBlob => f !== null);
       if (files.length === 0) {
+        reportClientError('download_failed', 'Save to Photos: every original failed to load', {
+          context: { eventId, requested: n, failed },
+        });
         setError('Could not load any of the selected photos. Please try again in a moment.');
         return;
       }
@@ -419,6 +434,19 @@ export function FindMe(): JSX.Element {
             matching. Your reference photo is used only for this search.
           </p>
           {error && <p className="error-text">{error}</p>}
+          <label className="consent-row consent-name">
+            <span>Your name</span>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Jamie Lee"
+              maxLength={120}
+              autoComplete="name"
+              required
+              aria-required="true"
+            />
+          </label>
           <label className="consent-row">
             <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
             <span>

@@ -64,6 +64,23 @@ export const DownloadRequestSchema = z.object({
 });
 export type DownloadRequest = z.infer<typeof DownloadRequestSchema>;
 
+// ── Searcher name (required at search time; FR — guest identification) ────────
+
+/** Max length for the searcher/guest display name captured at search time. */
+export const SEARCHER_NAME_MAX = 120;
+
+/**
+ * Searcher name validator: trimmed, non-empty, length-bounded. Find Me is open
+ * to anonymous guests, who have no account email — so every search must carry a
+ * name we can put in the admin alert. Required for members too (captured once in
+ * the consent step), so the alert is always attributable.
+ */
+export const SearcherNameSchema = z
+  .string()
+  .trim()
+  .min(1, 'Please enter your name')
+  .max(SEARCHER_NAME_MAX, `Name must be ${SEARCHER_NAME_MAX} characters or fewer`);
+
 // ── Search (POST /api/findme/search, multipart) ──────────────────────────────
 
 export const MatchResultSchema = z.object({
@@ -140,8 +157,81 @@ export type ListReferencesResponse = z.infer<typeof ListReferencesResponseSchema
  *  search (the gate runs again server-side). */
 export const SearchByUploadRequestSchema = z.object({
   eventId: z.string().min(1),
+  /** Required: who is running the search (feeds the admin alert). */
+  name: SearcherNameSchema,
   mode: z.enum(['fused', 'person']).optional(),
   subjectIsMinor: z.boolean().optional(),
   guardianAttested: z.boolean().optional(),
 });
 export type SearchByUploadRequest = z.infer<typeof SearchByUploadRequestSchema>;
+
+// ── Admin: Find Me reference inspection + repro (admin-only, audited) ─────────
+
+/**
+ * One stored reference selfie as seen by an admin (cross-user). Unlike the
+ * member-facing `ReferenceUpload`, this exposes the owner (uid/email), the
+ * searcher-provided name, and the recorded `outcome` so support can find the
+ * exact selfie behind a reported issue — including failed searches we now keep
+ * for reproduction.
+ */
+export const AdminReferenceSchema = z.object({
+  uploadId: z.string(),
+  uid: z.string(),
+  email: z.string().nullable(),
+  name: z.string().nullable(),
+  eventId: z.string(),
+  /** Match mode that succeeded, or null for a failed/no-face search. */
+  mode: z.enum(['fused', 'person']).nullable(),
+  /** 'matched' or the matcher error code reproduced (e.g. 'no_usable_face'). */
+  outcome: z.string(),
+  subjectIsMinor: z.boolean(),
+  createdAt: z.string(),
+  expiresAt: z.string(),
+  /** Short-lived signed URL to view/download the selfie (issuance is audited). */
+  imageUrl: z.string(),
+});
+export type AdminReference = z.infer<typeof AdminReferenceSchema>;
+
+export const AdminReferenceListResponseSchema = z.object({
+  ok: z.literal(true),
+  total: z.number(),
+  references: z.array(AdminReferenceSchema),
+});
+export type AdminReferenceListResponse = z.infer<typeof AdminReferenceListResponseSchema>;
+
+/** Body for POST /api/admin/findme/uploads/:uploadId/reproduce. */
+export const AdminReproduceRequestSchema = z.object({
+  /** Event to run against; defaults to the reference's original event. */
+  eventId: z.string().min(1).optional(),
+  mode: z.enum(['fused', 'face', 'person']).optional(),
+});
+export type AdminReproduceRequest = z.infer<typeof AdminReproduceRequestSchema>;
+
+/**
+ * Diagnostic result of an admin repro run. Mirrors the raw matcher outcome
+ * (success OR the reproduced error code) and writes NOTHING to consents /
+ * match_runs and does not persist a new reference — it only re-runs the stored
+ * selfie so support can see what a user hit.
+ */
+export const AdminReproduceResponseSchema = z.object({
+  ok: z.literal(true),
+  uploadId: z.string(),
+  eventId: z.string(),
+  /** 'matched' or the matcher error code (e.g. 'no_usable_face'). */
+  outcome: z.string(),
+  /** Upstream HTTP status from the matcher (200 on match). */
+  status: z.number(),
+  message: z.string().optional(),
+  mode: z.enum(['fused', 'face', 'person']).nullable(),
+  modelVersion: z.string().nullable(),
+  resultCount: z.number(),
+  /** Top results (photoId + score + signed thumb) when matched. */
+  results: z.array(
+    z.object({
+      photoId: z.string(),
+      score: z.number(),
+      thumbUrl: z.string(),
+    }),
+  ),
+});
+export type AdminReproduceResponse = z.infer<typeof AdminReproduceResponseSchema>;

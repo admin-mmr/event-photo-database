@@ -61,6 +61,9 @@ export function FindMe(): JSX.Element {
   const { eventId = '' } = useParams();
   const [phase, setPhase] = useState<Phase>('consent');
   const [agreed, setAgreed] = useState(false);
+  // Required: Find Me is open to guests, so we capture who is searching (feeds
+  // the admin alert). Entered once here and sent on every search this session.
+  const [name, setName] = useState('');
   const [isMinor, setIsMinor] = useState(false);
   const [guardianOk, setGuardianOk] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,8 +97,10 @@ export function FindMe(): JSX.Element {
   // doesn't overwrite the cache before the restore has run (C6).
   const restored = useRef(false);
 
-  // Consent can't be given for a minor without guardian attestation (PRD §8.3).
-  const consentOk = agreed && (!isMinor || guardianOk);
+  // A non-empty name is required, alongside consent. Consent can't be given for
+  // a minor without guardian attestation (PRD §8.3).
+  const nameOk = name.trim().length > 0;
+  const consentOk = agreed && nameOk && (!isMinor || guardianOk);
   const canSavePhotos = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
 
   const activeRef = references.find((r) => r.id === activeId);
@@ -257,6 +262,7 @@ export function FindMe(): JSX.Element {
   async function searchByUpload(u: ReferenceUpload): Promise<void> {
     const body: SearchByUploadRequest = {
       eventId,
+      name: name.trim(),
       ...(u.mode === 'person' ? { mode: 'person' as const } : {}),
       subjectIsMinor: isMinor,
       guardianAttested: guardianOk,
@@ -296,6 +302,7 @@ export function FindMe(): JSX.Element {
     const form = new FormData();
     form.set('file', file);
     form.set('eventId', eventId);
+    form.set('name', name.trim());
     form.set('consent', 'true');
     form.set('subjectIsMinor', String(isMinor));
     form.set('guardianAttested', String(guardianOk));
@@ -506,6 +513,19 @@ export function FindMe(): JSX.Element {
             matching. Your reference photo is used only for this search.
           </p>
           {error && <p className="error-text">{error}</p>}
+          <label className="consent-row consent-name">
+            <span>Your name</span>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Jamie Lee"
+              maxLength={120}
+              autoComplete="name"
+              required
+              aria-required="true"
+            />
+          </label>
           <label className="consent-row">
             <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
             <span>

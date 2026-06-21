@@ -131,7 +131,7 @@ describe('Find Me reference reuse (D7)', () => {
       const res = await request(app)
         .post('/api/findme/uploads/up-1/search')
         .set('x-test-user', OTHER)
-        .send({ eventId: 'evNew' });
+        .send({ eventId: 'evNew', name: 'Test Runner' });
       expect(res.status).toBe(404);
       expect(matcherSearch).not.toHaveBeenCalled();
     });
@@ -147,7 +147,7 @@ describe('Find Me reference reuse (D7)', () => {
       const res = await request(app)
         .post('/api/findme/uploads/up-1/search')
         .set('x-test-user', USER)
-        .send({ eventId: 'evNew' });
+        .send({ eventId: 'evNew', name: 'Test Runner' });
       expect(res.status).toBe(200);
       expect(res.body.results).toHaveLength(1);
       expect(readReference).toHaveBeenCalledWith('find_me_references/u1/up-1.jpg');
@@ -162,7 +162,7 @@ describe('Find Me reference reuse (D7)', () => {
       const res = await request(app)
         .post('/api/findme/uploads/up-1/search')
         .set('x-test-user', USER)
-        .send({ eventId: 'evNew', subjectIsMinor: true });
+        .send({ eventId: 'evNew', name: 'Test Runner', subjectIsMinor: true });
       expect(res.status).toBe(403);
       expect(res.body.error).toBe('guardian_required');
       expect(matcherSearch).not.toHaveBeenCalled();
@@ -174,7 +174,7 @@ describe('Find Me reference reuse (D7)', () => {
       const res = await request(app)
         .post('/api/findme/uploads/up-1/search')
         .set('x-test-user', USER)
-        .send({ eventId: 'evNew' });
+        .send({ eventId: 'evNew', name: 'Test Runner' });
       expect(res.status).toBe(410);
       expect(res.body.error).toBe('reference_gone');
     });
@@ -184,8 +184,18 @@ describe('Find Me reference reuse (D7)', () => {
       const res = await request(app)
         .post('/api/findme/uploads/up-1/search')
         .set('x-test-user', USER)
-        .send({});
+        .send({ name: 'Test Runner' });
       expect(res.status).toBe(400);
+    });
+
+    it('400s on a missing name', async () => {
+      store = [rec()];
+      const res = await request(app)
+        .post('/api/findme/uploads/up-1/search')
+        .set('x-test-user', USER)
+        .send({ eventId: 'evNew' });
+      expect(res.status).toBe(400);
+      expect(matcherSearch).not.toHaveBeenCalled();
     });
   });
 

@@ -21,6 +21,7 @@ import multer from 'multer';
 import type { Response } from 'express';
 import {
   SearchByUploadRequestSchema,
+  SearcherNameSchema,
   type SearchResponse,
   type MatchResult,
   type ListReferencesResponse,
@@ -67,10 +68,13 @@ interface RunSearchOpts {
   image: Buffer;
   contentType: string;
   filename: string;
+  /** Searcher-provided display name (required, validated by the caller). */
+  name: string;
   mode: 'fused' | 'person';
   subjectIsMinor: boolean;
   guardianAttested: boolean;
-  /** Store the reference for future reuse (fresh uploads only). */
+  /** Store the reference (fresh uploads only). Persisted on ALL outcomes —
+   *  including failed searches — so an admin can reproduce reported issues. */
   persistReference: boolean;
 }
 
@@ -82,7 +86,10 @@ interface RunSearchOpts {
  * caller's try/catch forwards those to the error handler).
  */
 async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
-  const { user, eventId, image, contentType, filename, mode, subjectIsMinor, guardianAttested } = opts;
+  const { user, eventId, image, contentType, filename, name, mode, subjectIsMinor, guardianAttested } = opts;
+  // Anonymous guests have no account email — the captured name is how we
+  // attribute the search in the admin alert.
+  const isGuest = !user.email;
 
   // Pilot feature flag (dev plan M6.1). Cheapest check first — no IO. When the
   // launch is gated to specific events (or switched off globally), a search for
@@ -121,6 +128,8 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
   await firestore().collection('consents').add({
     uid: user.uid,
     email: user.email ?? null,
+    name,
+    isGuest,
     eventId,
     policyVersion: env.CONSENT_POLICY_VERSION,
     action: 'findme_search',
@@ -130,6 +139,66 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
   });
 
   const match = await matcherSearch({ image, filename, contentType, eventId, topK: 50, mode });
+
+  // Outcome derived once, used for persistence, the alert, and the response.
+  const outcome = match.ok ? 'matched' : match.error;
+  const storedMode: 'fused' | 'person' | null = match.ok
+    ? match.mode === 'person'
+      ? 'person'
+      : 'fused'
+    : null;
+  const resultCount = match.ok ? match.results.length : 0;
+
+  // Persist the reference for reuse + admin repro (best-effort, non-fatal —
+  // PRD D7/§6.1). Done on EVERY outcome (incl. no_usable_face / not-indexed) so
+  // support can reproduce a reported failure from the exact selfie the user
+  // sent. Only matched selfies are later offered back to the user for reuse.
+  if (opts.persistReference) {
+    try {
+      const uploadId = randomUUID();
+      const gcsPath = await uploadReference(user.uid, uploadId, image, contentType);
+      const days = subjectIsMinor
+        ? env.REFERENCE_RETENTION_DAYS_MINOR
+        : env.REFERENCE_RETENTION_DAYS_ADULT;
+      const expiresAt = new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString();
+      await createReference({
+        uploadId,
+        uid: user.uid,
+        eventId,
+        gcsPath,
+        contentType,
+        mode: storedMode,
+        outcome,
+        name,
+        email: user.email ?? null,
+        subjectIsMinor,
+        createdAt: nowIso,
+        expiresAt,
+      });
+    } catch (err) {
+      logger.warn({ err, uid: user.uid }, 'reference persist failed (non-fatal)');
+    }
+  }
+
+  // Admin alert (FR — guest identification). One structured line per search; a
+  // Cloud Monitoring log-based alert policy (infra/monitoring/
+  // findme-search-alert-policy.json) turns `alert="findme_search"` into an
+  // email to the org channel. The captured name makes a guest search
+  // attributable even though anonymous guests have no email.
+  logger.info(
+    {
+      alert: 'findme_search',
+      guestName: name,
+      isGuest,
+      uid: user.uid,
+      email: user.email ?? null,
+      eventId,
+      outcome,
+      mode: storedMode,
+      resultCount,
+    },
+    `Find Me search by ${name}${isGuest ? ' (guest)' : ''} on ${eventId} — ${outcome}`,
+  );
 
   if (!match.ok) {
     if (match.error === 'no_usable_face') {
@@ -157,33 +226,6 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
     logger.error({ eventId, error: match.error, status: match.status }, 'matcher search failed');
     res.status(502).json({ ok: false, error: match.error, message: match.message });
     return;
-  }
-
-  const storedMode: 'fused' | 'person' = match.mode === 'person' ? 'person' : 'fused';
-
-  // Persist the reference for reuse (best-effort, non-fatal — PRD D7/§6.1).
-  if (opts.persistReference) {
-    try {
-      const uploadId = randomUUID();
-      const gcsPath = await uploadReference(user.uid, uploadId, image, contentType);
-      const days = subjectIsMinor
-        ? env.REFERENCE_RETENTION_DAYS_MINOR
-        : env.REFERENCE_RETENTION_DAYS_ADULT;
-      const expiresAt = new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString();
-      await createReference({
-        uploadId,
-        uid: user.uid,
-        eventId,
-        gcsPath,
-        contentType,
-        mode: storedMode,
-        subjectIsMinor,
-        createdAt: nowIso,
-        expiresAt,
-      });
-    } catch (err) {
-      logger.warn({ err, uid: user.uid }, 'reference persist failed (non-fatal)');
-    }
   }
 
   // Persist a minimal run record for the feedback loop (M4 / eval doc).
@@ -261,6 +303,18 @@ findmeRouter.post(
         return;
       }
 
+      // A non-empty name is required (Find Me is open to guests; the name is how
+      // the admin alert attributes the search).
+      const nameParsed = SearcherNameSchema.safeParse(req.body?.name);
+      if (!nameParsed.success) {
+        res.status(400).json({
+          ok: false,
+          error: 'name_required',
+          message: nameParsed.error.issues[0]?.message ?? 'Please enter your name',
+        });
+        return;
+      }
+
       // Outfit-only fallback (FR-7): the client retries with mode=person when no
       // face was found. Only 'fused' (default) and 'person' are accepted.
       const mode = req.body?.mode === 'person' ? 'person' : 'fused';
@@ -271,6 +325,7 @@ findmeRouter.post(
         image: req.file.buffer,
         contentType: req.file.mimetype,
         filename: req.file.originalname || 'reference.jpg',
+        name: nameParsed.data,
         mode,
         subjectIsMinor: req.body?.subjectIsMinor === 'true',
         guardianAttested: req.body?.guardianAttested === 'true',
@@ -292,7 +347,9 @@ findmeRouter.get('/findme/uploads', requireAuth, async (req, res, next) => {
       recs.map(async (r) => ({
         uploadId: r.uploadId,
         url: await signReferenceUrl(r.gcsPath),
-        mode: r.mode,
+        // listReferencesForUser only returns matched refs (mode non-null); the
+        // fallback satisfies the type and never triggers at runtime.
+        mode: r.mode ?? 'fused',
         createdAt: r.createdAt,
         expiresAt: r.expiresAt,
       })),
@@ -362,7 +419,7 @@ findmeRouter.post(
         });
         return;
       }
-      const { eventId, mode, subjectIsMinor, guardianAttested } = parsed.data;
+      const { eventId, name, mode, subjectIsMinor, guardianAttested } = parsed.data;
 
       const rec = await getReference(String(req.params.uploadId));
       // 404 (not 403) when it isn't the caller's, so we don't confirm existence
@@ -391,6 +448,7 @@ findmeRouter.post(
         image,
         contentType: rec.contentType,
         filename: `${rec.uploadId}.jpg`,
+        name,
         mode: mode ?? 'fused',
         subjectIsMinor: subjectIsMinor ?? rec.subjectIsMinor,
         guardianAttested: guardianAttested ?? false,

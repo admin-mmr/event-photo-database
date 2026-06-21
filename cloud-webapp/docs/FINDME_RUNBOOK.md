@@ -264,6 +264,65 @@ gcloud logging read \
 > errors — they must never lock real attendees out. reCAPTCHA fails *closed*
 > only on a genuinely bad verdict.
 
+### 6.3 Reproduce a reported issue (admin-only, audited)
+
+Find Me now persists **every** reference selfie — including searches that failed
+(`no_usable_face`, `event_not_indexed`, …) — and records the searcher's **name**
+(required at search time; guests have no email, so the name is how a report is
+attributed). Admins can find and re-run the exact selfie behind a report. All
+three routes require an `ADMIN_EMAILS` Firebase admin token and write an
+`admin_audit` Firestore record + log line on every access — privileged access to
+another user's selfie is never silent.
+
+```bash
+BASE=https://mmr-data-pipeline.web.app
+TOKEN=...   # a Firebase ID token for an ADMIN_EMAILS account
+
+# 1. Find the selfie. Filter by ?name= is not supported server-side; filter by
+#    ?uid=, ?email=, ?eventId=, ?outcome= (e.g. no_usable_face), ?limit=.
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$BASE/api/admin/findme/uploads?email=guest@example.com&outcome=no_usable_face"
+
+# 2. View/download the selfie bytes (302 → short-lived signed GCS URL).
+curl -sL -H "Authorization: Bearer $TOKEN" \
+  "$BASE/api/admin/findme/uploads/<uploadId>/image" -o selfie.jpg
+
+# 3. Re-run it through the matcher (diagnostic only — writes NO consent /
+#    match_run, persists nothing). Body optional: {"eventId":"…","mode":"fused"}.
+#    Defaults to the reference's original event + mode. Returns the raw outcome,
+#    including the error the user hit.
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  "$BASE/api/admin/findme/uploads/<uploadId>/reproduce" -d '{}'
+```
+
+Notes: selfies expire on the PRD §8.4 retention tier (90 days adult / 30 days
+minor) and are removed by a user's "delete my data" — an expired/deleted selfie
+returns `410 reference_gone`. Inspect the audit trail with:
+
+```bash
+gcloud logging read \
+  'resource.type="cloud_run_revision" AND resource.labels.service_name="event-photo-api" AND jsonPayload.adminAudit=true' \
+  --project=mmr-data-pipeline --limit=20 \
+  --format='value(jsonPayload.action, jsonPayload.adminEmail, jsonPayload.uploadId, jsonPayload.targetUid)'
+```
+
+### 6.4 Guest-search alert email
+
+Each search emits a structured log line (`jsonPayload.alert="findme_search"`)
+carrying `guestName`, `isGuest`, `uid`, `email`, `eventId`, `outcome`,
+`resultCount`. Apply the log-based alert policy once so these reach the org
+notification channel (same channel as the error alert):
+
+```bash
+gcloud alpha monitoring policies create \
+  --policy-from-file=infra/monitoring/findme-search-alert-policy.json \
+  --project=mmr-data-pipeline
+```
+
+To alert on **guest** searches only, append `AND jsonPayload.isGuest=true` to the
+filter in that JSON before applying. The policy has a 300s notification rate
+limit so a busy event doesn't flood the inbox.
+
 ---
 
 ## 7. Data deletion / subject requests

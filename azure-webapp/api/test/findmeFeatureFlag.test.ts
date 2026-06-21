@@ -70,6 +70,7 @@ function search(app: ReturnType<typeof buildServer>, eventId: string) {
     .post('/api/findme/search')
     .set('x-test-user', USER)
     .field('eventId', eventId)
+    .field('name', 'Test Runner')
     .field('consent', 'true')
     .attach('file', JPEG, { filename: 'selfie.jpg', contentType: 'image/jpeg' });
 }

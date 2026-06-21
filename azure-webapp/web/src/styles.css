@@ -783,6 +783,24 @@ pre.error {
   margin-top: 4px;
 }
 
+/* Required name field: stack the label above a full-width text input. */
+.consent-row.consent-name {
+  flex-direction: column;
+  gap: 4px;
+  cursor: default;
+}
+
+.consent-row.consent-name span {
+  font-weight: 600;
+}
+
+.consent-row.consent-name input {
+  margin-top: 0;
+  width: 100%;
+  padding: 8px 10px;
+  box-sizing: border-box;
+}
+
 .signin-card {
   margin-top: 24px;
 }
