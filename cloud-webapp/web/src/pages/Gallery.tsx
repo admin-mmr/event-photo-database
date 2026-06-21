@@ -22,6 +22,17 @@ import { PageSizeSelect } from '../components/PageSizeSelect.js';
 import { SortSelect } from '../components/SortSelect.js';
 import { LoadMore } from '../components/LoadMore.js';
 
+/** State of the admin delete stepper. `phase` is the overall stage; `reindex`
+ *  tracks step 4 (the Find Me re-index) independently since it's polled. */
+interface DeleteFlow {
+  /** How many photos were actually deleted (drives the heading). */
+  count: number;
+  phase: 'removing' | 'reindexing' | 'done';
+  /** How many requested photos could NOT be deleted (shown as a warning). */
+  failed: number;
+  reindex: 'active' | 'done' | 'skipped';
+}
+
 export function Gallery(): JSX.Element {
   const { eventId = '' } = useParams();
   const [photos, setPhotos] = useState<GalleryPhoto[] | null>(null);
@@ -32,6 +43,11 @@ export function Gallery(): JSX.Element {
   const [downloading, setDownloading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // Live progress for the admin delete (the 4-step stepper). Steps 1-3 (Trash /
+  // copies / index) resolve together when the POST returns; step 4 (Find Me
+  // re-index) is polled from the event's indexState until it lands. Null = no
+  // delete in progress / nothing to show.
+  const [deleteFlow, setDeleteFlow] = useState<DeleteFlow | null>(null);
   // Admin-only delete: guests (anonymous) never see the control; the API is the
   // real gate (requireAdmin → 403), matching the Index/Sync pattern on Events.
   const { user } = useAuth();
@@ -132,6 +148,7 @@ export function Gallery(): JSX.Element {
     setPhotos(null);
     setNextCursor(null);
     setError(null);
+    setDeleteFlow(null);
     setWebUrls({});
     webFetching.current = new Set();
     // Drop cached originals from the previous event and revoke their URLs.
@@ -271,6 +288,42 @@ export function Gallery(): JSX.Element {
     return () => io.disconnect();
   }, [nextCursor, loadMore]);
 
+  // Step 4 of a delete: poll the event's indexState until the re-index finishes,
+  // then flip "Refresh Find Me" to done. Runs only while a re-index is active;
+  // gives up after 5 minutes (leaves the step showing "updating", which is true
+  // — the job is just slow). Reuses GET /api/events/:id (same field the Events
+  // page polls), so no new endpoint is needed.
+  const reindexActive = deleteFlow?.reindex === 'active';
+  useEffect(() => {
+    if (!reindexActive) return;
+    let cancelled = false;
+    const startedAt = Date.now();
+    const tick = (): void => {
+      apiGet<GetEventResponse>(`/api/events/${encodeURIComponent(eventId)}`)
+        .then((r) => {
+          const status = r.event.indexState?.status;
+          if (!cancelled && (status === 'done' || status === 'failed')) {
+            setDeleteFlow((f) => (f ? { ...f, phase: 'done', reindex: 'done' } : f));
+          }
+        })
+        .catch(() => {
+          /* transient — keep polling */
+        });
+    };
+    const id = setInterval(() => {
+      if (Date.now() - startedAt > 5 * 60 * 1000) {
+        clearInterval(id);
+        return;
+      }
+      tick();
+    }, 4000);
+    tick();
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [reindexActive, eventId]);
+
   const title = eventLabel({ name: eventName, id: eventId, hasPhotos: list.length > 0 });
 
   async function fetchOriginal(p: GalleryPhoto): Promise<Blob> {
@@ -320,6 +373,8 @@ export function Gallery(): JSX.Element {
     setDeleting(true);
     setNotice(null);
     setStatus(null);
+    // Steps 1-3 are in flight inside this one request; show them as active.
+    setDeleteFlow({ count: ids.length, phase: 'removing', failed: 0, reindex: 'skipped' });
     try {
       const r = await apiPost<DeletePhotosResponse>(
         `/api/events/${encodeURIComponent(eventId)}/photos/delete`,
@@ -328,10 +383,15 @@ export function Gallery(): JSX.Element {
       const removed = new Set(r.deleted);
       setPhotos((prev) => (prev ?? []).filter((p) => !removed.has(p.photoId)));
       sel.selectNone();
-      const failedNote = r.failed.length ? ` ${r.failed.length} could not be deleted.` : '';
-      const findMeNote = r.reindex ? ' Find Me is updating.' : '';
-      setStatus(`Deleted ${r.deleted.length} photo${r.deleted.length === 1 ? '' : 's'}.${findMeNote}${failedNote}`);
+      // Steps 1-3 done. Step 4 (re-index) is async: poll it if one was triggered.
+      setDeleteFlow({
+        count: r.deleted.length,
+        phase: r.reindex ? 'reindexing' : 'done',
+        failed: r.failed.length,
+        reindex: r.reindex ? 'active' : 'skipped',
+      });
     } catch (e) {
+      setDeleteFlow(null);
       if (e instanceof ApiError && e.status === 403) {
         setNotice('Deleting photos is admin-only — sign in with an admin account.');
       } else {
@@ -500,6 +560,62 @@ export function Gallery(): JSX.Element {
         <p className="status-text" role="status" aria-live="polite">
           {status}
         </p>
+      )}
+
+      {deleteFlow && (
+        <div className="delete-progress" role="status" aria-live="polite">
+          <div className="delete-progress-head">
+            <strong>
+              {deleteFlow.phase === 'done'
+                ? `Deleted ${deleteFlow.count} photo${deleteFlow.count === 1 ? '' : 's'}`
+                : `Deleting ${deleteFlow.count} photo${deleteFlow.count === 1 ? '' : 's'}…`}
+            </strong>
+            {deleteFlow.phase === 'done' && (
+              <button className="btn btn-light btn-sm" onClick={() => setDeleteFlow(null)}>
+                Dismiss
+              </button>
+            )}
+          </div>
+
+          {(() => {
+            const removalDone = deleteFlow.phase !== 'removing';
+            const removal = removalDone ? 'done' : 'active';
+            const rows: Array<{ label: string; sub: string; state: 'done' | 'active' }> = [
+              { label: 'Move originals to Drive Trash', sub: 'Recoverable for ~30 days', state: removal },
+              { label: 'Delete stored copies', sub: 'Thumbnail, web & original', state: removal },
+              { label: 'Remove from gallery', sub: 'Index entry cleared', state: removal },
+            ];
+            const reindexRow =
+              deleteFlow.reindex === 'skipped'
+                ? null
+                : {
+                    label: 'Refresh Find Me',
+                    sub:
+                      deleteFlow.reindex === 'done'
+                        ? 'Find Me updated'
+                        : 'Re-indexing… this can take a few minutes',
+                    state: deleteFlow.reindex,
+                  };
+            const all = reindexRow ? [...rows, reindexRow] : rows;
+            return all.map((r) => (
+              <div className="delete-step" key={r.label}>
+                <span className={`del-badge del-${r.state}`} aria-hidden="true">
+                  {r.state === 'done' ? '✓' : <span className="del-spin" />}
+                </span>
+                <span>
+                  <span className="del-label">{r.label}</span>
+                  <span className="del-sub">{r.sub}</span>
+                </span>
+              </div>
+            ));
+          })()}
+
+          {deleteFlow.failed > 0 && (
+            <p className="error-text delete-failed-note">
+              {deleteFlow.failed} photo{deleteFlow.failed === 1 ? '' : 's'} could not be deleted.
+            </p>
+          )}
+        </div>
       )}
       {photos === null && !error && <p className="muted">Loading photos…</p>}
       {photos?.length === 0 && (

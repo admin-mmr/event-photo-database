@@ -135,6 +135,82 @@ pre.error {
   margin: 0.5rem 0;
 }
 
+/* Admin delete progress stepper. */
+.delete-progress {
+  border: 0.5px solid #d3d1c7;
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+  margin: 0.75rem 0;
+}
+
+.delete-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.delete-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.del-badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  font-size: 13px;
+  margin-top: 1px;
+}
+
+.del-done {
+  background: #e1f5ee;
+  color: #0f6e56;
+}
+
+.del-active {
+  background: #e6f1fb;
+  color: #185fa5;
+}
+
+.del-label {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.del-sub {
+  display: block;
+  font-size: 13px;
+  color: #5f5e5a;
+}
+
+.del-spin {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: del-spin 0.8s linear infinite;
+}
+
+@keyframes del-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.delete-failed-note {
+  margin: 0.5rem 0 0;
+}
+
 /* ── Events list ────────────────────────────────────────────────────────── */
 
 .event-list {
