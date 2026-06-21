@@ -11,10 +11,14 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
-import type { CompleteUploadResponse } from '@cloud-webapp/shared';
+import type {
+  CompleteUploadResponse,
+  UploadBatchPhase,
+  UploadBatchStatusResponse,
+} from '@cloud-webapp/shared';
 
 import { uploadFileResumable, AbortError, type UploadResult } from '../lib/resumableUpload.js';
-import { apiPost } from '../lib/api.js';
+import { apiGet, apiPost } from '../lib/api.js';
 
 const CONCURRENCY = 3;
 const ACCEPTED = new Set([
@@ -75,6 +79,9 @@ export function VolunteerUpload(): JSX.Element {
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<string | null>(null);
   const [skipped, setSkipped] = useState<string[]>([]);
+  // Backend pipeline phase polled from the status endpoint after the bytes are
+  // in the cloud (saving → indexing → done/ready). Drives the post-upload line.
+  const [serverPhase, setServerPhase] = useState<UploadBatchPhase | null>(null);
 
   const batchId = useMemo(() => crypto.randomUUID(), []);
   const abortRef = useRef<AbortController | null>(null);
@@ -99,6 +106,28 @@ export function VolunteerUpload(): JSX.Element {
   const patch = useCallback((idx: number, p: Partial<Item>) => {
     setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...p } : it)));
   }, []);
+
+  // Poll the batch status so the page reflects the background pipeline (saving →
+  // indexing → done). Capped so it can't poll forever; stops on a terminal phase.
+  // Forward-compatible with step 3 (a worker advancing the same doc to `ready`).
+  const pollStatus = useCallback(
+    async (id: string): Promise<void> => {
+      for (let i = 0; i < 20; i += 1) {
+        try {
+          const s = await apiGet<UploadBatchStatusResponse>(
+            `/api/volunteer/upload/status/${encodeURIComponent(id)}?token=${encodeURIComponent(token)}`,
+          );
+          setServerPhase(s.phase);
+          if (s.phase === 'done' || s.phase === 'ready' || s.phase === 'error') return;
+        } catch {
+          /* transient — keep trying until the cap */
+        }
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    },
+    [token],
+  );
 
   const startUpload = useCallback(async () => {
     if (items.length === 0 || phase === 'uploading') return;
@@ -172,11 +201,12 @@ export function VolunteerUpload(): JSX.Element {
       setReceipt(res.message);
       setSkipped(res.skippedDuplicateNames ?? []);
       setPhase('done');
+      void pollStatus(batchId);
     } catch (err) {
       setFatalError(err instanceof Error ? err.message : String(err));
       setPhase('idle');
     }
-  }, [items, phase, token, batchId, patch, photographerName]);
+  }, [items, phase, token, batchId, patch, photographerName, pollStatus]);
 
   const cancel = useCallback(() => {
     abortRef.current?.abort();
@@ -309,10 +339,11 @@ export function VolunteerUpload(): JSX.Element {
           <strong>✅ Upload received!</strong>
           <p style={{ margin: '4px 0 0' }}>{receipt}</p>
           <p style={{ margin: '8px 0 0', color: '#555' }}>
-            Your photos are saved. They&rsquo;ll appear in the event gallery in a few minutes, once
-            indexing finishes.
-            <br />
-            照片已保存，索引完成后几分钟内即可在相册中查看。
+            {serverPhase === 'saving'
+              ? 'Saving your photos to the event library… · 正在保存到相册…'
+              : serverPhase === 'error'
+                ? 'Saved to the cloud, but the library step hit a snag — an admin will reconcile it. · 已上传到云端，保存步骤出现问题，管理员会处理。'
+                : 'Your photos are saved. They’ll appear in the event gallery in a few minutes, once indexing finishes. · 照片已保存，索引完成后几分钟内即可在相册中查看。'}
           </p>
           {skipped.length > 0 && (
             <details style={{ marginTop: 10 }}>

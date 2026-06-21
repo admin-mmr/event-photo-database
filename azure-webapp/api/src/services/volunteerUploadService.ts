@@ -32,6 +32,7 @@ import {
 } from './driveService.js';
 import { triggerIndexJob } from './indexerJob.js';
 import { appendUploadLog } from './uploadLogService.js';
+import { initUploadBatch, updateUploadBatch } from './uploadBatchService.js';
 import { buildCreditedFileName } from '../lib/creditedFileName.js';
 
 /**
@@ -293,6 +294,10 @@ export async function enqueueStagedBatch(
 ): Promise<BatchResult> {
   if (objectNames.length === 0) return { copied: 0, skippedDuplicates: 0, skippedDuplicateNames: [] };
 
+  // Make the batch observable (UPLOAD_ASYNC_QUEUE_DESIGN.md step 1). Best-effort:
+  // status writes must never fail an upload whose bytes are already staged.
+  await initUploadBatch(batchId, link.eventId, link.linkId, objectNames.length);
+
   const folderId = await resolveEventFolderId(link.eventId);
   const bucket = getStorage().bucket(env.VOLUNTEER_STAGING_BUCKET);
   const driveToken = await getDriveToken(DRIVE_SCOPE_READWRITE);
@@ -329,6 +334,7 @@ export async function enqueueStagedBatch(
   let copied = 0;
   let copiedBytes = 0;
   let skippedDuplicates = 0;
+  let failed = 0;
   const skippedDuplicateNames: string[] = [];
   for (const objectName of objectNames) {
     try {
@@ -382,6 +388,7 @@ export async function enqueueStagedBatch(
         .delete({ ignoreNotFound: true })
         .catch((err) => logger.warn({ err, objectName }, 'staged object cleanup failed (non-fatal)'));
     } catch (err) {
+      failed += 1;
       logger.error({ err, eventId: link.eventId, batchId, objectName }, 'staged object copy to Drive failed');
     }
   }
@@ -419,6 +426,19 @@ export async function enqueueStagedBatch(
     skippedDuplicates,
     source: 'link',
     linkId: link.linkId,
+  });
+
+  // Mark the batch observable-terminal for step 1: `indexing` once the copy
+  // succeeded and the indexer was triggered, else `done` (nothing to index).
+  // When the copy moves to a background worker (step 3), the worker owns these
+  // transitions and can additionally flip to `ready` when the index run finishes.
+  await updateUploadBatch(batchId, {
+    phase: copied > 0 ? 'indexing' : 'done',
+    copied,
+    skippedDuplicates,
+    skippedDuplicateNames,
+    failed,
+    batchFolderName,
   });
 
   return { copied, skippedDuplicates, skippedDuplicateNames };

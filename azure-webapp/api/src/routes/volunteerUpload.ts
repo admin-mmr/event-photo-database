@@ -22,6 +22,7 @@ import {
   ACCEPTED_UPLOAD_MIME,
   type CreateUploadSessionResponse,
   type CompleteUploadResponse,
+  type UploadBatchStatusResponse,
 } from '@cloud-webapp/shared';
 
 import { logger } from '../lib/logger.js';
@@ -33,6 +34,7 @@ import {
   enqueueStagedBatch,
   UploadLinkError,
 } from '../services/volunteerUploadService.js';
+import { getUploadBatch } from '../services/uploadBatchService.js';
 
 export const volunteerUploadRouter = Router();
 
@@ -148,6 +150,48 @@ volunteerUploadRouter.post('/volunteer/upload/complete', async (req, res, next) 
       skippedDuplicates,
       skippedDuplicateNames,
       message: `Received ${copied} file${copied === 1 ? '' : 's'} for "${where}"${dupNote}.`,
+    };
+    res.json(body);
+  } catch (err) {
+    if (err instanceof UploadLinkError) {
+      res.status(linkErrorStatus(err.code)).json({ ok: false, error: err.code, message: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
+/**
+ * GET /api/volunteer/upload/status/:batchId?token=...
+ * Observable batch status (UPLOAD_ASYNC_QUEUE_DESIGN.md step 1). The link token
+ * authorizes the read and scopes it to that link's event, so a batch id alone
+ * can't be used to read another event's status.
+ */
+volunteerUploadRouter.get('/volunteer/upload/status/:batchId', async (req, res, next) => {
+  try {
+    const token = String(req.query.token ?? '');
+    if (!token) {
+      res.status(400).json({ ok: false, error: 'bad_request', message: 'token is required' });
+      return;
+    }
+    const link = await validateUploadLink(token);
+    const batch = await getUploadBatch(String(req.params.batchId));
+    if (!batch || batch.eventId !== link.eventId) {
+      res.status(404).json({ ok: false, error: 'not_found', message: 'Unknown batch' });
+      return;
+    }
+    const body: UploadBatchStatusResponse = {
+      ok: true,
+      batchId: batch.batchId,
+      eventId: batch.eventId,
+      phase: batch.phase,
+      total: batch.total,
+      copied: batch.copied,
+      skippedDuplicates: batch.skippedDuplicates,
+      skippedDuplicateNames: batch.skippedDuplicateNames,
+      failed: batch.failed,
+      batchFolderName: batch.batchFolderName,
+      updatedAt: batch.updatedAt,
     };
     res.json(body);
   } catch (err) {
