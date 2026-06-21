@@ -36,22 +36,54 @@ function pageSize(raw: unknown): number {
   return Math.min(n, MAX_PAGE);
 }
 
-type SortMode = 'recent' | 'time' | 'name';
 /**
- * `?sort=recent|time|name`, default `recent`.
+ * Five gallery sort orders, `?sort=`, default `added_desc` (newest upload first):
  *
- * - `recent` (default): newest-first by `addedAt` (upload/added time = Drive
- *   createdTime). Surfaces freshly uploaded photos at the top so it's obvious
- *   when there are new photos to Find Me. Falls back to `takenAt` desc for
- *   events not yet reindexed (no `addedAt` written) — see the route below.
- * - `time`: oldest-first by capture time (`takenAt`), CAPTURE_TIME_SORT_DESIGN §5.
+ * - `added_desc` (default): upload/added time newest first (`addedAt` =
+ *   Drive createdTime). Surfaces freshly uploaded photos at the top.
+ * - `added_asc`: upload time oldest first.
+ * - `taken_desc`: capture time newest first (`takenAt`).
+ * - `taken_asc`: capture time oldest first, CAPTURE_TIME_SORT_DESIGN §5.
  * - `name`: by filename.
+ *
+ * Legacy aliases (older clients / saved prefs): `recent` → `added_desc`,
+ * `time` → `taken_asc`.
+ *
+ * Each mode maps to one Firestore field + direction. The id tiebreak
+ * (`__name__`) is always ordered in the SAME direction as the primary field so
+ * the composite index (whose implicit `__name__` matches its last field's
+ * direction) serves the query — forward for the matching direction, reverse for
+ * the opposite. This is the crux of the bug fix: a `desc` primary with an `asc`
+ * id tiebreak is a mixed-direction order no existing index can serve, which is
+ * what made `added_desc` ("Newest first") 500 while `taken_asc` ("Oldest
+ * first") — both ascending, matching its index — kept working.
  */
+type SortMode = 'added_desc' | 'added_asc' | 'taken_desc' | 'taken_asc' | 'name';
+
+type SortField = 'addedAt' | 'takenAt' | 'name';
+type SortDir = 'asc' | 'desc';
+type CursorKey = 'a' | 't' | 'n';
+
+interface SortSpec {
+  field: SortField;
+  dir: SortDir;
+  cursorKey: CursorKey;
+}
+
+const SORT_SPECS: Record<SortMode, SortSpec> = {
+  added_desc: { field: 'addedAt', dir: 'desc', cursorKey: 'a' },
+  added_asc: { field: 'addedAt', dir: 'asc', cursorKey: 'a' },
+  taken_desc: { field: 'takenAt', dir: 'desc', cursorKey: 't' },
+  taken_asc: { field: 'takenAt', dir: 'asc', cursorKey: 't' },
+  name: { field: 'name', dir: 'asc', cursorKey: 'n' },
+};
+
 function parseSort(raw: unknown): SortMode {
   const s = String(raw ?? '').toLowerCase();
-  if (s === 'time') return 'time';
-  if (s === 'name') return 'name';
-  return 'recent';
+  if (s === 'recent') return 'added_desc';
+  if (s === 'time') return 'taken_asc';
+  if (s in SORT_SPECS) return s as SortMode;
+  return 'added_desc';
 }
 
 /** Opaque, base64url page cursor carrying the last doc's primary sort value
@@ -89,66 +121,68 @@ galleryRouter.get('/events/:id/photos', requireAuth, async (req, res, next) => {
       return;
     }
 
-    // Order by the chosen key then document id (Firestore's implicit __name__
-    // tiebreak, made explicit so the value-based cursor below is stable). Needs
-    // the photos(eventId, takenAt) / (eventId, name) / (eventId, addedAt desc)
-    // composite indexes in firestore.indexes.json. Firestore excludes docs that
-    // lack the orderBy field, so an event reindexed before `addedAt` existed
-    // returns nothing under `recent`; the fallback below handles that.
+    // Order by the chosen field then document id. The id tiebreak (Firestore's
+    // implicit __name__) is ordered in the SAME direction as the field so the
+    // composite index serves it (forward when directions match the index,
+    // reverse otherwise) — see SORT_SPECS above. Needs the
+    // photos(eventId, takenAt) / (eventId, name) / (eventId, addedAt desc)
+    // composite indexes in firestore.indexes.json; each serves both directions
+    // of its field via a reverse scan, so no per-direction index is required.
+    // Firestore excludes docs that lack the orderBy field, so an event indexed
+    // before `addedAt` existed returns nothing under an `added_*` sort; the
+    // takenAt fallback below handles that.
     const base = (): Query => firestore().collection('photos').where('eventId', '==', eventId);
-    // `recentFallback` tracks when a `recent` request is actually being served
-    // by the takenAt-desc fallback, so the cursor below is tagged correctly.
-    let recentFallback = false;
 
-    const buildQuery = (mode: SortMode, useFallback: boolean): Query => {
-      let q = base();
-      if (mode === 'name') {
-        q = q.orderBy('name').orderBy(FieldPath.documentId());
-        if (cursor) q = q.startAfter(cursor.n ?? '', cursor.id ?? '');
-      } else if (mode === 'time') {
-        q = q.orderBy('takenAt').orderBy(FieldPath.documentId());
-        if (cursor) q = q.startAfter(cursor.t ?? null, cursor.id ?? '');
-      } else if (useFallback || cursor?.t !== undefined) {
-        // recent, served via takenAt-desc fallback (event not yet backfilled).
-        // A `t`-tagged cursor means we're continuing that fallback across pages.
-        q = q.orderBy('takenAt', 'desc').orderBy(FieldPath.documentId());
-        if (cursor) q = q.startAfter(cursor.t ?? null, cursor.id ?? '');
-      } else {
-        // recent, normal path: newest-first by addedAt.
-        q = q.orderBy('addedAt', 'desc').orderBy(FieldPath.documentId());
-        if (cursor?.a !== undefined) q = q.startAfter(cursor.a ?? null, cursor.id ?? '');
+    const buildQuery = (spec: SortSpec): Query => {
+      let q = base().orderBy(spec.field, spec.dir).orderBy(FieldPath.documentId(), spec.dir);
+      if (cursor) {
+        const startVal =
+          spec.cursorKey === 'n'
+            ? (cursor.n ?? '')
+            : spec.cursorKey === 't'
+              ? (cursor.t ?? null)
+              : (cursor.a ?? null);
+        q = q.startAfter(startVal, cursor.id ?? '');
       }
       return q.limit(limit);
     };
 
+    const primary = SORT_SPECS[sort];
+    // The takenAt fallback for `added_*` sorts (event not backfilled / addedAt
+    // index missing) keeps the user's chosen direction, just on capture time.
+    const fallbackSpec: SortSpec = { field: 'takenAt', dir: primary.dir, cursorKey: 't' };
+    // `usedSpec` is whichever spec actually produced the results, so nextCursor
+    // is tagged with the right key (it differs when the fallback kicks in).
+    let usedSpec = primary;
+
     let snap;
-    if (sort === 'recent' && cursor?.t !== undefined) {
-      // Continuing the takenAt-desc fallback across pages (the previous page was
-      // served by the fallback and handed back a `t`-tagged cursor).
-      recentFallback = true;
-      snap = await buildQuery(sort, true).get();
+    if (primary.field === 'addedAt' && cursor?.t !== undefined) {
+      // Continuing the takenAt fallback across pages (a previous page was served
+      // by the fallback and handed back a `t`-tagged cursor).
+      usedSpec = fallbackSpec;
+      snap = await buildQuery(fallbackSpec).get();
     } else {
       try {
-        snap = await buildQuery(sort, false).get();
+        snap = await buildQuery(primary).get();
         // Recover an event that has photos but no `addedAt` yet (indexed before
-        // the field existed): an empty FIRST page of a `recent` request means
-        // "not backfilled" → re-query by takenAt desc so the gallery is never
-        // blank. Subsequent pages stay in fallback via the `t`-tagged cursor.
-        if (sort === 'recent' && !cursor && snap.empty) {
-          recentFallback = true;
-          snap = await buildQuery(sort, true).get();
+        // the field existed): an empty FIRST page of an `added_*` request means
+        // "not backfilled" → re-query by takenAt so the gallery is never blank.
+        // Subsequent pages stay in fallback via the `t`-tagged cursor.
+        if (primary.field === 'addedAt' && !cursor && snap.empty) {
+          usedSpec = fallbackSpec;
+          snap = await buildQuery(fallbackSpec).get();
         }
       } catch (err) {
         // The addedAt composite index may not exist yet (a deploy that shipped
         // this route before `firebase deploy --only firestore:indexes`, or the
         // index is still building → Firestore FAILED_PRECONDITION). Degrade to
-        // capture-time desc, which the existing (eventId, takenAt) index serves,
-        // so the gallery keeps working until the index is live. Other sorts use
-        // already-built indexes, so their errors are real → rethrow.
-        if (sort === 'recent') {
-          logger.warn({ err, eventId }, 'gallery: addedAt query failed, falling back to takenAt desc');
-          recentFallback = true;
-          snap = await buildQuery(sort, true).get();
+        // capture time, which the existing (eventId, takenAt) index serves, so
+        // the gallery keeps working until the index is live. The takenAt/name
+        // sorts use already-built indexes, so their errors are real → rethrow.
+        if (primary.field === 'addedAt') {
+          logger.warn({ err, eventId }, 'gallery: addedAt query failed, falling back to takenAt');
+          usedSpec = fallbackSpec;
+          snap = await buildQuery(fallbackSpec).get();
         } else {
           throw err;
         }
@@ -161,9 +195,9 @@ galleryRouter.get('/events/:id/photos', requireAuth, async (req, res, next) => {
     let nextCursor: string | null = null;
     if (snap.size === limit && lastDoc) {
       const d = lastDoc.data();
-      if (sort === 'name') {
+      if (usedSpec.cursorKey === 'n') {
         nextCursor = encodeCursor({ n: String(d.name ?? ''), id: lastDoc.id });
-      } else if (sort === 'time' || recentFallback) {
+      } else if (usedSpec.cursorKey === 't') {
         nextCursor = encodeCursor({ t: (d.takenAt as string | null) ?? null, id: lastDoc.id });
       } else {
         nextCursor = encodeCursor({ a: (d.addedAt as string | null) ?? null, id: lastDoc.id });

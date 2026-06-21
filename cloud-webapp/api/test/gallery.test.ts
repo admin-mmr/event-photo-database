@@ -191,17 +191,59 @@ describe('GET /api/events/:id/photos', () => {
     expect(res.body.photos[0].addedAt).toBe('2026-06-20T09:00:00');
   });
 
-  it('sort=time orders by takenAt ascending', async () => {
+  it('sort=taken_asc orders by takenAt ascending', async () => {
     fakeDb.photos.length = 0;
     fakeDb.photos.push(
       { id: 'pA', data: { eventId: 'ev1', name: 'z.jpg', takenAt: '2026-06-20T09:00:00', takenAtSource: 'exif' } },
       { id: 'pB', data: { eventId: 'ev1', name: 'a.jpg', takenAt: '2026-06-20T08:00:00', takenAtSource: 'exif' } },
     );
-    const res = await request(app).get('/api/events/ev1/photos?sort=time').set('x-test-user', USER);
+    const res = await request(app).get('/api/events/ev1/photos?sort=taken_asc').set('x-test-user', USER);
     // Earlier capture time first, regardless of filename.
     expect(res.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['pB', 'pA']);
     expect(res.body.photos[0].takenAt).toBe('2026-06-20T08:00:00');
     expect(res.body.photos[0].takenAtSource).toBe('exif');
+  });
+
+  it('sort=taken_desc orders by takenAt descending', async () => {
+    fakeDb.photos.length = 0;
+    fakeDb.photos.push(
+      { id: 'pEarly', data: { eventId: 'ev1', name: 'a.jpg', takenAt: '2026-06-20T08:00:00' } },
+      { id: 'pLate', data: { eventId: 'ev1', name: 'z.jpg', takenAt: '2026-06-20T09:00:00' } },
+    );
+    const res = await request(app).get('/api/events/ev1/photos?sort=taken_desc').set('x-test-user', USER);
+    expect(res.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['pLate', 'pEarly']);
+  });
+
+  it('sort=added_asc orders by addedAt ascending (upload time, oldest first)', async () => {
+    fakeDb.photos.length = 0;
+    fakeDb.photos.push(
+      { id: 'pNew', data: { eventId: 'ev1', name: 'z.jpg', addedAt: '2026-06-20T09:00:00' } },
+      { id: 'pOld', data: { eventId: 'ev1', name: 'a.jpg', addedAt: '2026-06-20T08:00:00' } },
+    );
+    const res = await request(app).get('/api/events/ev1/photos?sort=added_asc').set('x-test-user', USER);
+    expect(res.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['pOld', 'pNew']);
+  });
+
+  it('sort=added_desc (and the legacy `recent` alias) order by addedAt, newest first', async () => {
+    fakeDb.photos.length = 0;
+    fakeDb.photos.push(
+      { id: 'pOld', data: { eventId: 'ev1', name: 'z.jpg', addedAt: '2026-06-20T08:00:00' } },
+      { id: 'pNew', data: { eventId: 'ev1', name: 'a.jpg', addedAt: '2026-06-20T09:00:00' } },
+    );
+    const explicit = await request(app).get('/api/events/ev1/photos?sort=added_desc').set('x-test-user', USER);
+    expect(explicit.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['pNew', 'pOld']);
+    const legacy = await request(app).get('/api/events/ev1/photos?sort=recent').set('x-test-user', USER);
+    expect(legacy.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['pNew', 'pOld']);
+  });
+
+  it('legacy `time` alias still maps to takenAt ascending', async () => {
+    fakeDb.photos.length = 0;
+    fakeDb.photos.push(
+      { id: 'pA', data: { eventId: 'ev1', name: 'z.jpg', takenAt: '2026-06-20T09:00:00' } },
+      { id: 'pB', data: { eventId: 'ev1', name: 'a.jpg', takenAt: '2026-06-20T08:00:00' } },
+    );
+    const res = await request(app).get('/api/events/ev1/photos?sort=time').set('x-test-user', USER);
+    expect(res.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['pB', 'pA']);
   });
 
   it('sort=recent falls back to takenAt desc (no 500) when the addedAt index is missing', async () => {

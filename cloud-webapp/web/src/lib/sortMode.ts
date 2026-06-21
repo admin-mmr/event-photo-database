@@ -4,29 +4,42 @@ import { useCallback, useState } from 'react';
  * Gallery sort-order preference (matches the API's `?sort=` values in
  * api/src/routes/gallery.ts).
  *
- * - `recent` (default): newest upload first (by addedAt / Drive createdTime).
- * - `time`: oldest capture-time first.
+ * - `added_desc` (default): upload time, newest first (addedAt / Drive
+ *   createdTime).
+ * - `added_asc`: upload time, oldest first.
+ * - `taken_desc`: capture time, newest first.
+ * - `taken_asc`: capture time, oldest first.
  * - `name`: by filename.
  *
  * Persisted in localStorage so the choice sticks across visits. Default is
- * `recent` so freshly uploaded photos appear at the top.
+ * `added_desc` so freshly uploaded photos appear at the top.
  */
-export type GallerySort = 'recent' | 'time' | 'name';
+export type GallerySort = 'added_desc' | 'added_asc' | 'taken_desc' | 'taken_asc' | 'name';
 
 export const SORT_OPTIONS: ReadonlyArray<{ value: GallerySort; label: string }> = [
-  { value: 'recent', label: 'Newest first' },
-  { value: 'time', label: 'Oldest first' },
+  { value: 'added_desc', label: 'Upload time — newest first' },
+  { value: 'added_asc', label: 'Upload time — oldest first' },
+  { value: 'taken_desc', label: 'Time taken — newest first' },
+  { value: 'taken_asc', label: 'Time taken — oldest first' },
   { value: 'name', label: 'By name' },
 ];
-export const DEFAULT_SORT: GallerySort = 'recent';
+export const DEFAULT_SORT: GallerySort = 'added_desc';
 
 const STORAGE_KEY = 'gallery.sort';
-const VALID = new Set<GallerySort>(['recent', 'time', 'name']);
+const VALID = new Set<GallerySort>(['added_desc', 'added_asc', 'taken_desc', 'taken_asc', 'name']);
+
+/** Map a stored value to a current sort, migrating the pre-5-option aliases
+ *  (`recent` → newest upload, `time` → oldest capture) so saved prefs survive. */
+function migrate(raw: string | null): GallerySort | null {
+  if (!raw) return null;
+  if (raw === 'recent') return 'added_desc';
+  if (raw === 'time') return 'taken_asc';
+  return VALID.has(raw as GallerySort) ? (raw as GallerySort) : null;
+}
 
 function readSaved(): GallerySort {
   try {
-    const s = localStorage.getItem(STORAGE_KEY);
-    if (s && VALID.has(s as GallerySort)) return s as GallerySort;
+    return migrate(localStorage.getItem(STORAGE_KEY)) ?? DEFAULT_SORT;
   } catch {
     /* storage unavailable (private mode) — use the default */
   }
