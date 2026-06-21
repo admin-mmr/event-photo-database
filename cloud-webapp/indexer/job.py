@@ -325,6 +325,13 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
         pid, md5 = f["id"], f.get("md5Checksum", "")
         unchanged = (pid in prev_photos and md5 and prev_photos[pid].get("md5") == md5)
 
+        # addedAt = when the file was added to Drive (its createdTime). For a
+        # volunteer/admin upload this is the upload time, so the gallery's
+        # newest-first sort surfaces freshly uploaded photos at the top
+        # regardless of when they were originally taken. Stable across reindexes
+        # (Drive createdTime never changes), with modifiedTime as a last resort.
+        added_at = f.get("createdTime") or f.get("modifiedTime") or None
+
         # Apply the planned Drive rename + capture-time modifiedTime, then carry
         # the new name into the manifest/Firestore. Best-effort: a rename hiccup
         # must not fail indexing.
@@ -346,12 +353,21 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
             for meta, vec in prev_rows[pid]["person"]:
                 persons_meta.append(meta), persons_vecs.append(vec)
             carried = prev_photos[pid]
+            patch: dict = {}
+            # Backfill addedAt for photos indexed before this field existed, so a
+            # single (non-force) reindex populates a whole event. Only written
+            # when missing → idempotent on subsequent runs.
+            if not carried.get("addedAt") and added_at:
+                carried = {**carried, "addedAt": added_at}
+                patch["addedAt"] = added_at
             # A reused (byte-unchanged) photo that we just renamed on Drive needs
             # its stored name/relPath refreshed (the bytes/vectors are reused but
             # the filename changed). Patch the manifest entry + Firestore doc.
             if pid in rename_to:
                 carried = {**carried, "name": f["name"], "relPath": f["relPath"]}
-                fs.upsert_photo(pid, {"name": f["name"], "relPath": f["relPath"]})
+                patch.update({"name": f["name"], "relPath": f["relPath"]})
+            if patch:
+                fs.upsert_photo(pid, patch)
             photos_map[pid] = carried
             reused += 1
             continue
@@ -374,7 +390,8 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
         photos_map[pid] = {"md5": md5, "name": f["name"], "relPath": f["relPath"],
                            "mimeType": f["mimeType"], "modifiedTime": f.get("modifiedTime", ""),
                            "contentHash": md5, "duplicateCount": dup_n,
-                           "takenAt": taken_at, "takenAtSource": taken_src}
+                           "takenAt": taken_at, "takenAtSource": taken_src,
+                           "addedAt": added_at}
         embedded += 1
 
         fs.upsert_photo(pid, {
@@ -387,6 +404,9 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
             "modelVersion": model_version,
             # Capture-time sort (CAPTURE_TIME_SORT_DESIGN §4c/§5).
             "takenAt": taken_at, "takenAtSource": taken_src,
+            # Upload/added time = Drive createdTime; powers the gallery's
+            # newest-first default sort.
+            "addedAt": added_at,
         })
 
     # Photos that disappeared from Drive: drop their rows + Firestore docs.

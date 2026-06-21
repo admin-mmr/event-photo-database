@@ -11,6 +11,11 @@ process.env.VOLUNTEER_STAGING_PREFIX = 'vol';
 const sheetData: Record<string, string[][]> = {};
 vi.mock('../src/services/sheetsService.js', () => ({
   getSheetValues: async (_spreadsheetId: string, range: string) => sheetData[range] ?? [],
+  // The Upload_Log append (appendUploadLog → appendSheetValues) runs after a
+  // batch is copied to Drive. Stubbed so the best-effort logging path succeeds
+  // quietly instead of hitting its non-fatal catch on a missing mock export.
+  appendSheetValues: async (_spreadsheetId: string, _range: string, rows: unknown[][]) =>
+    rows.length,
 }));
 
 const eventDocs: Record<string, Record<string, unknown> | undefined> = {};

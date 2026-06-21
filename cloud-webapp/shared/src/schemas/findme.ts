@@ -23,6 +23,10 @@ export const GalleryPhotoSchema = z.object({
   /** Which tier produced takenAt: "exif" | "drive_exif" | "created" |
    *  "modified" | "none". Lets the UI flag best-guesses ("approx"). */
   takenAtSource: z.string().default(''),
+  /** Upload/added time = the photo's Drive createdTime (ISO-8601). Powers the
+   *  gallery's newest-first default sort. Null for photos indexed before the
+   *  field existed (until a reindex backfills it). */
+  addedAt: z.string().nullable().default(null),
 });
 export type GalleryPhoto = z.infer<typeof GalleryPhotoSchema>;
 
