@@ -84,11 +84,15 @@ const EnvSchema = z.object({
   // ── Volunteer resumable uploads (UPLOAD_RESUMABLE_NOTES) ──────────────
   // Staging bucket where the browser PUTs raw uploads via a GCS resumable
   // session, BEFORE they are copied into Drive + indexed. Defaults to the
-  // uploads bucket so a fresh deploy works; give it its own bucket in prod so
-  // a lifecycle rule can auto-purge half-finished sessions (GCS keeps an
-  // unfinalized resumable upload for ~7 days). Objects live under
+  // DEDICATED `-uploads-staging` bucket that provision-volunteer-uploads.sh
+  // creates and applies CORS + the 7-day purge lifecycle to (GCS keeps an
+  // unfinalized resumable upload for ~7 days). This MUST match the bucket the
+  // provision script targets — they previously disagreed (default pointed at
+  // the shared `-uploads` Find Me bucket while CORS landed on `-uploads-staging`),
+  // so sessions were minted on a bucket with no CORS rule and every browser PUT
+  // failed with "No 'Access-Control-Allow-Origin' header". Objects live under
   // `<prefix>/<eventId>/<batchId>/<uploadId>.<ext>`.
-  VOLUNTEER_STAGING_BUCKET: z.string().default('mmr-data-pipeline-uploads'),
+  VOLUNTEER_STAGING_BUCKET: z.string().default('mmr-data-pipeline-uploads-staging'),
   VOLUNTEER_STAGING_PREFIX: z.string().default('volunteer_uploads'),
   // The web origin allowed to PUT chunks to the resumable session. Must match
   // the CORS config applied to the staging bucket (see UPLOAD_RESUMABLE_NOTES).
