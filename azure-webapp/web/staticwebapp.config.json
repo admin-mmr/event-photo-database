@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/staticwebapp.config.json",
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": ["/assets/*", "/api/*"]
+  },
+  "routes": [
+    {
+      "route": "/api/*",
+      "comment": "Proxied to the event-photo-api Container App via the SWA linked backend (the Azure analog of firebase.json's Hosting -> Cloud Run rewrite). Link it with: az staticwebapp backends link."
+    }
+  ],
+  "globalHeaders": {
+    "X-Content-Type-Options": "nosniff"
+  },
+  "routesNote": "Long-cache for hashed assets is set on the Blob/SWA side; SWA serves /assets/* immutable by default for fingerprinted files.",
+  "responseOverrides": {
+    "404": { "rewrite": "/index.html" }
+  }
+}

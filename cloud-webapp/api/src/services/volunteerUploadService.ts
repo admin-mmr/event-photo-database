@@ -23,8 +23,43 @@ import { env } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { getSheetValues } from './sheetsService.js';
 import { firestore } from '../lib/firestore.js';
-import { getDriveToken, uploadFileToDrive, DRIVE_SCOPE_READWRITE } from './driveService.js';
+import {
+  getDriveToken,
+  uploadFileToDrive,
+  listEventImages,
+  getOrCreateSubfolder,
+  DRIVE_SCOPE_READWRITE,
+} from './driveService.js';
 import { triggerIndexJob } from './indexerJob.js';
+import { buildCreditedFileName } from '../lib/creditedFileName.js';
+
+/**
+ * Tag substituted when an upload link carries no tag, so the Drive hierarchy
+ * stays uniform (Event/Club/tag/batch). Mirrors the gas-app `DEFAULT_TAG`.
+ */
+const DEFAULT_TAG = 'ALL';
+
+/** Compact UTC batch timestamp `YYYYMMDD-HHMMSS` — mirrors gas-app toBatchTimestamp. */
+export function batchTimestamp(date: Date): string {
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return (
+    `${date.getUTCFullYear()}${p(date.getUTCMonth() + 1)}${p(date.getUTCDate())}` +
+    `-${p(date.getUTCHours())}${p(date.getUTCMinutes())}${p(date.getUTCSeconds())}`
+  );
+}
+
+/**
+ * Layer-3 batch folder name `YYYYMMDD-HHMMSS_<username>`. The volunteer flow is
+ * unauthenticated, so the username segment derives from the typed photographer
+ * name (lowercased, reduced to the safe `[a-z0-9._-]` class like gas-app
+ * buildLayer3FolderName), falling back to `volunteer` when blank or fully
+ * stripped. Always starts with a letter so it satisfies the Layer-3 convention.
+ */
+export function buildBatchFolderName(photographerName: string, now: Date = new Date()): string {
+  const safe = (photographerName || '').toLowerCase().replace(/[^a-z0-9._-]/g, '');
+  const username = /^[a-z]/.test(safe) ? safe : `volunteer${safe ? `_${safe}` : ''}`;
+  return `${batchTimestamp(now)}_${username}`;
+}
 
 // Upload_Links column indices — mirror gas-app constants.ts SheetColumns.UPLOAD_LINKS.
 const LINKS_COL = {
@@ -149,6 +184,7 @@ export async function createResumableSession(
   batchId: string,
   fileName: string,
   mimeType: string,
+  photographerName = '',
 ): Promise<CreatedSession> {
   const uploadId = randomUUID();
   const objectName = stagingObjectName(link.eventId, batchId, uploadId, mimeType);
@@ -164,6 +200,9 @@ export async function createResumableSession(
         clubName: link.clubName,
         tag: link.tag,
         originalName: fileName,
+        // Stamped so the later Drive-copy step can reconstruct the credited
+        // filename without a side channel. Trimmed to keep object metadata tidy.
+        photographerName: photographerName.trim(),
         batchId,
       },
     },
@@ -197,20 +236,49 @@ async function resolveEventFolderId(eventId: string): Promise<string> {
   return folderId;
 }
 
+/** Outcome of a handoff: how many staged files were copied into Drive (new)
+ *  vs. skipped because an identical file is already in the event's folder. */
+export interface BatchResult {
+  copied: number;
+  skippedDuplicates: number;
+}
+
+/**
+ * Dedup key for a candidate file: credited name (case-insensitive) + byte size.
+ * Mirrors the gas-app DuplicateCheckService strategy — filename alone collides
+ * across camera rolls and size alone collides across different photos, but the
+ * pair is very unlikely to match by chance. We key on the CREDITED name (what we
+ * actually write to Drive) so a re-upload through the same link — which produces
+ * the same `<Club>_<Photographer>_<original>` name — is recognised as a dup.
+ */
+function dedupKey(name: string, size: number): string {
+  return `${name.toLowerCase()}|${size}`;
+}
+
 /**
  * Hand a finished batch of staged objects off to Drive + the indexer:
- *   1. Verify each staged object exists and is non-zero (guards against a client
+ *   1. List the event's existing Drive images once so we can skip re-uploads
+ *      (duplicate-check by credited name + byte size).
+ *   2. Verify each staged object exists and is non-zero (guards against a client
  *      that called /complete before its PUTs finished).
- *   2. Copy the original from the staging bucket into the event's Drive folder,
- *      preserving the uploaded filename (stamped as `originalName` metadata when
- *      the session was minted), then delete the staged copy.
- *   3. Trigger the photo-indexer job once for the event (it diffs the folder and
- *      embeds the new photos).
+ *   3. Rename the original to its photographer-credit name
+ *      (`<Club>_<Photographer>_<original>`, from the link + stamped metadata),
+ *      skip it if a file with that name + size is already present (or appeared
+ *      earlier in this same batch), otherwise copy it into the event's Drive
+ *      folder and delete the staged copy.
+ *   4. Trigger the photo-indexer job once for the event — only if ≥1 file landed.
  *
- * Returns the number of files actually copied so the front end can show an
- * accurate receipt. A failed Drive copy for one file is logged and skipped
- * rather than failing the whole batch; the index trigger fires only if at least
- * one file landed.
+ * Files land in the gas-app folder hierarchy
+ *   Event(driveFolderId) / Club_Name / tag (DEFAULT_TAG when blank) /
+ *   YYYYMMDD-HHMMSS_<photographer|volunteer>
+ * so the drive-tree view, special-folders rebuild, and public-sheet index see
+ * the same layout the legacy Apps Script upload produced. The Club/tag/batch
+ * folders are created lazily on the first non-duplicate file, so an all-duplicate
+ * batch never leaves an empty folder behind.
+ *
+ * Returns `{ copied, skippedDuplicates }` so the receipt can report both. A
+ * failed Drive copy for one file is logged and skipped rather than failing the
+ * whole batch.
  *
  * NOTE: each object is buffered in memory for the copy (`file.download()`).
  * Fine for photos; revisit with a streamed copy if large videos become common.
@@ -219,14 +287,42 @@ export async function enqueueStagedBatch(
   link: ValidatedLink,
   batchId: string,
   objectNames: string[],
-): Promise<number> {
-  if (objectNames.length === 0) return 0;
+): Promise<BatchResult> {
+  if (objectNames.length === 0) return { copied: 0, skippedDuplicates: 0 };
 
   const folderId = await resolveEventFolderId(link.eventId);
   const bucket = getStorage().bucket(env.VOLUNTEER_STAGING_BUCKET);
   const driveToken = await getDriveToken(DRIVE_SCOPE_READWRITE);
 
+  // Snapshot existing Drive files for the duplicate check. Best-effort: if the
+  // listing fails we proceed WITHOUT dedup rather than blocking the upload (the
+  // indexer dedups by content hash downstream, so a stray dup is not fatal).
+  const seen = new Set<string>();
+  try {
+    const existing = await listEventImages(folderId, { token: driveToken });
+    for (const f of existing) seen.add(dedupKey(f.name, Number(f.size ?? 0)));
+  } catch (err) {
+    logger.warn({ err, eventId: link.eventId, folderId }, 'duplicate-check listing failed (proceeding without dedup)');
+  }
+
+  // Lazily build Event/Club/tag/batch and memoize the batch folder id, so the
+  // path is only created when at least one real (non-duplicate) file needs it.
+  // `photographerName` names the batch folder; the whole session shares one name.
+  let batchFolderId: string | null = null;
+  const ensureBatchFolder = async (photographerName: string): Promise<string> => {
+    if (batchFolderId) return batchFolderId;
+    let parent = folderId;
+    if (link.clubName) parent = (await getOrCreateSubfolder(parent, link.clubName, { token: driveToken })).id;
+    const tag = (link.tag || '').trim() || DEFAULT_TAG;
+    parent = (await getOrCreateSubfolder(parent, tag, { token: driveToken })).id;
+    const batchName = buildBatchFolderName(photographerName);
+    batchFolderId = (await getOrCreateSubfolder(parent, batchName, { token: driveToken })).id;
+    logger.info({ eventId: link.eventId, batchId, batchFolderId, batchName, tag }, 'volunteer batch folder ready');
+    return batchFolderId;
+  };
+
   let copied = 0;
+  let skippedDuplicates = 0;
   for (const objectName of objectNames) {
     try {
       const file = bucket.file(objectName);
@@ -242,11 +338,34 @@ export async function enqueueStagedBatch(
         continue;
       }
       const custom = (meta.metadata ?? {}) as Record<string, string>;
-      const name = (custom.originalName || objectName.split('/').pop() || objectName).trim();
+      const originalName = (custom.originalName || objectName.split('/').pop() || objectName).trim();
       const contentType = meta.contentType || 'application/octet-stream';
 
+      // Photographer-credit rename (defence-in-depth: re-derived server-side, the
+      // browser is never the only place this happens). Club comes from the link;
+      // photographer name was stamped at session-create time.
+      const name = buildCreditedFileName({
+        clubShortName: link.clubName,
+        photographerName: custom.photographerName ?? '',
+        originalFileName: originalName,
+      });
+
+      // Duplicate-check against existing Drive files AND earlier files in this
+      // same batch. Skip + clean up rather than writing a second copy.
+      const key = dedupKey(name, size);
+      if (seen.has(key)) {
+        skippedDuplicates += 1;
+        logger.info({ eventId: link.eventId, batchId, objectName, name }, 'duplicate skipped');
+        await file
+          .delete({ ignoreNotFound: true })
+          .catch((err) => logger.warn({ err, objectName }, 'duplicate cleanup failed (non-fatal)'));
+        continue;
+      }
+
+      const destFolderId = await ensureBatchFolder(custom.photographerName ?? '');
       const [bytes] = await file.download();
-      await uploadFileToDrive(folderId, name, contentType, bytes, { token: driveToken });
+      await uploadFileToDrive(destFolderId, name, contentType, bytes, { token: driveToken });
+      seen.add(key);
       copied += 1;
 
       // Best-effort cleanup; the bucket lifecycle rule is the backstop.
@@ -261,14 +380,20 @@ export async function enqueueStagedBatch(
   if (copied > 0) {
     try {
       const { execution } = await triggerIndexJob(link.eventId);
-      logger.info({ eventId: link.eventId, batchId, copied, execution }, 'volunteer batch copied to Drive; indexer triggered');
+      logger.info(
+        { eventId: link.eventId, batchId, copied, skippedDuplicates, execution },
+        'volunteer batch copied to Drive; indexer triggered',
+      );
     } catch (err) {
       // Files are safely in Drive; the next scheduled/manual scan will index them.
       logger.error({ err, eventId: link.eventId, batchId, copied }, 'index trigger failed after Drive copy');
     }
   } else {
-    logger.warn({ eventId: link.eventId, batchId, requested: objectNames.length }, 'volunteer batch: no files copied');
+    logger.warn(
+      { eventId: link.eventId, batchId, requested: objectNames.length, skippedDuplicates },
+      'volunteer batch: no files copied',
+    );
   }
 
-  return copied;
+  return { copied, skippedDuplicates };
 }

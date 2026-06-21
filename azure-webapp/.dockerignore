@@ -1,0 +1,25 @@
+# Build context is the cloud-webapp/ root (api/Dockerfile builds from here), so
+# this is the .dockerignore Docker actually applies. Keep the upload small and,
+# critically, never ship incremental build caches: a *.tsbuildinfo without its
+# matching dist/ makes `tsc -b` skip emit and fail with TS6305.
+node_modules
+**/node_modules
+dist
+**/dist
+*.tsbuildinfo
+**/*.tsbuildinfo
+coverage
+**/coverage
+.git
+.github
+.vscode
+.idea
+*.log
+.env*
+**/test
+**/test_*.py
+**/conftest.py
+**/requirements-test.txt
+**/.pytest_cache
+**/__pycache__
+**/.venv

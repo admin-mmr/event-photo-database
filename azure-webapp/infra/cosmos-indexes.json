@@ -1,0 +1,21 @@
+{
+  "_comment": "Cosmos DB indexing policy for the 'photos' container (replaces firestore.indexes.json). Cosmos indexes ALL paths by default, so single-field sorts work with no config. Composite indexes are only needed for multi-field ORDER BY. Apply with: az cosmosdb sql container update -a <acct> -g <rg> -d eventphotos -n photos --idx @infra/cosmos-indexes.json",
+  "indexingMode": "consistent",
+  "automatic": true,
+  "includedPaths": [
+    { "path": "/*" }
+  ],
+  "excludedPaths": [
+    { "path": "/_etag/?" }
+  ],
+  "compositeIndexes": [
+    [
+      { "path": "/eventId", "order": "ascending" },
+      { "path": "/takenAt", "order": "ascending" }
+    ],
+    [
+      { "path": "/eventId", "order": "ascending" },
+      { "path": "/name", "order": "ascending" }
+    ]
+  ]
+}

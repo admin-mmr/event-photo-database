@@ -22,7 +22,12 @@ endpoints, plus the accepted-MIME allowlist and per-file size cap.
   with the read-write scope.
 - `routes/volunteerUpload.ts` — `POST /api/volunteer/upload/session` and
   `POST /api/volunteer/upload/complete`. Public (no Firebase auth); the link
-  token is the gate.
+  token is the gate. `/session` is additionally gated by a per-token rate limit
+  (`volunteerUploadRateLimit`) and reCAPTCHA Enterprise
+  (`requireRecaptcha('volunteer_upload')`) — both no-op when unconfigured / in
+  tests / limit 0, so dev and the demo keep working without keys.
+- `lib/creditedFileName.ts` — pure-TS port of the gas-app credited-filename
+  builder; the handoff renames each original to `<Club>_<Photographer>_<orig>`.
 - `lib/config.ts` — `VOLUNTEER_STAGING_BUCKET`, `VOLUNTEER_STAGING_PREFIX`,
   `VOLUNTEER_UPLOAD_ORIGIN`.
 - `server.ts` — mounts `volunteerUploadRouter`.
@@ -56,10 +61,11 @@ For each staged object name from `/complete`:
    (`driveFolderId`); a missing folder raises `not_configured` (→ 503).
 2. Verify the object exists and is non-zero (guards a client that called
    `/complete` before its PUTs finished); missing/empty are logged + skipped.
-3. `download()` the bytes and `uploadFileToDrive()` them into the folder,
-   naming the Drive file from the `originalName` object metadata stamped at
-   session-create time, then `delete()` the staged copy (lifecycle is the
-   backstop).
+3. Build the credited name (`<Club>_<Photographer>_<originalName>`) from the
+   link + stamped metadata; skip + clean up if that name + size already exists
+   in Drive (or earlier in this batch). Otherwise `download()` the bytes and
+   `uploadFileToDrive()` them into the folder under the credited name, then
+   `delete()` the staged copy (lifecycle is the backstop).
 4. Trigger `photo-indexer` once for the event — only if ≥1 file was copied.
 
 A single file's copy failure is logged and skipped, not fatal to the batch;
@@ -96,18 +102,46 @@ script prints the two steps it cannot do for you:
   behaviour (308/200/201/5xx) with `fetch` stubbed.
 - `api/test/volunteerUploadService.test.ts` — link validation (valid / invalid
   / revoked / non-fatal name lookup), the staging-name helpers, and
-  `enqueueStagedBatch` (copy + delete + single index trigger, skip
-  missing/empty, basename fallback, no-trigger-when-nothing-copied,
-  `not_configured` when the event has no Drive folder).
+  `enqueueStagedBatch` (credited-name copy + delete + single index trigger, dedup
+  vs. existing Drive files + within-batch, same-name-different-size is NOT a dup,
+  club-only prefix when no photographer, skip missing/empty, basename fallback,
+  no-trigger-when-nothing-copied, `not_configured` when the event has no folder).
+- `api/test/creditedFileName.test.ts` — the ported credited-name builder
+  (prefix assembly, non-ASCII, idempotency, club-only, fallback, truncation).
 
-## TODO before production
+## Abuse protection + dedup + credit (implemented)
 
-- **Abuse protection**: add reCAPTCHA Enterprise + a per-token rate limit on
-  `/session` (a leaked link otherwise lets anyone fill the bucket).
-- **EXIF/GPS scrub**: the gas-app client strips GPS before upload
-  (`sanitizeJpegMetadata`). Port that into `resumableUpload.ts` (sanitize the
-  ArrayBuffer before slicing chunks) or do it server-side during the Drive copy.
-- **Duplicate check + credited filename**: the gas-app flow renames files to the
-  photographer credit and skips duplicates; fold that into the session request
-  (`enqueueStagedBatch` currently keeps the uploaded `originalName` as-is).
+- **Abuse protection — DONE.** `/session` is gated by `volunteerUploadRateLimit`
+  (Firestore fixed-window counter keyed on the LINK TOKEN, since the route is
+  unauthenticated and a leaked link is the abuse vector — `VOLUNTEER_UPLOAD_LIMIT`
+  / `VOLUNTEER_UPLOAD_WINDOW_SEC`, default 2000/hour, 0 disables, fails OPEN) and
+  by reCAPTCHA Enterprise (`requireRecaptcha('volunteer_upload')`). The browser
+  acquires a token via `web/src/lib/recaptcha.ts` (no-op unless
+  `VITE_RECAPTCHA_SITE_KEY` is set) and sends it in `X-Recaptcha-Token`. To turn
+  the gate on in prod, set the three `RECAPTCHA_*` api env vars + the site key.
+- **Drive folder hierarchy — DONE (matches gas-app).** `enqueueStagedBatch`
+  rebuilds the legacy layout instead of dumping files in the event root:
+  `Event(driveFolderId) / Club_Name / tag (DEFAULT_TAG="ALL" when the link has
+  no tag) / YYYYMMDD-HHMMSS_<photographer|volunteer>`. The Layer-3 batch folder
+  is named from the typed photographer name (lowercased, `[a-z0-9._-]`, falls
+  back to `volunteer`); the Club/tag/batch folders are created lazily via
+  `driveService.getOrCreateSubfolder` on the first non-duplicate file, so an
+  all-duplicate batch leaves no empty folder. This keeps the drive-tree view,
+  special-folders rebuild, and public-sheet index working (they key off the
+  `YYYYMMDD-HHMMSS_` batch-folder prefix). The volunteer flow is unauthenticated,
+  so unlike gas-app the batch folder is NOT named from a login email.
+- **Duplicate check + credited filename — DONE (server-side).** `enqueueStagedBatch`
+  renames each staged original to `<Club>_<Photographer>_<orig>` via
+  `buildCreditedFileName` (club from the link, photographer stamped onto the
+  staging object at session-create time from the optional name field on the
+  page), then skips any file whose credited name + byte size already exists in
+  the event's Drive folder (or appeared earlier in the same batch). The receipt
+  reports `accepted` + `skippedDuplicates`. Dedup listing failure is non-fatal
+  (proceeds without dedup; the indexer dedups by content hash downstream).
+
+## Deliberately NOT done
+
+- **EXIF/GPS scrub — intentionally skipped.** Per product decision, location
+  EXIF/GPS is kept in the file. (The gas-app client strips GPS via
+  `sanitizeJpegMetadata`; we do not replicate that here.)
 ```

@@ -1,0 +1,10 @@
+model_files/
+local_store/
+__pycache__/
+.pytest_cache/
+# biometric eval data stays local (PRD §8)
+eval/queries/*
+!eval/queries/README.md
+eval/labels.csv
+eval/report.json
+eval/review.html

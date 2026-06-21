@@ -1,0 +1,16 @@
+# Build context for the matcher image is cloud-webapp/matcher/ (deploy-matcher.sh
+# runs `gcloud builds submit $REPO_ROOT/matcher`), so the cloud-webapp/.dockerignore
+# does NOT apply here — Docker uses the .dockerignore at the context root. The
+# matcher Dockerfile copies `*.py` by glob (so new modules are never silently
+# omitted); these excludes keep tests, caches, and local-only data out of the image.
+**/test_*.py
+**/conftest.py
+**/requirements-test.txt
+**/__pycache__
+**/.pytest_cache
+**/pytest-cache-files-*
+**/.venv
+local_store/
+eval/
+*.log
+.DS_Store
