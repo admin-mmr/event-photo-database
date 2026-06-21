@@ -21,6 +21,7 @@ import { getRecaptchaToken } from '../lib/recaptcha.js';
 import { useSelection } from '../lib/selection.js';
 import { combineReferences, visibleResults, scoreBand, bandLabel } from '../lib/results.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
+import { type ShareOutcome } from '../lib/share.js';
 import { saveResults, loadResults, clearResults } from '../lib/findmeCache.js';
 import { usePageSize, PAGE_SIZE_OPTIONS } from '../lib/pageSize.js';
 import { SelectBar } from '../components/SelectBar.js';
@@ -73,6 +74,14 @@ export function FindMe(): JSX.Element {
   const [saving, setSaving] = useState(false);
   // Save-to-Photos progress (C9): how many originals have been fetched so far.
   const [saveProgress, setSaveProgress] = useState<{ done: number; total: number } | null>(null);
+  // Original blobs cached per photo for "Save to Photos". iOS only honours
+  // navigator.share inside the tap's transient activation, so we must NOT await
+  // a network fetch before sharing — we prefetch the selected originals here and
+  // share synchronously once they're cached. The ref mirrors the state so the
+  // prefetch effect can skip cached ids without depending on origBlobs.
+  const [origBlobs, setOrigBlobs] = useState<Record<string, Blob>>({});
+  const origBlobsRef = useRef<Record<string, Blob>>({});
+  const origFetching = useRef<Set<string>>(new Set());
   // Transient success line after a save/download (C9), announced via aria-live.
   const [status, setStatus] = useState<string | null>(null);
   // Index into `visible` of the photo open in the lightbox, or null (C4/C5).
@@ -100,6 +109,19 @@ export function FindMe(): JSX.Element {
 
   const ids = useMemo(() => visible.map((r) => r.photoId), [visible]);
   const sel = useSelection(ids);
+
+  // Stable key for the selected set so prefetch/prune effects only re-run when
+  // the set changes, not every render.
+  const selectedKey = useMemo(() => [...sel.selected].sort().join(','), [sel.selected]);
+  // All selected originals cached → the batch share can fire synchronously.
+  const selectedReady = sel.count > 0 && [...sel.selected].every((id) => Boolean(origBlobs[id]));
+  // On mobile, true while we're still prefetching selected originals (the Save
+  // button shows "Preparing…" and stays disabled until they're all in hand).
+  const savePreparing = canSavePhotos && sel.count > 0 && !selectedReady;
+  const preparedCount = useMemo(
+    () => [...sel.selected].filter((id) => Boolean(origBlobs[id])).length,
+    [sel.selected, origBlobs],
+  );
 
   // Matcher results come back as one ranked list (no server cursor), so we
   // page the *display* client-side: show `visibleCount`, governed by the same
@@ -157,6 +179,42 @@ export function FindMe(): JSX.Element {
       setLightboxIndex(visible.length > 0 ? visible.length - 1 : null);
     }
   }, [visible.length, lightboxIndex]);
+
+  // Prefetch selected originals (mobile only) so the batch "Save to Photos" can
+  // share synchronously inside the tap. Reads the ref to skip cached ids, so
+  // adding a blob doesn't re-fire; re-runs only when the selected set changes.
+  useEffect(() => {
+    if (!canSavePhotos) return;
+    for (const id of sel.selected) {
+      if (origBlobsRef.current[id] || origFetching.current.has(id)) continue;
+      origFetching.current.add(id);
+      apiGetBlob(`/api/events/${encodeURIComponent(eventId)}/photos/${encodeURIComponent(id)}/original`)
+        .then((blob) => {
+          origBlobsRef.current = { ...origBlobsRef.current, [id]: blob };
+          setOrigBlobs(origBlobsRef.current);
+        })
+        .catch(() => {
+          /* leave uncached; the save falls back to a download for this one */
+        })
+        .finally(() => origFetching.current.delete(id));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canSavePhotos, selectedKey]);
+
+  // Drop cached originals no longer selected (bounds mobile memory). Keyed on
+  // the selected set so it runs when the selection shrinks or switches tabs.
+  useEffect(() => {
+    let changed = false;
+    for (const id of Object.keys(origBlobsRef.current)) {
+      if (sel.isSelected(id)) continue;
+      const next = { ...origBlobsRef.current };
+      delete next[id];
+      origBlobsRef.current = next;
+      changed = true;
+    }
+    if (changed) setOrigBlobs(origBlobsRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedKey]);
 
   /** Append a result set from a search response and make it the active tab. */
   function pushReference(res: SearchResponse, previewUrl: string, labelPrefix: string): void {
@@ -332,74 +390,101 @@ export function FindMe(): JSX.Element {
     }
   }
 
+  function reportSave(outcome: ShareOutcome, count: number, failed = 0): void {
+    const photos = `${count} photo${count === 1 ? '' : 's'}`;
+    const skipped = failed > 0 ? ` (${failed} couldn't be loaded and were skipped)` : '';
+    // 'shared' → went to the share sheet (iOS "Save to Photos"); 'cancelled' →
+    // user dismissed, say nothing; otherwise it fell back to file downloads.
+    if (outcome === 'shared') {
+      setStatus(`Sent ${photos} to your share sheet — choose Save to Photos.${skipped}`);
+    } else if (outcome !== 'cancelled') {
+      setStatus(`Downloaded ${photos}.${skipped}`);
+    }
+  }
+
   /**
-   * One-tap "Save to Photos" (§5B C3). Fetches each selected original, then
-   * hands the actual image FILES to the native share sheet — on iOS that yields
-   * "Save N Images to Photos". A ZIP can't be expanded into the iOS photo
-   * library, so we deliberately share images, not the ZIP. On a browser without
-   * Web Share L2 this degrades to per-file downloads (handled in the helper).
+   * "Save to Photos" (§5B C3). Hands the actual image FILES to the native share
+   * sheet — on iOS that yields "Save N Images to Photos". A ZIP can't be expanded
+   * into the iOS photo library, so we deliberately share images, not the ZIP.
+   *
+   * iOS only honours navigator.share while the tap's *transient activation* is
+   * live, so we must NOT await a network fetch before calling it. On mobile the
+   * selected originals are prefetched into `origBlobs` (the button stays disabled
+   * — "Preparing…" — until they're all cached), so the fast path builds the files
+   * and shares synchronously in the same tick. The fetch-then-share fallback only
+   * runs on desktop, where the helper degrades to per-file downloads and
+   * activation doesn't matter.
    */
-  async function saveSelected(): Promise<void> {
+  function saveSelected(): void {
     if (sel.count === 0) return;
     const ids = [...sel.selected];
     const n = ids.length;
-    setSaving(true);
     setError(null);
     setStatus(null);
-    setSaveProgress({ done: 0, total: n });
-    try {
-      // Fetch the originals with a small concurrency pool (much faster than the
-      // old one-at-a-time loop for large selections) and tolerate per-photo
-      // failures: one unreadable original must not sink the whole save. Slots
-      // preserve order so filenames stay stable.
-      const slots: (NamedBlob | null)[] = new Array<NamedBlob | null>(n).fill(null);
-      let done = 0;
-      let failed = 0;
-      let cursor = 0;
-      const CONCURRENCY = 5;
-      const worker = async (): Promise<void> => {
-        while (cursor < n) {
-          const i = cursor;
-          cursor += 1;
-          const photoId = ids[i];
-          try {
-            if (photoId === undefined) throw new Error('missing id');
-            // eslint-disable-next-line no-await-in-loop
-            const blob = await apiGetBlob(
-              `/api/events/${encodeURIComponent(eventId)}/photos/${encodeURIComponent(photoId)}/original`,
-            );
-            slots[i] = { blob, filename: `${photoId}.jpg` };
-          } catch {
-            failed += 1;
-          } finally {
-            done += 1;
-            setSaveProgress({ done, total: n });
-          }
-        }
-      };
-      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, n) }, () => worker()));
 
-      const files = slots.filter((f): f is NamedBlob => f !== null);
-      if (files.length === 0) {
-        setError('Could not load any of the selected photos. Please try again in a moment.');
-        return;
-      }
-      const outcome = await savePhotosIndividually(files, { title: 'My event photos' });
-      const photos = `${files.length} photo${files.length === 1 ? '' : 's'}`;
-      const skipped = failed > 0 ? ` (${failed} couldn't be loaded and were skipped)` : '';
-      // 'shared' → went to the share sheet (iOS "Save to Photos"); 'cancelled' →
-      // user dismissed, say nothing; otherwise it fell back to file downloads.
-      if (outcome === 'shared') {
-        setStatus(`Sent ${photos} to your share sheet — choose Save to Photos.${skipped}`);
-      } else if (outcome !== 'cancelled') {
-        setStatus(`Downloaded ${photos}.${skipped}`);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not save photos');
-    } finally {
-      setSaving(false);
-      setSaveProgress(null);
+    // Fast path: every selected original is cached → share synchronously.
+    if (canSavePhotos && selectedReady) {
+      const files: NamedBlob[] = ids
+        .map((id) => {
+          const blob = origBlobs[id];
+          return blob ? { blob, filename: `${id}.jpg` } : null;
+        })
+        .filter((f): f is NamedBlob => f !== null);
+      setSaving(true);
+      savePhotosIndividually(files, { title: 'My event photos' })
+        .then((outcome) => reportSave(outcome, files.length))
+        .catch((e) => setError(e instanceof Error ? e.message : 'Could not save photos'))
+        .finally(() => setSaving(false));
+      return;
     }
+
+    // Fallback (desktop, or a blob still loading): fetch with a small concurrency
+    // pool and tolerate per-photo failures, then save/download. Slots preserve
+    // order so filenames stay stable.
+    void (async () => {
+      setSaving(true);
+      setSaveProgress({ done: 0, total: n });
+      try {
+        const slots: (NamedBlob | null)[] = new Array<NamedBlob | null>(n).fill(null);
+        let done = 0;
+        let failed = 0;
+        let cursor = 0;
+        const CONCURRENCY = 5;
+        const worker = async (): Promise<void> => {
+          while (cursor < n) {
+            const i = cursor;
+            cursor += 1;
+            const photoId = ids[i];
+            try {
+              if (photoId === undefined) throw new Error('missing id');
+              // eslint-disable-next-line no-await-in-loop
+              const blob = await apiGetBlob(
+                `/api/events/${encodeURIComponent(eventId)}/photos/${encodeURIComponent(photoId)}/original`,
+              );
+              slots[i] = { blob, filename: `${photoId}.jpg` };
+            } catch {
+              failed += 1;
+            } finally {
+              done += 1;
+              setSaveProgress({ done, total: n });
+            }
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, n) }, () => worker()));
+
+        const files = slots.filter((f): f is NamedBlob => f !== null);
+        if (files.length === 0) {
+          setError('Could not load any of the selected photos. Please try again in a moment.');
+          return;
+        }
+        reportSave(await savePhotosIndividually(files, { title: 'My event photos' }), files.length, failed);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not save photos');
+      } finally {
+        setSaving(false);
+        setSaveProgress(null);
+      }
+    })();
   }
 
   return (
@@ -595,13 +680,16 @@ export function FindMe(): JSX.Element {
                 total={ids.length}
                 selectedCount={sel.count}
                 busy={downloading || saving}
-                saveProgress={saveProgress}
+                saveProgress={
+                  savePreparing ? { done: preparedCount, total: sel.count } : saveProgress
+                }
+                savePreparing={savePreparing}
                 canSave={canSavePhotos}
                 onSelectAll={sel.selectAll}
                 onSelectNone={sel.selectNone}
                 onInvert={sel.invert}
                 onDownload={() => void downloadSelected()}
-                onSaveToPhone={() => void saveSelected()}
+                onSaveToPhone={() => saveSelected()}
               />
               <div className="photo-grid">
                 {shown.map((r, i) => {

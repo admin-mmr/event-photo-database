@@ -18,6 +18,6 @@
     "autoClose": "1800s"
   },
   "notificationChannels": [
-    "REPLACE_WITH_CHANNEL_NAME"
+    "projects/mmr-data-pipeline/notificationChannels/2707820505476417914"
   ]
 }

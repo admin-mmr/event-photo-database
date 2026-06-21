@@ -86,7 +86,9 @@ export function SelectBar({
                 ? `Saving ${saveProgress.done} of ${saveProgress.total}…`
                 : 'Saving…'
               : savePreparing
-                ? `Preparing ${selectedCount || ''}…`.replace('  ', ' ').trim()
+                ? saveProgress
+                  ? `Preparing ${saveProgress.done} of ${saveProgress.total}…`
+                  : `Preparing ${selectedCount || ''}…`.replace('  ', ' ').trim()
                 : `📲 Save ${selectedCount || ''} to Photos`.replace('  ', ' ').trim()}
           </button>
         )}
