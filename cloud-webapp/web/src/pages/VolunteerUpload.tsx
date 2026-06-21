@@ -51,6 +51,18 @@ function fmtEta(sec: number): string {
   return m > 0 ? `~${m} min ${s} sec remaining` : `~${s} sec remaining`;
 }
 
+/**
+ * Touch device (phone/tablet) detection. We feature-detect the *interaction
+ * model* rather than sniff the user agent: a coarse pointer with no hover means
+ * there's no drag-and-drop, so the dropzone should say "tap to choose" instead.
+ * `maxTouchPoints` is a fallback for browsers without the media query.
+ */
+const IS_TOUCH =
+  typeof window !== 'undefined' &&
+  ((typeof window.matchMedia === 'function' &&
+    window.matchMedia('(hover: none) and (pointer: coarse)').matches) ||
+    (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));
+
 export function VolunteerUpload(): JSX.Element {
   const { token = '' } = useParams();
   const [items, setItems] = useState<Item[]>([]);
@@ -213,9 +225,21 @@ export function VolunteerUpload(): JSX.Element {
             background: '#fafffa',
           }}
         >
-          <div style={{ fontSize: 40 }}>📁</div>
-          <div style={{ color: '#1b5e20', fontWeight: 600 }}>Drag &amp; drop photos and videos here</div>
-          <div className="muted">{items.length} file{items.length === 1 ? '' : 's'} selected</div>
+          <div style={{ fontSize: 40 }}>{IS_TOUCH ? '🖼️' : '📁'}</div>
+          <div style={{ color: '#1b5e20', fontWeight: 600 }}>
+            {IS_TOUCH ? 'Tap to add photos or videos' : 'Drag & drop photos and videos here'}
+          </div>
+          <div style={{ color: '#1b5e20', fontWeight: 600 }}>
+            {IS_TOUCH ? '点按添加照片或视频' : '拖放照片和视频到此处'}
+          </div>
+          <div className="muted">
+            {IS_TOUCH
+              ? 'Choose from your Photos or Files · 可从「照片」或「文件」中选择'
+              : 'or click to choose · 或点击选择'}
+          </div>
+          <div className="muted">
+            {items.length} file{items.length === 1 ? '' : 's'} selected · 已选择 {items.length} 个文件
+          </div>
           <input
             type="file"
             multiple
