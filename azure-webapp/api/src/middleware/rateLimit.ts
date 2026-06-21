@@ -154,6 +154,19 @@ export const originalFetchRateLimit = (): RequestHandler =>
   rateLimit({ bucket: 'original_fetch', limit: env.ORIGINAL_FETCH_LIMIT, windowSec: 24 * 60 * 60 });
 
 /**
+ * Client-error reports (POST /api/client-errors), keyed by uid. Each accepted
+ * report is logged at ERROR severity and so can trigger an alert — this bucket
+ * caps how many a single client can emit per window (config defaults to
+ * 30/hour). Fails open like every other limiter.
+ */
+export const clientErrorRateLimit = (): RequestHandler =>
+  rateLimit({
+    bucket: 'client_error',
+    limit: env.CLIENT_ERROR_LIMIT,
+    windowSec: env.CLIENT_ERROR_WINDOW_SEC,
+  });
+
+/**
  * Per-link-token limit on the public volunteer upload `/session` endpoint
  * (UPLOAD_RESUMABLE_NOTES). The route is unauthenticated — the link token is the
  * only stable identity — so we key on the token (a leaked link is the abuse

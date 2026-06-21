@@ -14,3 +14,4 @@ export * from './schemas/feedback.js';
 export * from './schemas/metrics.js';
 export * from './schemas/sync.js';
 export * from './schemas/upload.js';
+export * from './schemas/telemetry.js';

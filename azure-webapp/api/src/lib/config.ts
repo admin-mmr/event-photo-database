@@ -145,6 +145,14 @@ const EnvSchema = z.object({
   // of 50 and lock the user out for the rest of the day. Generous limit + own
   // bucket so a normal multi-photo save never trips it.
   ORIGINAL_FETCH_LIMIT: z.coerce.number().int().min(0).default(500),
+  // Client-error reports per window, keyed by uid (POST /api/client-errors).
+  // Each accepted report becomes an ERROR log line, which an alert rule can turn
+  // into a notification — so this bucket caps how many alert-worthy logs a single
+  // misbehaving (or malicious) client can emit. 0 disables. Generous enough for a
+  // real burst of failures in one session, low enough that a stuck retry loop
+  // can't flood the alert channel.
+  CLIENT_ERROR_LIMIT: z.coerce.number().int().min(0).default(30),
+  CLIENT_ERROR_WINDOW_SEC: z.coerce.number().int().positive().default(3600),
 
   // reCAPTCHA Enterprise on the upload/search action (services/recaptcha.ts).
   // All three must be set to enable verification; otherwise the gate no-ops
