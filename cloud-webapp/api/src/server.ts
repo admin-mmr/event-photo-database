@@ -12,6 +12,7 @@ import { feedbackRouter } from './routes/feedback.js';
 import { metricsRouter } from './routes/metrics.js';
 import { syncRouter } from './routes/sync.js';
 import { volunteerUploadRouter } from './routes/volunteerUpload.js';
+import { telemetryRouter } from './routes/telemetry.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 
 export function buildServer(): express.Express {
@@ -75,6 +76,7 @@ export function buildServer(): express.Express {
   app.use('/api', metricsRouter);
   app.use('/api', syncRouter);
   app.use('/api', volunteerUploadRouter);
+  app.use('/api', telemetryRouter);
 
   // 404 + final error handler must be registered last.
   app.use(notFoundHandler);

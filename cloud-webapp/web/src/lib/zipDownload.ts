@@ -12,6 +12,7 @@
 
 import { apiPost } from './api.js';
 import { downloadBlob } from './share.js';
+import { reportClientError } from './reportError.js';
 import { buildStoreZip, type ZipEntry } from './zip.js';
 import type { DownloadRequest, DownloadSignResponse } from '@cloud-webapp/shared';
 
@@ -55,20 +56,41 @@ export async function downloadOriginalsZip(
   );
 
   let failed = 0;
+  // Keep a few sample failure reasons so an alert can pinpoint the cause
+  // (e.g. a CORS error vs. an HTTP 403 on the signed URL) without logging one
+  // line per photo.
+  const sampleErrors: string[] = [];
   const fetched = await mapLimit(files, 6, async (f): Promise<ZipEntry | null> => {
     try {
       const res = await fetch(f.url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = new Uint8Array(await res.arrayBuffer());
       return { name: f.filename, data };
-    } catch {
+    } catch (e) {
       failed += 1;
+      if (sampleErrors.length < 3) {
+        sampleErrors.push(e instanceof Error ? e.message : String(e));
+      }
       return null;
     }
   });
 
   const entries = fetched.filter((e): e is ZipEntry => e !== null);
-  if (entries.length === 0) throw new Error('None of the selected photos could be downloaded.');
+  if (entries.length === 0) {
+    // Every signed-URL fetch failed — a real outage (commonly the derivatives
+    // bucket missing its CORS rule). Report it so ops gets an email alert; the
+    // user only sees the thrown message.
+    reportClientError('download_failed', 'ZIP download: every original failed to fetch', {
+      context: {
+        eventId,
+        requested: photoIds.length,
+        signed: files.length,
+        failed,
+        sampleErrors,
+      },
+    });
+    throw new Error('None of the selected photos could be downloaded.');
+  }
 
   downloadBlob(buildStoreZip(entries), zipName);
   return { included: entries.length, failed };

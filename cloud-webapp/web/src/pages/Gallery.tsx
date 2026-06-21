@@ -13,6 +13,7 @@ import { useSelection } from '../lib/selection.js';
 import { eventLabel } from '../lib/eventLabel.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
 import { downloadOriginalsZip } from '../lib/zipDownload.js';
+import { reportClientError } from '../lib/reportError.js';
 import { saveToPhone, type ShareOutcome } from '../lib/share.js';
 import { usePageSize } from '../lib/pageSize.js';
 import { useSortMode } from '../lib/sortMode.js';
@@ -454,6 +455,10 @@ export function Gallery(): JSX.Element {
       if (outcome === 'shared') setStatus(`Sent ${label} to your share sheet — choose Save to Photos.`);
       else if (outcome !== 'cancelled') setStatus(`Downloaded ${label}.`);
     } catch (e) {
+      reportClientError('download_failed', 'Save to Photos: original fetch failed', {
+        stack: e instanceof Error ? e.stack : undefined,
+        context: { eventId, requested: chosen.length, reason: e instanceof Error ? e.message : String(e) },
+      });
       setNotice(e instanceof Error ? e.message : 'Could not save photos');
     } finally {
       setSaving(false);

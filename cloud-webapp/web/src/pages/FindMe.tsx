@@ -20,6 +20,7 @@ import { useSelection } from '../lib/selection.js';
 import { combineReferences, visibleResults, scoreBand, bandLabel } from '../lib/results.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
 import { downloadOriginalsZip } from '../lib/zipDownload.js';
+import { reportClientError } from '../lib/reportError.js';
 import { type ShareOutcome } from '../lib/share.js';
 import { saveResults, loadResults, clearResults } from '../lib/findmeCache.js';
 import { usePageSize, PAGE_SIZE_OPTIONS } from '../lib/pageSize.js';
@@ -472,6 +473,9 @@ export function FindMe(): JSX.Element {
 
         const files = slots.filter((f): f is NamedBlob => f !== null);
         if (files.length === 0) {
+          reportClientError('download_failed', 'Save to Photos: every original failed to load', {
+            context: { eventId, requested: n, failed },
+          });
           setError('Could not load any of the selected photos. Please try again in a moment.');
           return;
         }
