@@ -1,0 +1,23 @@
+{
+  "displayName": "event-photo-api unhandled errors",
+  "documentation": {
+    "content": "An unhandled error (severity>=ERROR) was logged by the event-photo-api Cloud Run service. Open the incident to see the log entry, including the error message and stack trace.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "ERROR logs from event-photo-api",
+      "conditionMatchedLog": {
+        "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"event-photo-api\" AND severity>=ERROR"
+      }
+    }
+  ],
+  "alertStrategy": {
+    "notificationRateLimit": { "period": "300s" },
+    "autoClose": "1800s"
+  },
+  "notificationChannels": [
+    "REPLACE_WITH_CHANNEL_NAME"
+  ]
+}
