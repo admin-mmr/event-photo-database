@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { canShareFiles, shareFiles, saveToPhone } from './share.js';
+import { canShareFiles, canShareImageFiles, shareFiles, saveToPhone } from './share.js';
 
 function navWith(overrides: Partial<Navigator>): Navigator {
   return overrides as Navigator;
@@ -29,6 +29,30 @@ describe('canShareFiles', () => {
       }),
     } as Partial<Navigator>);
     expect(canShareFiles([file], nav)).toBe(false);
+  });
+});
+
+describe('canShareImageFiles', () => {
+  it('true when the browser can share a probe JPEG (Web Share L2)', () => {
+    const nav = navWith({ share: vi.fn(), canShare: vi.fn().mockReturnValue(true) } as Partial<Navigator>);
+    expect(canShareImageFiles(nav)).toBe(true);
+  });
+
+  it('false when share exists but canShare rejects files (Web Share L1 only)', () => {
+    const nav = navWith({ share: vi.fn(), canShare: vi.fn().mockReturnValue(false) } as Partial<Navigator>);
+    expect(canShareImageFiles(nav)).toBe(false);
+  });
+
+  it('false when the browser lacks share/canShare (desktop)', () => {
+    expect(canShareImageFiles(navWith({}))).toBe(false);
+  });
+
+  it('passes an image/jpeg file (not a zip) to canShare', () => {
+    const canShare = vi.fn().mockReturnValue(true);
+    const nav = navWith({ share: vi.fn(), canShare } as Partial<Navigator>);
+    canShareImageFiles(nav);
+    const arg = canShare.mock.calls[0]?.[0] as { files: File[] };
+    expect(arg.files[0]?.type).toBe('image/jpeg');
   });
 });
 
