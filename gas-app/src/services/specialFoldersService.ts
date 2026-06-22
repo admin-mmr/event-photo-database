@@ -912,9 +912,16 @@ export interface LinkTargetsResult {
  *
  * Permissions: a native Drive shortcut inherits the TARGET file's permissions,
  * NOT the containing folder's — so sharing the folder is not enough for
- * anyone-with-link viewers to open/download. This grants Anyone→reader on
- * EVERY target (including ones whose shortcut already exists), so pre-existing
- * shortcuts self-heal on the next sync. `grantTarget` must be idempotent.
+ * anyone-with-link viewers to open/download. We grant Anyone→reader on each
+ * target at the moment we create its shortcut.
+ *
+ * We do NOT re-grant targets whose shortcut already exists: they were granted
+ * when first linked, and re-granting every target on every rebuild made a
+ * no-op rebuild walk and re-share the entire archive (thousands of redundant
+ * Drive permission writes + log lines). Steady-state rebuilds now touch only
+ * genuinely new targets. (A bulk re-share of pre-existing targets, if ever
+ * needed, belongs in an explicit backfill, not the hot rebuild path.)
+ * `grantTarget` must be idempotent.
  *
  * Pure aside from the injected `deps`; unit-tested directly.
  */
@@ -931,8 +938,6 @@ export function linkTargetsIntoShortcutFolder(
   const linked = new Set(existingTargetIds);
 
   for (const f of targets) {
-    deps.grantTarget(f.id);
-
     if (linked.has(f.id)) {
       shortcutsExisting++;
       continue;
@@ -944,6 +949,9 @@ export function linkTargetsIntoShortcutFolder(
       );
       continue;
     }
+    // Grant only the freshly-linked target — the shortcut inherits the
+    // target's sharing, and only-new keeps repeat rebuilds quiet.
+    deps.grantTarget(f.id);
     shortcutsCreated++;
     linked.add(f.id);
   }

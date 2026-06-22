@@ -6,9 +6,10 @@
  * therefore NOT enough for anyone-with-link viewers to download — the target
  * must be shared too. These tests pin that behaviour for both edited paths:
  *
- *   1. linkTargetsIntoShortcutFolder() — Album/Videos: grant EVERY target
- *      (new and already-linked, so old shortcuts self-heal) and only create a
- *      shortcut for not-yet-linked targets.
+ *   1. linkTargetsIntoShortcutFolder() — Album/Videos: create a shortcut only
+ *      for not-yet-linked targets, and grant Anyone-read on each target as it
+ *      is freshly linked (already-linked targets are NOT re-granted, so repeat
+ *      rebuilds don't re-share the whole archive).
  *   2. materializePhotoIntoBucket() — Photos_NNN fallback: when a photo falls
  *      back to a shortcut, its target gets granted too.
  *
@@ -68,14 +69,14 @@ describe('linkTargetsIntoShortcutFolder()', () => {
     return { deps: { ...base, ...overrides }, granted, created };
   }
 
-  it('grants Anyone-read on EVERY target, including already-linked ones', () => {
+  it('grants Anyone-read only on newly-linked targets, not already-linked ones', () => {
     const { deps: d, granted } = deps();
     const targets = [target('a'), target('b'), target('c')];
-    const existing = new Set(['b']); // b already has a shortcut
+    const existing = new Set(['b']); // b already has a shortcut → not re-granted
 
     linkTargetsIntoShortcutFolder('folder1', 'Album', targets, existing, d);
 
-    expect(granted.sort()).toEqual(['a', 'b', 'c']); // self-heals 'b' too
+    expect(granted.sort()).toEqual(['a', 'c']); // 'b' skipped — already shared
   });
 
   it('creates a shortcut only for targets that are not yet linked', () => {
@@ -91,7 +92,7 @@ describe('linkTargetsIntoShortcutFolder()', () => {
     expect(res.warnings).toEqual([]);
   });
 
-  it('still grants the target when shortcut creation fails, and records a warning', () => {
+  it('does not grant the target when shortcut creation fails, and records a warning', () => {
     const { deps: base, granted } = deps();
     const d: LinkTargetsDeps = {
       ...base,
@@ -100,7 +101,7 @@ describe('linkTargetsIntoShortcutFolder()', () => {
 
     const res = linkTargetsIntoShortcutFolder('folder1', 'Album', [target('a')], new Set(), d);
 
-    expect(granted).toEqual(['a']);            // permission still attempted
+    expect(granted).toEqual([]);               // no shortcut created → no grant
     expect(res.shortcutsCreated).toBe(0);
     expect(res.warnings).toHaveLength(1);
     expect(res.warnings[0]).toContain('a.jpg');
