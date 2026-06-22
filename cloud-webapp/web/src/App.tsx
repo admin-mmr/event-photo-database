@@ -10,6 +10,8 @@ import { AdminUsers } from './pages/AdminUsers.js';
 import { AdminClubs } from './pages/AdminClubs.js';
 import { AdminEvents } from './pages/AdminEvents.js';
 import { AdminLinks } from './pages/AdminLinks.js';
+import { AdminAudit } from './pages/AdminAudit.js';
+import { EmailPrefs } from './pages/EmailPrefs.js';
 import { MyData } from './pages/MyData.js';
 import { VolunteerUpload } from './pages/VolunteerUpload.js';
 
@@ -59,6 +61,12 @@ export function App(): JSX.Element {
                 </Link>
                 <Link to="/admin/feedback" className="muted nav-link">
                   Match feedback
+                </Link>
+                <Link to="/admin/audit" className="muted nav-link">
+                  Audit
+                </Link>
+                <Link to="/me/email" className="muted nav-link">
+                  Email settings
                 </Link>
               </>
             )}
@@ -121,6 +129,8 @@ export function App(): JSX.Element {
             path="/admin/events/:eventId/links"
             element={isGuest ? <Navigate to="/" replace /> : <AdminLinks />}
           />
+          <Route path="/admin/audit" element={isGuest ? <Navigate to="/" replace /> : <AdminAudit />} />
+          <Route path="/me/email" element={isGuest ? <Navigate to="/" replace /> : <EmailPrefs />} />
           <Route path="/me/data" element={<MyData />} />
         </Route>
       </Routes>

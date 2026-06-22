@@ -36,6 +36,11 @@ vi.mock('../src/middleware/rbac.js', () => {
 const recordAudit = vi.fn(async (..._a: unknown[]) => undefined);
 vi.mock('../src/services/auditStore.js', () => ({ recordAudit: (...a: unknown[]) => recordAudit(...a) }));
 
+// Event-created email fan-out touches the Sheet (users + prefs) + network; stub.
+vi.mock('../src/services/userStore.js', () => ({ listUsers: async () => [] }));
+vi.mock('../src/services/emailPrefsStore.js', () => ({ optedInAmong: async () => [] }));
+vi.mock('../src/services/emailService.js', () => ({ sendEmail: async () => false, sendToMany: async () => 0 }));
+
 const fsSet = vi.fn(async () => undefined);
 vi.mock('../src/lib/firestore.js', () => ({
   firestore: () => ({ collection: () => ({ doc: () => ({ set: fsSet }) }) }),

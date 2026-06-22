@@ -145,3 +145,62 @@ export type ListLinksResponse = z.infer<typeof ListLinksResponseSchema>;
 
 export const LinkResponseSchema = z.object({ ok: z.literal(true), link: LinkRecordSchema });
 export type LinkResponse = z.infer<typeof LinkResponseSchema>;
+
+// ── Audit log (dev plan G4.2) ─────────────────────────────────────────────────
+
+export const AuditResourceTypeSchema = z.enum(['user', 'club', 'event', 'link', 'report', 'other']);
+export type AuditResourceType = z.infer<typeof AuditResourceTypeSchema>;
+
+export const AuditRecordSchema = z.object({
+  auditId: z.string(),
+  timestamp: z.string(),
+  actorEmail: z.string().default(''),
+  action: z.string().default(''),
+  resourceType: z.string().default(''),
+  resourceId: z.string().default(''),
+  details: z.string().default(''),
+  linkId: z.string().default(''),
+  ip: z.string().default(''),
+  reason: z.string().default(''),
+});
+export type AuditRecord = z.infer<typeof AuditRecordSchema>;
+
+export const ListAuditResponseSchema = z.object({
+  ok: z.literal(true),
+  records: z.array(AuditRecordSchema),
+  total: z.number().int().nonnegative(),
+});
+export type ListAuditResponse = z.infer<typeof ListAuditResponseSchema>;
+
+// ── Email preferences (dev plan G4.1) ─────────────────────────────────────────
+
+/** Per-admin opt-in flags, mirroring gas-app Email_Preferences columns. */
+export const EmailPrefsSchema = z.object({
+  email: z.string(),
+  userCreated: z.boolean(),
+  userRoleChanged: z.boolean(),
+  userDeactivated: z.boolean(),
+  securityEvent: z.boolean(),
+  eventCreated: z.boolean(),
+  dailyReport: z.boolean(),
+  weeklyReport: z.boolean(),
+  updatedAt: z.string().default(''),
+});
+export type EmailPrefs = z.infer<typeof EmailPrefsSchema>;
+
+/** PATCH body: any subset of the boolean flags. */
+export const UpdateEmailPrefsRequestSchema = z
+  .object({
+    userCreated: z.boolean().optional(),
+    userRoleChanged: z.boolean().optional(),
+    userDeactivated: z.boolean().optional(),
+    securityEvent: z.boolean().optional(),
+    eventCreated: z.boolean().optional(),
+    dailyReport: z.boolean().optional(),
+    weeklyReport: z.boolean().optional(),
+  })
+  .refine((o) => Object.keys(o).length > 0, { message: 'No fields to update' });
+export type UpdateEmailPrefsRequest = z.infer<typeof UpdateEmailPrefsRequestSchema>;
+
+export const EmailPrefsResponseSchema = z.object({ ok: z.literal(true), prefs: EmailPrefsSchema });
+export type EmailPrefsResponse = z.infer<typeof EmailPrefsResponseSchema>;

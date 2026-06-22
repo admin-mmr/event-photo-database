@@ -19,6 +19,9 @@ import { adminClubsRouter } from './routes/adminClubs.js';
 import { adminMasqueradeRouter } from './routes/adminMasquerade.js';
 import { adminEventsRouter } from './routes/adminEvents.js';
 import { adminLinksRouter } from './routes/adminLinks.js';
+import { auditRouter } from './routes/audit.js';
+import { emailPrefsRouter } from './routes/emailPrefs.js';
+import { emailDigestRouter } from './routes/emailDigest.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 
 export function buildServer(): express.Express {
@@ -89,6 +92,9 @@ export function buildServer(): express.Express {
   app.use('/api', adminMasqueradeRouter);
   app.use('/api', adminEventsRouter);
   app.use('/api', adminLinksRouter);
+  app.use('/api', auditRouter);
+  app.use('/api', emailPrefsRouter);
+  app.use('/api', emailDigestRouter);
 
   // 404 + final error handler must be registered last.
   app.use(notFoundHandler);

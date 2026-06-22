@@ -21,8 +21,12 @@ import { requireAuth } from '../middleware/auth.js';
 import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
 import { recordAudit } from '../services/auditStore.js';
 import { DRIVE_SCOPE_READWRITE, getDriveToken, getOrCreateSubfolder } from '../services/driveService.js';
+import { optedInAmong } from '../services/emailPrefsStore.js';
+import { sendToMany } from '../services/emailService.js';
+import { eventCreated } from '../services/emailTemplates.js';
 import { createEvent, findByFolderName, folderNameFor } from '../services/eventStore.js';
 import { triggerIndexJob } from '../services/indexerJob.js';
+import { listUsers } from '../services/userStore.js';
 import { actor, handleStoreError, masterSheetId } from './adminShared.js';
 
 export const adminEventsRouter = Router();
@@ -97,6 +101,18 @@ adminEventsRouter.post('/admin/events', requireAuth, attachRole, requireAnyAdmin
       details: { folderName: event.folderName, driveFolderId: event.driveFolderId },
       ip: req.ip ?? '',
     });
+
+    // Best-effort "new event" notice to opted-in admins (default ON). Never
+    // blocks the create; sendToMany no-ops when EMAIL_ENABLED!=='true'.
+    try {
+      const admins = (await listUsers(sid, { status: 'active' }))
+        .filter((u) => u.role !== 'api_client')
+        .map((u) => u.email);
+      const recipients = await optedInAmong(sid, 'eventCreated', admins);
+      await sendToMany(recipients, eventCreated(actor(req), event.name, event.date));
+    } catch (err) {
+      logger.warn({ err, eventId: event.eventId }, 'event-created notification failed (non-fatal)');
+    }
 
     const body: CreateEventResponse = { ok: true, event };
     res.status(201).json(body);

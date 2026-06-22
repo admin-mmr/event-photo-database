@@ -17,11 +17,37 @@ import {
 } from '@cloud-webapp/shared';
 
 import { UserStatus } from '../lib/roles.js';
+import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
 import { attachRole, requireAnyAdmin, requireSuperAdmin } from '../middleware/rbac.js';
 import { recordAudit } from '../services/auditStore.js';
+import { optedInAmong } from '../services/emailPrefsStore.js';
+import { sendEmail, sendToMany } from '../services/emailService.js';
+import { userCreated, welcomeUser } from '../services/emailTemplates.js';
 import { createUser, listUsers, setUserStatus, updateUser } from '../services/userStore.js';
 import { actor, effectiveClubScope, handleStoreError, masterSheetId } from './adminShared.js';
+
+/**
+ * Best-effort email fan-out for a newly created user: a welcome to the user, and
+ * a "new user added" notice to opted-in admins (default ON). Never throws — a
+ * mail failure must not fail the create (sendEmail itself no-ops when disabled).
+ */
+async function notifyUserCreated(
+  sid: string,
+  newUser: { email: string; firstName: string; lastName: string; role: string },
+  actorEmail: string,
+): Promise<void> {
+  try {
+    await sendEmail(newUser.email, welcomeUser(`${newUser.firstName} ${newUser.lastName}`, newUser.role));
+    const admins = (await listUsers(sid, { status: UserStatus.ACTIVE }))
+      .filter((u) => u.role !== 'api_client' && u.email !== newUser.email)
+      .map((u) => u.email);
+    const recipients = await optedInAmong(sid, 'userCreated', admins);
+    await sendToMany(recipients, userCreated(actorEmail, newUser.email, newUser.role));
+  } catch (err) {
+    logger.warn({ err, email: newUser.email }, 'user-created notification failed (non-fatal)');
+  }
+}
 
 export const adminUsersRouter = Router();
 
@@ -54,6 +80,7 @@ adminUsersRouter.post('/admin/users', requireAuth, attachRole, requireSuperAdmin
       details: { role: user.role, clubId: user.clubId },
       ip: req.ip ?? '',
     });
+    await notifyUserCreated(sid, user, actor(req));
     const body: UserResponse = { ok: true, user };
     res.status(201).json(body);
   } catch (err) {

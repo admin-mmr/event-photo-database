@@ -39,6 +39,10 @@ vi.mock('../src/middleware/rbac.js', () => {
 const recordAudit = vi.fn(async (..._args: unknown[]) => undefined);
 vi.mock('../src/services/auditStore.js', () => ({ recordAudit: (...a: unknown[]) => recordAudit(...a) }));
 
+// Email fan-out on create touches the Sheet (prefs) + network; stub it out.
+vi.mock('../src/services/emailPrefsStore.js', () => ({ optedInAmong: async () => [] }));
+vi.mock('../src/services/emailService.js', () => ({ sendEmail: async () => false, sendToMany: async () => 0 }));
+
 // In-memory userStore with the real error-class shape (instanceof must hold).
 interface U {
   email: string;

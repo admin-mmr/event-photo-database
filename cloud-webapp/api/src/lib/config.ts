@@ -60,6 +60,19 @@ const EnvSchema = z.object({
   USERS_SHEET_NAME: z.string().default('Users'),
   CLUBS_SHEET_NAME: z.string().default('Clubs'),
   AUDIT_LOG_SHEET_NAME: z.string().default('Audit_Log'),
+  EMAIL_PREFERENCES_SHEET_NAME: z.string().default('Email_Preferences'),
+
+  // ── Email notifications (dev plan G4.1) ───────────────────────────────────
+  // Transactional + digest email via the Gmail API using the SAME keyless DWD
+  // client as Drive/Sheets (cloud-neutral — works unchanged on Azure). Sending
+  // is OFF by default so dev/test/demo never send real mail; flip EMAIL_ENABLED
+  // to 'true' in prod. Requires the `gmail.send` scope authorized on the DWD
+  // client and EMAIL_FROM set to the impersonated sender (defaults to DWD_SUBJECT).
+  EMAIL_ENABLED: z.enum(['true', 'false']).default('false'),
+  EMAIL_FROM: z.string().default(''),
+  // Absolute base URL of the web app, used to build links inside emails. Empty
+  // = omit links. e.g. https://mmr-data-pipeline.web.app
+  APP_BASE_URL: z.string().default(''),
   // Drive folder under which new event folders (layer-1 `YYYY-MM-DD_Event`) are
   // created when an admin creates an event in cloud-webapp (dev plan G3.1).
   // Empty until configured — POST /api/admin/events then 503s with a clear
