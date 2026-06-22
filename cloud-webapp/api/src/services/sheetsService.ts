@@ -135,3 +135,39 @@ export async function appendSheetValues(
   const json = (await res.json()) as { updates?: { updatedRows?: number } };
   return json.updates?.updatedRows ?? 0;
 }
+
+/**
+ * Overwrite an exact range in place via `spreadsheets.values.update` — used for
+ * row edits (deactivate user, revoke/rotate link, etc.) where we already know
+ * the row number from a prior read.
+ *
+ * `range` is an A1 range that EXACTLY spans the cells written, e.g.
+ * `Users!A7:K7` to rewrite the 7th sheet row. Values are sent `RAW`. Pass fewer
+ * cells than the range width and the API errors, so size the range to the row.
+ *
+ * Requires the read/WRITE `spreadsheets` scope on the DWD client (see header).
+ * Returns the number of cells the API reported updated.
+ */
+export async function updateSheetValues(
+  spreadsheetId: string,
+  range: string,
+  rows: unknown[][],
+  opts?: { token?: string },
+): Promise<number> {
+  const token = opts?.token ?? (await getSheetsToken());
+  const params = new URLSearchParams({ valueInputOption: 'RAW' });
+  const url = `${SHEETS}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}?${params}`;
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ majorDimension: 'ROWS', values: rows }),
+  });
+  if (!res.ok) {
+    throw new Error(`Sheets API update ${res.status} on '${range}': ${await res.text()}`);
+  }
+  const json = (await res.json()) as { updatedCells?: number };
+  return json.updatedCells ?? 0;
+}

@@ -3,6 +3,7 @@ import { getAuth } from 'firebase-admin/auth';
 import { initializeApp, getApps, applicationDefault } from 'firebase-admin/app';
 import { env } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
+import type { UserRole } from '../lib/roles.js';
 
 // Initialize firebase-admin exactly once. Idempotent across hot-reloads.
 if (getApps().length === 0) {
@@ -16,6 +17,12 @@ export interface AuthedUser {
   uid: string;
   email: string | undefined;
   emailVerified: boolean;
+  /** Control-plane role, resolved from the Users sheet by middleware/rbac.ts
+   *  (attachRole). Undefined until that middleware runs / if the user has no
+   *  active Users row and is not a bootstrap admin. */
+  role?: UserRole;
+  /** Club normalizedName for a club_admin; '' / undefined otherwise. */
+  clubId?: string;
 }
 
 declare module 'express-serve-static-core' {

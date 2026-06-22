@@ -111,6 +111,8 @@ Sheet tabs stay authoritative. `cloud-webapp` gets a write adapter per tab; Fire
 
 Each milestone is independently deployable. Roughly **30–45 dev-days** for one engineer who knows the codebase; G1–G2 dominate.
 
+> **⚠️ STATUS (2026-06-21) — G0 + G1 landed in code.** G0 (Firestore cache indexes for `users`/`clubs`/`uploadLinks`/`auditLog` in `infra/firestore.indexes.json`) and the G1 keystone are implemented + unit-tested (CI-green, 225/225) in `cloud-webapp/api`: `sheetsService.updateSheetValues` (in-place row edits), `sheetTable.ts` (read/address/serialize-per-tab), Sheet-write adapters `userStore.ts` / `clubStore.ts` / `auditStore.ts` (Sheet SSOT + best-effort Firestore mirror), and RBAC middleware `rbac.ts` (`attachRole` resolving roles from the Users sheet via a 60s TTL cache, `requireRole`/`requireSuperAdmin`/`requireAnyAdmin`, `requireClubScope`). **Remaining for G1:** one ops step — authorize the `https://www.googleapis.com/auth/spreadsheets` (read/write) scope on the DWD client in the Workspace Admin console (read scope already granted; see `sheetsService.ts` header). `linkStore` is deferred to G3 (links need event context). Next: G2 admin routes + React pages wired behind `attachRole`+`requireRole`.
+
 ### G0 — Foundations & decision lock (~1.5 days)
 - 0.1 Confirm D1–D6 with stakeholders. *(D2 = Sheet stays SSOT — confirmed.)*
 - 0.2 Snapshot current Sheet schema; grant the cloud-webapp SA **Sheets write scope** via DWD (read scope already in use). Verify a test write round-trips.
