@@ -75,16 +75,64 @@ export interface BatchGrantSummary {
   readonly errorSample: ReadonlyArray<string>;
 }
 
+// ─── Existing-permission probe ───────────────────────────────────────────────
+
+/**
+ * Returns true iff `folderId` already carries an "anyone" permission that
+ * grants at least read access (reader / writer / owner all imply readable).
+ *
+ * Why this exists
+ * ───────────────
+ * Drive's `permissions.create` is NOT a no-op for an existing `type=anyone`
+ * grant: there can only ever be one anyone-permission on a file, so a repeat
+ * create returns **HTTP 200** with that same permission — it does NOT return
+ * the 400 "duplicate" that `type=user`/`group` grants produce. That means the
+ * caller can't tell a fresh share from a re-share by status code alone, and
+ * every rebuild would re-log/re-write every already-public file. Probing the
+ * permission list first lets us short-circuit to outcome='exists' silently.
+ *
+ * Returns `null` (unknown) when the probe itself fails, so the caller can fall
+ * back to attempting the create rather than wrongly assuming "not shared".
+ */
+function hasAnyoneReadPermission(folderId: string): boolean | null {
+  const url =
+    `${DRIVE_API_BASE}/files/${encodeURIComponent(folderId)}/permissions` +
+    `?supportsAllDrives=true&fields=permissions(type,role)`;
+  try {
+    const response = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: { Authorization: `Bearer ${getDriveAuthToken()}` },
+      muteHttpExceptions: true,
+    });
+    const status = response.getResponseCode();
+    if (status < 200 || status >= 300) return null;
+    const parsed = JSON.parse(response.getContentText()) as {
+      permissions?: Array<{ type?: string; role?: string }>;
+    };
+    const perms = parsed.permissions ?? [];
+    return perms.some(
+      (p) =>
+        p.type === 'anyone' &&
+        (p.role === 'reader' || p.role === 'writer' || p.role === 'owner')
+    );
+  } catch {
+    return null;
+  }
+}
+
 // ─── Single-folder grant ─────────────────────────────────────────────────────
 
 /**
  * Grants "Anyone with the link → Viewer" (role=reader, type=anyone) on
  * `folderId`. Idempotent and safe to call repeatedly.
  *
- * Drive treats a duplicate `type=anyone` permission as a 4xx error rather
- * than a no-op (the error text usually contains "duplicate" or
- * "shareOutNotPermitted"). We map that case to outcome='exists' so callers
- * can distinguish it from a real failure.
+ * A file can hold at most one `type=anyone` permission, and Drive happily
+ * returns HTTP 200 on a repeat create rather than a 400 "duplicate" — so we
+ * cannot detect the already-shared case from the create response. Instead we
+ * probe the permission list first (hasAnyoneReadPermission) and short-circuit
+ * to outcome='exists' (no write, no log) when the grant is already in place.
+ * This keeps repeated rebuilds quiet and quota-cheap instead of re-sharing
+ * every target file on every run.
  *
  * Errors are intentionally not thrown — the public-sharing path is a
  * convenience layer and must never break a sync.
@@ -92,6 +140,12 @@ export interface BatchGrantSummary {
 export function grantAnyoneRead(folderId: string): GrantPermissionResult {
   if (!folderId || !folderId.trim()) {
     return { ok: false, outcome: 'error', status: 0, error: 'folderId is required' };
+  }
+
+  // Already shared? Skip the write entirely. A null probe result means we
+  // couldn't tell, so we fall through and attempt the create defensively.
+  if (hasAnyoneReadPermission(folderId) === true) {
+    return { ok: true, outcome: 'exists', status: 200 };
   }
 
   // supportsAllDrives=true so the call works for folders that live in a

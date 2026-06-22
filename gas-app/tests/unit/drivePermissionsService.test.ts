@@ -47,9 +47,19 @@ beforeEach(() => {
   (globalThis as any).Logger = { log: jest.fn() };
 });
 
+// grantAnyoneRead() first PROBES the permission list (a GET) to detect an
+// already-shared file, then only POSTs a create when no anyone-permission is
+// present. Tests therefore queue the probe response before the create response.
+// A probe body with no `type:'anyone'` entry means "not shared yet".
+const PROBE_NOT_SHARED: FetchResponseSpec = {
+  status: 200,
+  body: JSON.stringify({ permissions: [{ type: 'user', role: 'owner' }] }),
+};
+
 describe('grantAnyoneRead()', () => {
-  it('returns outcome=created on HTTP 200 and includes the permission ID', () => {
+  it('probes, then returns outcome=created on HTTP 200 with the permission ID', () => {
     const fetchMock = queueFetchResponses([
+      PROBE_NOT_SHARED,
       { status: 200, body: JSON.stringify({ id: 'perm-xyz' }) },
     ]);
 
@@ -60,9 +70,13 @@ describe('grantAnyoneRead()', () => {
     expect(result.permissionId).toBe('perm-xyz');
     expect(result.status).toBe(200);
 
-    // Verify the actual HTTP request looks right.
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, opts] = fetchMock.mock.calls[0];
+    // Two round-trips: a GET probe followed by the POST create.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [probeUrl, probeOpts] = fetchMock.mock.calls[0];
+    expect(probeUrl).toContain('/drive/v3/files/folder-abc/permissions');
+    expect(probeOpts.method).toBe('get');
+
+    const [url, opts] = fetchMock.mock.calls[1];
     expect(url).toContain('/drive/v3/files/folder-abc/permissions');
     expect(url).toContain('supportsAllDrives=true');
     expect(url).toContain('sendNotificationEmail=false');
@@ -74,11 +88,32 @@ describe('grantAnyoneRead()', () => {
     expect(body.allowFileDiscovery).toBe(false);
   });
 
-  it('returns outcome=exists when Drive rejects with a "duplicate" 400', () => {
-    // Drive's actual message looks like:
-    //   {"error":{"code":400,"message":"...duplicate...","status":"INVALID_ARGUMENT"}}
-    // The classifier only needs the body to mention "duplicate" or "exist".
+  it('returns outcome=exists (no create POST) when an anyone-reader already exists', () => {
+    const fetchMock = queueFetchResponses([
+      {
+        status: 200,
+        body: JSON.stringify({
+          permissions: [
+            { type: 'user', role: 'owner' },
+            { type: 'anyone', role: 'reader' },
+          ],
+        }),
+      },
+    ]);
+
+    const result = grantAnyoneRead('folder-already-shared');
+    expect(result.ok).toBe(true);
+    expect(result.outcome).toBe('exists');
+    // Only the probe ran — no create attempt, no re-share, nothing logged.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1].method).toBe('get');
+  });
+
+  it('falls back to outcome=exists on a "duplicate" 400 from the create', () => {
+    // Defensive fallback: if the probe missed it (e.g. a race) and the create
+    // still 400s as a duplicate, we treat it as already-shared.
     queueFetchResponses([
+      PROBE_NOT_SHARED,
       {
         status: 400,
         body: JSON.stringify({
@@ -87,14 +122,17 @@ describe('grantAnyoneRead()', () => {
       },
     ]);
 
-    const result = grantAnyoneRead('folder-already-shared');
+    const result = grantAnyoneRead('folder-dup');
     expect(result.ok).toBe(true);
     expect(result.outcome).toBe('exists');
     expect(result.status).toBe(400);
   });
 
   it('classifies a 5xx as outcome=error so callers can retry', () => {
-    queueFetchResponses([{ status: 500, body: 'Internal Server Error' }]);
+    queueFetchResponses([
+      PROBE_NOT_SHARED,
+      { status: 500, body: 'Internal Server Error' },
+    ]);
 
     const result = grantAnyoneRead('folder-flaky');
     expect(result.ok).toBe(false);
@@ -105,6 +143,7 @@ describe('grantAnyoneRead()', () => {
 
   it('classifies a non-duplicate 403 as outcome=error (not silently shared)', () => {
     queueFetchResponses([
+      PROBE_NOT_SHARED,
       {
         status: 403,
         body: JSON.stringify({
@@ -119,8 +158,22 @@ describe('grantAnyoneRead()', () => {
     expect(result.status).toBe(403);
   });
 
-  it('returns outcome=error when fetch itself throws', () => {
-    queueFetchResponses([new Error('DNS failure')]);
+  it('attempts the create when the probe itself fails (unknown state)', () => {
+    // Probe throws → state unknown → fall through to create rather than
+    // wrongly assuming the file is unshared-and-safe-to-skip.
+    const fetchMock = queueFetchResponses([
+      new Error('probe blip'),
+      { status: 200, body: JSON.stringify({ id: 'perm-after-probe-fail' }) },
+    ]);
+
+    const result = grantAnyoneRead('folder-probe-fail');
+    expect(result.ok).toBe(true);
+    expect(result.outcome).toBe('created');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns outcome=error when the create fetch itself throws', () => {
+    queueFetchResponses([PROBE_NOT_SHARED, new Error('DNS failure')]);
 
     const result = grantAnyoneRead('folder-network-blip');
     expect(result.ok).toBe(false);
