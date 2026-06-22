@@ -6,6 +6,8 @@ import { Events } from './pages/Events.js';
 import { Gallery } from './pages/Gallery.js';
 import { FindMe } from './pages/FindMe.js';
 import { FeedbackAdmin } from './pages/FeedbackAdmin.js';
+import { AdminUsers } from './pages/AdminUsers.js';
+import { AdminClubs } from './pages/AdminClubs.js';
 import { MyData } from './pages/MyData.js';
 import { VolunteerUpload } from './pages/VolunteerUpload.js';
 
@@ -43,9 +45,17 @@ export function App(): JSX.Element {
             </Link>
             {/* Admin-only; guests have no email so the API blocks them anyway. */}
             {!isGuest && (
-              <Link to="/admin/feedback" className="muted nav-link">
-                Match feedback
-              </Link>
+              <>
+                <Link to="/admin/users" className="muted nav-link">
+                  Users
+                </Link>
+                <Link to="/admin/clubs" className="muted nav-link">
+                  Clubs
+                </Link>
+                <Link to="/admin/feedback" className="muted nav-link">
+                  Match feedback
+                </Link>
+              </>
             )}
             {isGuest ? (
               <>
@@ -99,6 +109,8 @@ export function App(): JSX.Element {
             path="/admin/feedback"
             element={isGuest ? <Navigate to="/" replace /> : <FeedbackAdmin />}
           />
+          <Route path="/admin/users" element={isGuest ? <Navigate to="/" replace /> : <AdminUsers />} />
+          <Route path="/admin/clubs" element={isGuest ? <Navigate to="/" replace /> : <AdminClubs />} />
           <Route path="/me/data" element={<MyData />} />
         </Route>
       </Routes>

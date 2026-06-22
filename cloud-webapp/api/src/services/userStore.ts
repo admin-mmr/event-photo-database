@@ -49,14 +49,14 @@ export interface CreateUserInput {
   firstName: string;
   lastName: string;
   role: Role;
-  clubId?: string;
+  clubId?: string | undefined;
 }
 
 export interface UpdateUserPatch {
-  firstName?: string;
-  lastName?: string;
-  role?: Role;
-  clubId?: string;
+  firstName?: string | undefined;
+  lastName?: string | undefined;
+  role?: Role | undefined;
+  clubId?: string | undefined;
 }
 
 export class UserStoreError extends Error {

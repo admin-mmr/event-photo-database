@@ -78,6 +78,25 @@ export async function apiPost<T, B = unknown>(
   return (await res.json()) as T;
 }
 
+export async function apiPatch<T, B = unknown>(
+  path: string,
+  body: B,
+  opts?: { headers?: Record<string, string> },
+): Promise<T> {
+  const res = await fetch(path, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      ...(await authHeader()),
+      ...(opts?.headers ?? {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await parseError(res, `PATCH ${path} failed: HTTP ${res.status}`);
+  return (await res.json()) as T;
+}
+
 /** Multipart POST (Find Me reference upload). */
 export async function apiUpload<T>(
   path: string,
