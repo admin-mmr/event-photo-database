@@ -184,6 +184,34 @@
     `cloud-webapp/matcher/.dockerignore` — the parent one does NOT apply. Keep
     both in sync when changing exclude rules.
 
+## Cloud Scheduler jobs (machine triggers)
+
+- Four scheduler jobs in `us-central1` POST to `event-photo-api`, all authorized
+  by the `allowCronOrAdmin` gate (`X-Sync-Token: $SYNC_TRIGGER_TOKEN`):
+  `findme-drive-sync` (`/api/admin/sync`, daily reconcile — pre-existing, from
+  `provision-sync-scheduler.sh`), `findme-index-scan` (`/api/admin/index-scan`,
+  ~every 10 min — `provision-index-scan-scheduler.sh`), `findme-email-daily`
+  (`/api/admin/email/daily`) and `findme-deleted-purge`
+  (`/api/admin/deleted-files/purge`). The latter two have no script — create them
+  with `gcloud scheduler jobs create http` mirroring the index-scan script.
+- **Every job needs an OIDC token, not just the header.** Cloud Run IAM runs
+  before the app's `X-Sync-Token` gate, so a job without
+  `--oidc-service-account-email=api-runtime@mmr-data-pipeline.iam.gserviceaccount.com`
+  + `--oidc-token-audience=<service URL>` gets an HTML `403` from Google before
+  the app ever sees it. `api-runtime@` already holds `run.invoker` on the service.
+- **`provision-index-scan-scheduler.sh` only works on first create.** It passes
+  `--headers`, valid for `create http`; on re-run the job exists so it takes the
+  `update http` path, where the flag is `--update-headers`, and dies with
+  `unrecognized arguments: --headers=…`. Workaround: delete the job and re-run, or
+  do the `update http` by hand with `--update-headers`. TODO: patch the script to
+  pick the header flag by verb.
+- **Keep all four PAUSED until Phase B parity sign-off** (`CUTOVER_RUNBOOK.md`
+  §A4). New jobs are `ENABLED` by default — pause right after creating. A paused
+  job can still be triggered manually with `gcloud scheduler jobs run` for
+  verification. `findme-drive-sync` especially must be paused during parity since
+  it writes the master Sheet (the SSOT the parity diffs read). `resume` all four
+  after sign-off.
+
 ## Indexer notes
 
 - One Cloud Run Job execution = one event. Per-event vectors live as flat

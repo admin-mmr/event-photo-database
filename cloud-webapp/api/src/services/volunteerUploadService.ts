@@ -8,7 +8,8 @@
  * browser resume from the last committed byte, and the bytes land in a staging
  * bucket WITHOUT handing a broad Drive OAuth token to the browser. A later
  * server-side step copies the staged originals into Drive and triggers the
- * indexer (see `enqueueStagedBatch` — currently a stub).
+ * indexer (see `enqueueStagedBatch`, wired into the `/complete` and worker
+ * paths in `routes/volunteerUpload.ts`).
  *
  * The browser never sees a credential here: we call `createResumableUpload()`
  * with ADC (the api-runtime@ SA) and return only the opaque, single-object

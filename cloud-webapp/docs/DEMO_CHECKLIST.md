@@ -7,6 +7,14 @@ https://mmr-data-pipeline.web.app
 simple consent dialog. Deferred to full M3/M5: i18n (ZH), enrollment, minor/guardian
 consent path, rate limiting/reCAPTCHA, feedback buttons.
 
+> **Update 2026-06-22:** several items listed as "deferred" below have since been
+> built. The Find Me B-series backlog (B1–B8) — feedback buttons ("not me"),
+> original-res ZIP download, multi-selfie switching, content-hash dedup, instant
+> metadata sync — is now **code-complete in the repo, pending one deploy** (api +
+> web, plus a B6 indexer re-run). Still genuinely unbuilt: ZH localization, selfie
+> enrollment, and the minor/guardian consent path. See
+> `../GAS_MIGRATION_DEV_PLAN.md` §4A.1–4A.2 for current status.
+
 The code deploys itself on `git push` (api + hosting). What remains is the
 **one-time human steps** below — all run from `cloud-webapp/` with `gcloud` logged in
 as admin@mmrunners.org. Budget ~half a day, plus model download time.
@@ -109,7 +117,12 @@ Drive folder count.
 
 ## Known demo-scope limitations (say them before stakeholders find them)
 
-- English only (ZH lands with full M3).
-- Search requires Google sign-in (link-only access lands with M3).
-- Reference selfie isn't saved — every search re-uploads (enrollment is M3).
-- No "not me" feedback yet (M4); accuracy tuning continues via EVAL_FEEDBACK_LOOP.md.
+These describe the **currently deployed** demo site. Items marked _(code-complete,
+pending deploy)_ exist in the repo and land on the next api + web deploy — see the
+2026-06-22 update note at the top.
+
+- English only (ZH lands with full M3 — still unbuilt).
+- Search requires Google sign-in (link-only access lands with M3 — still unbuilt).
+- Reference selfie isn't saved — every search re-uploads (enrollment is M3 — still unbuilt).
+- "Not me" feedback (B7) — _code-complete, pending deploy_; accuracy tuning continues
+  via EVAL_FEEDBACK_LOOP.md.

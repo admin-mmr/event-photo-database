@@ -70,22 +70,91 @@ firebase deploy --only firestore:indexes --project mmr-data-pipeline
 
 ### A4. Schedulers (Cloud Scheduler → POST with `X-Sync-Token`)
 
-| Job | Target | Cadence |
+| Scheduler job | Target | Cron (TZ `America/New_York`) |
 |---|---|---|
-| index scan (existing) | `POST /api/admin/index-scan` | every ~10 min during events |
-| daily email digest | `POST /api/admin/email/daily` | once daily |
-| deleted-files purge | `POST /api/admin/deleted-files/purge` | once daily |
+| `findme-index-scan` | `POST /api/admin/index-scan` | `*/10 * * * *` (every ~10 min during events) |
+| `findme-email-daily` | `POST /api/admin/email/daily` | `0 7 * * *` (once daily) |
+| `findme-deleted-purge` | `POST /api/admin/deleted-files/purge` | `30 3 * * *` (once daily) |
 
-All honour the machine `X-Sync-Token` (`SYNC_TRIGGER_TOKEN`) so no Firebase
-login is needed. Keep them OFF until after parity sign-off (Phase B).
+All three share the `allowCronOrAdmin` gate (`middleware/cronAuth.ts`): a machine
+caller presents `X-Sync-Token: $SYNC_TRIGGER_TOKEN` (no Firebase login needed),
+humans fall through to `requireAuth → requireAdmin`.
+
+**Provisioning.** First export the token from Secret Manager so it's never pasted
+literally:
+
+```bash
+export SYNC_TRIGGER_TOKEN="$(gcloud secrets versions access latest --secret=SYNC_TRIGGER_TOKEN --project=mmr-data-pipeline)"
+```
+
+`findme-index-scan` has a maintained script
+(`infra/scripts/provision-index-scan-scheduler.sh <project> <region>`). The other
+two are created directly with `gcloud scheduler jobs create http`, mirroring the
+script: same `--headers="X-Sync-Token=…,Content-Type=application/json"`,
+`--message-body='{}'`, `--attempt-deadline=320s`.
+
+**OIDC is required, not just the header.** Even though the app authorizes on
+`X-Sync-Token`, Cloud Run's IAM layer runs first, so every scheduler job must also
+attach a Google OIDC token or Cloud Run returns an HTML `403` before the token
+gate ever runs. Use the same identity the existing `findme-drive-sync` job uses
+(`api-runtime@mmr-data-pipeline.iam.gserviceaccount.com`, which holds
+`run.invoker` on the service) and set the audience to the service URL:
+
+```
+  --oidc-service-account-email=api-runtime@mmr-data-pipeline.iam.gserviceaccount.com \
+  --oidc-token-audience="$API_URL"
+```
+
+The index-scan script adds these automatically (it inherits the SA from
+`findme-drive-sync`); add them by hand to the `create http` calls for the other
+two.
+
+**Gotcha — script flag bug on re-run.** `provision-index-scan-scheduler.sh` uses
+`--headers`, which is only valid on `gcloud scheduler jobs create http`. If the
+job already exists the script takes the `update http` path, where the flag is
+`--update-headers`, and fails with `unrecognized arguments: --headers=…`. Until
+the script is patched, either delete the job first and let it re-create, or run
+the `update http` by hand with `--update-headers`.
+
+**Keep them OFF until parity sign-off (Phase B).** Newly created jobs are
+`ENABLED` by default, so pause each immediately after creating it (a paused job
+can still be triggered manually with `jobs run` for verification):
+
+```bash
+for J in findme-index-scan findme-email-daily findme-deleted-purge; do
+  gcloud scheduler jobs pause "$J" --location=us-central1 --project=mmr-data-pipeline
+done
+```
+
+**Also pause `findme-drive-sync` during parity.** This pre-existing daily
+reconciler (`POST /api/admin/sync`, the §8 "Sync with Drive" job from
+`provision-sync-scheduler.sh`) is NOT part of A4, but it writes the master Sheet,
+so leaving it `ENABLED` during Phase B would mutate the SSOT underneath your
+parity diffs. Pause it too until sign-off:
+
+```bash
+gcloud scheduler jobs pause findme-drive-sync --location=us-central1 --project=mmr-data-pipeline
+```
+
+Verify the full set reads `PAUSED` before moving on:
+
+```bash
+gcloud scheduler jobs list --location=us-central1 --project=mmr-data-pipeline \
+  --format='table(name.basename(), schedule, state, httpTarget.uri)'
+```
+
+Re-enable everything (all four) after Phase B with `gcloud scheduler jobs resume <job> …`.
 
 ### A5. Deploy
 
 ```bash
 cd cloud-webapp
-./infra/scripts/deploy-api.sh
-./infra/scripts/deploy-web.sh
+./infra/scripts/deploy-api.sh mmr-data-pipeline
+./infra/scripts/deploy-web.sh mmr-data-pipeline
 ```
+
+(Both scripts require the project id as `$1`; `deploy-api.sh` takes an optional
+region as `$2`, default `us-central1`.)
 
 Confirm `GET /api/health` returns the new commit SHA.
 
@@ -115,7 +184,8 @@ each test.
 | Partner API | `GET /partner/events`, `POST /partner/links` | key auth works; link pinned to client club |
 
 **Go/no-go:** every row verified on a real (non-production-critical) event for at
-least one full event cycle. Now enable the Phase A4 schedulers.
+least one full event cycle. Now `resume` the Phase A4 schedulers **and**
+`findme-drive-sync` (all four were paused for parity — see A4).
 
 ---
 
@@ -179,7 +249,7 @@ now describe the single-app reality.
 - [ ] A1 scopes authorized (spreadsheets, drive, gmail.send)
 - [ ] A2 env + secrets set; partners registered as api_client
 - [ ] A3 indexes deployed
-- [ ] A4 schedulers created (index-scan, digest, purge)
+- [ ] A4 schedulers created + paused (index-scan, digest, purge); `findme-drive-sync` also paused for parity
 - [ ] A5 deployed; `/api/health` green
 - [ ] B parity matrix fully verified over one event cycle
 - [ ] C gas-app writes frozen (web app unpublished, triggers removed)

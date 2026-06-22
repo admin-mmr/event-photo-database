@@ -58,11 +58,21 @@ deployed site**, which is already up.
 English only; search requires Google sign-in; reference selfie isn't saved (re-upload each
 search); no "not me" feedback yet. These are scheduled for full M3/M4.
 
+> **Update 2026-06-22:** the Find Me B-series backlog (B1–B8), including the "not me"
+> wrong-match feedback (B7), original-res ZIP download, multi-selfie switching, and
+> content-hash dedup, is now **code-complete in the repo but not yet deployed** — one
+> api + web deploy (plus a B6 indexer re-run) lands them live. ZH localization (M4) and
+> selfie enrollment (M3) remain genuinely unbuilt. See
+> `../GAS_MIGRATION_DEV_PLAN.md` §4A.1–4A.2 for the authoritative status.
+
 ## Doc nit
 
-The migration table in `README.md` is stale — it lists most features "not started," but M2 +
-minimal M3 shipped. The authoritative status is `docs/DEMO_CHECKLIST.md` +
-`FACE_MATCHING_DEV_PLAN.md`. Worth updating the README so a fresh reader isn't misled.
+The migration table in `README.md` was stale — it listed most features "not started," but M2 +
+minimal M3 shipped.
+
+> **Resolved 2026-06-22:** the `README.md` migration table now reflects the
+> code-complete G1–G5 control plane. The authoritative status remains
+> `docs/DEMO_CHECKLIST.md` + `../GAS_MIGRATION_DEV_PLAN.md`.
 
 ## Environment note — Node 22 (applied & re-verified 2026-06-14)
 

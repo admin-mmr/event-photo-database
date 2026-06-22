@@ -23,7 +23,7 @@ imports from `../gas-app/` and vice versa. Once cutover finishes,
 ```
                                                       ┌──────────────────────────┐
    browser  ──HTTPS──▶  Firebase Hosting  ───▶ /api/* ─┤  Cloud Run (api/)        │
-   (React SPA          (web/ static bundle)            │  Node 20 + Express + TS  │
+   (React SPA          (web/ static bundle)            │  Node 22 + Express + TS  │
     from web/)                                         └──────────┬───────────────┘
                                                                   │
                                                   ┌───────────────┼────────────────┐
@@ -79,7 +79,7 @@ and the deploy/cutover sequence are in `../CUTOVER_RUNBOOK.md`.
 
 Install once on your machine:
 
-- Node 20.x (use `nvm install` from this directory — `.nvmrc` pins it).
+- Node 22.x (use `nvm install` from this directory — `.nvmrc` pins it).
 - `gcloud` CLI: <https://cloud.google.com/sdk/docs/install>
 - `firebase-tools`: `npm install -g firebase-tools`
 - Docker Desktop (only needed if you want to build/run the api container locally).
@@ -116,7 +116,7 @@ See `docs/DEPLOYMENT.md` for the long version.
 
 ```bash
 cd cloud-webapp
-nvm use            # picks up Node 20 from .nvmrc
+nvm use            # picks up Node 22 from .nvmrc
 npm install        # installs all workspaces
 npm run dev        # runs api on :8080 and web on :5173 in parallel
 ```
@@ -157,15 +157,32 @@ To deploy manually:
 
 ## Migration status from gas-app
 
-| gas-app feature | Status |
-|---|---|
-| Health check | ✅ ported (`GET /api/health`) |
-| Auth (Firebase Auth replacing `Session.getActiveUser`) | 🟡 scaffolded, not wired into routes yet |
-| Upload links | ⬜ not started |
-| Audit log | ⬜ not started |
-| Drive tree | ⬜ not started |
-| Photos sync | ⬜ not started |
-| (existing) image conversion `cloud-run/main.py` | ⬜ to be absorbed in a later milestone |
+As of the **G1–G5 milestones (2026-06-22), the full gas-app control plane is
+code-complete here** — all parity features are implemented and tested (api +
+web suites green). The remaining work is **G6 cutover**, which is *operational,
+not code*: provision DWD scopes/secrets/schedulers, verify the parity matrix,
+freeze gas-app writes, run a 48h dual-run, then retire gas-app. Follow
+`../CUTOVER_RUNBOOK.md`.
 
-When a feature ships here, flip its row to ✅ and remove the equivalent
-from the gas-app tree in the same PR.
+Legend: ✅ shipped (code-complete + tested) · 🟡 partial · ⬜ not started
+
+| gas-app feature | Status | Milestone |
+|---|---|---|
+| Health check (`GET /api/health`) | ✅ | — |
+| Auth — Firebase Auth replacing `Session.getActiveUser` | ✅ | — |
+| RBAC: roles, club-scoping, super-admin masquerade | ✅ | G1–G2 |
+| User management (CRUD, roles, club assignment) | ✅ | G2 |
+| Club management (CRUD, activate) | ✅ | G2 |
+| Event creation + Drive folder provisioning | ✅ | G3 |
+| Upload-link generate / rotate / revoke | ✅ | G3 |
+| Volunteer upload (resumable GCS + async queue) | ✅ | — |
+| Email notifications (alerts + digests + prefs) | ✅ | G4 |
+| Audit log (search + CSV export) | ✅ | G4 |
+| Duplicate / trash lifecycle (soft-delete, restore, purge) | ✅ | G5 |
+| Summary & reporting (CSV) | ✅ | G5 |
+| Partner REST API (API key, rate-limited) | ✅ | G5 |
+| Image conversion (absorbed into the indexer derivatives) | ✅ | — |
+
+> Note: an `auth.ts` middleware module exists but is not yet wired into routes —
+> it's a planned refactor of the current (working) Firebase Auth path, not a
+> missing feature. See the TODO in `api/src/middleware/auth.ts`.
