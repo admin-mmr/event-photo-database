@@ -49,5 +49,19 @@ export const AdminMetricsResponseSchema = z.object({
   }),
   /** "Delete my data" / consent-revoke erasures recorded in the window (§8.5). */
   dataDeletions: z.number(),
+  /**
+   * Control-plane totals (current, not windowed): events + indexed photos from
+   * Firestore, active/total users + clubs from the master Sheet. `null` when the
+   * Sheet isn't configured (counts that need it are skipped, not faked).
+   */
+  platform: z
+    .object({
+      events: z.number(),
+      photos: z.number(),
+      users: z.number().nullable(),
+      activeUsers: z.number().nullable(),
+      clubs: z.number().nullable(),
+    })
+    .optional(),
 });
 export type AdminMetricsResponse = z.infer<typeof AdminMetricsResponseSchema>;

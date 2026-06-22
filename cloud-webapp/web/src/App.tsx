@@ -14,6 +14,7 @@ import { AdminAudit } from './pages/AdminAudit.js';
 import { EmailPrefs } from './pages/EmailPrefs.js';
 import { AdminSummary } from './pages/AdminSummary.js';
 import { DeletedFiles } from './pages/DeletedFiles.js';
+import { AdminMetrics } from './pages/AdminMetrics.js';
 import { MyData } from './pages/MyData.js';
 import { VolunteerUpload } from './pages/VolunteerUpload.js';
 
@@ -63,6 +64,9 @@ export function App(): JSX.Element {
                 </Link>
                 <Link to="/admin/feedback" className="muted nav-link">
                   Match feedback
+                </Link>
+                <Link to="/admin/metrics" className="muted nav-link">
+                  Metrics
                 </Link>
                 <Link to="/admin/summary" className="muted nav-link">
                   Report
@@ -138,6 +142,7 @@ export function App(): JSX.Element {
             element={isGuest ? <Navigate to="/" replace /> : <AdminLinks />}
           />
           <Route path="/admin/audit" element={isGuest ? <Navigate to="/" replace /> : <AdminAudit />} />
+          <Route path="/admin/metrics" element={isGuest ? <Navigate to="/" replace /> : <AdminMetrics />} />
           <Route path="/admin/summary" element={isGuest ? <Navigate to="/" replace /> : <AdminSummary />} />
           <Route path="/admin/deleted" element={isGuest ? <Navigate to="/" replace /> : <DeletedFiles />} />
           <Route path="/me/email" element={isGuest ? <Navigate to="/" replace /> : <EmailPrefs />} />

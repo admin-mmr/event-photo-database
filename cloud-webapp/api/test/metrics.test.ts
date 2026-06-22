@@ -16,7 +16,7 @@ vi.mock('../src/middleware/auth.js', () => ({
 }));
 
 interface Row { data: Record<string, unknown> }
-const store: Record<string, Row[]> = { match_runs: [], consents: [], match_feedback: [] };
+const store: Record<string, Row[]> = { match_runs: [], consents: [], match_feedback: [], events: [], photos: [] };
 
 vi.mock('../src/lib/firestore.js', () => ({
   firestore: () => ({
@@ -29,6 +29,9 @@ vi.mock('../src/lib/firestore.js', () => ({
         limit(n: number) {
           builder._limit = n;
           return builder;
+        },
+        count() {
+          return { async get() { return { data: () => ({ count: (store[name] ?? []).length }) }; } };
         },
         async get() {
           const rows = store[name] ?? [];
@@ -69,6 +72,8 @@ function seed(): void {
     { data: { verdict: 'not_me', eventId: 'ev1', createdAt: NOW } },
     { data: { verdict: 'confirmed', eventId: 'ev2', createdAt: NOW } },
   ];
+  store.events = [{ data: {} }, { data: {} }];
+  store.photos = [{ data: {} }, { data: {} }, { data: {} }];
 }
 
 describe('GET /api/admin/metrics (M6.2)', () => {
@@ -90,6 +95,9 @@ describe('GET /api/admin/metrics (M6.2)', () => {
     expect(res.status).toBe(200);
     expect(res.body.searches).toBe(3); // OLD row excluded by the window
     expect(res.body.distinctSearchers).toBe(2);
+    // platform counts: events/photos from Firestore count(); users/clubs null
+    // (MASTER_SPREADSHEET_ID unset in this test, so the Sheet is not read).
+    expect(res.body.platform).toEqual({ events: 2, photos: 3, users: null, activeUsers: null, clubs: null });
     expect(res.body.searchesByMode).toEqual({ fused: 2, person: 1 });
     expect(res.body.minorSearches).toBe(1);
     expect(res.body.consent).toEqual({ records: 3, coverage: 1 });

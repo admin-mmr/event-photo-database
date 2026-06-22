@@ -61,13 +61,69 @@ def metrics_at_k(ranked_photo_ids: list[str], relevant: set[str], k: int) -> dic
     }
 
 
-def evaluate(event, truth: dict[str, set[str]], query_embeddings: dict, k: int) -> dict:
-    """query_embeddings: person → {"face": vec|None, "person": vec|None}."""
-    report: dict = {"k": k, "per_mode": {}}
+def load_judged_labels(path: str) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """For --judged-only: read photoId,person,label (label=confirmed|wrong) into
+    (positives, negatives) per person. Feedback labels are PARTIAL — only judged
+    pairs are scored (EVAL_FEEDBACK_LOOP.md §3)."""
+    positives: dict[str, set[str]] = defaultdict(set)
+    negatives: dict[str, set[str]] = defaultdict(set)
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            person = row["person"].strip()
+            pid = row["photoId"].strip()
+            label = row["label"].strip().lower()
+            if label == "confirmed":
+                positives[person].add(pid)
+            elif label == "wrong":
+                negatives[person].add(pid)
+    return dict(positives), dict(negatives)
+
+
+def judged_metrics_at_k(
+    ranked_photo_ids: list[str], positives: set[str], negatives: set[str], k: int
+) -> dict:
+    """Judged P@K: among the top-K results that received a verdict, confirmed /
+    (confirmed + wrong). Unjudged results are EXCLUDED, not counted as negatives.
+    Recall is unmeasurable from partial feedback, so it is reported as None."""
+    top = ranked_photo_ids[:k]
+    confirmed = sum(1 for pid in top if pid in positives)
+    wrong = sum(1 for pid in top if pid in negatives)
+    judged = confirmed + wrong
+    return {
+        "precision": (confirmed / judged) if judged else None,
+        "recall": None,
+        "fp_rate": (wrong / judged) if judged else None,
+        "returned": len(top),
+        "judged": judged,
+        "confirmed": confirmed,
+        "wrong": wrong,
+    }
+
+
+def evaluate(
+    event,
+    truth: dict[str, set[str]],
+    query_embeddings: dict,
+    k: int,
+    negatives: dict[str, set[str]] | None = None,
+    judged: bool = False,
+) -> dict:
+    """query_embeddings: person → {"face": vec|None, "person": vec|None}.
+
+    When `judged` (EVAL_FEEDBACK_LOOP.md §3), score only labeled pairs from
+    partial user feedback: `truth` is the confirmed-positive set and `negatives`
+    the explicit "wrong" set; unjudged results are excluded, recall is None, and
+    the gate target rises to 0.85."""
+    negatives = negatives or {}
+    report: dict = {"k": k, "judged": judged, "per_mode": {}}
 
     def run_mode(name: str, ranked_fn, keep_retrieved: bool = False) -> dict:
-        per_person, agg = {}, defaultdict(float)
+        per_person = {}
+        # Mean only over queries that produced a (non-None) value for each key.
+        agg: dict[str, float] = defaultdict(float)
+        cnt: dict[str, int] = defaultdict(int)
         n = 0
+        judged_pairs = 0
         for person, relevant in truth.items():
             q = query_embeddings.get(person)
             if q is None:
@@ -75,7 +131,12 @@ def evaluate(event, truth: dict[str, set[str]], query_embeddings: dict, k: int) 
             ranked = ranked_fn(q)
             if ranked is None:
                 continue
-            m = metrics_at_k([h["photoId"] for h in ranked], relevant, k)
+            ranked_ids = [h["photoId"] for h in ranked]
+            if judged:
+                m = judged_metrics_at_k(ranked_ids, relevant, negatives.get(person, set()), k)
+                judged_pairs += m["judged"]
+            else:
+                m = metrics_at_k(ranked_ids, relevant, k)
             if keep_retrieved:
                 m["retrieved"] = [
                     {"photoId": h["photoId"], "labeled": h["photoId"] in relevant}
@@ -83,10 +144,15 @@ def evaluate(event, truth: dict[str, set[str]], query_embeddings: dict, k: int) 
                 ]
             per_person[person] = m
             for key in ("precision", "recall", "fp_rate"):
-                agg[key] += m[key]
+                if m[key] is not None:
+                    agg[key] += m[key]
+                    cnt[key] += 1
             n += 1
-        means = {key: (agg[key] / n if n else 0.0) for key in ("precision", "recall", "fp_rate")}
-        return {"mean": means, "queries": n, "per_person": per_person}
+        means = {key: (agg[key] / cnt[key] if cnt[key] else None) for key in ("precision", "recall", "fp_rate")}
+        out = {"mean": means, "queries": n, "per_person": per_person}
+        if judged:
+            out["judged_pairs"] = judged_pairs
+        return out
 
     report["per_mode"]["face"] = run_mode(
         "face",
@@ -111,11 +177,17 @@ def evaluate(event, truth: dict[str, set[str]], query_embeddings: dict, k: int) 
         entry = run_mode(f"fused_{w_face}_{w_person}", fused)
         report["fusion_sweep"].append({"w_face": w_face, "w_person": w_person, **entry})
 
-    best = max(report["fusion_sweep"], key=lambda e: e["mean"]["precision"])
+    def prec_or_neg(e: dict) -> float:
+        p = e["mean"]["precision"]
+        return p if p is not None else -1.0
+
+    best = max(report["fusion_sweep"], key=prec_or_neg)
+    target = 0.85 if judged else 0.8
+    best_p = best["mean"]["precision"]
     report["best_fusion"] = {"w_face": best["w_face"], "w_person": best["w_person"], "mean": best["mean"]}
     report["gate"] = {
-        "target_precision_at_k": 0.8,
-        "passed": best["mean"]["precision"] >= 0.8,
+        "target_precision_at_k": target,
+        "passed": best_p is not None and best_p >= target,
     }
     return report
 
@@ -170,12 +242,25 @@ def main() -> int:
     parser.add_argument("--queries", required=True)
     parser.add_argument("--k", type=int, default=20)
     parser.add_argument("--report", default="")
+    parser.add_argument(
+        "--judged-only",
+        action="store_true",
+        help="score only labeled pairs from user feedback (label column confirmed|wrong); "
+        "unjudged results excluded, recall omitted, gate target 0.85 "
+        "(EVAL_FEEDBACK_LOOP.md). Use labels from export_feedback_labels.py.",
+    )
     args = parser.parse_args()
 
     from store import EmbeddingStore
 
-    truth = load_labels(args.labels)
-    print(f"Loaded labels: {len(truth)} people, {sum(len(v) for v in truth.values())} (photo,person) pairs")
+    negatives: dict[str, set[str]] = {}
+    if args.judged_only:
+        truth, negatives = load_judged_labels(args.labels)
+        pairs = sum(len(v) for v in truth.values()) + sum(len(v) for v in negatives.values())
+        print(f"Loaded JUDGED labels: {len(set(truth) | set(negatives))} people, {pairs} judged pairs")
+    else:
+        truth = load_labels(args.labels)
+        print(f"Loaded labels: {len(truth)} people, {sum(len(v) for v in truth.values())} (photo,person) pairs")
     event = EmbeddingStore(args.store).load_event(args.event_id)
     print(f"Event '{args.event_id}': {len(event.meta['face'])} face rows, {len(event.meta['person'])} person rows")
     queries = embed_queries(args.queries)
@@ -185,32 +270,42 @@ def main() -> int:
             "Expected one subfolder per labeled person (e.g. queries/alice/selfie.jpg) — "
             "see eval/queries/README.md."
         )
-    missing = sorted(set(truth) - set(queries))
+    all_people = set(truth) | set(negatives)
+    missing = sorted(all_people - set(queries))
     if missing:
         print(f"WARNING: labeled people with no reference photos (skipped): {', '.join(missing)}")
 
-    report = evaluate(event, truth, queries, args.k)
+    report = evaluate(event, truth, queries, args.k, negatives=negatives, judged=args.judged_only)
 
-    print(f"\n=== Results @ K={args.k} ===")
+    def fmt(v: float | None) -> str:
+        return f"{v:.3f}" if v is not None else "  n/a"
+
+    print(f"\n=== Results @ K={args.k}{' (judged-only)' if args.judged_only else ''} ===")
     for mode in ("face", "person"):
         m = report["per_mode"][mode]["mean"]
-        print(f"  {mode:>7}: P={m['precision']:.3f}  R={m['recall']:.3f}  FP={m['fp_rate']:.3f}")
+        print(f"  {mode:>7}: P={fmt(m['precision'])}  R={fmt(m['recall'])}  FP={fmt(m['fp_rate'])}")
     print("  fusion sweep:")
     for e in report["fusion_sweep"]:
         m = e["mean"]
-        print(f"    wF={e['w_face']:.1f} wP={e['w_person']:.1f}: P={m['precision']:.3f}  R={m['recall']:.3f}")
+        print(f"    wF={e['w_face']:.1f} wP={e['w_person']:.1f}: P={fmt(m['precision'])}  R={fmt(m['recall'])}")
     b = report["best_fusion"]
     gate = "PASS ✅" if report["gate"]["passed"] else "FAIL ❌"
-    print(f"\n  Best: wF={b['w_face']} wP={b['w_person']} → P@{args.k}={b['mean']['precision']:.3f}  → M0 gate (≥0.8): {gate}")
+    target = report["gate"]["target_precision_at_k"]
+    print(f"\n  Best: wF={b['w_face']} wP={b['w_person']} → P@{args.k}={fmt(b['mean']['precision'])}  → gate (≥{target}): {gate}")
 
-    # Retrieved-but-unlabeled photos: likely true hits missing from labels.csv.
-    # Review these and add real matches to labels.csv, then rerun.
-    print("\n  Retrieved but unlabeled (face mode) — check these for missed labels:")
-    for person, pm in report["per_mode"]["face"]["per_person"].items():
-        unlabeled = [r["photoId"] for r in pm.get("retrieved", []) if not r["labeled"]]
-        print(f"    {person} ({len(unlabeled)}):")
-        for pid in unlabeled:
-            print(f"      {pid}")
+    if args.judged_only:
+        pairs = report["per_mode"]["face"].get("judged_pairs", 0)
+        users = len(all_people)
+        if pairs < 20 or users < 5:
+            print(f"  ⚠️  Below evidence bar ({pairs} judged pairs, {users} users; need ≥20 pairs / ≥5 users) — number not meaningful.")
+    else:
+        # Retrieved-but-unlabeled photos: likely true hits missing from labels.csv.
+        print("\n  Retrieved but unlabeled (face mode) — check these for missed labels:")
+        for person, pm in report["per_mode"]["face"]["per_person"].items():
+            unlabeled = [r["photoId"] for r in pm.get("retrieved", []) if not r["labeled"]]
+            print(f"    {person} ({len(unlabeled)}):")
+            for pid in unlabeled:
+                print(f"      {pid}")
 
     if args.report:
         with open(args.report, "w", encoding="utf-8") as f:

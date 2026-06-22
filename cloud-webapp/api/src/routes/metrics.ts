@@ -17,8 +17,12 @@ import type { Query, DocumentData } from '@google-cloud/firestore';
 import type { AdminMetricsResponse } from '@cloud-webapp/shared';
 
 import { firestore } from '../lib/firestore.js';
+import { env } from '../lib/config.js';
+import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireAdmin } from '../middleware/admin.js';
+import { listClubs } from '../services/clubStore.js';
+import { listUsers } from '../services/userStore.js';
 
 export const metricsRouter = Router();
 
@@ -26,6 +30,50 @@ export const metricsRouter = Router();
 const SCAN_LIMIT = 5000;
 const DEFAULT_SINCE_DAYS = 90;
 const MAX_SINCE_DAYS = 365;
+
+/**
+ * Current control-plane totals (not windowed). Events + indexed photos are cheap
+ * `count()` aggregations on Firestore; users + clubs come from the master Sheet
+ * (SSOT). Best-effort — any source failing degrades that count to null/0 rather
+ * than failing the whole metrics call.
+ */
+async function platformCounts(): Promise<{
+  events: number;
+  photos: number;
+  users: number | null;
+  activeUsers: number | null;
+  clubs: number | null;
+}> {
+  const countOf = async (collection: string): Promise<number> => {
+    try {
+      const agg = await firestore().collection(collection).count().get();
+      return Number(agg.data().count ?? 0);
+    } catch (err) {
+      logger.warn({ err, collection }, 'metrics count() failed (non-fatal)');
+      return 0;
+    }
+  };
+  const [events, photos] = await Promise.all([countOf('events'), countOf('photos')]);
+
+  let users: number | null = null;
+  let activeUsers: number | null = null;
+  let clubs: number | null = null;
+  if (env.MASTER_SPREADSHEET_ID) {
+    try {
+      const all = await listUsers(env.MASTER_SPREADSHEET_ID);
+      users = all.length;
+      activeUsers = all.filter((u) => u.status === 'active').length;
+    } catch (err) {
+      logger.warn({ err }, 'metrics user count failed (non-fatal)');
+    }
+    try {
+      clubs = (await listClubs(env.MASTER_SPREADSHEET_ID, { status: 'active' })).length;
+    } catch (err) {
+      logger.warn({ err }, 'metrics club count failed (non-fatal)');
+    }
+  }
+  return { events, photos, users, activeUsers, clubs };
+}
 
 async function recentDocs(collection: string, since: string): Promise<DocumentData[]> {
   const query: Query<DocumentData> = firestore()
@@ -79,6 +127,8 @@ metricsRouter.get('/admin/metrics', requireAuth, requireAdmin, async (req, res, 
     const not_me = fbScoped.filter((d) => d.verdict === 'not_me').length;
     const precision = confirmed + not_me === 0 ? null : confirmed / (confirmed + not_me);
 
+    const platform = await platformCounts();
+
     const body: AdminMetricsResponse = {
       ok: true,
       window: { sinceDays, since, eventId: eventId ?? null },
@@ -89,6 +139,7 @@ metricsRouter.get('/admin/metrics', requireAuth, requireAdmin, async (req, res, 
       consent: { records: consentRecords, coverage },
       feedback: { confirmed, not_me, precision },
       dataDeletions,
+      platform,
     };
     res.json(body);
   } catch (err) {

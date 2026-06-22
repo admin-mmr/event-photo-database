@@ -58,6 +58,18 @@ Build items (slot into M4 alongside task 4.4, ~2–3 days total):
 2. `run_eval.py --judged-only` — skip the unlabeled-as-negative assumption; replay stored query embeddings from `match_runs` instead of `eval/queries/`.
 3. Admin metrics rollup (extends the M4 feedback admin queue): judged P@20, FP rate, confirm rate, feedback participation rate, per event × model_version, trended weekly.
 
+> **✅ IMPLEMENTED (2026-06-22).** Items 1–2 shipped. `matcher/eval/export_feedback_labels.py`
+> reads `match_feedback` (+ `match_runs` for `model_version`) — live via `--project`
+> or offline via `--feedback-json`/`--runs-json` for CI — applies the §4b reason
+> rules (friend/group excluded, `me`/confirmed→positive, `not_me`→negative), writes
+> one `labels-<eventId>.csv` per event, and prints judged P@20 with the §3 evidence
+> bar (≥20 pairs / ≥5 users). `run_eval.py --judged-only` consumes that CSV
+> (`photoId,person,label`), scores only judged pairs (unjudged excluded, recall
+> omitted), and raises the gate to 0.85. Tests: `eval/test_export_feedback_labels.py`.
+> Note: the judged metric is computed directly from feedback (no replay); the
+> `--judged-only` sweep still replays via `eval/queries/` for weight tuning —
+> replaying from stored `match_runs` embeddings remains a follow-up.
+
 ## 4b. "Too few photos — see more" expander (decided 2026-06-11)
 
 The results page shows only results above the conservative default cutoff. A **"Too few photos? See more"** button relaxes the cutoff **one bounded step** (fixed second threshold or next 20, whichever is smaller) and appends **only the diff**. The user can then tag photos to keep them — tagging adds the photo to their results/download set **and** writes a row to `match_feedback`.
