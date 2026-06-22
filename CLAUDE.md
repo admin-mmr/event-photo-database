@@ -1,5 +1,21 @@
 # CLAUDE.md — project notes for Claude
 
+## Control plane migration (gas-app → cloud-webapp)
+
+- The admin/control plane (users, clubs, events, upload links, email, audit,
+  duplicates/trash, reporting, partner API) has been reimplemented in
+  `cloud-webapp/` (dev plan `GAS_MIGRATION_DEV_PLAN.md`, milestones G1–G5).
+  **New control-plane work goes in `cloud-webapp/`, not `gas-app/`** (now
+  deprecated — see `gas-app/DEPRECATED.md`).
+- **The Google Sheet stays the source of truth.** It is human-viewable and lives
+  in Google Workspace, the constant across a future Azure move. cloud-webapp
+  *writes* the Sheet via the Sheets API (keyless DWD); Firestore is only a
+  derived read cache. Never put secrets (e.g. partner API keys) in the Sheet —
+  it is world-viewable; secrets go in env / Secret Manager.
+- Control-plane writes are RBAC-guarded in middleware (`rbac.ts`) since a Sheet
+  has no row-level security, and are recorded in the Audit_Log tab.
+- Cutover from gas-app is operational, not code — follow `CUTOVER_RUNBOOK.md`.
+
 ## Local environment
 
 - The dev machine is **macOS (zsh)**. `watch` is **NOT installed by default** on

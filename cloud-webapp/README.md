@@ -4,6 +4,14 @@ This is the GCP replacement for the Apps Script app in `../gas-app/`.
 Backend on Cloud Run, frontend on Firebase Hosting, metadata in Firestore,
 photo originals/thumbnails in Cloud Storage.
 
+As of the G1–G5 migration (`../GAS_MIGRATION_DEV_PLAN.md`), the full **control
+plane** also lives here: users, clubs, events, upload links, email, audit,
+duplicates/trash, reporting, and the partner API — see "Control plane (admin)"
+below. **The Google Sheet remains the source of truth (SSOT);** cloud-webapp is
+the writer, with Firestore as a derived read cache. `gas-app/` is now deprecated
+(`../gas-app/DEPRECATED.md`); cutover is operational — follow
+`../CUTOVER_RUNBOOK.md`.
+
 The two trees coexist during the migration; nothing in this folder
 imports from `../gas-app/` and vice versa. Once cutover finishes,
 `../gas-app/` is decommissioned.
@@ -37,6 +45,33 @@ Folder layout:
 
 This is a single npm workspace with three packages (`api`, `web`, `shared`).
 One `npm install` at the root installs everything.
+
+---
+
+## Control plane (admin)
+
+Ported from gas-app (dev plan G1–G5). All writes go through RBAC middleware
+(`requireAuth` → `attachRole` → `requireSuperAdmin`/`requireAnyAdmin`, plus club
+scoping) to the Google Sheet (SSOT) via the `*Store` services, and are recorded
+in the audit log.
+
+| Area | API route | Web page |
+|---|---|---|
+| Users | `/api/admin/users` | `/admin/users` |
+| Clubs | `/api/admin/clubs` | `/admin/clubs` |
+| Masquerade | `/api/admin/masquerade/*` | (super-admin) |
+| Events | `/api/admin/events` | `/admin/events` |
+| Upload links | `/api/admin/links` | `/admin/events/:id/links` |
+| Email prefs / digest | `/api/admin/email-prefs`, `/api/admin/email/daily` | `/me/email` |
+| Audit | `/api/admin/audit` | `/admin/audit` |
+| Deleted files / trash | `/api/admin/deleted-files` | `/admin/deleted` |
+| Reporting | `/api/admin/summary` | `/admin/summary` |
+| Partner API | `/api/partner/events`, `/api/partner/links` | (API key) |
+
+RBAC: `requireSuperAdmin` for user/club management; `requireAnyAdmin` +
+club-scope for events/links/trash/reporting; partner routes use an API key
+(`X-Api-Key`, secret in env/Secret Manager — never the Sheet). Required config
+and the deploy/cutover sequence are in `../CUTOVER_RUNBOOK.md`.
 
 ---
 
