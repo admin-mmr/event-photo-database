@@ -138,7 +138,10 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
     createdAt: nowIso,
   });
 
-  const match = await matcherSearch({ image, filename, contentType, eventId, topK: 50, mode });
+  // No topK: the matcher returns every photo above the fused score threshold,
+  // so someone who appears in more than 50 photos gets all of their matches
+  // (the UI pages them and downloads in batches under MAX_DOWNLOAD_PHOTOS).
+  const match = await matcherSearch({ image, filename, contentType, eventId, mode });
 
   // Outcome derived once, used for persistence, the alert, and the response.
   const outcome = match.ok ? 'matched' : match.error;

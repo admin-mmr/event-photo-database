@@ -19,15 +19,16 @@ import { getRecaptchaToken } from '../lib/recaptcha.js';
 import { useSelection } from '../lib/selection.js';
 import { combineReferences, visibleResults, scoreBand, bandLabel } from '../lib/results.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
+import { canShareImageFiles } from '../lib/share.js';
 import { downloadOriginalsZip } from '../lib/zipDownload.js';
 import { reportClientError } from '../lib/reportError.js';
 import { type ShareOutcome } from '../lib/share.js';
 import { saveResults, loadResults, clearResults } from '../lib/findmeCache.js';
-import { usePageSize, PAGE_SIZE_OPTIONS } from '../lib/pageSize.js';
+import { useFindMePageSize, FINDME_PAGE_SIZE_OPTIONS } from '../lib/pageSize.js';
 import { SelectBar } from '../components/SelectBar.js';
 import { Lightbox } from '../components/Lightbox.js';
 import { PageSizeSelect } from '../components/PageSizeSelect.js';
-import { LoadMore } from '../components/LoadMore.js';
+import { Pager } from '../components/Pager.js';
 
 type Phase = 'consent' | 'pick' | 'searching' | 'results';
 
@@ -101,7 +102,19 @@ export function FindMe(): JSX.Element {
   // a minor without guardian attestation (PRD §8.3).
   const nameOk = name.trim().length > 0;
   const consentOk = agreed && nameOk && (!isMinor || guardianOk);
-  const canSavePhotos = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+  // Tells the user exactly why "Continue" is disabled (the first unmet
+  // requirement), so a greyed-out button is never unexplained.
+  const consentHint = !nameOk
+    ? 'Enter your name to continue. · 请填写姓名后继续。'
+    : !agreed
+      ? 'Tick the consent box to continue. · 请勾选同意框后继续。'
+      : isMinor && !guardianOk
+        ? 'Confirm guardian consent to continue. · 请确认监护人同意后继续。'
+        : null;
+  // Real file-share capability (not just `navigator.share`, which can exist
+  // without file support). When false we still offer a non-ZIP "Save photos"
+  // fallback so a phone is never left with only the ZIP download.
+  const canSavePhotos = canShareImageFiles();
 
   const activeRef = references.find((r) => r.id === activeId);
   const isCombined = activeId === COMBINED || !activeRef;
@@ -112,8 +125,25 @@ export function FindMe(): JSX.Element {
     return activeRef ? visibleResults(activeRef) : [];
   }, [references, isCombined, activeRef]);
 
-  const ids = useMemo(() => visible.map((r) => r.photoId), [visible]);
-  const sel = useSelection(ids);
+  // Matcher results come back as one ranked list (no server cursor), so we page
+  // the *display* client-side into discrete numbered pages. "Select all" acts on
+  // the CURRENT page only (pageIds), so each download is one batch that stays
+  // within MAX_DOWNLOAD_PHOTOS — someone in hundreds of photos grabs them page
+  // by page. Find Me's page sizes are capped at that download limit.
+  const { pageSize, setPageSize } = useFindMePageSize();
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
+  const shown = useMemo(
+    () => visible.slice(page * pageSize, page * pageSize + pageSize),
+    [visible, page, pageSize],
+  );
+  const rangeStart = visible.length === 0 ? 0 : page * pageSize + 1;
+  const rangeEnd = Math.min(visible.length, (page + 1) * pageSize);
+
+  // Selection is scoped to the visible page: selecting "all" never exceeds one
+  // downloadable batch, and switching page starts a fresh selection.
+  const pageIds = useMemo(() => shown.map((r) => r.photoId), [shown]);
+  const sel = useSelection(pageIds);
 
   // Stable key for the selected set so prefetch/prune effects only re-run when
   // the set changes, not every render.
@@ -128,26 +158,24 @@ export function FindMe(): JSX.Element {
     [sel.selected, origBlobs],
   );
 
-  // Matcher results come back as one ranked list (no server cursor), so we
-  // page the *display* client-side: show `visibleCount`, governed by the same
-  // page-size preference as the gallery, with a "Load more" affordance. Keeps
-  // the initial render light on phones when there are lots of matches.
-  const { pageSize, setPageSize } = usePageSize();
-  const [visibleCount, setVisibleCount] = useState(pageSize);
-  const shown = useMemo(() => visible.slice(0, visibleCount), [visible, visibleCount]);
-
-  // Reset the window when the page size changes or the user switches reference
-  // tabs (a different result set should start from the top).
+  // Reset to the first page when the page size changes or the user switches
+  // reference tabs (a different result set should start from the top).
   useEffect(() => {
-    setVisibleCount(pageSize);
+    setPage(0);
   }, [pageSize, activeId]);
 
-  // Switching the active reference clears the current selection — selecting in
-  // one view shouldn't carry into another (no cross-upload blending).
+  // Keep the page in range if the result set shrinks (e.g. "Not me" removals).
+  useEffect(() => {
+    if (page > pageCount - 1) setPage(pageCount - 1);
+  }, [page, pageCount]);
+
+  // Clear the selection when switching reference tabs OR changing page —
+  // selection is per-page (no cross-upload or cross-page blending), so each
+  // download is one self-contained batch.
   useEffect(() => {
     sel.selectNone();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId]);
+  }, [activeId, page]);
 
   // Load the user's reusable past selfies the first time they reach "pick".
   useEffect(() => {
@@ -177,13 +205,14 @@ export function FindMe(): JSX.Element {
     else clearResults(eventId);
   }, [eventId, references, activeId, confirmed]);
 
-  // Close the lightbox if its target scrolls out of the current result set
-  // (e.g. after "Not me" removes it, or switching reference tabs).
+  // Close the lightbox if its target scrolls out of the current page (e.g.
+  // after "Not me" removes it, or switching reference tabs / pages). The
+  // lightbox is scoped to the current page, so it indexes into `shown`.
   useEffect(() => {
-    if (lightboxIndex !== null && lightboxIndex >= visible.length) {
-      setLightboxIndex(visible.length > 0 ? visible.length - 1 : null);
+    if (lightboxIndex !== null && lightboxIndex >= shown.length) {
+      setLightboxIndex(shown.length > 0 ? shown.length - 1 : null);
     }
-  }, [visible.length, lightboxIndex]);
+  }, [shown.length, lightboxIndex]);
 
   // Prefetch selected originals (mobile only) so the batch "Save to Photos" can
   // share synchronously inside the tap. Reads the ref to skip cached ids, so
@@ -271,7 +300,7 @@ export function FindMe(): JSX.Element {
       `/api/findme/uploads/${encodeURIComponent(u.uploadId)}/search`,
       body,
     );
-    pushReference(res, u.url, 'Saved');
+    pushReference(res, u.url, 'Saved · 已存');
   }
 
   async function runSelectedPast(): Promise<void> {
@@ -291,7 +320,7 @@ export function FindMe(): JSX.Element {
     } catch (e) {
       if (e instanceof ApiError && e.code === 'guardian_required') setPhase('consent');
       else setPhase('pick');
-      setError(e instanceof Error ? e.message : 'Search failed');
+      setError(e instanceof Error ? e.message : 'Search failed · 搜索失败');
     }
   }
 
@@ -314,7 +343,7 @@ export function FindMe(): JSX.Element {
         form,
         recaptchaToken ? { headers: { 'X-Recaptcha-Token': recaptchaToken } } : undefined,
       );
-      pushReference(res, URL.createObjectURL(file), mode === 'person' ? 'Outfit' : 'Photo');
+      pushReference(res, URL.createObjectURL(file), mode === 'person' ? 'Outfit · 服装' : 'Photo · 照片');
       setPhase('results');
       // Refresh history so this just-uploaded photo appears in the reuse picker.
       void loadPastUploads(true);
@@ -323,20 +352,22 @@ export function FindMe(): JSX.Element {
         // FR-7: keep the file and offer an outfit/appearance-only retry.
         setNoFaceFile(file);
         setError(
-          'We couldn’t find a clear face in that photo. You can search by outfit and appearance instead, or try a sharper, front-facing picture.',
+          'We couldn’t find a clear face in that photo. You can search by outfit and appearance instead, or try a sharper, front-facing picture. · 这张照片中没有找到清晰的人脸。您可以改用服装和外观搜索，或换一张更清晰的正面照片。',
         );
         setPhase('pick');
       } else if (e instanceof ApiError && e.code === 'guardian_required') {
         setError(e.message);
         setPhase('consent');
       } else if (e instanceof ApiError && e.code === 'event_not_indexed') {
-        setError('This event hasn’t been indexed for Find Me yet — ask an admin to run indexing.');
+        setError(
+          'This event hasn’t been indexed for Find Me yet — ask an admin to run indexing. · 本次活动尚未为「找到我」建立索引，请联系管理员运行索引。',
+        );
         setPhase('pick');
       } else if (e instanceof ApiError && e.code === 'rate_limited') {
         setError(e.message);
         setPhase('pick');
       } else {
-        setError(e instanceof Error ? e.message : 'Search failed');
+        setError(e instanceof Error ? e.message : 'Search failed · 搜索失败');
         setPhase('pick');
       }
     }
@@ -367,7 +398,7 @@ export function FindMe(): JSX.Element {
       setReferences((prev) =>
         prev.map((r) => (r.id === ref.id ? { ...r, hidden: withRemoved(r.hidden, photoId) } : r)),
       );
-      setError('Could not record that feedback — please try again.');
+      setError('Could not record that feedback — please try again. · 无法记录此反馈，请重试。');
     });
   }
 
@@ -387,10 +418,13 @@ export function FindMe(): JSX.Element {
         [...sel.selected],
         'my-photos.zip',
       );
-      const skipped = failed > 0 ? ` (${failed} couldn't be loaded and were skipped)` : '';
-      setStatus(`Downloaded ${included} photo${included === 1 ? '' : 's'} as a ZIP.${skipped}`);
+      const skipped =
+        failed > 0 ? ` (${failed} couldn't be loaded and were skipped · ${failed} 张无法加载，已跳过)` : '';
+      setStatus(
+        `Downloaded ${included} photo${included === 1 ? '' : 's'} as a ZIP.${skipped} · 已将 ${included} 张照片打包为 ZIP 下载。`,
+      );
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Download failed');
+      setError(e instanceof Error ? e.message : 'Download failed · 下载失败');
     } finally {
       setDownloading(false);
     }
@@ -398,13 +432,16 @@ export function FindMe(): JSX.Element {
 
   function reportSave(outcome: ShareOutcome, count: number, failed = 0): void {
     const photos = `${count} photo${count === 1 ? '' : 's'}`;
-    const skipped = failed > 0 ? ` (${failed} couldn't be loaded and were skipped)` : '';
+    const skipped =
+      failed > 0 ? ` (${failed} couldn't be loaded and were skipped · ${failed} 张无法加载，已跳过)` : '';
     // 'shared' → went to the share sheet (iOS "Save to Photos"); 'cancelled' →
     // user dismissed, say nothing; otherwise it fell back to file downloads.
     if (outcome === 'shared') {
-      setStatus(`Sent ${photos} to your share sheet — choose Save to Photos.${skipped}`);
+      setStatus(
+        `Sent ${photos} to your share sheet — choose Save to Photos.${skipped} · 已将 ${count} 张照片发送到分享菜单，请选择「保存到照片」。`,
+      );
     } else if (outcome !== 'cancelled') {
-      setStatus(`Downloaded ${photos}.${skipped}`);
+      setStatus(`Downloaded ${photos}.${skipped} · 已下载 ${count} 张照片。`);
     }
   }
 
@@ -437,9 +474,9 @@ export function FindMe(): JSX.Element {
         })
         .filter((f): f is NamedBlob => f !== null);
       setSaving(true);
-      savePhotosIndividually(files, { title: 'My event photos' })
+      savePhotosIndividually(files, { title: 'My event photos · 我的活动照片' })
         .then((outcome) => reportSave(outcome, files.length))
-        .catch((e) => setError(e instanceof Error ? e.message : 'Could not save photos'))
+        .catch((e) => setError(e instanceof Error ? e.message : 'Could not save photos · 无法保存照片'))
         .finally(() => setSaving(false));
       return;
     }
@@ -483,12 +520,18 @@ export function FindMe(): JSX.Element {
           reportClientError('download_failed', 'Save to Photos: every original failed to load', {
             context: { eventId, requested: n, failed },
           });
-          setError('Could not load any of the selected photos. Please try again in a moment.');
+          setError(
+            'Could not load any of the selected photos. Please try again in a moment. · 无法加载所选的任何照片，请稍后重试。',
+          );
           return;
         }
-        reportSave(await savePhotosIndividually(files, { title: 'My event photos' }), files.length, failed);
+        reportSave(
+          await savePhotosIndividually(files, { title: 'My event photos · 我的活动照片' }),
+          files.length,
+          failed,
+        );
       } catch (e) {
-        setError(e instanceof Error ? e.message : 'Could not save photos');
+        setError(e instanceof Error ? e.message : 'Could not save photos · 无法保存照片');
       } finally {
         setSaving(false);
         setSaveProgress(null);
@@ -499,37 +542,43 @@ export function FindMe(): JSX.Element {
   return (
     <div>
       <div className="gallery-header">
-        <h2>Find Me</h2>
+        <h2>Find Me · 找到我</h2>
         <Link to={`/events/${eventId}`} className="btn btn-light">
-          ← Back to gallery
+          ← Back to gallery · 返回相册
         </Link>
       </div>
 
       {phase === 'consent' && (
         <div className="consent-card">
-          <h3>Before we search</h3>
+          <h3>Before we search · 搜索前须知</h3>
           <p>
             Find Me compares a photo of you against this event&rsquo;s photos using face
             matching. Your reference photo is used only for this search.
           </p>
+          <p className="muted">
+            找到我会使用人脸匹配，将您的照片与本次活动的照片进行比对。您的参考照片仅用于本次搜索。
+          </p>
           {error && <p className="error-text">{error}</p>}
           <label className="consent-row consent-name">
-            <span>Your name</span>
+            <span>Your name (required) · 您的姓名（必填）</span>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Jamie Lee"
+              placeholder="e.g. Jamie Lee · 例如：张三"
               maxLength={120}
               autoComplete="name"
               required
               aria-required="true"
             />
+            <span className="field-hint muted">
+              Required. Shown to event organizers so they know who searched. · 必填。此姓名会提供给活动主办方，以便了解是谁进行了搜索。
+            </span>
           </label>
           <label className="consent-row">
             <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
             <span>
-              I consent to the use of this photo for face matching in this event.
+              I consent to the use of this photo for face matching in this event. · 我同意将此照片用于本次活动的人脸匹配。
             </span>
           </label>
           <label className="consent-row">
@@ -541,7 +590,7 @@ export function FindMe(): JSX.Element {
                 if (!e.target.checked) setGuardianOk(false);
               }}
             />
-            <span>The person in the photo is under 18.</span>
+            <span>The person in the photo is under 18. · 照片中的人未满 18 岁。</span>
           </label>
           {isMinor && (
             <label className="consent-row consent-guardian">
@@ -552,20 +601,31 @@ export function FindMe(): JSX.Element {
               />
               <span>
                 I am the parent or legal guardian of this child and I consent to this search on
-                their behalf.
+                their behalf. · 我是该儿童的父母或法定监护人，并代表其同意本次搜索。
               </span>
             </label>
           )}
+          {!consentOk && consentHint && (
+            <p className="field-hint muted" role="status">
+              {consentHint}
+            </p>
+          )}
           <button className="btn btn-primary" disabled={!consentOk} onClick={() => { setError(null); setPhase('pick'); }}>
-            Continue
+            Continue · 继续
           </button>
         </div>
       )}
 
       {phase === 'pick' && (
         <div className="consent-card">
-          <h3>{references.length > 0 ? 'Add another photo' : 'Upload a photo of yourself'}</h3>
-          <p className="muted">A clear, front-facing photo works best — a selfie is perfect.</p>
+          <h3>
+            {references.length > 0
+              ? 'Add another photo · 添加另一张照片'
+              : 'Upload a photo of yourself · 上传您的照片'}
+          </h3>
+          <p className="muted">
+            A clear, front-facing photo works best — a selfie is perfect. · 清晰的正面照片效果最佳，自拍即可。
+          </p>
           {error && <p className="error-text">{error}</p>}
           <input
             ref={fileInput}
@@ -578,23 +638,38 @@ export function FindMe(): JSX.Element {
             }}
           />
           <button className="btn btn-primary" onClick={() => fileInput.current?.click()}>
-            Choose / take a photo
+            Choose / take a photo · 选择或拍摄照片
           </button>
           {noFaceFile && (
             <button className="btn btn-light" onClick={() => void search(noFaceFile, 'person')}>
-              Search by outfit instead
+              Search by outfit instead · 改用服装搜索
             </button>
           )}
+          {/* Standard (face) vs outfit search, so people understand the choice —
+              especially after a "no clear face" fallback is offered. */}
+          <div className="mode-note muted">
+            <p>
+              <strong>Standard search · 标准搜索</strong> uses your face — most accurate, but it
+              needs a clear, front-facing photo. · 使用人脸匹配，最准确，但需要清晰的正面照片。
+            </p>
+            <p>
+              <strong>Search by outfit · 服装搜索</strong> matches your clothing and overall
+              appearance instead of your face — useful when no clear face is found, but only
+              reliable within this event. · 根据您的衣着和整体外观（而非面部）进行匹配，在找不到清晰人脸时很有用，但仅在本次活动内可靠。
+            </p>
+          </div>
           {references.length > 0 && (
             <button className="btn btn-light" onClick={() => setPhase('results')}>
-              Cancel
+              Cancel · 取消
             </button>
           )}
 
           {pastUploads && pastUploads.length > 0 && (
             <div className="past-uploads">
-              <h4>Or reuse a previous photo</h4>
-              <p className="muted">Pick one or more photos you uploaded before to match this event.</p>
+              <h4>Or reuse a previous photo · 或重复使用以前的照片</h4>
+              <p className="muted">
+                Pick one or more photos you uploaded before to match this event. · 选择一张或多张您之前上传的照片来匹配本次活动。
+              </p>
               <div className="past-grid">
                 {pastUploads.map((u) => {
                   const checked = selectedPast.has(u.uploadId);
@@ -604,9 +679,9 @@ export function FindMe(): JSX.Element {
                       className={`past-cell${checked ? ' selected' : ''}`}
                       aria-pressed={checked}
                       onClick={() => togglePast(u.uploadId)}
-                      title={u.mode === 'person' ? 'Outfit match' : 'Face match'}
+                      title={u.mode === 'person' ? 'Outfit match · 服装匹配' : 'Face match · 人脸匹配'}
                     >
-                      <img src={u.url} alt="A photo you uploaded before" loading="lazy" />
+                      <img src={u.url} alt="A photo you uploaded before · 您之前上传的照片" loading="lazy" />
                       <span className="select-tick">{checked ? '✓' : ''}</span>
                     </button>
                   );
@@ -617,7 +692,7 @@ export function FindMe(): JSX.Element {
                 disabled={selectedPast.size === 0}
                 onClick={() => void runSelectedPast()}
               >
-                Match this event with selected ({selectedPast.size})
+                Match this event with selected ({selectedPast.size}) · 用所选照片匹配（{selectedPast.size}）
               </button>
             </div>
           )}
@@ -628,8 +703,10 @@ export function FindMe(): JSX.Element {
         <div className="searching" role="status" aria-live="polite">
           <span className="spinner" aria-hidden="true" />
           <div>
-            <p className="searching-title">Searching the event photos…</p>
-            <p className="muted">The first search can take a few seconds to warm up.</p>
+            <p className="searching-title">Searching the event photos… · 正在搜索活动照片…</p>
+            <p className="muted">
+              The first search can take a few seconds to warm up. · 首次搜索可能需要几秒钟来预热。
+            </p>
           </div>
         </div>
       )}
@@ -657,15 +734,17 @@ export function FindMe(): JSX.Element {
                 className={`ref-tab ref-combined${isCombined ? ' active' : ''}`}
                 onClick={() => setActiveId(COMBINED)}
               >
-                <span>★ Combined</span>
+                <span>★ Combined · 合并</span>
               </button>
             </div>
           )}
 
           {references.length === 1 && activeRef && (
             <div className="ref-current">
-              {activeRef.previewUrl && <img src={activeRef.previewUrl} alt="Your reference photo" />}
-              <span className="muted">Results for this photo</span>
+              {activeRef.previewUrl && (
+                <img src={activeRef.previewUrl} alt="Your reference photo · 您的参考照片" />
+              )}
+              <span className="muted">Results for this photo · 此照片的匹配结果</span>
             </div>
           )}
 
@@ -679,27 +758,39 @@ export function FindMe(): JSX.Element {
           {visible.length === 0 ? (
             <p className="muted">
               {isCombined
-                ? 'No matches yet.'
-                : 'No matches for this photo (or you removed them all).'}{' '}
+                ? 'No matches yet. · 暂无匹配结果。'
+                : 'No matches for this photo (or you removed them all). · 此照片没有匹配结果（或已全部移除）。'}{' '}
               Try the{' '}
-              <Link to={`/events/${eventId}`}>full gallery</Link> or add another photo.
+              <Link to={`/events/${eventId}`}>full gallery · 完整相册</Link> or add another photo. · 可浏览完整相册或添加另一张照片。
             </p>
           ) : (
             <>
               <div className="results-toolbar">
                 <p className="muted results-count">
                   {isCombined
-                    ? `${visible.length} matches across your photos, best first.`
-                    : `${visible.length} possible matches, best first.`}{' '}
+                    ? `${visible.length} matches across your photos, best first. · 您的照片共匹配到 ${visible.length} 张，按相似度排序。`
+                    : `${visible.length} possible matches, best first. · 共 ${visible.length} 张可能匹配，按相似度排序。`}{' '}
                   Tap a photo to enlarge and check it&rsquo;s you; tick the box to select, then
-                  download the originals.
+                  download the originals. · 点按照片可放大确认是否是您；勾选方框选中后即可下载原图。
                 </p>
-                {visible.length > PAGE_SIZE_OPTIONS[0] && (
-                  <PageSizeSelect value={pageSize} onChange={setPageSize} label="Matches per page" />
+                {visible.length > FINDME_PAGE_SIZE_OPTIONS[0] && (
+                  <PageSizeSelect
+                    value={pageSize}
+                    onChange={setPageSize}
+                    label="Matches per page · 每页匹配数"
+                    options={FINDME_PAGE_SIZE_OPTIONS}
+                  />
                 )}
               </div>
+              {pageCount > 1 && (
+                <p className="muted batch-hint">
+                  Showing {rangeStart}–{rangeEnd} of {visible.length}. “Select page” selects only this
+                  page — download one page at a time. · 正在显示第 {rangeStart}–{rangeEnd} 张，共{' '}
+                  {visible.length} 张。"选择本页"仅选中本页——请逐页下载。
+                </p>
+              )}
               <SelectBar
-                total={ids.length}
+                total={pageIds.length}
                 selectedCount={sel.count}
                 busy={downloading || saving}
                 saveProgress={
@@ -707,11 +798,13 @@ export function FindMe(): JSX.Element {
                 }
                 savePreparing={savePreparing}
                 canSave={canSavePhotos}
+                selectAllLabel="Select page · 选择本页"
                 onSelectAll={sel.selectAll}
                 onSelectNone={sel.selectNone}
                 onInvert={sel.invert}
                 onDownload={() => void downloadSelected()}
                 onSaveToPhone={() => saveSelected()}
+                {...(canSavePhotos ? {} : { onDownloadIndividual: () => saveSelected() })}
               />
               <div className="photo-grid">
                 {shown.map((r, i) => {
@@ -746,13 +839,13 @@ export function FindMe(): JSX.Element {
                             className="btn-feedback"
                             onClick={() => handleNotMe(activeRef, r.photoId)}
                           >
-                            Not me
+                            Not me · 不是我
                           </button>
                           <button
                             className={`btn-feedback${confirmed.has(r.photoId) ? ' confirmed' : ''}`}
                             onClick={() => handleConfirm(activeRef, r.photoId)}
                           >
-                            {confirmed.has(r.photoId) ? '✓ Me' : "That's me"}
+                            {confirmed.has(r.photoId) ? '✓ Me · 是我' : "That's me · 是我"}
                           </button>
                         </div>
                       )}
@@ -760,24 +853,17 @@ export function FindMe(): JSX.Element {
                   );
                 })}
               </div>
-              <LoadMore
-                shownCount={shown.length}
-                total={visible.length}
-                hasMore={shown.length < visible.length}
-                loading={false}
-                onLoadMore={() => setVisibleCount((c) => c + pageSize)}
-                noun="match"
-              />
+              <Pager page={page} pageCount={pageCount} onChange={setPage} />
             </>
           )}
 
           <button className="btn btn-light" onClick={() => setPhase('pick')}>
-            + Add another photo
+            + Add another photo · 添加另一张照片
           </button>
 
-          {lightboxIndex !== null && visible[lightboxIndex] && (
+          {lightboxIndex !== null && shown[lightboxIndex] && (
             <Lightbox
-              items={visible.map((r) => {
+              items={shown.map((r) => {
                 const band = scoreBand(r.score);
                 return {
                   key: r.photoId,
@@ -801,7 +887,7 @@ export function FindMe(): JSX.Element {
                       className={`btn btn-sm ${checked ? 'btn-primary' : 'btn-light'}`}
                       onClick={() => sel.toggle(item.key)}
                     >
-                      {checked ? '✓ Selected' : 'Select'}
+                      {checked ? '✓ Selected · 已选中' : 'Select · 选择'}
                     </button>
                     {!isCombined && activeRef && (
                       <>
@@ -809,13 +895,13 @@ export function FindMe(): JSX.Element {
                           className="btn btn-light btn-sm"
                           onClick={() => handleNotMe(activeRef, item.key)}
                         >
-                          Not me
+                          Not me · 不是我
                         </button>
                         <button
                           className={`btn btn-sm ${confirmed.has(item.key) ? 'btn-primary' : 'btn-light'}`}
                           onClick={() => handleConfirm(activeRef, item.key)}
                         >
-                          {confirmed.has(item.key) ? '✓ Me' : "That's me"}
+                          {confirmed.has(item.key) ? '✓ Me · 是我' : "That's me · 是我"}
                         </button>
                       </>
                     )}

@@ -32,6 +32,12 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_BYTES", 25 * 1024 * 1024))
 
+# Safety cap for the single-modality modes ('face' / 'person'), which have NO
+# score threshold — without a cap an outfit-only search would return the entire
+# event ranked by similarity. Fused mode (the default Find-Me path) is gated by
+# the fusion threshold instead and is returned uncapped when no top_k is given.
+UNGATED_TOP_K = int(os.environ.get("MATCHER_UNGATED_TOP_K", "500"))
+
 # EMBEDDINGS_ROOT: gs://<proj>-derivatives in prod; a local dir in dev/tests.
 _store: EmbeddingStore | None = None
 
@@ -106,7 +112,17 @@ def search():
     mode = request.form.get("mode", "fused")
     if mode not in ("fused", "face", "person"):
         return jsonify({"error": "bad_mode"}), 400
-    top_k = min(int(request.form.get("top_k", 50)), 200)
+    # top_k is optional. Omitted (or <= 0) means "no cap": fused results are
+    # bounded by the fusion score threshold, so everyone who appears in more
+    # than the old 50/200 photos now gets all of their matches back.
+    raw_top_k = request.form.get("top_k")
+    top_k = int(raw_top_k) if raw_top_k not in (None, "") else None
+    if top_k is not None and top_k <= 0:
+        top_k = None
+    # The single-modality modes have no quality gate, so cap their candidate
+    # retrieval even when uncapped overall; fused retrieves everything and lets
+    # the threshold decide.
+    retrieve_k = None if mode == "fused" else (top_k if top_k is not None else UNGATED_TOP_K)
 
     img, err = _read_upload()
     if err:
@@ -143,12 +159,12 @@ def search():
         return jsonify({"error": "event_not_indexed", "eventId": event_id}), 404
 
     face_hits = (
-        event.top_photos("face", query_face["embedding"], k=top_k)
+        event.top_photos("face", query_face["embedding"], k=retrieve_k)
         if query_face is not None and mode in ("fused", "face")
         else []
     )
     person_hits = (
-        event.top_photos("person", query_person["embedding"], k=top_k)
+        event.top_photos("person", query_person["embedding"], k=retrieve_k)
         if query_person is not None and mode in ("fused", "person")
         else []
     )
@@ -172,7 +188,7 @@ def search():
             "mode": mode,
             "modelVersion": result["model_version"],
             "indexModelVersion": event.manifest.get("modelVersion"),
-            "results": ranked[:top_k],
+            "results": ranked if top_k is None else ranked[:top_k],
         }
     )
 

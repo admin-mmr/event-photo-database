@@ -143,6 +143,20 @@ def seeded_store(tmp_path):
     return str(tmp_path)
 
 
+@pytest.fixture
+def big_store(tmp_path):
+    """Event 'big' where 250 distinct photos all match the face query strongly
+    (cosine 1.0 → fused 0.7, well above the 0.25 threshold). Used to prove the
+    result list is no longer capped at the old 50/200."""
+    n = 250
+    faces = np.stack([basis(0) for _ in range(n)])
+    faces_meta = [{"photoId": f"p{i}.jpg", "box": [0, 0, 50, 50], "score": 0.9} for i in range(n)]
+    persons = np.zeros((0, DIM), dtype=np.float32)
+    manifest = build_manifest("big", "test@v0", faces_meta, [])
+    write_local(str(tmp_path / "big"), manifest, faces, persons)
+    return str(tmp_path)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. Pure helpers
 # ──────────────────────────────────────────────────────────────────────────────
@@ -240,6 +254,18 @@ class TestStore:
         photos = [h["photoId"] for h in ev.top_photos("face", basis(0), k=10)]
         assert len(photos) == len(set(photos))
 
+    def test_top_k_none_returns_all_sorted(self, seeded_store):
+        ev = EmbeddingStore(seeded_store).load_event("ev1")
+        hits = ev.top_k("face", basis(0), k=None)
+        assert len(hits) == 3  # every crop, no cap
+        scores = [h["score"] for h in hits]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_top_photos_none_returns_every_photo(self, seeded_store):
+        ev = EmbeddingStore(seeded_store).load_event("ev1")
+        photos = [h["photoId"] for h in ev.top_photos("face", basis(0), k=None)]
+        assert set(photos) == {"pA.jpg", "pB.jpg", "pC.jpg"}
+
     def test_query_normalization(self, seeded_store):
         ev = EmbeddingStore(seeded_store).load_event("ev1")
         a = ev.top_k("face", basis(0), k=1)[0]["score"]
@@ -317,6 +343,28 @@ class TestSearch:
         assert body["results"][0]["photoId"] == "pB.jpg"
         ids = [r["photoId"] for r in body["results"]]
         assert "pA.jpg" in ids
+
+    def test_fused_search_uncapped_by_default(self, client, monkeypatch, big_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", big_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "big"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        # All 250 matching photos come back — no 50/200 truncation.
+        assert len(body["results"]) == 250
+
+    def test_explicit_top_k_still_caps(self, client, monkeypatch, big_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", big_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "big", "top_k": "10"},
+        )
+        assert resp.status_code == 200
+        assert len(resp.get_json()["results"]) == 10
 
     def test_face_only_mode(self, client, monkeypatch, seeded_store):
         self._env(monkeypatch, seeded_store)

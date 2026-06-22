@@ -38,6 +38,9 @@ interface SelectBarProps {
   onDownloadIndividual?: () => void;
   /** Primary mobile save: hands the image files to the native share sheet. */
   onSaveToPhone?: () => void;
+  /** Label for the select-all button. Find Me pages results and selects only
+   *  the current page, so it passes "Select page". Defaults to "Select all". */
+  selectAllLabel?: string;
 }
 
 export function SelectBar({
@@ -53,6 +56,7 @@ export function SelectBar({
   onDownload,
   onDownloadIndividual,
   onSaveToPhone,
+  selectAllLabel = 'Select all · 全选',
 }: SelectBarProps): JSX.Element {
   const none = selectedCount === 0;
   const all = selectedCount === total && total > 0;
@@ -63,17 +67,17 @@ export function SelectBar({
   return (
     <div className="select-bar" role="toolbar" aria-label="Photo selection">
       <span className="select-count" aria-live="polite">
-        {selectedCount} of {total} selected
+        {selectedCount} of {total} selected · 已选 {selectedCount}/{total}
       </span>
       <div className="select-actions">
         <button className="btn btn-light btn-sm" onClick={onSelectAll} disabled={all || busy}>
-          Select all
+          {selectAllLabel}
         </button>
         <button className="btn btn-light btn-sm" onClick={onSelectNone} disabled={none || busy}>
-          Select none
+          Select none · 取消全选
         </button>
         <button className="btn btn-light btn-sm" onClick={onInvert} disabled={total === 0 || busy}>
-          Invert
+          Invert · 反选
         </button>
         {saveToPhotos && (
           <button
@@ -83,17 +87,19 @@ export function SelectBar({
           >
             {busy
               ? saveProgress
-                ? `Saving ${saveProgress.done} of ${saveProgress.total}…`
-                : 'Saving…'
+                ? `Saving ${saveProgress.done} of ${saveProgress.total}… · 保存中 ${saveProgress.done}/${saveProgress.total}…`
+                : 'Saving… · 保存中…'
               : savePreparing
                 ? saveProgress
-                  ? `Preparing ${saveProgress.done} of ${saveProgress.total}…`
-                  : `Preparing ${selectedCount || ''}…`.replace('  ', ' ').trim()
-                : `📲 Save ${selectedCount || ''} to Photos`.replace('  ', ' ').trim()}
+                  ? `Preparing ${saveProgress.done} of ${saveProgress.total}… · 准备中 ${saveProgress.done}/${saveProgress.total}…`
+                  : `Preparing ${selectedCount || ''}…`.replace('  ', ' ').trim() + ' · 准备中…'
+                : `📲 Save ${selectedCount || ''} to Photos`.replace('  ', ' ').trim() + ' · 保存到相册'}
           </button>
         )}
         <button className={zipClass} onClick={onDownload} disabled={none || busy}>
-          {busy && !saveToPhotos ? 'Preparing ZIP…' : `⬇ Download ZIP ${selectedCount || ''}`.trim()}
+          {busy && !saveToPhotos
+            ? 'Preparing ZIP… · 正在准备 ZIP…'
+            : `⬇ Download ZIP ${selectedCount || ''}`.trim() + ' · 下载 ZIP'}
         </button>
         {onDownloadIndividual && (
           <button
@@ -101,7 +107,7 @@ export function SelectBar({
             onClick={onDownloadIndividual}
             disabled={none || busy}
           >
-            🖼 Save individually
+            🖼 Save photos · 逐张保存
           </button>
         )}
       </div>

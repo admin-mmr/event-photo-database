@@ -14,7 +14,7 @@ import { eventLabel } from '../lib/eventLabel.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
 import { downloadOriginalsZip } from '../lib/zipDownload.js';
 import { reportClientError } from '../lib/reportError.js';
-import { saveToPhone, type ShareOutcome } from '../lib/share.js';
+import { saveToPhone, canShareImageFiles, type ShareOutcome } from '../lib/share.js';
 import { usePageSize } from '../lib/pageSize.js';
 import { useSortMode } from '../lib/sortMode.js';
 import { SelectBar } from '../components/SelectBar.js';
@@ -92,8 +92,10 @@ export function Gallery(): JSX.Element {
 
   // Mobile browsers (Web Share L2) can hand image files to the native share
   // sheet → iOS "Save N Images to Photos". On desktop this is false and ZIP
-  // stays the primary action.
-  const canSavePhotos = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+  // stays the primary action. Probe the real file-share capability (not just
+  // `navigator.share`, which can exist without file support) so the button only
+  // shows when it will actually work; a non-ZIP fallback is offered otherwise.
+  const canSavePhotos = canShareImageFiles();
 
   function filenameFor(p: GalleryPhoto): string {
     const base = (p.name || '').split(/[/\\]/).pop()?.trim();
@@ -535,7 +537,7 @@ export function Gallery(): JSX.Element {
   return (
     <div>
       <nav className="breadcrumb" aria-label="Breadcrumb">
-        <Link to="/">← All events</Link>
+        <Link to="/">← All events · 全部活动</Link>
       </nav>
 
       <div className="gallery-header">
@@ -552,15 +554,15 @@ export function Gallery(): JSX.Element {
             }}
             disabled={list.length === 0}
           >
-            {selectMode ? 'Done' : 'Select photos'}
+            {selectMode ? 'Done · 完成' : 'Select photos · 选择照片'}
           </button>
           <Link to={`/events/${eventId}/findme`} className="btn btn-primary btn-sm">
-            📷 Find Me
+            📷 Find Me · 找到我
           </Link>
         </div>
       </div>
 
-      {error && <p className="error-text">Could not load photos: {error}</p>}
+      {error && <p className="error-text">Could not load photos · 无法加载照片：{error}</p>}
       {notice && <p className="error-text">{notice}</p>}
       {status && (
         <p className="status-text" role="status" aria-live="polite">
@@ -623,17 +625,19 @@ export function Gallery(): JSX.Element {
           )}
         </div>
       )}
-      {photos === null && !error && <p className="muted">Loading photos…</p>}
+      {photos === null && !error && <p className="muted">Loading photos… · 正在加载照片…</p>}
       {photos?.length === 0 && (
-        <p className="muted">No photos indexed for this event yet — ask an admin to run indexing.</p>
+        <p className="muted">
+          No photos indexed for this event yet — ask an admin to run indexing. · 本次活动尚未建立照片索引，请联系管理员运行索引。
+        </p>
       )}
 
       {selectMode && list.length > 0 && (
         <>
           <p className="muted">
             {canSavePhotos
-              ? 'Tap photos to select them, then “Save to Photos” to add them straight to your camera roll.'
-              : 'Tap photos to select them, then download the originals.'}
+              ? 'Tap photos to select them, then “Save to Photos” to add them straight to your camera roll. · 点按照片进行选择，然后点「保存到相册」即可直接存入相册。'
+              : 'Tap photos to select them, then save or download the originals. · 点按照片进行选择，然后保存或下载原图。'}
           </p>
           <SelectBar
             total={ids.length}

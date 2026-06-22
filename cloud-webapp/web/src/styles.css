@@ -429,6 +429,48 @@ pre.error {
   border-width: 2px;
 }
 
+/* Find Me pagination: Prev / numbered pages / Next, centred and wrapping. */
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 12px 0 24px;
+}
+
+.pager-pages {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pager-num {
+  min-width: 38px;
+}
+
+.pager-num.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+  font-weight: 600;
+}
+
+.pager-gap {
+  padding: 0 4px;
+  color: #98a2b3;
+}
+
+/* Reminder that "Select page" selects the current page only (batch download). */
+.batch-hint {
+  margin: 4px 0 10px;
+  font-size: 14px;
+}
+
 .lightbox {
   position: fixed;
   inset: 0;

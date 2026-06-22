@@ -63,30 +63,38 @@ class EventEmbeddings:
                     f"manifest/{kind} length mismatch: {n_meta} meta rows vs {n_vec} vectors"
                 )
 
-    def top_k(self, kind: str, query: np.ndarray, k: int = 50) -> list[dict]:
+    def top_k(self, kind: str, query: np.ndarray, k: int | None = 50) -> list[dict]:
         """Cosine top-k crops for `kind` ('face'|'person').
         Returns [{photoId, score, row, ...meta}], best first. Vectors are
-        L2-normalized so cosine similarity = dot product."""
+        L2-normalized so cosine similarity = dot product. `k=None` returns
+        every crop, fully sorted (used when the caller wants no cap)."""
         vecs = self.vectors[kind]
         if vecs.size == 0:
             return []
         q = np.asarray(query, dtype=np.float32).reshape(-1)
         q = q / max(np.linalg.norm(q), 1e-12)
         sims = vecs @ q
-        k = min(k, len(sims))
-        idx = np.argpartition(-sims, k - 1)[:k]
-        idx = idx[np.argsort(-sims[idx])]
+        n = len(sims)
+        if k is None or k >= n:
+            idx = np.argsort(-sims)
+        else:
+            k = max(k, 1)
+            idx = np.argpartition(-sims, k - 1)[:k]
+            idx = idx[np.argsort(-sims[idx])]
         return [{**self.meta[kind][i], "row": int(i), "score": float(sims[i])} for i in idx]
 
-    def top_photos(self, kind: str, query: np.ndarray, k: int = 50) -> list[dict]:
-        """Per-photo results: max crop score per photo, best first."""
+    def top_photos(self, kind: str, query: np.ndarray, k: int | None = 50) -> list[dict]:
+        """Per-photo results: max crop score per photo, best first. `k=None`
+        returns every photo ranked (no cap) — the caller is expected to gate
+        the list some other way (e.g. the fused score threshold)."""
+        pool = None if k is None else max(k * 4, 200)
         best: dict[str, dict] = {}
-        for hit in self.top_k(kind, query, k=max(k * 4, 200)):
+        for hit in self.top_k(kind, query, k=pool):
             pid = hit["photoId"]
             if pid not in best or hit["score"] > best[pid]["score"]:
                 best[pid] = hit
         ranked = sorted(best.values(), key=lambda h: -h["score"])
-        return ranked[:k]
+        return ranked if k is None else ranked[:k]
 
 
 class EmbeddingStore:

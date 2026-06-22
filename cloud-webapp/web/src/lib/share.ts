@@ -25,6 +25,30 @@ export function canShareFiles(files: File[], nav: Navigator = navigator): boolea
 }
 
 /**
+ * True when this browser can actually hand image files to the native share
+ * sheet — i.e. when a "Save to Photos" action is meaningful. Probes with a tiny
+ * representative JPEG so it matches exactly what {@link canShareFiles} will
+ * accept at save time.
+ *
+ * The UI used to gate the button on `typeof navigator.share === 'function'`,
+ * which is broader than file-sharing support: a browser can expose `share`
+ * (Web Share L1 — text/URL only) without `canShare({files})`. That mismatch
+ * either showed a "Save to Photos" button that silently degraded to downloads,
+ * or hid it entirely on browsers without `canShare` while leaving no non-ZIP
+ * save at all. Gate on this helper instead, and always keep a non-ZIP fallback.
+ */
+export function canShareImageFiles(nav: Navigator = typeof navigator !== 'undefined' ? navigator : ({} as Navigator)): boolean {
+  try {
+    const probe = new File([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], 'probe.jpg', {
+      type: 'image/jpeg',
+    });
+    return canShareFiles([probe], nav);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Opens the native share sheet for the given files. Returns:
  *  - 'shared'      the share resolved (user picked a target)
  *  - 'cancelled'   the user dismissed the sheet (AbortError)

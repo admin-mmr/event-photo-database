@@ -24,11 +24,13 @@ def fuse(
     w_person: float = DEFAULT_PERSON_WEIGHT,
     method: str = "score",
     threshold: float = DEFAULT_THRESHOLD,
-    top_k: int = 50,
+    top_k: int | None = 50,
 ) -> list[dict]:
     """Fuse two per-photo hit lists ([{photoId, score, ...}], best first).
 
-    Returns [{photoId, score, faceScore, personScore}], best first.
+    Returns [{photoId, score, faceScore, personScore}], best first. `top_k=None`
+    returns every photo above `threshold` (the threshold is the only gate) —
+    use it when matches must not be capped at an arbitrary count.
     """
     if method not in ("score", "rrf"):
         raise ValueError(f"unknown fusion method: {method}")
@@ -59,4 +61,4 @@ def fuse(
 
     fused = [h for h in fused if method == "rrf" or h["score"] >= threshold]
     fused.sort(key=lambda h: -h["score"])
-    return fused[:top_k]
+    return fused if top_k is None else fused[:top_k]
