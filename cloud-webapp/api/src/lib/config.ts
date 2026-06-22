@@ -54,6 +54,18 @@ const EnvSchema = z.object({
   // Tab names within the master Sheet (gas-app SHEET_NAMES).
   EVENTS_SHEET_NAME: z.string().default('Events'),
   UPLOAD_LINKS_SHEET_NAME: z.string().default('Upload_Links'),
+  // Tabs the control-plane admin writes (gas-app SHEET_NAMES). Mirrors the
+  // column maps in the *Store services. Writing needs the read/write
+  // `spreadsheets` DWD scope (see sheetsService header).
+  USERS_SHEET_NAME: z.string().default('Users'),
+  CLUBS_SHEET_NAME: z.string().default('Clubs'),
+  AUDIT_LOG_SHEET_NAME: z.string().default('Audit_Log'),
+  // Drive folder under which new event folders (layer-1 `YYYY-MM-DD_Event`) are
+  // created when an admin creates an event in cloud-webapp (dev plan G3.1).
+  // Empty until configured — POST /api/admin/events then 503s with a clear
+  // message instead of dropping the folder at the Drive root. Requires the
+  // read/write `drive` DWD scope (see driveService DRIVE_SCOPE_READWRITE).
+  EVENTS_ROOT_FOLDER_ID: z.string().default(''),
   // Tab the volunteer upload flow appends a completed-batch summary row to.
   // Mirrors gas-app SHEET_NAMES.UPLOAD_LOG. Writing needs the read/write
   // `spreadsheets` scope on the DWD client (see sheetsService header).

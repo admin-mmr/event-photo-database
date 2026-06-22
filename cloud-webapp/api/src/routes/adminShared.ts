@@ -10,7 +10,17 @@ import { ZodError } from 'zod';
 import { env } from '../lib/config.js';
 import { UserRole } from '../lib/roles.js';
 import { ClubStoreError } from '../services/clubStore.js';
+import { EventStoreError } from '../services/eventStore.js';
+import { LinkStoreError } from '../services/linkStore.js';
 import { UserStoreError } from '../services/userStore.js';
+
+/** Store error `code` → HTTP status. */
+const CODE_STATUS: Record<string, number> = {
+  duplicate: 409,
+  already_revoked: 409,
+  not_found: 404,
+  invalid: 400,
+};
 
 /** Resolve the configured master Sheet, or 503 if unset (mirrors sync route). */
 export function masterSheetId(res: Response): string | null {
@@ -35,9 +45,13 @@ export function handleStoreError(err: unknown, res: Response): boolean {
     res.status(400).json({ ok: false, error: 'invalid', message: err.issues[0]?.message ?? 'Invalid request' });
     return true;
   }
-  if (err instanceof UserStoreError || err instanceof ClubStoreError) {
-    const status = err.code === 'duplicate' ? 409 : err.code === 'not_found' ? 404 : 400;
-    res.status(status).json({ ok: false, error: err.code, message: err.message });
+  if (
+    err instanceof UserStoreError ||
+    err instanceof ClubStoreError ||
+    err instanceof EventStoreError ||
+    err instanceof LinkStoreError
+  ) {
+    res.status(CODE_STATUS[err.code] ?? 400).json({ ok: false, error: err.code, message: err.message });
     return true;
   }
   return false;

@@ -17,6 +17,8 @@ import { telemetryRouter } from './routes/telemetry.js';
 import { adminUsersRouter } from './routes/adminUsers.js';
 import { adminClubsRouter } from './routes/adminClubs.js';
 import { adminMasqueradeRouter } from './routes/adminMasquerade.js';
+import { adminEventsRouter } from './routes/adminEvents.js';
+import { adminLinksRouter } from './routes/adminLinks.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 
 export function buildServer(): express.Express {
@@ -85,6 +87,8 @@ export function buildServer(): express.Express {
   app.use('/api', adminUsersRouter);
   app.use('/api', adminClubsRouter);
   app.use('/api', adminMasqueradeRouter);
+  app.use('/api', adminEventsRouter);
+  app.use('/api', adminLinksRouter);
 
   // 404 + final error handler must be registered last.
   app.use(notFoundHandler);

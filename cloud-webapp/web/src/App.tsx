@@ -8,6 +8,8 @@ import { FindMe } from './pages/FindMe.js';
 import { FeedbackAdmin } from './pages/FeedbackAdmin.js';
 import { AdminUsers } from './pages/AdminUsers.js';
 import { AdminClubs } from './pages/AdminClubs.js';
+import { AdminEvents } from './pages/AdminEvents.js';
+import { AdminLinks } from './pages/AdminLinks.js';
 import { MyData } from './pages/MyData.js';
 import { VolunteerUpload } from './pages/VolunteerUpload.js';
 
@@ -46,6 +48,9 @@ export function App(): JSX.Element {
             {/* Admin-only; guests have no email so the API blocks them anyway. */}
             {!isGuest && (
               <>
+                <Link to="/admin/events" className="muted nav-link">
+                  Events
+                </Link>
                 <Link to="/admin/users" className="muted nav-link">
                   Users
                 </Link>
@@ -111,6 +116,11 @@ export function App(): JSX.Element {
           />
           <Route path="/admin/users" element={isGuest ? <Navigate to="/" replace /> : <AdminUsers />} />
           <Route path="/admin/clubs" element={isGuest ? <Navigate to="/" replace /> : <AdminClubs />} />
+          <Route path="/admin/events" element={isGuest ? <Navigate to="/" replace /> : <AdminEvents />} />
+          <Route
+            path="/admin/events/:eventId/links"
+            element={isGuest ? <Navigate to="/" replace /> : <AdminLinks />}
+          />
           <Route path="/me/data" element={<MyData />} />
         </Route>
       </Routes>

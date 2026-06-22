@@ -90,3 +90,58 @@ export const MasqueradeResponseSchema = z.object({
   actingAsClub: z.string().nullable(),
 });
 export type MasqueradeResponse = z.infer<typeof MasqueradeResponseSchema>;
+
+// ── Event creation (dev plan G3.1) ────────────────────────────────────────────
+
+export const CreateEventRequestSchema = z.object({
+  name: z.string().min(1),
+  /** ISO date (YYYY-MM-DD). */
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+});
+export type CreateEventRequest = z.infer<typeof CreateEventRequestSchema>;
+
+export const CreatedEventSchema = z.object({
+  eventId: z.string(),
+  name: z.string(),
+  date: z.string(),
+  folderName: z.string(),
+  driveFolderId: z.string(),
+});
+export type CreatedEvent = z.infer<typeof CreatedEventSchema>;
+
+export const CreateEventResponseSchema = z.object({ ok: z.literal(true), event: CreatedEventSchema });
+export type CreateEventResponse = z.infer<typeof CreateEventResponseSchema>;
+
+// ── Upload links (dev plan G3.2) ──────────────────────────────────────────────
+
+export const LinkRecordSchema = z.object({
+  linkId: z.string(),
+  eventId: z.string(),
+  clubName: z.string(),
+  token: z.string(),
+  version: z.number().int().positive(),
+  generatedBy: z.string().default(''),
+  generatedAt: z.string().default(''),
+  revokedAt: z.string().default(''),
+  revokedBy: z.string().default(''),
+  revokedReason: z.string().default(''),
+  tag: z.string().default(''),
+  status: StatusSchema, // 'active' (not revoked) | 'inactive' (revoked)
+});
+export type LinkRecord = z.infer<typeof LinkRecordSchema>;
+
+export const GenerateLinkRequestSchema = z.object({
+  eventId: z.string().min(1),
+  clubName: z.string().min(1),
+  tag: z.string().optional(),
+});
+export type GenerateLinkRequest = z.infer<typeof GenerateLinkRequestSchema>;
+
+export const RevokeLinkRequestSchema = z.object({ reason: z.string().optional() });
+export type RevokeLinkRequest = z.infer<typeof RevokeLinkRequestSchema>;
+
+export const ListLinksResponseSchema = z.object({ ok: z.literal(true), links: z.array(LinkRecordSchema) });
+export type ListLinksResponse = z.infer<typeof ListLinksResponseSchema>;
+
+export const LinkResponseSchema = z.object({ ok: z.literal(true), link: LinkRecordSchema });
+export type LinkResponse = z.infer<typeof LinkResponseSchema>;
