@@ -61,6 +61,21 @@ const EnvSchema = z.object({
   CLUBS_SHEET_NAME: z.string().default('Clubs'),
   AUDIT_LOG_SHEET_NAME: z.string().default('Audit_Log'),
   EMAIL_PREFERENCES_SHEET_NAME: z.string().default('Email_Preferences'),
+  DELETED_FILES_SHEET_NAME: z.string().default('Deleted_Files'),
+  UPLOAD_LOG_SHEET_NAME_REPORT: z.string().default('Upload_Log'),
+  // Soft-deleted files become eligible for permanent purge after this many days
+  // (gas-app SOFT_DELETE_RETENTION_DAYS). The purge job hard-deletes from Drive.
+  SOFT_DELETE_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
+
+  // ── Partner REST API (dev plan G5.3) ──────────────────────────────────────
+  // API keys for programmatic partner uploads, as a comma-separated list of
+  // `email:key` pairs. The secret lives HERE (env / Secret Manager), never in
+  // the world-viewable master Sheet — the Sheet's Users row only records that the
+  // email is an api_client. Empty = the partner API is closed (401 for all).
+  PARTNER_API_KEYS: z.string().default(''),
+  // Partner request budget (Firestore fixed-window), keyed by api-client email.
+  PARTNER_RATE_LIMIT: z.coerce.number().int().min(0).default(60),
+  PARTNER_RATE_WINDOW_SEC: z.coerce.number().int().positive().default(3600),
 
   // ── Email notifications (dev plan G4.1) ───────────────────────────────────
   // Transactional + digest email via the Gmail API using the SAME keyless DWD

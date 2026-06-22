@@ -188,6 +188,38 @@ export async function trashFile(fileId: string, opts?: { token?: string }): Prom
   if (!res.ok) throw new Error(`Drive trash ${res.status}: ${await res.text()}`);
 }
 
+/**
+ * Restore a trashed Drive file (`trashed:false`). Used by the deleted-files
+ * restore path (dev plan G5.1) within the retention window. Requires a
+ * write-scoped token; pass `token` in tests.
+ */
+export async function untrashFile(fileId: string, opts?: { token?: string }): Promise<void> {
+  const token = opts?.token ?? (await getDriveToken(DRIVE_SCOPE_READWRITE));
+  const params = new URLSearchParams({ supportsAllDrives: 'true', fields: 'id,trashed' });
+  const res = await fetch(`${DRIVE}/${fileId}?${params}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trashed: false }),
+  });
+  if (!res.ok) throw new Error(`Drive untrash ${res.status}: ${await res.text()}`);
+}
+
+/**
+ * Permanently delete a Drive file (no trash). Used by the deleted-files purge job
+ * (dev plan G5.1) once a soft-deleted file passes its retention window — NOT
+ * recoverable. Requires a write-scoped token; pass `token` in tests.
+ */
+export async function deleteFilePermanently(fileId: string, opts?: { token?: string }): Promise<void> {
+  const token = opts?.token ?? (await getDriveToken(DRIVE_SCOPE_READWRITE));
+  const params = new URLSearchParams({ supportsAllDrives: 'true' });
+  const res = await fetch(`${DRIVE}/${fileId}?${params}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  // 204 No Content on success; 404 means it's already gone (treat as success).
+  if (!res.ok && res.status !== 404) throw new Error(`Drive delete ${res.status}: ${await res.text()}`);
+}
+
 export interface UploadedDriveFile {
   id: string;
   name: string;

@@ -204,3 +204,95 @@ export type UpdateEmailPrefsRequest = z.infer<typeof UpdateEmailPrefsRequestSche
 
 export const EmailPrefsResponseSchema = z.object({ ok: z.literal(true), prefs: EmailPrefsSchema });
 export type EmailPrefsResponse = z.infer<typeof EmailPrefsResponseSchema>;
+
+// ── Deleted-files lifecycle (dev plan G5.1) ───────────────────────────────────
+
+export const DeletedFileSchema = z.object({
+  deleteId: z.string(),
+  driveFileId: z.string(),
+  fileName: z.string().default(''),
+  eventId: z.string().default(''),
+  clubName: z.string().default(''),
+  batchFolderName: z.string().default(''),
+  uploadedBy: z.string().default(''),
+  deletedAt: z.string().default(''),
+  deletedBy: z.string().default(''),
+  deletedReason: z.string().default(''),
+  restoredAt: z.string().default(''),
+  restoredBy: z.string().default(''),
+  purgedAt: z.string().default(''),
+  status: z.enum(['deleted', 'restored', 'purged']),
+});
+export type DeletedFile = z.infer<typeof DeletedFileSchema>;
+
+export const SoftDeleteRequestSchema = z.object({
+  driveFileId: z.string().min(1),
+  clubName: z.string().min(1),
+  fileName: z.string().optional(),
+  eventId: z.string().optional(),
+  batchFolderName: z.string().optional(),
+  uploadedBy: z.string().optional(),
+  reason: z.string().optional(),
+});
+export type SoftDeleteRequest = z.infer<typeof SoftDeleteRequestSchema>;
+
+export const ListDeletedFilesResponseSchema = z.object({ ok: z.literal(true), files: z.array(DeletedFileSchema) });
+export type ListDeletedFilesResponse = z.infer<typeof ListDeletedFilesResponseSchema>;
+
+export const DeletedFileResponseSchema = z.object({ ok: z.literal(true), file: DeletedFileSchema });
+export type DeletedFileResponse = z.infer<typeof DeletedFileResponseSchema>;
+
+export const PurgeResponseSchema = z.object({
+  ok: z.literal(true),
+  purged: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+});
+export type PurgeResponse = z.infer<typeof PurgeResponseSchema>;
+
+// ── Reporting (dev plan G5.2) ─────────────────────────────────────────────────
+
+export const ClubSummarySchema = z.object({
+  clubName: z.string(),
+  sessions: z.number().int().nonnegative(),
+  files: z.number().int().nonnegative(),
+  sizeMb: z.number().nonnegative(),
+});
+export type ClubSummary = z.infer<typeof ClubSummarySchema>;
+
+export const SummaryResponseSchema = z.object({
+  ok: z.literal(true),
+  since: z.string(),
+  until: z.string(),
+  totals: z.object({
+    sessions: z.number().int().nonnegative(),
+    files: z.number().int().nonnegative(),
+    sizeMb: z.number().nonnegative(),
+  }),
+  byClub: z.array(ClubSummarySchema),
+});
+export type SummaryResponse = z.infer<typeof SummaryResponseSchema>;
+
+// ── Partner REST API (dev plan G5.3) ──────────────────────────────────────────
+
+export const PartnerEventSchema = z.object({
+  eventId: z.string(),
+  name: z.string().default(''),
+  date: z.string().default(''),
+});
+export type PartnerEvent = z.infer<typeof PartnerEventSchema>;
+
+export const PartnerEventsResponseSchema = z.object({ ok: z.literal(true), events: z.array(PartnerEventSchema) });
+export type PartnerEventsResponse = z.infer<typeof PartnerEventsResponseSchema>;
+
+export const PartnerLinkRequestSchema = z.object({ eventId: z.string().min(1), tag: z.string().optional() });
+export type PartnerLinkRequest = z.infer<typeof PartnerLinkRequestSchema>;
+
+export const PartnerLinkResponseSchema = z.object({
+  ok: z.literal(true),
+  uploadUrl: z.string(),
+  token: z.string(),
+  eventId: z.string(),
+  clubName: z.string(),
+  tag: z.string(),
+});
+export type PartnerLinkResponse = z.infer<typeof PartnerLinkResponseSchema>;
