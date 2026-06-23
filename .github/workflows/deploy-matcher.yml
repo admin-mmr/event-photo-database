@@ -1,0 +1,69 @@
+name: Deploy matcher to Cloud Run
+
+# Builds and deploys the private `matcher` Cloud Run service. Like the indexer
+# deploy (and unlike api/web) this reuses infra/scripts/deploy-matcher.sh,
+# because the build pulls ~184 MB of ONNX model weights from GCS into the build
+# context IN-CLOUD (via Cloud Build) — keeping the runner upload to source only
+# and the deploy logic in one place. Until this workflow existed the matcher was
+# the one service with no push-to-deploy, so matcher-only changes (e.g. fusion
+# weights) silently never reached production.
+#
+# One-time IAM (grant as an owner; the api/web deployer SA does not have these by
+# default). Two distinct identities are involved:
+#
+# A) The DEPLOYER SA (secrets.GCP_SERVICE_ACCOUNT, e.g. cloud-webapp-deployer@) —
+#    submits the build and deploys the service:
+#      roles/cloudbuild.builds.editor          (submit the in-cloud build)
+#      roles/run.admin                         (deploy the Cloud Run service)
+#      roles/iam.serviceAccountUser on matcher-runtime@<project>.iam...
+#                                              (deploy a service that runs AS it)
+#
+# B) The BUILD SA — the SA the in-cloud Cloud Build runs as (the default Cloud
+#    Build / Compute Engine default SA unless overridden). It needs:
+#      roles/storage.objectViewer on gs://<project>-models  (read staged weights)
+#      roles/artifactregistry.writer                        (push the image)
+#      write access to gs://<project>_cloudbuild  (build logs/source staging)
+#
+# Models must already be staged in GCS (gs://<project>-models/model_files); the
+# script preflights this and fails early if the bucket is empty.
+#
+# The service deploys WITHOUT --allow-unauthenticated. After the FIRST deploy,
+# grant the api permission to call it (one-time):
+#   gcloud run services add-iam-policy-binding matcher --region=<region> \
+#     --member="serviceAccount:api-runtime@<project>.iam.gserviceaccount.com" \
+#     --role="roles/run.invoker"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloud-webapp/matcher/**'
+      - 'cloud-webapp/infra/scripts/deploy-matcher.sh'
+      - '.github/workflows/deploy-matcher.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required for Workload Identity Federation OIDC token
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDP }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and deploy the matcher service
+        working-directory: cloud-webapp
+        env:
+          REGION: ${{ secrets.GCP_REGION }}
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          ./infra/scripts/deploy-matcher.sh "$PROJECT_ID" "$REGION"
