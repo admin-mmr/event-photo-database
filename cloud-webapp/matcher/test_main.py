@@ -124,8 +124,8 @@ def client():
 @pytest.fixture
 def seeded_store(tmp_path):
     """Local store with event 'ev1'. Face-query basis(0): pA=1.0, pB≈0.894.
-    Person-query basis(1): pB=1.0, others 0. Fused 0.7/0.3 → pB (0.926)
-    beats pA (0.7)."""
+    Person-query basis(1): pB=1.0, others 0. Fused 0.85/0.15 → pB (0.910)
+    beats pA (0.85)."""
     faces = np.stack([basis(0), unit(basis(0) * 0.9 + basis(5) * 0.45), basis(7)])
     faces_meta = [
         {"photoId": "pA.jpg", "box": [0, 0, 50, 50], "score": 0.9},
@@ -146,7 +146,7 @@ def seeded_store(tmp_path):
 @pytest.fixture
 def big_store(tmp_path):
     """Event 'big' where 250 distinct photos all match the face query strongly
-    (cosine 1.0 → fused 0.7, well above the 0.25 threshold). Used to prove the
+    (cosine 1.0 → fused 0.85, well above the 0.25 threshold). Used to prove the
     result list is no longer capped at the old 50/200."""
     n = 250
     faces = np.stack([basis(0) for _ in range(n)])
@@ -339,7 +339,7 @@ class TestSearch:
         assert resp.status_code == 200
         body = resp.get_json()
         assert body["mode"] == "fused" and body["indexModelVersion"] == "test@v0"
-        # pA: face=1.0 → 0.7; pB: face≈0.89*0.7 + person=1.0*0.3 ≈ 0.93 — pB wins
+        # pA: face=1.0 → 0.85; pB: face≈0.894*0.85 + person=1.0*0.15 ≈ 0.91 — pB wins
         assert body["results"][0]["photoId"] == "pB.jpg"
         ids = [r["photoId"] for r in body["results"]]
         assert "pA.jpg" in ids

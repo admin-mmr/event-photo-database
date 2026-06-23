@@ -40,6 +40,29 @@ export function bandLabel(band: ScoreBand): string {
 }
 
 /**
+ * Calibrated display confidence (0–100) for a raw fused score.
+ *
+ * The raw score is a cosine similarity, which tops out well below 1.0 even for
+ * an unmistakable match — a correct face match commonly lands around 0.65–0.75,
+ * which reads as a discouraging "65%" to a user who expects a percentage. This
+ * maps the raw score through a logistic curve anchored so the matcher's report
+ * threshold (0.25, the weakest score ever shown) reads as 50% and a "Strong"
+ * match (>=0.6) reads as ~89%+, giving an intuitive number.
+ *
+ * IMPORTANT: this is presentation only. Ranking, selection, paging, banding and
+ * the matcher's threshold all stay in RAW-score space — never feed a calibrated
+ * value back into them, or the displayed % and the ordering/band could diverge.
+ * Clamped to 1–99 so a match never claims an absolute 0% or 100%.
+ */
+export const DISPLAY_MIDPOINT = 0.25; // raw score shown as 50%
+export const DISPLAY_STEEPNESS = 6; // curve sharpness around the midpoint
+
+export function displayConfidence(score: number): number {
+  const pct = 100 / (1 + Math.exp(-DISPLAY_STEEPNESS * (score - DISPLAY_MIDPOINT)));
+  return Math.round(Math.min(99, Math.max(1, pct)));
+}
+
+/**
  * Combined, de-duplicated view across references: the union of each reference's
  * *visible* results, keyed by photoId, keeping the highest score. A photo
  * removed from every reference disappears; one still matching another selfie

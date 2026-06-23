@@ -6,6 +6,8 @@ import {
   scoreBand,
   bandLabel,
   STRONG_MATCH_THRESHOLD,
+  displayConfidence,
+  DISPLAY_MIDPOINT,
 } from './results.js';
 
 function mr(photoId: string, score: number): MatchResult {
@@ -57,5 +59,34 @@ describe('scoreBand (C7)', () => {
   it('maps bands to human labels', () => {
     expect(bandLabel('strong')).toBe('Strong');
     expect(bandLabel('possible')).toBe('Possible');
+  });
+});
+
+describe('displayConfidence (calibrated %)', () => {
+  it('shows the report threshold (0.25) as 50%', () => {
+    expect(displayConfidence(DISPLAY_MIDPOINT)).toBe(50);
+  });
+
+  it('lifts a correct-but-modest cosine into an intuitive range', () => {
+    // The complaint case: a genuine match at ~0.67 used to read "67%".
+    expect(displayConfidence(0.67)).toBeGreaterThanOrEqual(90);
+  });
+
+  it('reads a "Strong" match (>=0.6) as ~89%+', () => {
+    expect(displayConfidence(STRONG_MATCH_THRESHOLD)).toBeGreaterThanOrEqual(88);
+  });
+
+  it('is monotonic in the raw score', () => {
+    const xs = [0.25, 0.35, 0.5, 0.6, 0.7, 0.85, 0.95];
+    const ys = xs.map(displayConfidence);
+    for (let i = 1; i < ys.length; i += 1) {
+      expect(ys[i]).toBeGreaterThanOrEqual(ys[i - 1]!);
+    }
+  });
+
+  it('never claims an absolute 0% or 100%', () => {
+    expect(displayConfidence(0)).toBeGreaterThanOrEqual(1);
+    expect(displayConfidence(1)).toBeLessThanOrEqual(99);
+    expect(displayConfidence(5)).toBeLessThanOrEqual(99);
   });
 });

@@ -17,7 +17,7 @@ import {
 } from '../lib/api.js';
 import { getRecaptchaToken } from '../lib/recaptcha.js';
 import { useSelection } from '../lib/selection.js';
-import { combineReferences, visibleResults, scoreBand } from '../lib/results.js';
+import { combineReferences, visibleResults, scoreBand, displayConfidence } from '../lib/results.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
 import { canShareImageFiles } from '../lib/share.js';
 import { downloadOriginalsZip } from '../lib/zipDownload.js';
@@ -1033,7 +1033,7 @@ export function FindMe(): JSX.Element {
                         {/* C7: confidence band (the raw % stays as detail). */}
                         <span className={`score-chip band-${band}`}>
                           {band === 'strong' ? t.bandStrong : t.bandPossible} ·{' '}
-                          {Math.round(r.score * 100)}%
+                          {displayConfidence(r.score)}%
                         </span>
                       </button>
                       <button
@@ -1083,7 +1083,7 @@ export function FindMe(): JSX.Element {
                   badge: (
                     <span className={`score-chip band-${band}`}>
                       {band === 'strong' ? t.bandStrong : t.bandPossible} ·{' '}
-                      {Math.round(r.score * 100)}%
+                      {displayConfidence(r.score)}%
                     </span>
                   ),
                 };

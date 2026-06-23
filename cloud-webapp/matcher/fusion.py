@@ -11,8 +11,15 @@ mirror this math (PRD §7.2). Two methods:
 
 from __future__ import annotations
 
-DEFAULT_FACE_WEIGHT = 0.7
-DEFAULT_PERSON_WEIGHT = 0.3
+# Face is the far more reliable signal than outfit/appearance, so it dominates
+# the fused score. Outfit (person-ReID) is kept as a small tie-breaker / boost
+# rather than an equal partner: with the old 0.7/0.3 split a confident face
+# match (e.g. cosine 0.75) was diluted by a noisy outfit cosine down to ~0.67,
+# which read as a discouragingly low match. 0.85/0.15 lets a strong face match
+# carry the score while outfit still helps rank near-ties. (Pure outfit-only
+# searches set mode='person' and bypass this blend entirely.)
+DEFAULT_FACE_WEIGHT = 0.85
+DEFAULT_PERSON_WEIGHT = 0.15
 DEFAULT_THRESHOLD = 0.25  # min fused score to be reported at all
 RRF_K = 60
 
