@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { continueAsGuest, signInWithGoogle, signOutUser } from './lib/firebase.js';
 import { useAuth } from './lib/useAuth.js';
@@ -26,6 +26,35 @@ function BrandMark({ className = 'brand-mark' }: { className?: string }): JSX.El
   );
 }
 
+/** Hamburger (three bars) that morphs to an X when the menu is open. */
+function MenuIcon({ open }: { open: boolean }): JSX.Element {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="22"
+      height="22"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      {open ? (
+        <>
+          <line x1="6" y1="6" x2="18" y2="18" />
+          <line x1="18" y1="6" x2="6" y2="18" />
+        </>
+      ) : (
+        <>
+          <line x1="3" y1="6" x2="21" y2="6" />
+          <line x1="3" y1="12" x2="21" y2="12" />
+          <line x1="3" y1="18" x2="21" y2="18" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 const STR = {
   en: {
     title: 'Event Photo Database',
@@ -42,6 +71,7 @@ const STR = {
       audit: 'Audit',
       email: 'Email settings',
     },
+    menu: 'Menu',
     guest: 'Guest',
     signInGoogle: 'Sign in with Google',
     continueGuest: 'Continue as guest',
@@ -66,6 +96,7 @@ const STR = {
       audit: '审计',
       email: '邮件设置',
     },
+    menu: '菜单',
     guest: '访客',
     signInGoogle: '使用 Google 登录',
     continueGuest: '以访客身份继续',
@@ -95,8 +126,31 @@ export function App(): JSX.Element {
   const { user, loading } = useAuth();
   const [signInError, setSignInError] = useState<string | null>(null);
   const [inApp] = useState(() => isInAppBrowser());
+  const [menuOpen, setMenuOpen] = useState(false);
+  const headerRef = useRef<HTMLElement>(null);
   const t = useStrings(STR);
   const isGuest = Boolean(user?.isAnonymous);
+  const closeMenu = (): void => setMenuOpen(false);
+
+  // Close the collapsed menu when tapping outside the header or pressing Escape.
+  // Links close it via their own onClick; this covers everything else.
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onPointerDown(e: PointerEvent): void {
+      if (headerRef.current && !headerRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent): void {
+      if (e.key === 'Escape') setMenuOpen(false);
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [menuOpen]);
 
   async function guest(): Promise<void> {
     setSignInError(null);
@@ -114,45 +168,59 @@ export function App(): JSX.Element {
   // no header and no sign-in requirement.
   const layout = (
     <main className="page">
-      <header className="app-header">
-        <Link to="/" className="app-title">
+      <header className="app-header" ref={headerRef}>
+        <Link to="/" className="app-title" onClick={closeMenu}>
           <BrandMark />
           <h1>{t.title}</h1>
         </Link>
-        <LangToggle />
+        <div className="header-controls">
+          <LangToggle />
+          {user && (
+            <button
+              type="button"
+              className="nav-toggle"
+              aria-label={t.menu}
+              aria-expanded={menuOpen}
+              aria-controls="app-nav"
+              onClick={() => setMenuOpen((o) => !o)}
+            >
+              <MenuIcon open={menuOpen} />
+            </button>
+          )}
+        </div>
         {user && (
-          <div className="user-box">
-            <Link to="/me/data" className="nav-link">
+          <nav id="app-nav" className={`app-nav${menuOpen ? ' open' : ''}`}>
+            <Link to="/me/data" className="nav-link" onClick={closeMenu}>
               {t.nav.myData}
             </Link>
             {/* Admin-only; guests have no email so the API blocks them anyway. */}
             {!isGuest && (
               <>
-                <Link to="/admin/events" className="nav-link">
+                <Link to="/admin/events" className="nav-link" onClick={closeMenu}>
                   {t.nav.events}
                 </Link>
-                <Link to="/admin/users" className="nav-link">
+                <Link to="/admin/users" className="nav-link" onClick={closeMenu}>
                   {t.nav.users}
                 </Link>
-                <Link to="/admin/clubs" className="nav-link">
+                <Link to="/admin/clubs" className="nav-link" onClick={closeMenu}>
                   {t.nav.clubs}
                 </Link>
-                <Link to="/admin/feedback" className="nav-link">
+                <Link to="/admin/feedback" className="nav-link" onClick={closeMenu}>
                   {t.nav.feedback}
                 </Link>
-                <Link to="/admin/metrics" className="nav-link">
+                <Link to="/admin/metrics" className="nav-link" onClick={closeMenu}>
                   {t.nav.metrics}
                 </Link>
-                <Link to="/admin/summary" className="nav-link">
+                <Link to="/admin/summary" className="nav-link" onClick={closeMenu}>
                   {t.nav.report}
                 </Link>
-                <Link to="/admin/deleted" className="nav-link">
+                <Link to="/admin/deleted" className="nav-link" onClick={closeMenu}>
                   {t.nav.trash}
                 </Link>
-                <Link to="/admin/audit" className="nav-link">
+                <Link to="/admin/audit" className="nav-link" onClick={closeMenu}>
                   {t.nav.audit}
                 </Link>
-                <Link to="/me/email" className="nav-link">
+                <Link to="/me/email" className="nav-link" onClick={closeMenu}>
                   {t.nav.email}
                 </Link>
               </>
@@ -170,7 +238,7 @@ export function App(): JSX.Element {
             <button className="btn btn-light btn-sm" onClick={() => void signOutUser()}>
               {isGuest ? t.exitGuest : t.signOut}
             </button>
-          </div>
+          </nav>
         )}
       </header>
 

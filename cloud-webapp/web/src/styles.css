@@ -229,18 +229,79 @@ pre.error {
   box-shadow: var(--shadow-sm);
 }
 
-.user-box {
-  display: flex;
+/* Header right-side cluster: language toggle + menu button, pinned right. */
+.header-controls {
+  display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  width: 100%;
-  font-size: 14px;
+  gap: 8px;
+  margin-left: auto;
 }
 
-.user-box .muted {
+.header-controls .lang-toggle {
+  margin-left: 0;
+}
+
+/* Hamburger / close button — visible on phones only (hidden ≥768px). */
+.nav-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: var(--t);
+}
+
+.nav-toggle:hover {
+  background: var(--surface-2);
+}
+
+/* Collapsible nav. On phones it stays hidden until the menu button is tapped,
+   then drops down from the header as an overlay panel — so the sticky header
+   itself never grows past its single top row. */
+.app-nav {
+  display: none;
+}
+
+.app-nav.open {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  padding: 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+  max-height: calc(100vh - 100%);
+  overflow-y: auto;
+  font-size: 15px;
+}
+
+.app-nav .muted {
   min-width: 0;
   overflow-wrap: anywhere;
+  padding: 6px 12px;
+}
+
+.app-nav .nav-link {
+  width: 100%;
+  min-height: 44px;
+  border-radius: var(--r-sm);
+}
+
+.app-nav .btn {
+  width: 100%;
 }
 
 /* Nav links: thumb-friendly pills that wrap. */
@@ -1421,10 +1482,37 @@ pre.error {
     font-size: 22px;
   }
 
-  /* User box sits inline to the right of the title on wide screens. */
-  .user-box {
+  /* Wide screens: the nav sits inline to the right; hide the menu button. */
+  .nav-toggle {
+    display: none;
+  }
+
+  .app-nav,
+  .app-nav.open {
+    display: flex;
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
     width: auto;
     margin-left: 8px;
+    padding: 0;
+    background: none;
+    border: none;
+    box-shadow: none;
+    max-height: none;
+    overflow: visible;
+    font-size: 14px;
+  }
+
+  .app-nav .nav-link {
+    width: auto;
+    min-height: 36px;
+  }
+
+  .app-nav .btn {
+    width: auto;
   }
 
   .photo-grid {
