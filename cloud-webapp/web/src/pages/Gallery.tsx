@@ -97,7 +97,7 @@ const STR = {
     confirmDelete: (n: number) =>
       `删除 ${n} 张照片？\n\n` +
       `原图将被移至 Google Drive 回收站（约 30 天内可恢复），` +
-      `并从相册和「找到我」中移除。`,
+      `并从相册和人脸识别中移除。`,
     deleteAdminOnly: '删除照片仅限管理员，请使用管理员账号登录。',
     deleteFailed: '无法删除照片。',
     sentToShare: (label: string, skipped: string) =>
@@ -115,7 +115,7 @@ const STR = {
     allEvents: '← 全部活动',
     done: '完成',
     selectPhotos: '选择照片',
-    findMe: '📷 找到我',
+    findMe: '📷 人脸识别',
     couldNotLoadPhotos: '无法加载照片',
     deletedPhotos: (count: number) => `已删除 ${count} 张照片`,
     deletingPhotos: (count: number) => `正在删除 ${count} 张照片…`,
@@ -126,8 +126,8 @@ const STR = {
     deleteCopiesSub: '缩略图、网页版与原图',
     removeFromGalleryLabel: '从相册移除',
     removeFromGallerySub: '索引记录已清除',
-    refreshFindMeLabel: '刷新「找到我」',
-    findMeUpdated: '「找到我」已更新',
+    refreshFindMeLabel: '刷新人脸识别',
+    findMeUpdated: '人脸识别已更新',
     reindexing: '正在重新建立索引…可能需要几分钟',
     deleteFailedNote: (failed: number) => `${failed} 张照片无法删除。`,
     loadingPhotos: '正在加载照片…',

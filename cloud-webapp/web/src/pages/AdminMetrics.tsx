@@ -35,7 +35,7 @@ const STR = {
     window: '时间范围',
     windowOption: (days: number) => `最近 ${days} 天`,
     loading: '正在加载指标…',
-    findMeHeading: (n: number) => `找到我 · 最近 ${n} 天`,
+    findMeHeading: (n: number) => `人脸识别 · 最近 ${n} 天`,
     searches: '搜索次数',
     distinctSearchers: '独立搜索者',
     fusedPerson: '融合 / 人物',

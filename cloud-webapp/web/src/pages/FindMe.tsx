@@ -25,6 +25,7 @@ import { reportClientError } from '../lib/reportError.js';
 import { type ShareOutcome } from '../lib/share.js';
 import { saveResults, loadResults, clearResults } from '../lib/findmeCache.js';
 import { useFindMePageSize, FINDME_PAGE_SIZE_OPTIONS } from '../lib/pageSize.js';
+import { getStoredName, setStoredName } from '../lib/userName.js';
 import { SelectBar } from '../components/SelectBar.js';
 import { Lightbox } from '../components/Lightbox.js';
 import { PageSizeSelect } from '../components/PageSizeSelect.js';
@@ -63,10 +64,11 @@ const STR = {
     consentIntro:
       'Find Me compares a photo of you against this event’s photos using face matching. Your reference photo is used only for this search.',
     consentIntroZh:
-      '找到我会使用人脸匹配，将您的照片与本次活动的照片进行比对。您的参考照片仅用于本次搜索。',
+      '人脸识别会将您的照片与本次活动的照片进行比对，您的参考照片仅用于本次搜索。',
     yourNameRequired: 'Your name (required)',
     namePlaceholder: 'e.g. Jamie Lee',
     nameHint: 'Required. Shown to event organizers so they know who searched.',
+    searchingAs: (n: string): string => `Searching as ${n}.`,
     consentPhoto:
       'I consent to the use of this photo for face matching in this event.',
     isMinor: 'The person in the photo is under 18.',
@@ -136,7 +138,7 @@ const STR = {
     noUsableFace:
       '这张照片中没有找到清晰的人脸。您可以改用服装和外观搜索，或换一张更清晰的正面照片。',
     eventNotIndexed:
-      '本次活动尚未为「找到我」建立索引，请联系管理员运行索引。',
+      '本次活动尚未建立人脸识别索引，请联系管理员运行索引。',
     feedbackFailed: '无法记录此反馈，请重试。',
     downloadFailed: '下载失败',
     downloadSkipped: (failed: number) => ` (${failed} 张无法加载，已跳过)`,
@@ -149,16 +151,17 @@ const STR = {
     shareTitle: '我的活动照片',
     couldNotSavePhotos: '无法保存照片',
     couldNotLoadAny: '无法加载所选的任何照片，请稍后重试。',
-    title: '找到我',
+    title: '人脸识别',
     backToGallery: '← 返回相册',
     beforeWeSearch: '搜索前须知',
     consentIntro:
-      '找到我会使用人脸匹配，将您的照片与本次活动的照片进行比对。您的参考照片仅用于本次搜索。',
+      '人脸识别会将您的照片与本次活动的照片进行比对，您的参考照片仅用于本次搜索。',
     consentIntroZh:
-      '找到我会使用人脸匹配，将您的照片与本次活动的照片进行比对。您的参考照片仅用于本次搜索。',
+      '人脸识别会将您的照片与本次活动的照片进行比对，您的参考照片仅用于本次搜索。',
     yourNameRequired: '您的姓名（必填）',
     namePlaceholder: '例如：张三',
     nameHint: '必填。此姓名会提供给活动主办方，以便了解是谁进行了搜索。',
+    searchingAs: (n: string): string => `以 ${n} 的身份搜索。`,
     consentPhoto: '我同意将此照片用于本次活动的人脸匹配。',
     isMinor: '照片中的人未满 18 岁。',
     guardianConsent: '我是该儿童的父母或法定监护人，并代表其同意本次搜索。',
@@ -247,8 +250,11 @@ export function FindMe(): JSX.Element {
   const [phase, setPhase] = useState<Phase>('consent');
   const [agreed, setAgreed] = useState(false);
   // Required: Find Me is open to guests, so we capture who is searching (feeds
-  // the admin alert). Entered once here and sent on every search this session.
-  const [name, setName] = useState('');
+  // the admin alert). Captured once per session — at guest sign-in or here on
+  // first use — then remembered, so we don't ask again on later events/pages.
+  const [sessionName] = useState(() => getStoredName());
+  const [name, setName] = useState(sessionName);
+  const haveSessionName = sessionName.length > 0;
   const [isMinor, setIsMinor] = useState(false);
   const [guardianOk, setGuardianOk] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -773,20 +779,26 @@ export function FindMe(): JSX.Element {
           <p>{t.consentIntro}</p>
           <p className="muted">{t.consentIntroZh}</p>
           {error && <p className="error-text">{error}</p>}
-          <label className="consent-row consent-name">
-            <span>{t.yourNameRequired}</span>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={t.namePlaceholder}
-              maxLength={120}
-              autoComplete="name"
-              required
-              aria-required="true"
-            />
-            <span className="field-hint muted">{t.nameHint}</span>
-          </label>
+          {haveSessionName ? (
+            // Name already captured this session (guest sign-in or a prior
+            // event) — just confirm who's searching, don't ask again.
+            <p className="muted searching-as">{t.searchingAs(name)}</p>
+          ) : (
+            <label className="consent-row consent-name">
+              <span>{t.yourNameRequired}</span>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={t.namePlaceholder}
+                maxLength={120}
+                autoComplete="name"
+                required
+                aria-required="true"
+              />
+              <span className="field-hint muted">{t.nameHint}</span>
+            </label>
+          )}
           <label className="consent-row">
             <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
             <span>{t.consentPhoto}</span>
@@ -817,7 +829,16 @@ export function FindMe(): JSX.Element {
               {consentHint}
             </p>
           )}
-          <button className="btn btn-primary" disabled={!consentOk} onClick={() => { setError(null); setPhase('pick'); }}>
+          <button
+            className="btn btn-primary"
+            disabled={!consentOk}
+            onClick={() => {
+              setError(null);
+              // Remember the name for later events/pages so we don't re-ask.
+              setStoredName(name);
+              setPhase('pick');
+            }}
+          >
             {t.continue}
           </button>
         </div>

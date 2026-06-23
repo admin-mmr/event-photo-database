@@ -37,11 +37,13 @@ beforeEach(() => {
 });
 
 describe('<App />', () => {
-  it('shows the sign-in screen when signed out, with a guest option', () => {
+  it('shows the sign-in screen when signed out: a required name + Continue, plus Google', () => {
     authState.user = null;
     render(<App />);
     expect(screen.getByText(/Sign in with Google/i)).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Continue as guest/i })).toBeTruthy();
+    // Guests now enter their name here (remembered for the session) and Continue.
+    expect(screen.getByLabelText(/your name/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Continue$/ })).toBeTruthy();
   });
 
   it('lets a guest browse events but hides admin controls', async () => {

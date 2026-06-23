@@ -59,7 +59,7 @@ const STR = {
     indexing: '建立索引中…',
     starting: '启动中…',
     pill: {
-      done: '「找到我」就绪',
+      done: '人脸识别就绪',
       queued: '排队中…',
       running: '建立索引中…',
       failed: '索引失败',
@@ -288,6 +288,9 @@ export function Events({ isGuest = false }: EventsProps): JSX.Element {
                       </button>
                     )}
                   </div>
+                  <span className="event-chevron" aria-hidden="true">
+                    ›
+                  </span>
                 </div>
               </li>
             );

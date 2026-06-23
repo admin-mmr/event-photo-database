@@ -49,12 +49,12 @@ const STR = {
     photoDeleted: '照片已删除。',
     deletePhotoError: '无法删除该照片。',
     purgedAll: (refs: number, runs: number, fb: number): string =>
-      `已删除您的全部「找到我」数据（${refs} 张已保存照片、${runs} 次搜索、${fb} 次反馈）。`,
+      `已删除您的全部人脸识别数据（${refs} 张已保存照片、${runs} 次搜索、${fb} 次反馈）。`,
     purgeError: '无法删除您的数据。',
     loadDataError: '无法加载您的数据',
     title: '我的数据',
     intro:
-      '您为「找到我」保存的参考自拍。它们会在所示日期自动删除，您也可以立即移除其中任意一张。',
+      '您为人脸识别保存的参考自拍。它们会在所示日期自动删除，您也可以立即移除其中任意一张。',
     loading: '加载中…',
     noneSaved: '您没有已保存的照片。',
     savedSelfieAlt: '已保存的参考自拍',
@@ -68,8 +68,8 @@ const STR = {
     delete: '删除',
     dangerTitle: '删除全部数据',
     dangerIntro:
-      '永久删除您的全部「找到我」数据——已保存的照片、搜索记录和反馈。此操作将撤销您的同意，且无法撤销。',
-    deleteAllQ: '删除您的全部「找到我」数据？',
+      '永久删除您的全部人脸识别数据——已保存的照片、搜索记录和反馈。此操作将撤销您的同意，且无法撤销。',
+    deleteAllQ: '删除您的全部人脸识别数据？',
     yesDeleteEverything: '是，全部删除',
     deleteAllMyData: '删除我的全部数据',
     expiry: {

@@ -3,6 +3,7 @@ import { BrowserRouter, Link, Navigate, Outlet, Route, Routes } from 'react-rout
 import { continueAsGuest, signInWithGoogle, signOutUser } from './lib/firebase.js';
 import { useAuth } from './lib/useAuth.js';
 import { LangToggle, useStrings } from './lib/i18n.js';
+import { clearStoredName, setStoredName } from './lib/userName.js';
 import { isInAppBrowser } from './lib/inAppBrowser.js';
 import { InAppBrowserWarning } from './components/InAppBrowserWarning.js';
 
@@ -57,7 +58,7 @@ function MenuIcon({ open }: { open: boolean }): JSX.Element {
 
 const STR = {
   en: {
-    title: 'Event Photo Database',
+    title: 'Event Galleries',
     tagline: 'Browse event photos and find yourself with Find Me.',
     nav: {
       myData: 'My data',
@@ -74,7 +75,10 @@ const STR = {
     menu: 'Menu',
     guest: 'Guest',
     signInGoogle: 'Sign in with Google',
-    continueGuest: 'Continue as guest',
+    yourNameRequired: 'Your name (required)',
+    namePlaceholder: 'e.g. Jamie Lee',
+    nameHint: 'Shown to event organizers so they know who searched.',
+    continue: 'Continue',
     exitGuest: 'Exit guest',
     signOut: 'Sign out',
     loading: 'Loading…',
@@ -82,8 +86,8 @@ const STR = {
       'Could not start a guest session. Ask an admin to enable Anonymous sign-in in Firebase.',
   },
   zh: {
-    title: '活动照片库',
-    tagline: '浏览活动照片，并用「找到我」找到照片中的自己。',
+    title: '活动相册',
+    tagline: '浏览活动照片，并用人脸识别找到照片中的自己。',
     nav: {
       myData: '我的数据',
       events: '活动',
@@ -99,7 +103,10 @@ const STR = {
     menu: '菜单',
     guest: '访客',
     signInGoogle: '使用 Google 登录',
-    continueGuest: '以访客身份继续',
+    yourNameRequired: '您的姓名（必填）',
+    namePlaceholder: '例如：张三',
+    nameHint: '此姓名会提供给活动主办方，以便了解是谁进行了搜索。',
+    continue: '继续',
     exitGuest: '退出访客',
     signOut: '退出登录',
     loading: '加载中…',
@@ -127,10 +134,19 @@ export function App(): JSX.Element {
   const [signInError, setSignInError] = useState<string | null>(null);
   const [inApp] = useState(() => isInAppBrowser());
   const [menuOpen, setMenuOpen] = useState(false);
+  const [guestName, setGuestName] = useState('');
   const headerRef = useRef<HTMLElement>(null);
   const t = useStrings(STR);
   const isGuest = Boolean(user?.isAnonymous);
   const closeMenu = (): void => setMenuOpen(false);
+  const guestNameOk = guestName.trim().length > 0;
+
+  // Sign out / exit guest: also forget the remembered searcher name so the next
+  // person on a shared device starts fresh.
+  function signOutAndForget(): void {
+    clearStoredName();
+    void signOutUser();
+  }
 
   // Close the collapsed menu when tapping outside the header or pressing Escape.
   // Links close it via their own onClick; this covers everything else.
@@ -153,7 +169,11 @@ export function App(): JSX.Element {
   }, [menuOpen]);
 
   async function guest(): Promise<void> {
+    if (!guestNameOk) return;
     setSignInError(null);
+    // Remember the name first so it's already in place when the routed pages
+    // (Find Me) mount and read it — no need to ask for it again.
+    setStoredName(guestName);
     try {
       await continueAsGuest();
     } catch (err) {
@@ -235,7 +255,7 @@ export function App(): JSX.Element {
             ) : (
               <span className="muted">{user.email}</span>
             )}
-            <button className="btn btn-light btn-sm" onClick={() => void signOutUser()}>
+            <button className="btn btn-light btn-sm" onClick={signOutAndForget}>
               {isGuest ? t.exitGuest : t.signOut}
             </button>
           </nav>
@@ -257,9 +277,32 @@ export function App(): JSX.Element {
                 bilingual. */}
             {inApp && <InAppBrowserWarning />}
 
-            <button className="btn btn-primary" onClick={() => void guest()}>
-              {t.continueGuest}
-            </button>
+            {/* Name is captured once here and remembered for the session, so
+                Find Me never has to ask for it again. */}
+            <form
+              className="signin-name"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void guest();
+              }}
+            >
+              <label htmlFor="guest-name">{t.yourNameRequired}</label>
+              <input
+                id="guest-name"
+                type="text"
+                value={guestName}
+                onChange={(e) => setGuestName(e.target.value)}
+                placeholder={t.namePlaceholder}
+                maxLength={120}
+                autoComplete="name"
+                required
+                aria-required="true"
+              />
+              <span className="field-hint muted">{t.nameHint}</span>
+              <button className="btn btn-primary" type="submit" disabled={!guestNameOk}>
+                {t.continue}
+              </button>
+            </form>
             {!inApp && (
               <button className="btn btn-light btn-google" onClick={() => void signInWithGoogle()}>
                 {t.signInGoogle}

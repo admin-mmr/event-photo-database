@@ -177,6 +177,10 @@ pre.error {
   letter-spacing: -0.01em;
   margin: 0;
   font-weight: 700;
+  /* Keep the title on a single row; ellipsize rather than wrap on tiny phones. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Brand mark (inline SVG glyph). */
@@ -493,17 +497,35 @@ pre.error {
   gap: 12px;
 }
 
+/* Each event is a raised, tappable card. The whole card is one big link (the
+   .event-link stretches over it via ::after); the admin Index button sits above
+   that overlay so it stays separately clickable. */
 .event-card {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-md);
   transition: var(--t);
+  cursor: pointer;
 }
 
 .event-card:hover {
-  box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-2px);
+  border-color: var(--border-strong);
+}
+
+/* Pressed state: settle back down so a tap feels physical. */
+.event-card:active {
+  transform: translateY(0);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Keyboard focus on the link shows on the whole card. */
+.event-card:focus-within {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 .event-row {
@@ -524,9 +546,40 @@ pre.error {
   min-width: 0;
 }
 
+/* Stretch the link across the entire card so a tap anywhere navigates in. */
+.event-link::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
 .event-name {
   font-weight: 600;
   font-size: 16px;
+  color: var(--primary);
+}
+
+/* The Index button (admins) must stay clickable above the stretched link. */
+.event-row .btn {
+  position: relative;
+  z-index: 1;
+}
+
+/* Right-pointing chevron signals the card opens. Sits at the far right after
+   the meta cluster; nudges right on hover. */
+.event-chevron {
+  align-self: center;
+  margin-left: 2px;
+  font-size: 24px;
+  line-height: 1;
+  color: var(--text-subtle);
+  transition: var(--t);
+}
+
+.event-card:hover .event-chevron {
+  color: var(--text-muted);
+  transform: translateX(2px);
 }
 
 .event-date {
@@ -1629,7 +1682,8 @@ pre.error {
   }
 
   .btn-primary:not(:disabled):hover,
-  .event-card:hover {
+  .event-card:hover,
+  .event-card:hover .event-chevron {
     transform: none;
   }
 }
