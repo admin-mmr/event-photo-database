@@ -1,0 +1,37 @@
+Event Photo Database
+Copyright (c) 2026 admin-mmr
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License, version 3, as published by
+the Free Software Foundation. The full text is in the LICENSE file.
+
+Because this software is offered to users over a network, AGPL-3.0 section 13
+requires that those users be offered the Corresponding Source of the running
+version. The complete source is available at:
+
+    https://github.com/admin-mmr/event-photo-database
+
+The deployed service must correspond to the source published there, and that
+repository must remain publicly accessible (not gated behind an access request).
+
+
+Third-party components
+======================
+
+Ultralytics YOLOv8  —  person detector (matcher/model_files/yolov8n.onnx)
+    License: GNU AGPL-3.0
+    https://github.com/ultralytics/ultralytics
+    This is the AGPL-licensed component that makes the combined work AGPL-3.0
+    and triggers the network source-code offer above. The alternative to AGPL
+    is Ultralytics' commercial license.
+
+Other bundled models carry their OWN license terms (review them for your use
+case — they are NOT covered by, and may differ from, the AGPL terms above):
+
+InsightFace "buffalo_l"  —  SCRFD face detector (det_10g.onnx) and ArcFace
+    face embedder (w600k_r50.onnx)
+    https://github.com/deepinsight/insightface
+
+OSNet (osnet_x0_25.onnx)  —  person re-identification ("outfit") embedder
+    torchreid / deep-person-reid
+    https://github.com/KaiyangZhou/deep-person-reid

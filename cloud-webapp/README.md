@@ -186,3 +186,34 @@ Legend: ✅ shipped (code-complete + tested) · 🟡 partial · ⬜ not started
 > Note: an `auth.ts` middleware module exists but is not yet wired into routes —
 > it's a planned refactor of the current (working) Firebase Auth path, not a
 > missing feature. See the TODO in `api/src/middleware/auth.ts`.
+
+---
+
+## License & source
+
+This project is licensed under the **GNU Affero General Public License v3.0
+(AGPL-3.0)** — see the repository-root `LICENSE` and `NOTICE` files.
+
+It is AGPL because the matcher bundles **Ultralytics YOLOv8** (the person
+detector, `matcher/model_files/yolov8n.onnx`), which is AGPL-3.0. AGPL is a
+network-copyleft license: because Find Me is offered to people over the network,
+AGPL **section 13** requires that those users be offered the complete
+corresponding source of the running version. We honor that two ways:
+
+- **In the app:** a "Source code" link in the footer (`web/src/components/Footer.tsx`)
+  on every page, pointing at this public repository.
+- **In the repo:** the full AGPL-3.0 `LICENSE`, plus `NOTICE` attributing
+  YOLOv8 and the other bundled models.
+
+Two operational rules that keep us compliant:
+
+1. The **public repository must stay public** (freely accessible, not gated
+   behind an access request) and must **correspond to what is deployed** — don't
+   run modifications you haven't pushed.
+2. The other bundled models (InsightFace buffalo_l, OSNet) carry their **own**
+   license terms — review them for your use case; they are attributed in
+   `NOTICE`.
+
+If AGPL's copyleft is ever a problem, the alternative is Ultralytics' commercial
+YOLO license, or swapping in a permissively-licensed person detector and
+dropping the AGPL obligation.

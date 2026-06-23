@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { continueAsGuest, signInWithGoogle, signOutUser } from './lib/firebase.js';
 import { useAuth } from './lib/useAuth.js';
+import { useSession } from './lib/useSession.js';
 import { LangToggle, useStrings } from './lib/i18n.js';
 import { clearStoredName, setStoredName } from './lib/userName.js';
 import { isInAppBrowser } from './lib/inAppBrowser.js';
 import { InAppBrowserWarning } from './components/InAppBrowserWarning.js';
+import { Footer } from './components/Footer.js';
 
 /** Inline brand glyph (folder + lens) — placeholder until a real logo asset. */
 function BrandMark({ className = 'brand-mark' }: { className?: string }): JSX.Element {
@@ -61,6 +63,7 @@ const STR = {
     title: 'Event Galleries',
     tagline: 'Browse event photos and find yourself with Find Me.',
     nav: {
+      galleries: 'Galleries',
       myData: 'My data',
       events: 'Events',
       users: 'Users',
@@ -89,6 +92,7 @@ const STR = {
     title: '活动相册',
     tagline: '浏览活动照片，并用人脸识别找到照片中的自己。',
     nav: {
+      galleries: '相册',
       myData: '我的数据',
       events: '活动',
       users: '用户',
@@ -138,6 +142,11 @@ export function App(): JSX.Element {
   const headerRef = useRef<HTMLElement>(null);
   const t = useStrings(STR);
   const isGuest = Boolean(user?.isAnonymous);
+  // Control-plane role drives which menu items appear (super_admin → all;
+  // club_admin → the pages the API lets them open; member/guest → none).
+  const { role } = useSession(user);
+  const isSuperAdmin = role === 'super_admin';
+  const isAdmin = role === 'super_admin' || role === 'club_admin';
   const closeMenu = (): void => setMenuOpen(false);
   const guestNameOk = guestName.trim().length > 0;
 
@@ -210,12 +219,19 @@ export function App(): JSX.Element {
         </div>
         {user && (
           <nav id="app-nav" className={`app-nav${menuOpen ? ' open' : ''}`}>
+            {/* Everyone: the galleries dashboard (home) + their own data. */}
+            <Link to="/" className="nav-link" onClick={closeMenu}>
+              {t.nav.galleries}
+            </Link>
             <Link to="/me/data" className="nav-link" onClick={closeMenu}>
               {t.nav.myData}
             </Link>
-            {/* Admin-only; guests have no email so the API blocks them anyway. */}
-            {!isGuest && (
+
+            {/* Any admin (super_admin or club_admin): the pages the API lets a
+                club_admin open. "Events" here means event configuration. */}
+            {isAdmin && (
               <>
+                <span className="nav-sep" aria-hidden="true" />
                 <Link to="/admin/events" className="nav-link" onClick={closeMenu}>
                   {t.nav.events}
                 </Link>
@@ -225,26 +241,35 @@ export function App(): JSX.Element {
                 <Link to="/admin/clubs" className="nav-link" onClick={closeMenu}>
                   {t.nav.clubs}
                 </Link>
-                <Link to="/admin/feedback" className="nav-link" onClick={closeMenu}>
-                  {t.nav.feedback}
-                </Link>
-                <Link to="/admin/metrics" className="nav-link" onClick={closeMenu}>
-                  {t.nav.metrics}
-                </Link>
                 <Link to="/admin/summary" className="nav-link" onClick={closeMenu}>
                   {t.nav.report}
                 </Link>
                 <Link to="/admin/deleted" className="nav-link" onClick={closeMenu}>
                   {t.nav.trash}
                 </Link>
-                <Link to="/admin/audit" className="nav-link" onClick={closeMenu}>
-                  {t.nav.audit}
-                </Link>
                 <Link to="/me/email" className="nav-link" onClick={closeMenu}>
                   {t.nav.email}
                 </Link>
               </>
             )}
+
+            {/* Super admin only: org-wide oversight. */}
+            {isSuperAdmin && (
+              <>
+                <span className="nav-sep" aria-hidden="true" />
+                <Link to="/admin/metrics" className="nav-link" onClick={closeMenu}>
+                  {t.nav.metrics}
+                </Link>
+                <Link to="/admin/feedback" className="nav-link" onClick={closeMenu}>
+                  {t.nav.feedback}
+                </Link>
+                <Link to="/admin/audit" className="nav-link" onClick={closeMenu}>
+                  {t.nav.audit}
+                </Link>
+              </>
+            )}
+
+            <span className="nav-sep" aria-hidden="true" />
             {isGuest ? (
               <>
                 <span className="muted">{t.guest}</span>
@@ -312,6 +337,8 @@ export function App(): JSX.Element {
           </div>
         </div>
       )}
+
+      <Footer />
     </main>
   );
 

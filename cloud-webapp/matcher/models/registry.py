@@ -13,6 +13,13 @@ instance). Paths come from MODEL_DIR (default ./model_files):
 
 `MODEL_VERSION` tags every embedding written to the store; bump it whenever
 any model file changes so the indexer knows to re-embed (dev plan §8).
+
+The `@m1` bump (adding `yolov8n`) switched person crops from face-box
+expansion to the YOLOv8 detector. Because that changes the person ("outfit")
+embeddings, the indexer must re-embed every event under the new version, and
+the `yolov8n.onnx` file MUST be staged/baked before this version goes live —
+otherwise the service silently re-indexes with the face-expand fallback under
+the new tag, burning a re-index for no gain.
 """
 
 from __future__ import annotations
@@ -20,7 +27,7 @@ from __future__ import annotations
 import os
 import threading
 
-MODEL_VERSION = os.environ.get("MODEL_VERSION", "scrfd10g+arcface_r50+osnet_x0_25@m0")
+MODEL_VERSION = os.environ.get("MODEL_VERSION", "scrfd10g+yolov8n+arcface_r50+osnet_x0_25@m1")
 
 _DEFAULT_FILES = {
     "face_det": "det_10g.onnx",
