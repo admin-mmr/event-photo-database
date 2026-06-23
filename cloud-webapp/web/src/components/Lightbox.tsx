@@ -1,4 +1,10 @@
 import { useEffect, useRef, type ReactNode } from 'react';
+import { useStrings } from '../lib/i18n.js';
+
+const STR = {
+  en: { close: 'Close', prev: 'Previous photo', next: 'Next photo' },
+  zh: { close: '关闭', prev: '上一张', next: '下一张' },
+};
 
 /**
  * Lightbox — full-size photo viewer with prev/next navigation (dev plan §5B C4).
@@ -41,6 +47,7 @@ export function Lightbox({
   onNavigate,
   renderFooter,
 }: LightboxProps): JSX.Element | null {
+  const t = useStrings(STR);
   const touchX = useRef<number | null>(null);
   const item = items[index];
   const hasPrev = index > 0;
@@ -72,14 +79,14 @@ export function Lightbox({
 
   return (
     <div className="lightbox" role="dialog" aria-modal="true" onClick={onClose}>
-      <button className="lightbox-close" aria-label="Close" onClick={onClose}>
+      <button className="lightbox-close" aria-label={t.close} onClick={onClose}>
         ✕
       </button>
       <div className="lightbox-stage" onClick={(e) => e.stopPropagation()}>
         {hasPrev && (
           <button
             className="lightbox-nav lightbox-prev"
-            aria-label="Previous photo"
+            aria-label={t.prev}
             onClick={() => onNavigate(index - 1)}
           >
             ‹
@@ -106,7 +113,7 @@ export function Lightbox({
         {hasNext && (
           <button
             className="lightbox-nav lightbox-next"
-            aria-label="Next photo"
+            aria-label={t.next}
             onClick={() => onNavigate(index + 1)}
           >
             ›

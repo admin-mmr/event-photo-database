@@ -16,12 +16,14 @@ import { useCallback, useState } from 'react';
  */
 export type GallerySort = 'added_desc' | 'added_asc' | 'taken_desc' | 'taken_asc' | 'name';
 
-export const SORT_OPTIONS: ReadonlyArray<{ value: GallerySort; label: string }> = [
-  { value: 'added_desc', label: 'Time uploaded — newest first · 上传时间——最新优先' },
-  { value: 'added_asc', label: 'Time uploaded — oldest first · 上传时间——最早优先' },
-  { value: 'taken_desc', label: 'Time taken — newest first · 拍摄时间——最新优先' },
-  { value: 'taken_asc', label: 'Time taken — oldest first · 拍摄时间——最早优先' },
-  { value: 'name', label: 'By name · 按名称' },
+/** Sort values in display order. The human labels live in SortSelect, keyed by
+ *  value, so they follow the app-wide language toggle (lib/i18n). */
+export const SORT_OPTIONS: readonly GallerySort[] = [
+  'added_desc',
+  'added_asc',
+  'taken_desc',
+  'taken_asc',
+  'name',
 ];
 export const DEFAULT_SORT: GallerySort = 'added_desc';
 

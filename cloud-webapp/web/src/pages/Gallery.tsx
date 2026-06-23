@@ -22,6 +22,129 @@ import { Lightbox } from '../components/Lightbox.js';
 import { PageSizeSelect } from '../components/PageSizeSelect.js';
 import { SortSelect } from '../components/SortSelect.js';
 import { LoadMore } from '../components/LoadMore.js';
+import { useStrings } from '../lib/i18n.js';
+
+const STR = {
+  en: {
+    downloadZip: (included: number, skipped: string) =>
+      `Downloaded ${included} photo${included === 1 ? '' : 's'} as a ZIP.${skipped}`,
+    downloadZipSkipped: (failed: number) =>
+      ` (${failed} couldn't be loaded and were skipped)`,
+    downloadFailed: 'Download failed',
+    confirmDelete: (n: number) =>
+      `Delete ${n} photo${n === 1 ? '' : 's'}?\n\n` +
+      `This moves the original${n === 1 ? '' : 's'} to Google Drive Trash ` +
+      `(recoverable for ~30 days) and removes ${n === 1 ? 'it' : 'them'} from ` +
+      `the gallery and Find Me.`,
+    deleteAdminOnly:
+      'Deleting photos is admin-only — sign in with an admin account.',
+    deleteFailed: 'Could not delete photos.',
+    sentToShare: (label: string, skipped: string) =>
+      `Sent ${label} to your share sheet — choose Save to Photos.${skipped}`,
+    downloadedLabel: (label: string, skipped: string) => `Downloaded ${label}.${skipped}`,
+    couldNotSavePhotos: 'Could not save photos',
+    photoLabel: (n: number) => `${n} photo${n === 1 ? '' : 's'}`,
+    saveSkipped: (failed: number) => ` (${failed} skipped)`,
+    couldNotLoadAny:
+      'Could not load any of the selected photos. Please try again in a moment.',
+    savedPhotos: (n: number) => `Saved ${n} photo${n === 1 ? '' : 's'}.`,
+    sentToShareOne: 'Sent to your share sheet — choose Save to Photos.',
+    savedOnePhoto: 'Saved 1 photo.',
+    couldNotSavePhoto: 'Could not save photo',
+    breadcrumbAria: 'Breadcrumb',
+    allEvents: '← All events',
+    done: 'Done',
+    selectPhotos: 'Select photos',
+    findMe: '📷 Find Me',
+    couldNotLoadPhotos: 'Could not load photos',
+    deletedPhotos: (count: number) =>
+      `Deleted ${count} photo${count === 1 ? '' : 's'}`,
+    deletingPhotos: (count: number) =>
+      `Deleting ${count} photo${count === 1 ? '' : 's'}…`,
+    dismiss: 'Dismiss',
+    moveOriginalsLabel: 'Move originals to Drive Trash',
+    moveOriginalsSub: 'Recoverable for ~30 days',
+    deleteCopiesLabel: 'Delete stored copies',
+    deleteCopiesSub: 'Thumbnail, web & original',
+    removeFromGalleryLabel: 'Remove from gallery',
+    removeFromGallerySub: 'Index entry cleared',
+    refreshFindMeLabel: 'Refresh Find Me',
+    findMeUpdated: 'Find Me updated',
+    reindexing: 'Re-indexing… this can take a few minutes',
+    deleteFailedNote: (failed: number) =>
+      `${failed} photo${failed === 1 ? '' : 's'} could not be deleted.`,
+    loadingPhotos: 'Loading photos…',
+    noPhotos:
+      'No photos indexed for this event yet — ask an admin to run indexing.',
+    selectHintSave:
+      'Tap photos to select them, then “Save to Photos” to add them straight to your camera roll.',
+    selectHintDownload:
+      'Tap photos to select them, then save or download the originals.',
+    deleting: 'Deleting…',
+    deleteButton: (count: number) => `🗑 Delete${count ? ` ${count}` : ''}`,
+    adminOnlyDelete: 'Admin only — moves originals to Drive Trash.',
+    download: '⬇ Download',
+    preparing: 'Preparing…',
+    saveToPhotos: '📲 Save to Photos',
+    selected: '✓ Selected',
+    select: 'Select',
+  },
+  zh: {
+    downloadZip: (included: number, skipped: string) =>
+      `已将 ${included} 张照片打包为 ZIP 下载。${skipped}`,
+    downloadZipSkipped: (failed: number) => ` (${failed} 张无法加载，已跳过)`,
+    downloadFailed: '下载失败',
+    confirmDelete: (n: number) =>
+      `删除 ${n} 张照片？\n\n` +
+      `原图将被移至 Google Drive 回收站（约 30 天内可恢复），` +
+      `并从相册和「找到我」中移除。`,
+    deleteAdminOnly: '删除照片仅限管理员，请使用管理员账号登录。',
+    deleteFailed: '无法删除照片。',
+    sentToShare: (label: string, skipped: string) =>
+      `已将 ${label} 发送到分享菜单，请选择「保存到照片」。${skipped}`,
+    downloadedLabel: (label: string, skipped: string) => `已下载 ${label}。${skipped}`,
+    couldNotSavePhotos: '无法保存照片',
+    photoLabel: (n: number) => `${n} 张照片`,
+    saveSkipped: (failed: number) => ` (跳过 ${failed} 张)`,
+    couldNotLoadAny: '无法加载所选的任何照片，请稍后重试。',
+    savedPhotos: (n: number) => `已保存 ${n} 张照片。`,
+    sentToShareOne: '已发送到分享菜单，请选择「保存到照片」。',
+    savedOnePhoto: '已保存 1 张照片。',
+    couldNotSavePhoto: '无法保存照片',
+    breadcrumbAria: '面包屑导航',
+    allEvents: '← 全部活动',
+    done: '完成',
+    selectPhotos: '选择照片',
+    findMe: '📷 找到我',
+    couldNotLoadPhotos: '无法加载照片',
+    deletedPhotos: (count: number) => `已删除 ${count} 张照片`,
+    deletingPhotos: (count: number) => `正在删除 ${count} 张照片…`,
+    dismiss: '关闭',
+    moveOriginalsLabel: '将原图移至 Drive 回收站',
+    moveOriginalsSub: '约 30 天内可恢复',
+    deleteCopiesLabel: '删除已存副本',
+    deleteCopiesSub: '缩略图、网页版与原图',
+    removeFromGalleryLabel: '从相册移除',
+    removeFromGallerySub: '索引记录已清除',
+    refreshFindMeLabel: '刷新「找到我」',
+    findMeUpdated: '「找到我」已更新',
+    reindexing: '正在重新建立索引…可能需要几分钟',
+    deleteFailedNote: (failed: number) => `${failed} 张照片无法删除。`,
+    loadingPhotos: '正在加载照片…',
+    noPhotos: '本次活动尚未建立照片索引，请联系管理员运行索引。',
+    selectHintSave:
+      '点按照片进行选择，然后点「保存到相册」即可直接存入相册。',
+    selectHintDownload: '点按照片进行选择，然后保存或下载原图。',
+    deleting: '删除中…',
+    deleteButton: (count: number) => `删除${count ? ` ${count}` : ''}`,
+    adminOnlyDelete: '仅限管理员——会将原图移至 Drive 回收站。',
+    download: '⬇ 下载',
+    preparing: '准备中…',
+    saveToPhotos: '📲 保存到照片',
+    selected: '✓ 已选中',
+    select: '选择',
+  },
+};
 
 /** State of the admin delete stepper. `phase` is the overall stage; `reindex`
  *  tracks step 4 (the Find Me re-index) independently since it's polled. */
@@ -35,6 +158,7 @@ interface DeleteFlow {
 }
 
 export function Gallery(): JSX.Element {
+  const t = useStrings(STR);
   const { eventId = '' } = useParams();
   const [photos, setPhotos] = useState<GalleryPhoto[] | null>(null);
   const [eventName, setEventName] = useState('');
@@ -385,13 +509,10 @@ export function Gallery(): JSX.Element {
     setStatus(null);
     try {
       const { included, failed } = await downloadOriginalsZip(eventId, [...sel.selected], `${title}.zip`);
-      const skipped =
-        failed > 0 ? ` (${failed} couldn't be loaded and were skipped · ${failed} 张无法加载，已跳过)` : '';
-      setStatus(
-        `Downloaded ${included} photo${included === 1 ? '' : 's'} as a ZIP.${skipped} · 已将 ${included} 张照片打包为 ZIP 下载。`,
-      );
+      const skipped = failed > 0 ? t.downloadZipSkipped(failed) : '';
+      setStatus(t.downloadZip(included, skipped));
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : 'Download failed · 下载失败');
+      setNotice(e instanceof Error ? e.message : t.downloadFailed);
     } finally {
       setDownloading(false);
     }
@@ -407,15 +528,7 @@ export function Gallery(): JSX.Element {
   async function deleteSelected(): Promise<void> {
     if (sel.count === 0) return;
     const n = sel.count;
-    const ok = window.confirm(
-      `Delete ${n} photo${n === 1 ? '' : 's'}?\n\n` +
-        `This moves the original${n === 1 ? '' : 's'} to Google Drive Trash ` +
-        `(recoverable for ~30 days) and removes ${n === 1 ? 'it' : 'them'} from ` +
-        `the gallery and Find Me.\n\n` +
-        `删除 ${n} 张照片？\n\n` +
-        `原图将被移至 Google Drive 回收站（约 30 天内可恢复），` +
-        `并从相册和「找到我」中移除。`,
-    );
+    const ok = window.confirm(t.confirmDelete(n));
     if (!ok) return;
 
     const ids = [...sel.selected];
@@ -442,11 +555,9 @@ export function Gallery(): JSX.Element {
     } catch (e) {
       setDeleteFlow(null);
       if (e instanceof ApiError && e.status === 403) {
-        setNotice(
-          'Deleting photos is admin-only — sign in with an admin account. · 删除照片仅限管理员，请使用管理员账号登录。',
-        );
+        setNotice(t.deleteAdminOnly);
       } else {
-        setNotice(e instanceof Error ? e.message : 'Could not delete photos. · 无法删除照片。');
+        setNotice(e instanceof Error ? e.message : t.deleteFailed);
       }
     } finally {
       setDeleting(false);
@@ -470,8 +581,7 @@ export function Gallery(): JSX.Element {
   async function saveSelected(): Promise<void> {
     if (sel.count === 0) return;
     const n = sel.count;
-    const label = `${n} photo${n === 1 ? '' : 's'}`;
-    const labelZh = `${n} 张照片`;
+    const label = t.photoLabel(n);
     const chosen = list.filter((p) => sel.isSelected(p.photoId));
 
     setSaving(true);
@@ -486,13 +596,10 @@ export function Gallery(): JSX.Element {
     if (canSavePhotos && cached.length === chosen.length) {
       savePhotosIndividually(cached, { title })
         .then((outcome) => {
-          if (outcome === 'shared')
-            setStatus(
-              `Sent ${label} to your share sheet — choose Save to Photos. · 已将 ${labelZh} 发送到分享菜单，请选择「保存到照片」。`,
-            );
-          else if (outcome !== 'cancelled') setStatus(`Downloaded ${label}. · 已下载 ${labelZh}。`);
+          if (outcome === 'shared') setStatus(t.sentToShare(label, ''));
+          else if (outcome !== 'cancelled') setStatus(t.downloadedLabel(label, ''));
         })
-        .catch((e) => setNotice(e instanceof Error ? e.message : 'Could not save photos · 无法保存照片'))
+        .catch((e) => setNotice(e instanceof Error ? e.message : t.couldNotSavePhotos))
         .finally(() => setSaving(false));
       return;
     }
@@ -515,25 +622,19 @@ export function Gallery(): JSX.Element {
         reportClientError('download_failed', 'Save to Photos: every original failed to load', {
           context: { eventId, requested: chosen.length, failed },
         });
-        setNotice(
-          'Could not load any of the selected photos. Please try again in a moment. · 无法加载所选的任何照片，请稍后重试。',
-        );
+        setNotice(t.couldNotLoadAny);
         return;
       }
-      const skipped = failed > 0 ? ` (${failed} skipped · 跳过 ${failed} 张)` : '';
+      const skipped = failed > 0 ? t.saveSkipped(failed) : '';
       const outcome = await savePhotosIndividually(files, { title });
-      if (outcome === 'shared')
-        setStatus(
-          `Sent ${label} to your share sheet — choose Save to Photos.${skipped} · 已将 ${labelZh} 发送到分享菜单，请选择「保存到照片」。`,
-        );
-      else if (outcome !== 'cancelled')
-        setStatus(`Downloaded ${label}.${skipped} · 已下载 ${labelZh}。`);
+      if (outcome === 'shared') setStatus(t.sentToShare(label, skipped));
+      else if (outcome !== 'cancelled') setStatus(t.downloadedLabel(label, skipped));
     } catch (e) {
       reportClientError('download_failed', 'Save to Photos: original fetch failed', {
         stack: e instanceof Error ? e.stack : undefined,
         context: { eventId, requested: chosen.length, reason: e instanceof Error ? e.message : String(e) },
       });
-      setNotice(e instanceof Error ? e.message : 'Could not save photos · 无法保存照片');
+      setNotice(e instanceof Error ? e.message : t.couldNotSavePhotos);
     } finally {
       setSaving(false);
     }
@@ -554,9 +655,9 @@ export function Gallery(): JSX.Element {
         files.push({ blob: await fetchOriginal(p), filename: filenameFor(p) });
       }
       await savePhotosIndividually(files, { title });
-      setStatus(`Saved ${n} photo${n === 1 ? '' : 's'}. · 已保存 ${n} 张照片。`);
+      setStatus(t.savedPhotos(n));
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : 'Download failed · 下载失败');
+      setNotice(e instanceof Error ? e.message : t.downloadFailed);
     } finally {
       setDownloading(false);
     }
@@ -575,16 +676,15 @@ export function Gallery(): JSX.Element {
     setStatus(null);
 
     const report = (outcome: ShareOutcome): void => {
-      if (outcome === 'shared')
-        setStatus('Sent to your share sheet — choose Save to Photos. · 已发送到分享菜单，请选择「保存到照片」。');
-      else if (outcome !== 'cancelled') setStatus('Saved 1 photo. · 已保存 1 张照片。');
+      if (outcome === 'shared') setStatus(t.sentToShareOne);
+      else if (outcome !== 'cancelled') setStatus(t.savedOnePhoto);
     };
 
     const cached = origBlobs[p.photoId];
     if (canSavePhotos && cached) {
       saveToPhone(cached, filenameFor(p), { title })
         .then(report)
-        .catch((e) => setNotice(e instanceof Error ? e.message : 'Could not save photo · 无法保存照片'))
+        .catch((e) => setNotice(e instanceof Error ? e.message : t.couldNotSavePhoto))
         .finally(() => setSaving(false));
       return;
     }
@@ -594,7 +694,7 @@ export function Gallery(): JSX.Element {
         const blob = await fetchOriginal(p);
         report(await saveToPhone(blob, filenameFor(p), { title }));
       } catch (e) {
-        setNotice(e instanceof Error ? e.message : 'Could not save photo · 无法保存照片');
+        setNotice(e instanceof Error ? e.message : t.couldNotSavePhoto);
       } finally {
         setSaving(false);
       }
@@ -609,8 +709,8 @@ export function Gallery(): JSX.Element {
 
   return (
     <div>
-      <nav className="breadcrumb" aria-label="Breadcrumb">
-        <Link to="/">← All events · 全部活动</Link>
+      <nav className="breadcrumb" aria-label={t.breadcrumbAria}>
+        <Link to="/">{t.allEvents}</Link>
       </nav>
 
       <div className="gallery-header">
@@ -627,15 +727,15 @@ export function Gallery(): JSX.Element {
             }}
             disabled={list.length === 0}
           >
-            {selectMode ? 'Done · 完成' : 'Select photos · 选择照片'}
+            {selectMode ? t.done : t.selectPhotos}
           </button>
           <Link to={`/events/${eventId}/findme`} className="btn btn-primary btn-sm">
-            📷 Find Me · 找到我
+            {t.findMe}
           </Link>
         </div>
       </div>
 
-      {error && <p className="error-text">Could not load photos · 无法加载照片：{error}</p>}
+      {error && <p className="error-text">{t.couldNotLoadPhotos}：{error}</p>}
       {notice && <p className="error-text">{notice}</p>}
       {status && (
         <p className="status-text" role="status" aria-live="polite">
@@ -648,12 +748,12 @@ export function Gallery(): JSX.Element {
           <div className="delete-progress-head">
             <strong>
               {deleteFlow.phase === 'done'
-                ? `Deleted ${deleteFlow.count} photo${deleteFlow.count === 1 ? '' : 's'} · 已删除 ${deleteFlow.count} 张照片`
-                : `Deleting ${deleteFlow.count} photo${deleteFlow.count === 1 ? '' : 's'}… · 正在删除 ${deleteFlow.count} 张照片…`}
+                ? t.deletedPhotos(deleteFlow.count)
+                : t.deletingPhotos(deleteFlow.count)}
             </strong>
             {deleteFlow.phase === 'done' && (
               <button className="btn btn-light btn-sm" onClick={() => setDeleteFlow(null)}>
-                Dismiss · 关闭
+                {t.dismiss}
               </button>
             )}
           </div>
@@ -663,18 +763,18 @@ export function Gallery(): JSX.Element {
             const removal = removalDone ? 'done' : 'active';
             const rows: Array<{ label: string; sub: string; state: 'done' | 'active' }> = [
               {
-                label: 'Move originals to Drive Trash · 将原图移至 Drive 回收站',
-                sub: 'Recoverable for ~30 days · 约 30 天内可恢复',
+                label: t.moveOriginalsLabel,
+                sub: t.moveOriginalsSub,
                 state: removal,
               },
               {
-                label: 'Delete stored copies · 删除已存副本',
-                sub: 'Thumbnail, web & original · 缩略图、网页版与原图',
+                label: t.deleteCopiesLabel,
+                sub: t.deleteCopiesSub,
                 state: removal,
               },
               {
-                label: 'Remove from gallery · 从相册移除',
-                sub: 'Index entry cleared · 索引记录已清除',
+                label: t.removeFromGalleryLabel,
+                sub: t.removeFromGallerySub,
                 state: removal,
               },
             ];
@@ -682,11 +782,11 @@ export function Gallery(): JSX.Element {
               deleteFlow.reindex === 'skipped'
                 ? null
                 : {
-                    label: 'Refresh Find Me · 刷新「找到我」',
+                    label: t.refreshFindMeLabel,
                     sub:
                       deleteFlow.reindex === 'done'
-                        ? 'Find Me updated · 「找到我」已更新'
-                        : 'Re-indexing… this can take a few minutes · 正在重新建立索引…可能需要几分钟',
+                        ? t.findMeUpdated
+                        : t.reindexing,
                     state: deleteFlow.reindex,
                   };
             const all = reindexRow ? [...rows, reindexRow] : rows;
@@ -704,26 +804,17 @@ export function Gallery(): JSX.Element {
           })()}
 
           {deleteFlow.failed > 0 && (
-            <p className="error-text delete-failed-note">
-              {deleteFlow.failed} photo{deleteFlow.failed === 1 ? '' : 's'} could not be deleted. ·{' '}
-              {deleteFlow.failed} 张照片无法删除。
-            </p>
+            <p className="error-text delete-failed-note">{t.deleteFailedNote(deleteFlow.failed)}</p>
           )}
         </div>
       )}
-      {photos === null && !error && <p className="muted">Loading photos… · 正在加载照片…</p>}
-      {photos?.length === 0 && (
-        <p className="muted">
-          No photos indexed for this event yet — ask an admin to run indexing. · 本次活动尚未建立照片索引，请联系管理员运行索引。
-        </p>
-      )}
+      {photos === null && !error && <p className="muted">{t.loadingPhotos}</p>}
+      {photos?.length === 0 && <p className="muted">{t.noPhotos}</p>}
 
       {selectMode && list.length > 0 && (
         <>
           <p className="muted">
-            {canSavePhotos
-              ? 'Tap photos to select them, then “Save to Photos” to add them straight to your camera roll. · 点按照片进行选择，然后点「保存到相册」即可直接存入相册。'
-              : 'Tap photos to select them, then save or download the originals. · 点按照片进行选择，然后保存或下载原图。'}
+            {canSavePhotos ? t.selectHintSave : t.selectHintDownload}
           </p>
           <SelectBar
             total={ids.length}
@@ -745,13 +836,9 @@ export function Gallery(): JSX.Element {
                 disabled={sel.count === 0 || downloading || saving || deleting}
                 onClick={() => void deleteSelected()}
               >
-                {deleting
-                  ? 'Deleting… · 删除中…'
-                  : `🗑 Delete${sel.count ? ` ${sel.count}` : ''} · 删除${sel.count ? ` ${sel.count}` : ''}`}
+                {deleting ? t.deleting : t.deleteButton(sel.count)}
               </button>
-              <span className="muted">
-                Admin only — moves originals to Drive Trash. · 仅限管理员——会将原图移至 Drive 回收站。
-              </span>
+              <span className="muted">{t.adminOnlyDelete}</span>
             </div>
           )}
         </>
@@ -816,16 +903,16 @@ export function Gallery(): JSX.Element {
                   onClick={() => saveOne(p)}
                 >
                   {!canSavePhotos
-                    ? '⬇ Download · 下载'
+                    ? t.download
                     : preparing
-                      ? 'Preparing… · 准备中…'
-                      : '📲 Save to Photos · 保存到照片'}
+                      ? t.preparing
+                      : t.saveToPhotos}
                 </button>
                 <button
                   className={`btn btn-sm ${checked ? 'btn-primary' : 'btn-light'}`}
                   onClick={() => selectFromLightbox(item.key)}
                 >
-                  {checked ? '✓ Selected · 已选中' : 'Select · 选择'}
+                  {checked ? t.selected : t.select}
                 </button>
               </>
             );

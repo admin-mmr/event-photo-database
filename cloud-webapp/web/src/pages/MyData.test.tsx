@@ -49,8 +49,8 @@ describe('<MyData />', () => {
   it('lists saved selfies with mode + expiry', async () => {
     render(<MyData />);
     await waitFor(() => expect(screen.getAllByRole('img')).toHaveLength(2));
-    expect(screen.getByText(/Face · 人脸/)).toBeTruthy();
-    expect(screen.getByText(/Outfit · 服装/)).toBeTruthy();
+    expect(screen.getByText('Face')).toBeTruthy();
+    expect(screen.getByText('Outfit')).toBeTruthy();
     expect(screen.getAllByText(/expires in/i).length).toBeGreaterThan(0);
   });
 
@@ -78,7 +78,7 @@ describe('<MyData />', () => {
 
     // First card → Delete → confirm.
     const firstCard = screen.getAllByRole('listitem')[0]!;
-    fireEvent.click(within(firstCard).getByRole('button', { name: 'Delete · 删除' }));
+    fireEvent.click(within(firstCard).getByRole('button', { name: 'Delete' }));
     fireEvent.click(within(firstCard).getByRole('button', { name: /Yes, delete/i }));
 
     await waitFor(() => expect(screen.getAllByRole('img')).toHaveLength(1));
@@ -108,7 +108,7 @@ describe('<MyData />', () => {
     render(<MyData />);
     await waitFor(() => expect(screen.getAllByRole('img')).toHaveLength(2));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete all my data · 删除我的全部数据' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete all my data' }));
     fireEvent.click(screen.getByRole('button', { name: /Yes, delete everything/i }));
 
     await waitFor(() => expect(screen.getByText(/All your Find Me data was deleted/i)).toBeTruthy());

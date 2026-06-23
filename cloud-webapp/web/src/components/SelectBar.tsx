@@ -4,7 +4,41 @@
  * Drives the B1 batch download: shows the selection count and the
  * Select all / Select none / Invert controls plus the "Download originals"
  * button. Keyboard-accessible (plain <button>s, visible focus, aria-live count).
+ *
+ * Strings follow the app-wide language toggle via `useStrings` (lib/i18n).
  */
+import { useStrings } from '../lib/i18n.js';
+
+const STR = {
+  en: {
+    countSelected: (s: number, t: number): string => `${s} of ${t} selected`,
+    selectAll: 'Select all',
+    selectNone: 'Select none',
+    invert: 'Invert',
+    saving: 'Saving…',
+    savingN: (d: number, t: number): string => `Saving ${d} of ${t}…`,
+    preparing: (n: number): string => `Preparing ${n || ''}…`.replace('  ', ' ').trim(),
+    preparingN: (d: number, t: number): string => `Preparing ${d} of ${t}…`,
+    saveToPhotos: (n: number): string => `📲 Save ${n || ''} to Photos`.replace('  ', ' ').trim(),
+    preparingZip: 'Preparing ZIP…',
+    downloadZip: (n: number): string => `⬇ Download ZIP ${n || ''}`.trim(),
+    savePhotos: '🖼 Save photos',
+  },
+  zh: {
+    countSelected: (s: number, t: number): string => `已选 ${s}/${t}`,
+    selectAll: '全选',
+    selectNone: '取消全选',
+    invert: '反选',
+    saving: '保存中…',
+    savingN: (d: number, t: number): string => `保存中 ${d}/${t}…`,
+    preparing: (n: number): string => `准备中 ${n || ''}…`.replace('  ', ' ').trim(),
+    preparingN: (d: number, t: number): string => `准备中 ${d}/${t}…`,
+    saveToPhotos: (n: number): string => `📲 保存 ${n || ''} 张到相册`.replace('  ', ' ').trim(),
+    preparingZip: '正在准备 ZIP…',
+    downloadZip: (n: number): string => `⬇ 下载 ZIP ${n || ''}`.trim(),
+    savePhotos: '🖼 逐张保存',
+  },
+};
 
 interface SelectBarProps {
   total: number;
@@ -39,7 +73,8 @@ interface SelectBarProps {
   /** Primary mobile save: hands the image files to the native share sheet. */
   onSaveToPhone?: () => void;
   /** Label for the select-all button. Find Me pages results and selects only
-   *  the current page, so it passes "Select page". Defaults to "Select all". */
+   *  the current page, so it passes a localized "Select page". Defaults to the
+   *  toggle-aware "Select all". */
   selectAllLabel?: string;
 }
 
@@ -56,8 +91,9 @@ export function SelectBar({
   onDownload,
   onDownloadIndividual,
   onSaveToPhone,
-  selectAllLabel = 'Select all · 全选',
+  selectAllLabel,
 }: SelectBarProps): JSX.Element {
+  const t = useStrings(STR);
   const none = selectedCount === 0;
   const all = selectedCount === total && total > 0;
   // On mobile (Web Share L2) the one-tap "Save to Photos" is the headline action
@@ -67,17 +103,17 @@ export function SelectBar({
   return (
     <div className="select-bar" role="toolbar" aria-label="Photo selection">
       <span className="select-count" aria-live="polite">
-        {selectedCount} of {total} selected · 已选 {selectedCount}/{total}
+        {t.countSelected(selectedCount, total)}
       </span>
       <div className="select-actions">
         <button className="btn btn-light btn-sm" onClick={onSelectAll} disabled={all || busy}>
-          {selectAllLabel}
+          {selectAllLabel ?? t.selectAll}
         </button>
         <button className="btn btn-light btn-sm" onClick={onSelectNone} disabled={none || busy}>
-          Select none · 取消全选
+          {t.selectNone}
         </button>
         <button className="btn btn-light btn-sm" onClick={onInvert} disabled={total === 0 || busy}>
-          Invert · 反选
+          {t.invert}
         </button>
         {saveToPhotos && (
           <button
@@ -87,19 +123,17 @@ export function SelectBar({
           >
             {busy
               ? saveProgress
-                ? `Saving ${saveProgress.done} of ${saveProgress.total}… · 保存中 ${saveProgress.done}/${saveProgress.total}…`
-                : 'Saving… · 保存中…'
+                ? t.savingN(saveProgress.done, saveProgress.total)
+                : t.saving
               : savePreparing
                 ? saveProgress
-                  ? `Preparing ${saveProgress.done} of ${saveProgress.total}… · 准备中 ${saveProgress.done}/${saveProgress.total}…`
-                  : `Preparing ${selectedCount || ''}…`.replace('  ', ' ').trim() + ' · 准备中…'
-                : `📲 Save ${selectedCount || ''} to Photos`.replace('  ', ' ').trim() + ' · 保存到相册'}
+                  ? t.preparingN(saveProgress.done, saveProgress.total)
+                  : t.preparing(selectedCount)
+                : t.saveToPhotos(selectedCount)}
           </button>
         )}
         <button className={zipClass} onClick={onDownload} disabled={none || busy}>
-          {busy && !saveToPhotos
-            ? 'Preparing ZIP… · 正在准备 ZIP…'
-            : `⬇ Download ZIP ${selectedCount || ''}`.trim() + ' · 下载 ZIP'}
+          {busy && !saveToPhotos ? t.preparingZip : t.downloadZip(selectedCount)}
         </button>
         {onDownloadIndividual && (
           <button
@@ -107,7 +141,7 @@ export function SelectBar({
             onClick={onDownloadIndividual}
             disabled={none || busy}
           >
-            🖼 Save photos · 逐张保存
+            {t.savePhotos}
           </button>
         )}
       </div>

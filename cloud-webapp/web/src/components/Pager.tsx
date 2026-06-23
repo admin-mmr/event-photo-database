@@ -9,7 +9,11 @@
  * Renders Prev / numbered pages / Next. For long result sets the number strip
  * is windowed around the current page with ellipses, always showing the first
  * and last page. Pages are 0-indexed in props; the labels are 1-indexed.
+ *
+ * Visible Prev/Next text follows the app-wide language toggle (lib/i18n); the
+ * aria-labels stay in English as stable, language-neutral control names.
  */
+import { useLang } from '../lib/i18n.js';
 
 interface PagerProps {
   /** Current page, 0-indexed. */
@@ -36,8 +40,11 @@ function pageWindow(current: number, total: number): number[] {
 }
 
 export function Pager({ page, pageCount, onChange }: PagerProps): JSX.Element | null {
+  const { lang } = useLang();
   if (pageCount <= 1) return null;
   const items = pageWindow(page, pageCount);
+  const prevText = lang === 'zh' ? '← 上一页' : '← Prev';
+  const nextText = lang === 'zh' ? '下一页 →' : 'Next →';
 
   return (
     <nav className="pager" aria-label="Result pages">
@@ -48,7 +55,7 @@ export function Pager({ page, pageCount, onChange }: PagerProps): JSX.Element | 
         disabled={page === 0}
         aria-label="Previous page"
       >
-        ← Prev · 上一页
+        {prevText}
       </button>
       <ul className="pager-pages">
         {items.map((p, i) =>
@@ -78,7 +85,7 @@ export function Pager({ page, pageCount, onChange }: PagerProps): JSX.Element | 
         disabled={page >= pageCount - 1}
         aria-label="Next page"
       >
-        Next · 下一页 →
+        {nextText}
       </button>
     </nav>
   );
