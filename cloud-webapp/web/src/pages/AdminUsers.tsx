@@ -8,6 +8,70 @@ import type {
   UserResponse,
 } from '@cloud-webapp/shared';
 import { apiGet, apiPatch, apiPost, ApiError } from '../lib/api.js';
+import { useStrings } from '../lib/i18n.js';
+
+const STR = {
+  en: {
+    couldNotLoad: 'Could not load users.',
+    actionFailed: 'Action failed.',
+    rolePrompt: (email: string) =>
+      `Role for ${email} (super_admin / club_admin / api_client)`,
+    invalidRole: 'Invalid role.',
+    clubIdPrompt: (email: string) => `Club id for ${email}`,
+    forbiddenTitle: 'Users',
+    forbiddenBody:
+      'User management is admin-only — sign in with an admin account to view it.',
+    title: 'Users',
+    refresh: 'Refresh',
+    phEmail: 'Email',
+    phFirstName: 'First name',
+    phLastName: 'Last name',
+    roleLabel: 'Role',
+    clubLabel: 'Club',
+    selectClub: 'Select club…',
+    addUser: 'Add user',
+    loading: 'Loading users…',
+    noUsers: 'No users yet.',
+    colEmail: 'Email',
+    colName: 'Name',
+    colRole: 'Role',
+    colClub: 'Club',
+    colStatus: 'Status',
+    colActions: 'Actions',
+    editRole: 'Edit role',
+    deactivate: 'Deactivate',
+    reactivate: 'Reactivate',
+  },
+  zh: {
+    couldNotLoad: '无法加载用户。',
+    actionFailed: '操作失败。',
+    rolePrompt: (email: string) => `${email} 的角色`,
+    invalidRole: '角色无效。',
+    clubIdPrompt: (email: string) => `${email} 的俱乐部 ID`,
+    forbiddenTitle: '用户',
+    forbiddenBody: '用户管理仅限管理员，请使用管理员账号登录查看。',
+    title: '用户',
+    refresh: '刷新',
+    phEmail: '邮箱',
+    phFirstName: '名',
+    phLastName: '姓',
+    roleLabel: '角色',
+    clubLabel: '俱乐部',
+    selectClub: '选择俱乐部…',
+    addUser: '添加用户',
+    loading: '正在加载用户…',
+    noUsers: '暂无用户。',
+    colEmail: '邮箱',
+    colName: '姓名',
+    colRole: '角色',
+    colClub: '俱乐部',
+    colStatus: '状态',
+    colActions: '操作',
+    editRole: '编辑角色',
+    deactivate: '停用',
+    reactivate: '启用',
+  },
+};
 
 /**
  * Users admin (dev plan G2.2). CRUD over the Users tab (Sheet SSOT) via
@@ -16,6 +80,7 @@ import { apiGet, apiPatch, apiPost, ApiError } from '../lib/api.js';
  * friendly forbidden state.
  */
 export function AdminUsers(): JSX.Element {
+  const t = useStrings(STR);
   const [users, setUsers] = useState<UserRecord[] | null>(null);
   const [clubs, setClubs] = useState<ClubRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +108,7 @@ export function AdminUsers(): JSX.Element {
       }
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) setForbidden(true);
-      else setError(e instanceof Error ? e.message : 'Could not load users. · 无法加载用户。');
+      else setError(e instanceof Error ? e.message : t.couldNotLoad);
     }
   }, []);
 
@@ -58,7 +123,7 @@ export function AdminUsers(): JSX.Element {
       await fn();
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Action failed. · 操作失败。');
+      setError(e instanceof Error ? e.message : t.actionFailed);
     } finally {
       setBusy(false);
     }
@@ -82,19 +147,16 @@ export function AdminUsers(): JSX.Element {
   }
 
   async function changeRole(u: UserRecord): Promise<void> {
-    const next = window.prompt(
-      `Role for ${u.email} (super_admin / club_admin / api_client) · ${u.email} 的角色`,
-      u.role,
-    );
+    const next = window.prompt(t.rolePrompt(u.email), u.role);
     if (next === null) return;
     const r = next.trim();
     if (r !== 'super_admin' && r !== 'club_admin' && r !== 'api_client') {
-      setError('Invalid role. · 角色无效。');
+      setError(t.invalidRole);
       return;
     }
     const patch: { role: Role; clubId?: string } = { role: r };
     if (r !== 'super_admin') {
-      const c = window.prompt(`Club id for ${u.email} · ${u.email} 的俱乐部 ID`, u.clubId) ?? '';
+      const c = window.prompt(t.clubIdPrompt(u.email), u.clubId) ?? '';
       patch.clubId = c.trim();
     }
     await act(() => apiPatch<UserResponse>(`/api/admin/users/${encodeURIComponent(u.email)}`, patch));
@@ -108,11 +170,8 @@ export function AdminUsers(): JSX.Element {
   if (forbidden) {
     return (
       <div>
-        <h2>Users · 用户</h2>
-        <p className="muted">
-          User management is admin-only — sign in with an admin account to view it. ·
-          用户管理仅限管理员，请使用管理员账号登录查看。
-        </p>
+        <h2>{t.forbiddenTitle}</h2>
+        <p className="muted">{t.forbiddenBody}</p>
       </div>
     );
   }
@@ -120,24 +179,24 @@ export function AdminUsers(): JSX.Element {
   return (
     <div>
       <div className="gallery-header">
-        <h2>Users · 用户</h2>
+        <h2>{t.title}</h2>
         <button className="btn btn-light btn-sm" onClick={() => void load()} disabled={busy}>
-          Refresh · 刷新
+          {t.refresh}
         </button>
       </div>
 
       <div className="feedback-filters">
-        <input className="feedback-input" placeholder="Email · 邮箱" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <input className="feedback-input" placeholder="First name · 名" value={firstName} onChange={(e) => setFirstName(e.target.value)} />
-        <input className="feedback-input" placeholder="Last name · 姓" value={lastName} onChange={(e) => setLastName(e.target.value)} />
-        <select className="feedback-input" value={role} onChange={(e) => setRole(e.target.value as Role)} aria-label="Role · 角色">
+        <input className="feedback-input" placeholder={t.phEmail} value={email} onChange={(e) => setEmail(e.target.value)} />
+        <input className="feedback-input" placeholder={t.phFirstName} value={firstName} onChange={(e) => setFirstName(e.target.value)} />
+        <input className="feedback-input" placeholder={t.phLastName} value={lastName} onChange={(e) => setLastName(e.target.value)} />
+        <select className="feedback-input" value={role} onChange={(e) => setRole(e.target.value as Role)} aria-label={t.roleLabel}>
           <option value="club_admin">club_admin</option>
           <option value="super_admin">super_admin</option>
           <option value="api_client">api_client</option>
         </select>
         {role !== 'super_admin' && (
-          <select className="feedback-input" value={clubId} onChange={(e) => setClubId(e.target.value)} aria-label="Club · 俱乐部">
-            <option value="">Select club… · 选择俱乐部…</option>
+          <select className="feedback-input" value={clubId} onChange={(e) => setClubId(e.target.value)} aria-label={t.clubLabel}>
+            <option value="">{t.selectClub}</option>
             {clubs.map((c) => (
               <option key={c.normalizedName} value={c.normalizedName}>
                 {c.displayName}
@@ -146,45 +205,45 @@ export function AdminUsers(): JSX.Element {
           </select>
         )}
         <button className="btn btn-primary btn-sm" onClick={() => void create()} disabled={busy}>
-          Add user · 添加用户
+          {t.addUser}
         </button>
       </div>
 
       {error && <p className="error-text">{error}</p>}
 
       {users === null ? (
-        <p className="muted">Loading users… · 正在加载用户…</p>
+        <p className="muted">{t.loading}</p>
       ) : users.length === 0 ? (
-        <p className="muted">No users yet. · 暂无用户。</p>
+        <p className="muted">{t.noUsers}</p>
       ) : (
         <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Email · 邮箱</th>
-                <th>Name · 姓名</th>
-                <th>Role · 角色</th>
-                <th>Club · 俱乐部</th>
-                <th>Status · 状态</th>
-                <th>Actions · 操作</th>
+                <th>{t.colEmail}</th>
+                <th>{t.colName}</th>
+                <th>{t.colRole}</th>
+                <th>{t.colClub}</th>
+                <th>{t.colStatus}</th>
+                <th>{t.colActions}</th>
               </tr>
             </thead>
             <tbody>
               {users.map((u) => (
                 <tr key={u.email}>
-                  <td className="mono">{u.email}</td>
-                  <td>{`${u.firstName} ${u.lastName}`.trim() || '—'}</td>
-                  <td>{u.role}</td>
-                  <td className="mono">{u.clubId || '—'}</td>
-                  <td>
+                  <td className="mono" data-label={t.colEmail}>{u.email}</td>
+                  <td data-label={t.colName}>{`${u.firstName} ${u.lastName}`.trim() || '—'}</td>
+                  <td data-label={t.colRole}>{u.role}</td>
+                  <td className="mono" data-label={t.colClub}>{u.clubId || '—'}</td>
+                  <td data-label={t.colStatus}>
                     <span className={u.status === 'active' ? 'badge badge-ok' : 'badge badge-err'}>{u.status}</span>
                   </td>
-                  <td>
+                  <td data-label={t.colActions}>
                     <button className="btn btn-light btn-sm" onClick={() => void changeRole(u)} disabled={busy}>
-                      Edit role · 编辑角色
+                      {t.editRole}
                     </button>{' '}
                     <button className="btn btn-light btn-sm" onClick={() => void toggle(u)} disabled={busy}>
-                      {u.status === 'active' ? 'Deactivate · 停用' : 'Reactivate · 启用'}
+                      {u.status === 'active' ? t.deactivate : t.reactivate}
                     </button>
                   </td>
                 </tr>

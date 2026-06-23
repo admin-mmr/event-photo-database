@@ -2,6 +2,44 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { CreateEventResponse, EventSummary, ListEventsResponse } from '@cloud-webapp/shared';
 import { apiGet, apiPost, ApiError } from '../lib/api.js';
+import { useStrings } from '../lib/i18n.js';
+
+const STR = {
+  en: {
+    couldNotLoad: 'Could not load events.',
+    couldNotCreate: 'Could not create event.',
+    title: 'Events',
+    adminOnly: 'Event management is admin-only — sign in with an admin account.',
+    refresh: 'Refresh',
+    eventName: 'Event name',
+    eventDate: 'Event date',
+    createEvent: 'Create event',
+    loading: 'Loading events…',
+    noEvents: 'No events yet.',
+    colName: 'Name',
+    colDate: 'Date',
+    colIndex: 'Index',
+    colLinks: 'Links',
+    manageLinks: 'Manage links',
+  },
+  zh: {
+    couldNotLoad: '无法加载活动。',
+    couldNotCreate: '无法创建活动。',
+    title: '活动',
+    adminOnly: '活动管理仅限管理员，请使用管理员账号登录。',
+    refresh: '刷新',
+    eventName: '活动名称',
+    eventDate: '活动日期',
+    createEvent: '创建活动',
+    loading: '正在加载活动…',
+    noEvents: '暂无活动。',
+    colName: '名称',
+    colDate: '日期',
+    colIndex: '索引',
+    colLinks: '链接',
+    manageLinks: '管理链接',
+  },
+};
 
 /**
  * Events admin (dev plan G3.1/G3.3). Create an event (provisions a Drive folder
@@ -10,6 +48,7 @@ import { apiGet, apiPost, ApiError } from '../lib/api.js';
  * it works on a phone.
  */
 export function AdminEvents(): JSX.Element {
+  const t = useStrings(STR);
   const [events, setEvents] = useState<EventSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
@@ -26,9 +65,9 @@ export function AdminEvents(): JSX.Element {
       setEvents([...r.events].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? '')));
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) setForbidden(true);
-      else setError(e instanceof Error ? e.message : 'Could not load events. · 无法加载活动。');
+      else setError(e instanceof Error ? e.message : t.couldNotLoad);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void load();
@@ -44,7 +83,7 @@ export function AdminEvents(): JSX.Element {
       setDate('');
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not create event. · 无法创建活动。');
+      setError(e instanceof Error ? e.message : t.couldNotCreate);
     } finally {
       setBusy(false);
     }
@@ -53,11 +92,8 @@ export function AdminEvents(): JSX.Element {
   if (forbidden) {
     return (
       <div>
-        <h2>Events · 活动</h2>
-        <p className="muted">
-          Event management is admin-only — sign in with an admin account. ·
-          活动管理仅限管理员，请使用管理员账号登录。
-        </p>
+        <h2>{t.title}</h2>
+        <p className="muted">{t.adminOnly}</p>
       </div>
     );
   }
@@ -65,52 +101,52 @@ export function AdminEvents(): JSX.Element {
   return (
     <div>
       <div className="gallery-header">
-        <h2>Events · 活动</h2>
+        <h2>{t.title}</h2>
         <button className="btn btn-light btn-sm" onClick={() => void load()} disabled={busy}>
-          Refresh · 刷新
+          {t.refresh}
         </button>
       </div>
 
       <div className="feedback-filters">
-        <input className="feedback-input" placeholder="Event name · 活动名称" value={name} onChange={(e) => setName(e.target.value)} />
+        <input className="feedback-input" placeholder={t.eventName} value={name} onChange={(e) => setName(e.target.value)} />
         <input
           className="feedback-input"
           type="date"
           value={date}
           onChange={(e) => setDate(e.target.value)}
-          aria-label="Event date · 活动日期"
+          aria-label={t.eventDate}
         />
         <button className="btn btn-primary btn-sm" onClick={() => void create()} disabled={busy}>
-          Create event · 创建活动
+          {t.createEvent}
         </button>
       </div>
 
       {error && <p className="error-text">{error}</p>}
 
       {events === null ? (
-        <p className="muted">Loading events… · 正在加载活动…</p>
+        <p className="muted">{t.loading}</p>
       ) : events.length === 0 ? (
-        <p className="muted">No events yet. · 暂无活动。</p>
+        <p className="muted">{t.noEvents}</p>
       ) : (
         <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Name · 名称</th>
-                <th>Date · 日期</th>
-                <th>Index · 索引</th>
-                <th>Links · 链接</th>
+                <th>{t.colName}</th>
+                <th>{t.colDate}</th>
+                <th>{t.colIndex}</th>
+                <th>{t.colLinks}</th>
               </tr>
             </thead>
             <tbody>
               {events.map((ev) => (
                 <tr key={ev.id}>
-                  <td>{ev.name || ev.id}</td>
-                  <td className="muted">{ev.date || '—'}</td>
-                  <td className="muted">{ev.indexState?.status ?? '—'}</td>
-                  <td>
+                  <td data-label={t.colName}>{ev.name || ev.id}</td>
+                  <td className="muted" data-label={t.colDate}>{ev.date || '—'}</td>
+                  <td className="muted" data-label={t.colIndex}>{ev.indexState?.status ?? '—'}</td>
+                  <td data-label={t.colLinks}>
                     <Link className="btn btn-light btn-sm" to={`/admin/events/${encodeURIComponent(ev.id)}/links`}>
-                      Manage links · 管理链接
+                      {t.manageLinks}
                     </Link>
                   </td>
                 </tr>

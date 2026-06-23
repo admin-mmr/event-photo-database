@@ -1,25 +1,60 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { EmailPrefs as Prefs, EmailPrefsResponse, UpdateEmailPrefsRequest } from '@cloud-webapp/shared';
 import { apiGet, apiPatch, ApiError } from '../lib/api.js';
+import { useStrings } from '../lib/i18n.js';
 
 type FlagKey = keyof UpdateEmailPrefsRequest;
 
-const FLAGS: Array<{ key: FlagKey; label: string; group: 'Notifications' | 'Digests' }> = [
-  { key: 'userCreated', label: 'A user is added · 新增用户时', group: 'Notifications' },
-  { key: 'userRoleChanged', label: "A user's role changes · 用户角色变更时", group: 'Notifications' },
-  { key: 'userDeactivated', label: 'A user is deactivated · 用户被停用时', group: 'Notifications' },
-  { key: 'securityEvent', label: 'Security events (failed sign-ins) · 安全事件（登录失败）', group: 'Notifications' },
-  { key: 'eventCreated', label: 'A new event is created · 创建新活动时', group: 'Notifications' },
-  { key: 'dailyReport', label: 'Daily activity digest · 每日活动摘要', group: 'Digests' },
-  { key: 'weeklyReport', label: 'Weekly activity digest · 每周活动摘要', group: 'Digests' },
-];
-
-/** Bilingual display label for the two flag groups (the group value itself stays
- *  English so it can key the FLAGS filter / the iteration below). */
-const GROUP_LABEL: Record<'Notifications' | 'Digests', string> = {
-  Notifications: 'Notifications · 通知',
-  Digests: 'Digests · 摘要',
+const STR = {
+  en: {
+    flagUserCreated: 'A user is added',
+    flagUserRoleChanged: "A user's role changes",
+    flagUserDeactivated: 'A user is deactivated',
+    flagSecurityEvent: 'Security events (failed sign-ins)',
+    flagEventCreated: 'A new event is created',
+    flagDailyReport: 'Daily activity digest',
+    flagWeeklyReport: 'Weekly activity digest',
+    groupNotifications: 'Notifications',
+    groupDigests: 'Digests',
+    couldNotLoad: 'Could not load your email settings.',
+    couldNotSave: 'Could not save.',
+    heading: 'Email settings',
+    adminOnly: 'Email settings are for admin accounts.',
+    loading: 'Loading…',
+    saving: 'Saving…',
+    saveSettings: 'Save settings',
+    saved: 'Saved',
+  },
+  zh: {
+    flagUserCreated: '新增用户时',
+    flagUserRoleChanged: '用户角色变更时',
+    flagUserDeactivated: '用户被停用时',
+    flagSecurityEvent: '安全事件（登录失败）',
+    flagEventCreated: '创建新活动时',
+    flagDailyReport: '每日活动摘要',
+    flagWeeklyReport: '每周活动摘要',
+    groupNotifications: '通知',
+    groupDigests: '摘要',
+    couldNotLoad: '无法加载您的邮件设置。',
+    couldNotSave: '无法保存。',
+    heading: '邮件设置',
+    adminOnly: '邮件设置仅适用于管理员账号。',
+    loading: '加载中…',
+    saving: '保存中…',
+    saveSettings: '保存设置',
+    saved: '已保存',
+  },
 };
+
+const FLAGS: Array<{ key: FlagKey; labelKey: keyof typeof STR.en; group: 'Notifications' | 'Digests' }> = [
+  { key: 'userCreated', labelKey: 'flagUserCreated', group: 'Notifications' },
+  { key: 'userRoleChanged', labelKey: 'flagUserRoleChanged', group: 'Notifications' },
+  { key: 'userDeactivated', labelKey: 'flagUserDeactivated', group: 'Notifications' },
+  { key: 'securityEvent', labelKey: 'flagSecurityEvent', group: 'Notifications' },
+  { key: 'eventCreated', labelKey: 'flagEventCreated', group: 'Notifications' },
+  { key: 'dailyReport', labelKey: 'flagDailyReport', group: 'Digests' },
+  { key: 'weeklyReport', labelKey: 'flagWeeklyReport', group: 'Digests' },
+];
 
 /**
  * An admin's own email opt-in settings (dev plan G4.1). GET/PATCH
@@ -27,6 +62,7 @@ const GROUP_LABEL: Record<'Notifications' | 'Digests', string> = {
  * toggle rows stack naturally and the save bar wraps.
  */
 export function EmailPrefs(): JSX.Element {
+  const t = useStrings(STR);
   const [prefs, setPrefs] = useState<Prefs | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
@@ -41,9 +77,9 @@ export function EmailPrefs(): JSX.Element {
       setPrefs(r.prefs);
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) setForbidden(true);
-      else setError(e instanceof Error ? e.message : 'Could not load your email settings. · 无法加载您的邮件设置。');
+      else setError(e instanceof Error ? e.message : t.couldNotLoad);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void load();
@@ -72,7 +108,7 @@ export function EmailPrefs(): JSX.Element {
       setPrefs(r.prefs);
       setSaved(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not save. · 无法保存。');
+      setError(e instanceof Error ? e.message : t.couldNotSave);
     } finally {
       setSaving(false);
     }
@@ -81,38 +117,38 @@ export function EmailPrefs(): JSX.Element {
   if (forbidden) {
     return (
       <div>
-        <h2>Email settings · 邮件设置</h2>
-        <p className="muted">Email settings are for admin accounts. · 邮件设置仅适用于管理员账号。</p>
+        <h2>{t.heading}</h2>
+        <p className="muted">{t.adminOnly}</p>
       </div>
     );
   }
 
   return (
     <div>
-      <h2>Email settings · 邮件设置</h2>
+      <h2>{t.heading}</h2>
       {error && <p className="error-text">{error}</p>}
       {prefs === null ? (
-        <p className="muted">Loading… · 加载中…</p>
+        <p className="muted">{t.loading}</p>
       ) : (
         <>
           {(['Notifications', 'Digests'] as const).map((group) => (
             <fieldset key={group} style={{ border: 'none', padding: 0, margin: '0 0 16px' }}>
               <legend className="muted" style={{ marginBottom: 6 }}>
-                {GROUP_LABEL[group]}
+                {group === 'Notifications' ? t.groupNotifications : t.groupDigests}
               </legend>
               {FLAGS.filter((f) => f.group === group).map((f) => (
                 <label key={f.key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
                   <input type="checkbox" checked={prefs[f.key]} onChange={() => toggle(f.key)} />
-                  <span>{f.label}</span>
+                  <span>{t[f.labelKey]}</span>
                 </label>
               ))}
             </fieldset>
           ))}
           <div className="feedback-filters">
             <button className="btn btn-primary btn-sm" onClick={() => void save()} disabled={saving}>
-              {saving ? 'Saving… · 保存中…' : 'Save settings · 保存设置'}
+              {saving ? t.saving : t.saveSettings}
             </button>
-            {saved && <span className="badge badge-ok">Saved · 已保存</span>}
+            {saved && <span className="badge badge-ok">{t.saved}</span>}
           </div>
         </>
       )}

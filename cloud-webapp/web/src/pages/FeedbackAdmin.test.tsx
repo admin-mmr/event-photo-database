@@ -68,8 +68,8 @@ describe('<FeedbackAdmin />', () => {
     // Verdict labels rendered per row (scoped to the table — the filter
     // dropdown carries the same labels as options).
     const table = within(screen.getByRole('table'));
-    expect(table.getByText(/Wrong match · 匹配错误/)).toBeTruthy();
-    expect(table.getByText(/That's me · 是我/)).toBeTruthy();
+    expect(table.getByText(/Wrong match/)).toBeTruthy();
+    expect(table.getByText(/That's me/)).toBeTruthy();
     // Falls back to uid when email is null.
     expect(table.getByText('u2')).toBeTruthy();
   });

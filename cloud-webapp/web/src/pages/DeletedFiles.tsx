@@ -1,6 +1,46 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { DeletedFile, DeletedFileResponse, ListDeletedFilesResponse } from '@cloud-webapp/shared';
 import { apiGet, apiPost, ApiError } from '../lib/api.js';
+import { useStrings } from '../lib/i18n.js';
+
+const STR = {
+  en: {
+    title: 'Deleted files',
+    forbidden: 'Deleted-file management is admin-only — sign in with an admin account.',
+    loadError: 'Could not load deleted files.',
+    restoreFailed: 'Restore failed.',
+    refresh: 'Refresh',
+    statusLabel: 'Status',
+    all: 'All',
+    loading: 'Loading…',
+    noFiles: 'No files for this filter.',
+    file: 'File',
+    club: 'Club',
+    deleted: 'Deleted',
+    by: 'By',
+    status: 'Status',
+    actions: 'Actions',
+    restore: 'Restore',
+  },
+  zh: {
+    title: '已删除文件',
+    forbidden: '已删除文件管理仅限管理员，请使用管理员账号登录。',
+    loadError: '无法加载已删除文件。',
+    restoreFailed: '恢复失败。',
+    refresh: '刷新',
+    statusLabel: '状态',
+    all: '全部',
+    loading: '加载中…',
+    noFiles: '此筛选条件下暂无文件。',
+    file: '文件',
+    club: '俱乐部',
+    deleted: '删除时间',
+    by: '操作者',
+    status: '状态',
+    actions: '操作',
+    restore: '恢复',
+  },
+};
 
 function fmtWhen(iso: string): string {
   const t = Date.parse(iso);
@@ -17,6 +57,7 @@ const STATUS_FILTERS = ['', 'deleted', 'restored', 'purged'] as const;
  * purge happens via the scheduled job, not here. Mobile-friendly.
  */
 export function DeletedFiles(): JSX.Element {
+  const t = useStrings(STR);
   const [files, setFiles] = useState<DeletedFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
@@ -33,7 +74,7 @@ export function DeletedFiles(): JSX.Element {
       setFiles(r.files);
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) setForbidden(true);
-      else setError(e instanceof Error ? e.message : 'Could not load deleted files. · 无法加载已删除文件。');
+      else setError(e instanceof Error ? e.message : t.loadError);
     }
   }, [status]);
 
@@ -48,7 +89,7 @@ export function DeletedFiles(): JSX.Element {
       await apiPost<DeletedFileResponse>(`/api/admin/deleted-files/${encodeURIComponent(f.deleteId)}/restore`, {});
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Restore failed. · 恢复失败。');
+      setError(e instanceof Error ? e.message : t.restoreFailed);
     } finally {
       setBusy(false);
     }
@@ -57,11 +98,8 @@ export function DeletedFiles(): JSX.Element {
   if (forbidden) {
     return (
       <div>
-        <h2>Deleted files · 已删除文件</h2>
-        <p className="muted">
-          Deleted-file management is admin-only — sign in with an admin account. ·
-          已删除文件管理仅限管理员，请使用管理员账号登录。
-        </p>
+        <h2>{t.title}</h2>
+        <p className="muted">{t.forbidden}</p>
       </div>
     );
   }
@@ -69,17 +107,17 @@ export function DeletedFiles(): JSX.Element {
   return (
     <div>
       <div className="gallery-header">
-        <h2>Deleted files · 已删除文件</h2>
+        <h2>{t.title}</h2>
         <button className="btn btn-light btn-sm" onClick={() => void load()} disabled={busy}>
-          Refresh · 刷新
+          {t.refresh}
         </button>
       </div>
 
       <div className="feedback-filters">
-        <select className="feedback-input" value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status · 状态">
+        <select className="feedback-input" value={status} onChange={(e) => setStatus(e.target.value)} aria-label={t.statusLabel}>
           {STATUS_FILTERS.map((s) => (
             <option key={s} value={s}>
-              {s === '' ? 'All · 全部' : s}
+              {s === '' ? t.all : s}
             </option>
           ))}
         </select>
@@ -88,38 +126,38 @@ export function DeletedFiles(): JSX.Element {
       {error && <p className="error-text">{error}</p>}
 
       {files === null ? (
-        <p className="muted">Loading… · 加载中…</p>
+        <p className="muted">{t.loading}</p>
       ) : files.length === 0 ? (
-        <p className="muted">No files for this filter. · 此筛选条件下暂无文件。</p>
+        <p className="muted">{t.noFiles}</p>
       ) : (
         <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
-                <th>File · 文件</th>
-                <th>Club · 俱乐部</th>
-                <th>Deleted · 删除时间</th>
-                <th>By · 操作者</th>
-                <th>Status · 状态</th>
-                <th>Actions · 操作</th>
+                <th>{t.file}</th>
+                <th>{t.club}</th>
+                <th>{t.deleted}</th>
+                <th>{t.by}</th>
+                <th>{t.status}</th>
+                <th>{t.actions}</th>
               </tr>
             </thead>
             <tbody>
               {files.map((f) => (
                 <tr key={f.deleteId}>
-                  <td>{f.fileName || f.driveFileId}</td>
-                  <td className="mono">{f.clubName || '—'}</td>
-                  <td className="muted">{fmtWhen(f.deletedAt)}</td>
-                  <td>{f.deletedBy || '—'}</td>
-                  <td>
+                  <td data-label={t.file}>{f.fileName || f.driveFileId}</td>
+                  <td className="mono" data-label={t.club}>{f.clubName || '—'}</td>
+                  <td className="muted" data-label={t.deleted}>{fmtWhen(f.deletedAt)}</td>
+                  <td data-label={t.by}>{f.deletedBy || '—'}</td>
+                  <td data-label={t.status}>
                     <span className={f.status === 'deleted' ? 'badge badge-err' : f.status === 'restored' ? 'badge badge-ok' : 'badge'}>
                       {f.status}
                     </span>
                   </td>
-                  <td>
+                  <td data-label={t.actions}>
                     {f.status === 'deleted' ? (
                       <button className="btn btn-light btn-sm" onClick={() => void restore(f)} disabled={busy}>
-                        Restore · 恢复
+                        {t.restore}
                       </button>
                     ) : (
                       <span className="muted">—</span>

@@ -1,6 +1,46 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { SummaryResponse } from '@cloud-webapp/shared';
 import { apiGet, ApiError } from '../lib/api.js';
+import { useStrings } from '../lib/i18n.js';
+
+const STR = {
+  en: {
+    title: 'Upload report',
+    exportCsv: 'Export CSV',
+    forbidden: 'Reporting is admin-only — sign in with an admin account.',
+    loadError: 'Could not load the report.',
+    fromDate: 'From date',
+    toDate: 'To date',
+    loading: 'Loading…',
+    apply: 'Apply',
+    loadingReport: 'Loading report…',
+    sessionsBadge: (n: number) => `${n} sessions`,
+    filesBadge: (n: number) => `${n} files`,
+    noUploads: 'No uploads in this range.',
+    club: 'Club',
+    sessions: 'Sessions',
+    files: 'Files',
+    sizeMb: 'Size (MB)',
+  },
+  zh: {
+    title: '上传报告',
+    exportCsv: '导出 CSV',
+    forbidden: '报告功能仅限管理员，请使用管理员账号登录。',
+    loadError: '无法加载报告。',
+    fromDate: '起始日期',
+    toDate: '结束日期',
+    loading: '加载中…',
+    apply: '应用',
+    loadingReport: '正在加载报告…',
+    sessionsBadge: (n: number) => `${n} 次会话`,
+    filesBadge: (n: number) => `${n} 个文件`,
+    noUploads: '此时间范围内暂无上传。',
+    club: '俱乐部',
+    sessions: '会话',
+    files: '文件',
+    sizeMb: '大小（MB）',
+  },
+};
 
 function csvCell(v: string): string {
   return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
@@ -12,6 +52,7 @@ function csvCell(v: string): string {
  * their own numbers). Mobile-friendly via the responsive filter/table classes.
  */
 export function AdminSummary(): JSX.Element {
+  const t = useStrings(STR);
   const [data, setData] = useState<SummaryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
@@ -32,7 +73,7 @@ export function AdminSummary(): JSX.Element {
       setData(r);
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) setForbidden(true);
-      else setError(e instanceof Error ? e.message : 'Could not load the report. · 无法加载报告。');
+      else setError(e instanceof Error ? e.message : t.loadError);
     } finally {
       setLoading(false);
     }
@@ -67,8 +108,8 @@ export function AdminSummary(): JSX.Element {
   if (forbidden) {
     return (
       <div>
-        <h2>Upload report · 上传报告</h2>
-        <p className="muted">Reporting is admin-only — sign in with an admin account. · 报告功能仅限管理员，请使用管理员账号登录。</p>
+        <h2>{t.title}</h2>
+        <p className="muted">{t.forbidden}</p>
       </div>
     );
   }
@@ -76,51 +117,51 @@ export function AdminSummary(): JSX.Element {
   return (
     <div>
       <div className="gallery-header">
-        <h2>Upload report · 上传报告</h2>
+        <h2>{t.title}</h2>
         <button className="btn btn-light btn-sm" onClick={downloadCsv} disabled={!data}>
-          Export CSV · 导出 CSV
+          {t.exportCsv}
         </button>
       </div>
 
       <div className="feedback-filters">
-        <input className="feedback-input" type="date" value={since} onChange={(e) => setSince(e.target.value)} aria-label="From date · 起始日期" />
-        <input className="feedback-input" type="date" value={until} onChange={(e) => setUntil(e.target.value)} aria-label="To date · 结束日期" />
+        <input className="feedback-input" type="date" value={since} onChange={(e) => setSince(e.target.value)} aria-label={t.fromDate} />
+        <input className="feedback-input" type="date" value={until} onChange={(e) => setUntil(e.target.value)} aria-label={t.toDate} />
         <button className="btn btn-light btn-sm" onClick={() => void load()} disabled={loading}>
-          {loading ? 'Loading… · 加载中…' : 'Apply · 应用'}
+          {loading ? t.loading : t.apply}
         </button>
       </div>
 
       {error && <p className="error-text">{error}</p>}
 
       {data === null ? (
-        <p className="muted">Loading report… · 正在加载报告…</p>
+        <p className="muted">{t.loadingReport}</p>
       ) : (
         <>
           <div className="event-meta" style={{ marginBottom: 12 }}>
-            <span className="badge badge-ok">{data.totals.sessions} sessions · {data.totals.sessions} 次会话</span>
-            <span className="badge badge-ok">{data.totals.files} files · {data.totals.files} 个文件</span>
+            <span className="badge badge-ok">{t.sessionsBadge(data.totals.sessions)}</span>
+            <span className="badge badge-ok">{t.filesBadge(data.totals.files)}</span>
             <span className="muted event-stat">{data.totals.sizeMb} MB</span>
           </div>
           {data.byClub.length === 0 ? (
-            <p className="muted">No uploads in this range. · 此时间范围内暂无上传。</p>
+            <p className="muted">{t.noUploads}</p>
           ) : (
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Club · 俱乐部</th>
-                    <th>Sessions · 会话</th>
-                    <th>Files · 文件</th>
-                    <th>Size (MB) · 大小（MB）</th>
+                    <th>{t.club}</th>
+                    <th>{t.sessions}</th>
+                    <th>{t.files}</th>
+                    <th>{t.sizeMb}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.byClub.map((c) => (
                     <tr key={c.clubName}>
-                      <td className="mono">{c.clubName || '—'}</td>
-                      <td>{c.sessions}</td>
-                      <td>{c.files}</td>
-                      <td>{c.sizeMb}</td>
+                      <td className="mono" data-label={t.club}>{c.clubName || '—'}</td>
+                      <td data-label={t.sessions}>{c.sessions}</td>
+                      <td data-label={t.files}>{c.files}</td>
+                      <td data-label={t.sizeMb}>{c.sizeMb}</td>
                     </tr>
                   ))}
                 </tbody>

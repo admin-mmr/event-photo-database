@@ -8,6 +8,62 @@ import type {
   ListLinksResponse,
 } from '@cloud-webapp/shared';
 import { apiGet, apiPost, ApiError } from '../lib/api.js';
+import { useStrings } from '../lib/i18n.js';
+
+const STR = {
+  en: {
+    couldNotLoad: 'Could not load links.',
+    actionFailed: 'Action failed.',
+    couldNotCopy: 'Could not copy to clipboard.',
+    title: 'Upload links',
+    adminOnly: 'Link management is admin-only — sign in with an admin account.',
+    allEvents: '← All events',
+    event: 'Event',
+    club: 'Club',
+    selectClub: 'Select club…',
+    clubId: 'Club id',
+    tagPlaceholder: 'Tag (optional, e.g. finish_line)',
+    generateLink: 'Generate link',
+    loading: 'Loading links…',
+    noLinks: 'No links yet for this event.',
+    colClub: 'Club',
+    colTag: 'Tag',
+    colVer: 'Ver',
+    colStatus: 'Status',
+    colLink: 'Link',
+    colActions: 'Actions',
+    copied: 'Copied!',
+    copyUrl: 'Copy URL',
+    rotate: 'Rotate',
+    revoke: 'Revoke',
+  },
+  zh: {
+    couldNotLoad: '无法加载链接。',
+    actionFailed: '操作失败。',
+    couldNotCopy: '无法复制到剪贴板。',
+    title: '上传链接',
+    adminOnly: '链接管理仅限管理员，请使用管理员账号登录。',
+    allEvents: '← 全部活动',
+    event: '活动',
+    club: '俱乐部',
+    selectClub: '选择俱乐部…',
+    clubId: '俱乐部 ID',
+    tagPlaceholder: '标签（可选，例如 finish_line）',
+    generateLink: '生成链接',
+    loading: '正在加载链接…',
+    noLinks: '本次活动暂无链接。',
+    colClub: '俱乐部',
+    colTag: '标签',
+    colVer: '版本',
+    colStatus: '状态',
+    colLink: '链接',
+    colActions: '操作',
+    copied: '已复制！',
+    copyUrl: '复制链接',
+    rotate: '轮换',
+    revoke: '吊销',
+  },
+};
 
 /** Build the public volunteer-upload URL from a link token. */
 function uploadUrl(token: string): string {
@@ -20,6 +76,7 @@ function uploadUrl(token: string): string {
  * their own club server-side. Mobile-friendly via the wrapping/scrolling classes.
  */
 export function AdminLinks(): JSX.Element {
+  const t = useStrings(STR);
   const { eventId = '' } = useParams();
   const [links, setLinks] = useState<LinkRecord[] | null>(null);
   const [clubs, setClubs] = useState<ClubRecord[]>([]);
@@ -45,9 +102,9 @@ export function AdminLinks(): JSX.Element {
       }
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) setForbidden(true);
-      else setError(e instanceof Error ? e.message : 'Could not load links. · 无法加载链接。');
+      else setError(e instanceof Error ? e.message : t.couldNotLoad);
     }
-  }, [eventId]);
+  }, [eventId, t]);
 
   useEffect(() => {
     void load();
@@ -60,7 +117,7 @@ export function AdminLinks(): JSX.Element {
       await fn();
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Action failed. · 操作失败。');
+      setError(e instanceof Error ? e.message : t.actionFailed);
     } finally {
       setBusy(false);
     }
@@ -84,18 +141,15 @@ export function AdminLinks(): JSX.Element {
       setCopied(token);
       setTimeout(() => setCopied(null), 1500);
     } catch {
-      setError('Could not copy to clipboard. · 无法复制到剪贴板。');
+      setError(t.couldNotCopy);
     }
   }
 
   if (forbidden) {
     return (
       <div>
-        <h2>Upload links · 上传链接</h2>
-        <p className="muted">
-          Link management is admin-only — sign in with an admin account. ·
-          链接管理仅限管理员，请使用管理员账号登录。
-        </p>
+        <h2>{t.title}</h2>
+        <p className="muted">{t.adminOnly}</p>
       </div>
     );
   }
@@ -103,19 +157,19 @@ export function AdminLinks(): JSX.Element {
   return (
     <div>
       <div className="gallery-header">
-        <h2>Upload links · 上传链接</h2>
+        <h2>{t.title}</h2>
         <RouterLink to="/admin/events" className="muted nav-link">
-          ← All events · 全部活动
+          {t.allEvents}
         </RouterLink>
       </div>
       <p className="muted">
-        Event · 活动 <span className="mono">{eventId}</span>
+        {t.event} <span className="mono">{eventId}</span>
       </p>
 
       <div className="feedback-filters">
         {clubs.length > 0 ? (
-          <select className="feedback-input" value={clubName} onChange={(e) => setClubName(e.target.value)} aria-label="Club · 俱乐部">
-            <option value="">Select club… · 选择俱乐部…</option>
+          <select className="feedback-input" value={clubName} onChange={(e) => setClubName(e.target.value)} aria-label={t.club}>
+            <option value="">{t.selectClub}</option>
             {clubs.map((c) => (
               <option key={c.normalizedName} value={c.normalizedName}>
                 {c.displayName}
@@ -123,64 +177,64 @@ export function AdminLinks(): JSX.Element {
             ))}
           </select>
         ) : (
-          <input className="feedback-input" placeholder="Club id · 俱乐部 ID" value={clubName} onChange={(e) => setClubName(e.target.value)} />
+          <input className="feedback-input" placeholder={t.clubId} value={clubName} onChange={(e) => setClubName(e.target.value)} />
         )}
         <input
           className="feedback-input"
-          placeholder="Tag (optional, e.g. finish_line) · 标签（可选，例如 finish_line）"
+          placeholder={t.tagPlaceholder}
           value={tag}
           onChange={(e) => setTag(e.target.value)}
         />
         <button className="btn btn-primary btn-sm" onClick={() => void generate()} disabled={busy}>
-          Generate link · 生成链接
+          {t.generateLink}
         </button>
       </div>
 
       {error && <p className="error-text">{error}</p>}
 
       {links === null ? (
-        <p className="muted">Loading links… · 正在加载链接…</p>
+        <p className="muted">{t.loading}</p>
       ) : links.length === 0 ? (
-        <p className="muted">No links yet for this event. · 本次活动暂无链接。</p>
+        <p className="muted">{t.noLinks}</p>
       ) : (
         <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Club · 俱乐部</th>
-                <th>Tag · 标签</th>
-                <th>Ver · 版本</th>
-                <th>Status · 状态</th>
-                <th>Link · 链接</th>
-                <th>Actions · 操作</th>
+                <th>{t.colClub}</th>
+                <th>{t.colTag}</th>
+                <th>{t.colVer}</th>
+                <th>{t.colStatus}</th>
+                <th>{t.colLink}</th>
+                <th>{t.colActions}</th>
               </tr>
             </thead>
             <tbody>
               {links.map((l) => (
                 <tr key={l.linkId}>
-                  <td className="mono">{l.clubName}</td>
-                  <td>{l.tag}</td>
-                  <td className="muted">{l.version}</td>
-                  <td>
+                  <td className="mono" data-label={t.colClub}>{l.clubName}</td>
+                  <td data-label={t.colTag}>{l.tag}</td>
+                  <td className="muted" data-label={t.colVer}>{l.version}</td>
+                  <td data-label={t.colStatus}>
                     <span className={l.status === 'active' ? 'badge badge-ok' : 'badge badge-err'}>{l.status}</span>
                   </td>
-                  <td>
+                  <td data-label={t.colLink}>
                     {l.status === 'active' ? (
                       <button className="btn btn-light btn-sm" onClick={() => void copy(l.token)} disabled={busy}>
-                        {copied === l.token ? 'Copied! · 已复制！' : 'Copy URL · 复制链接'}
+                        {copied === l.token ? t.copied : t.copyUrl}
                       </button>
                     ) : (
                       <span className="muted">—</span>
                     )}
                   </td>
-                  <td>
+                  <td data-label={t.colActions}>
                     {l.status === 'active' && (
                       <>
                         <button className="btn btn-light btn-sm" onClick={() => void act(() => apiPost<LinkResponse>(`/api/admin/links/${encodeURIComponent(l.linkId)}/rotate`, {}))} disabled={busy}>
-                          Rotate · 轮换
+                          {t.rotate}
                         </button>{' '}
                         <button className="btn btn-light btn-sm" onClick={() => void act(() => apiPost<LinkResponse>(`/api/admin/links/${encodeURIComponent(l.linkId)}/revoke`, {}))} disabled={busy}>
-                          Revoke · 吊销
+                          {t.revoke}
                         </button>
                       </>
                     )}
