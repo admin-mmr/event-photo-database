@@ -83,4 +83,65 @@ describe('<App />', () => {
     // …as is the admin "Sync with Drive" trigger.
     expect(screen.getByRole('button', { name: /Sync with Drive/i })).toBeTruthy();
   });
+
+  // ── Role-aware navigation (driven by GET /api/me) ─────────────────────────
+
+  function stubFetchWithRole(role: 'super_admin' | 'club_admin' | null): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL | Request) => {
+        const u = String(url);
+        if (u === '/api/me') {
+          return new Response(
+            JSON.stringify({ ok: true, email: 'u@x.org', emailVerified: true, role, clubId: '' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (u === '/api/events') {
+          return new Response(JSON.stringify({ ok: true, events: [] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('{}', { status: 404 });
+      }),
+    );
+  }
+
+  it('shows every admin menu item to a super_admin', async () => {
+    authState.user = { email: 'boss@x.org' } as User;
+    stubFetchWithRole('super_admin');
+    render(<App />);
+    // Super-only items resolve once /api/me returns.
+    expect(await screen.findByRole('link', { name: 'Audit' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Metrics' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Match feedback' })).toBeTruthy();
+    // …plus the any-admin items and the everyone items.
+    expect(screen.getByRole('link', { name: 'Users' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: /^Galleries$/ })).toBeTruthy();
+  });
+
+  it('shows club-scoped items to a club_admin but hides super-only ones', async () => {
+    authState.user = { email: 'ca@x.org' } as User;
+    stubFetchWithRole('club_admin');
+    render(<App />);
+    expect(await screen.findByRole('link', { name: 'Users' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Report' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Email settings' })).toBeTruthy();
+    // No super-only items.
+    expect(screen.queryByRole('link', { name: 'Audit' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Metrics' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Match feedback' })).toBeNull();
+  });
+
+  it('shows only Galleries + My data to a signed-in member with no role', async () => {
+    authState.user = { email: 'm@x.org' } as User;
+    stubFetchWithRole(null);
+    render(<App />);
+    expect(await screen.findByRole('link', { name: /^Galleries$/ })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'My data' })).toBeTruthy();
+    // No admin items at all.
+    expect(screen.queryByRole('link', { name: 'Users' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Events' })).toBeNull();
+  });
 });

@@ -13,6 +13,24 @@ export type Role = z.infer<typeof RoleSchema>;
 export const StatusSchema = z.enum(['active', 'inactive']);
 export type Status = z.infer<typeof StatusSchema>;
 
+// ── Current session ("who am I") ──────────────────────────────────────────────
+
+/**
+ * GET /api/me — the signed-in caller's control-plane identity, so the web app
+ * can render role-aware navigation. `role` is null for a signed-in member or
+ * an anonymous guest with no Users row (and no bootstrap-admin allowlist hit).
+ * Authorization is still enforced per-route on the server; this is UI-only.
+ */
+export const MeResponseSchema = z.object({
+  ok: z.literal(true),
+  email: z.string().nullable(),
+  emailVerified: z.boolean(),
+  role: RoleSchema.nullable(),
+  /** Club normalizedName for a club_admin; '' otherwise. */
+  clubId: z.string().default(''),
+});
+export type MeResponse = z.infer<typeof MeResponseSchema>;
+
 // ── Users ────────────────────────────────────────────────────────────────────
 
 export const UserRecordSchema = z.object({

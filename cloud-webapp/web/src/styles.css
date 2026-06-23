@@ -308,6 +308,19 @@ pre.error {
   width: 100%;
 }
 
+/* Role-group divider — only meaningful in the stacked mobile dropdown, where it
+   separates everyone / admin / super-admin tiers. Hidden inline on desktop. */
+.nav-sep {
+  display: none;
+}
+
+.app-nav.open .nav-sep {
+  display: block;
+  height: 1px;
+  margin: 6px 8px;
+  background: var(--border);
+}
+
 /* Nav links: thumb-friendly pills that wrap. */
 .nav-link {
   display: inline-flex;
@@ -1566,6 +1579,13 @@ pre.error {
 
   .app-nav .btn {
     width: auto;
+  }
+
+  /* Tier dividers are a mobile-dropdown affordance only — never show them in
+     the inline desktop row. */
+  .app-nav .nav-sep,
+  .app-nav.open .nav-sep {
+    display: none;
   }
 
   .photo-grid {
