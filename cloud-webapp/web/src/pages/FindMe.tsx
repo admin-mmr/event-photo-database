@@ -86,6 +86,15 @@ export function FindMe(): JSX.Element {
   const [origBlobs, setOrigBlobs] = useState<Record<string, Blob>>({});
   const origBlobsRef = useRef<Record<string, Blob>>({});
   const origFetching = useRef<Set<string>>(new Set());
+  // Selected ids whose original prefetch FAILED (e.g. a CORS/network error on
+  // the signed-URL blob read). These count as "settled" so the Save button
+  // doesn't stay disabled on "Preparing…" forever — tapping it then runs the
+  // fetch-then-share fallback in saveSelected(), which retries and tolerates
+  // per-photo failures (degrading to a download where the share can't fire).
+  const [prefetchFailed, setPrefetchFailed] = useState<Set<string>>(new Set());
+  // Belt-and-suspenders: if a prefetch neither resolves nor rejects (a hung
+  // request), stop showing "Preparing…" after this long so the button is usable.
+  const [prepareTimedOut, setPrepareTimedOut] = useState(false);
   // Transient success line after a save/download (C9), announced via aria-live.
   const [status, setStatus] = useState<string | null>(null);
   // Index into `visible` of the photo open in the lightbox, or null (C4/C5).
@@ -150,9 +159,20 @@ export function FindMe(): JSX.Element {
   const selectedKey = useMemo(() => [...sel.selected].sort().join(','), [sel.selected]);
   // All selected originals cached → the batch share can fire synchronously.
   const selectedReady = sel.count > 0 && [...sel.selected].every((id) => Boolean(origBlobs[id]));
+  // Every selected original has SETTLED — cached, or its prefetch failed. Once
+  // settled we stop blocking the Save button (a failed prefetch must not pin it
+  // on "Preparing…" forever; the tap then takes saveSelected's fetch-then-share
+  // fallback path). Distinct from `selectedReady`, which gates the fast
+  // synchronous share and requires every blob actually cached.
+  const selectedSettled =
+    sel.count > 0 &&
+    [...sel.selected].every((id) => Boolean(origBlobs[id]) || prefetchFailed.has(id));
   // On mobile, true while we're still prefetching selected originals (the Save
-  // button shows "Preparing…" and stays disabled until they're all in hand).
-  const savePreparing = canSavePhotos && sel.count > 0 && !selectedReady;
+  // button shows "Preparing…" and stays disabled until they're all in hand). It
+  // clears once everything settles or the prepare watchdog times out, so the
+  // button can never stay permanently disabled.
+  const savePreparing =
+    canSavePhotos && sel.count > 0 && !selectedSettled && !prepareTimedOut;
   const preparedCount = useMemo(
     () => [...sel.selected].filter((id) => Boolean(origBlobs[id])).length,
     [sel.selected, origBlobs],
@@ -226,9 +246,19 @@ export function FindMe(): JSX.Element {
         .then((blob) => {
           origBlobsRef.current = { ...origBlobsRef.current, [id]: blob };
           setOrigBlobs(origBlobsRef.current);
+          // A retry succeeded → no longer a failed id.
+          setPrefetchFailed((prev) => {
+            if (!prev.has(id)) return prev;
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
         })
         .catch(() => {
-          /* leave uncached; the save falls back to a download for this one */
+          // Leave uncached and mark it settled-as-failed so the Save button
+          // stops waiting; saveSelected's fallback retries + degrades to a
+          // download for this one.
+          setPrefetchFailed((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
         })
         .finally(() => origFetching.current.delete(id));
     }
@@ -247,8 +277,25 @@ export function FindMe(): JSX.Element {
       changed = true;
     }
     if (changed) setOrigBlobs(origBlobsRef.current);
+    // Forget failures for ids no longer selected so a future re-select retries.
+    setPrefetchFailed((prev) => {
+      const next = new Set([...prev].filter((id) => sel.isSelected(id)));
+      return next.size === prev.size ? prev : next;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedKey]);
+
+  // Prepare watchdog: if the prefetch hasn't settled within a few seconds (e.g.
+  // a hung request that never resolves or rejects), stop showing "Preparing…"
+  // so the Save button becomes tappable and falls back to fetch-then-share.
+  // Reset whenever the selection changes or it does settle on its own.
+  useEffect(() => {
+    setPrepareTimedOut(false);
+    if (!canSavePhotos || sel.count === 0 || selectedSettled) return;
+    const t = setTimeout(() => setPrepareTimedOut(true), 12_000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canSavePhotos, selectedKey, selectedSettled]);
 
   /** Append a result set from a search response and make it the active tab. */
   function pushReference(res: SearchResponse, previewUrl: string, labelPrefix: string): void {

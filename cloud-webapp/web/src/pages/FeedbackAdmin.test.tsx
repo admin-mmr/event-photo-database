@@ -62,14 +62,14 @@ describe('<FeedbackAdmin />', () => {
       </MemoryRouter>,
     );
     await waitFor(() => expect(screen.getByText('runner@mmrunners.org')).toBeTruthy());
-    expect(screen.getByText('1 confirmed')).toBeTruthy();
-    expect(screen.getByText('1 wrong')).toBeTruthy();
-    expect(screen.getByText('2 in view')).toBeTruthy();
+    expect(screen.getByText(/1 confirmed/)).toBeTruthy();
+    expect(screen.getByText(/1 wrong/)).toBeTruthy();
+    expect(screen.getByText(/2 in view/)).toBeTruthy();
     // Verdict labels rendered per row (scoped to the table — the filter
     // dropdown carries the same labels as options).
     const table = within(screen.getByRole('table'));
-    expect(table.getByText('Wrong match')).toBeTruthy();
-    expect(table.getByText("That's me")).toBeTruthy();
+    expect(table.getByText(/Wrong match · 匹配错误/)).toBeTruthy();
+    expect(table.getByText(/That's me · 是我/)).toBeTruthy();
     // Falls back to uid when email is null.
     expect(table.getByText('u2')).toBeTruthy();
   });

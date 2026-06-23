@@ -30,7 +30,7 @@ export function App(): JSX.Element {
     } catch (err) {
       // Most likely cause: Anonymous sign-in not enabled in the Firebase console.
       setSignInError(
-        'Could not start a guest session. Ask an admin to enable Anonymous sign-in in Firebase.',
+        'Could not start a guest session. Ask an admin to enable Anonymous sign-in in Firebase. · 无法开始访客会话，请联系管理员在 Firebase 中启用匿名登录。',
       );
       console.error('anonymous sign-in failed', err);
     }
@@ -43,74 +43,77 @@ export function App(): JSX.Element {
     <main className="page">
       <header className="app-header">
         <Link to="/" className="app-title">
-          <h1>Event Photo Database</h1>
+          <h1>Event Photo Database · 活动照片库</h1>
         </Link>
         {user && (
           <div className="user-box">
             <Link to="/me/data" className="muted nav-link">
-              My data
+              My data · 我的数据
             </Link>
             {/* Admin-only; guests have no email so the API blocks them anyway. */}
             {!isGuest && (
               <>
                 <Link to="/admin/events" className="muted nav-link">
-                  Events
+                  Events · 活动
                 </Link>
                 <Link to="/admin/users" className="muted nav-link">
-                  Users
+                  Users · 用户
                 </Link>
                 <Link to="/admin/clubs" className="muted nav-link">
-                  Clubs
+                  Clubs · 俱乐部
                 </Link>
                 <Link to="/admin/feedback" className="muted nav-link">
-                  Match feedback
+                  Match feedback · 匹配反馈
                 </Link>
                 <Link to="/admin/metrics" className="muted nav-link">
-                  Metrics
+                  Metrics · 指标
                 </Link>
                 <Link to="/admin/summary" className="muted nav-link">
-                  Report
+                  Report · 报告
                 </Link>
                 <Link to="/admin/deleted" className="muted nav-link">
-                  Trash
+                  Trash · 回收站
                 </Link>
                 <Link to="/admin/audit" className="muted nav-link">
-                  Audit
+                  Audit · 审计
                 </Link>
                 <Link to="/me/email" className="muted nav-link">
-                  Email settings
+                  Email settings · 邮件设置
                 </Link>
               </>
             )}
             {isGuest ? (
               <>
-                <span className="muted">Guest</span>
+                <span className="muted">Guest · 访客</span>
                 <button className="btn btn-light" onClick={() => void signInWithGoogle()}>
-                  Sign in with Google
+                  Sign in with Google · 使用 Google 登录
                 </button>
               </>
             ) : (
               <span className="muted">{user.email}</span>
             )}
             <button className="btn btn-light" onClick={() => void signOutUser()}>
-              {isGuest ? 'Exit guest' : 'Sign out'}
+              {isGuest ? 'Exit guest · 退出访客' : 'Sign out · 退出登录'}
             </button>
           </div>
         )}
       </header>
 
       {loading ? (
-        <p className="muted">Loading…</p>
+        <p className="muted">Loading… · 加载中…</p>
       ) : user ? (
         <Outlet />
       ) : (
         <div className="consent-card signin-card">
-          <p>Browse event photos and find yourself in them with Find Me.</p>
+          <p>
+            Browse event photos and find yourself in them with Find Me. ·
+            浏览活动照片，并用「找到我」找到照片中的自己。
+          </p>
           <button className="btn btn-primary" onClick={() => void guest()}>
-            Continue as guest
+            Continue as guest · 以访客身份继续
           </button>
           <button className="btn btn-light" onClick={() => void signInWithGoogle()}>
-            Sign in with Google
+            Sign in with Google · 使用 Google 登录
           </button>
           {signInError && <p className="error-text">{signInError}</p>}
         </div>

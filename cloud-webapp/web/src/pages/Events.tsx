@@ -9,19 +9,19 @@ import type {
 import { apiGet, apiPost, ApiError } from '../lib/api.js';
 import { eventLabel } from '../lib/eventLabel.js';
 
-/** Compact "x minutes ago" for the last-indexed timestamp. */
+/** Compact "updated x minutes ago" for the last-indexed timestamp (bilingual). */
 function timeAgo(iso?: string): string {
   if (!iso) return '';
   const then = Date.parse(iso);
   if (!Number.isFinite(then)) return '';
   const secs = Math.max(0, Math.round((Date.now() - then) / 1000));
-  if (secs < 45) return 'just now';
+  if (secs < 45) return 'updated just now · 刚刚更新';
   const mins = Math.round(secs / 60);
-  if (mins < 60) return `${mins} min ago`;
+  if (mins < 60) return `updated ${mins} min ago · ${mins} 分钟前更新`;
   const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs} hr ago`;
+  if (hrs < 24) return `updated ${hrs} hr ago · ${hrs} 小时前更新`;
   const days = Math.round(hrs / 24);
-  return `${days} day${days === 1 ? '' : 's'} ago`;
+  return `updated ${days} day${days === 1 ? '' : 's'} ago · ${days} 天前更新`;
 }
 
 /** Sort events most-recently-synced first, then newest event date.
@@ -51,15 +51,15 @@ interface StatusPill {
 function pillFor(ev: EventSummary): StatusPill {
   switch (ev.indexState?.status) {
     case 'done':
-      return { label: 'Find Me ready', className: 'badge badge-ok', inFlight: false };
+      return { label: 'Find Me ready · 「找到我」就绪', className: 'badge badge-ok', inFlight: false };
     case 'queued':
-      return { label: 'Queued…', className: 'badge badge-warn', inFlight: true };
+      return { label: 'Queued… · 排队中…', className: 'badge badge-warn', inFlight: true };
     case 'running':
-      return { label: 'Indexing…', className: 'badge badge-warn', inFlight: true };
+      return { label: 'Indexing… · 建立索引中…', className: 'badge badge-warn', inFlight: true };
     case 'failed':
-      return { label: 'Index failed', className: 'badge badge-err', inFlight: false };
+      return { label: 'Index failed · 索引失败', className: 'badge badge-err', inFlight: false };
     default:
-      return { label: 'Not indexed', className: 'badge', inFlight: false };
+      return { label: 'Not indexed · 未建立索引', className: 'badge', inFlight: false };
   }
 }
 
@@ -90,16 +90,21 @@ export function Events({ isGuest = false }: EventsProps): JSX.Element {
       setNotice(
         `Synced with Drive — ${r.created} new, ${r.updated} updated, ${r.unchanged} unchanged` +
           (r.orphans.length ? `, ${r.orphans.length} not in Sheet` : '') +
-          '.',
+          '. · 已与 Drive 同步——新增 ' +
+          `${r.created}，更新 ${r.updated}，未变 ${r.unchanged}` +
+          (r.orphans.length ? `，${r.orphans.length} 个不在表格中` : '') +
+          '。',
       );
       await load();
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) {
-        setNotice('Sync is admin-only — sign in as an admin to run it.');
+        setNotice('Sync is admin-only — sign in as an admin to run it. · 同步仅限管理员，请以管理员身份登录后运行。');
       } else if (e instanceof ApiError && e.status === 503) {
-        setNotice('Sync is not configured yet (MASTER_SPREADSHEET_ID is unset on the API).');
+        setNotice(
+          'Sync is not configured yet (MASTER_SPREADSHEET_ID is unset on the API). · 同步尚未配置（API 上未设置 MASTER_SPREADSHEET_ID）。',
+        );
       } else {
-        setNotice(e instanceof Error ? e.message : 'Could not sync with Drive.');
+        setNotice(e instanceof Error ? e.message : 'Could not sync with Drive. · 无法与 Drive 同步。');
       }
     } finally {
       setSyncing(false);
@@ -152,33 +157,33 @@ export function Events({ isGuest = false }: EventsProps): JSX.Element {
       );
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) {
-        setNotice('Indexing is admin-only — sign in as an admin to run it.');
+        setNotice('Indexing is admin-only — sign in as an admin to run it. · 建立索引仅限管理员，请以管理员身份登录后运行。');
       } else if (e instanceof ApiError && e.status === 409) {
-        setNotice('An index run is already in progress for that event.');
+        setNotice('An index run is already in progress for that event. · 该活动已有一个索引任务正在进行中。');
       } else {
-        setNotice(e instanceof Error ? e.message : 'Could not start indexing.');
+        setNotice(e instanceof Error ? e.message : 'Could not start indexing. · 无法开始建立索引。');
       }
     } finally {
       setBusyId(null);
     }
   }
 
-  if (error) return <p className="error-text">Could not load events: {error}</p>;
-  if (events === null) return <p className="muted">Loading events…</p>;
+  if (error) return <p className="error-text">Could not load events · 无法加载活动：{error}</p>;
+  if (events === null) return <p className="muted">Loading events… · 正在加载活动…</p>;
 
   return (
     <div>
       <div className="page-head">
-        <h2>Events</h2>
+        <h2>Events · 活动</h2>
         {!isGuest && (
           <button className="btn btn-light" onClick={() => void syncWithDrive()} disabled={syncing}>
-            {syncing ? 'Syncing…' : 'Sync with Drive'}
+            {syncing ? 'Syncing… · 同步中…' : 'Sync with Drive · 与 Drive 同步'}
           </button>
         )}
       </div>
       {notice && <p className="error-text">{notice}</p>}
       {events.length === 0 ? (
-        <p className="muted">No events yet.</p>
+        <p className="muted">No events yet. · 暂无活动。</p>
       ) : (
         <ul className="event-list">
           {events.map((ev) => {
@@ -199,16 +204,20 @@ export function Events({ isGuest = false }: EventsProps): JSX.Element {
                   <div className="event-meta">
                     <span className={pill.className}>{pill.label}</span>
                     {typeof photoCount === 'number' && (
-                      <span className="muted event-stat">{photoCount} photos</span>
+                      <span className="muted event-stat">{photoCount} photos · {photoCount} 张照片</span>
                     )}
-                    {updated && <span className="muted event-stat">updated {updated}</span>}
+                    {updated && <span className="muted event-stat">{updated}</span>}
                     {!isGuest && (
                       <button
                         className="btn btn-light btn-sm"
                         onClick={() => void indexNow(ev.id)}
                         disabled={busyId === ev.id || pill.inFlight}
                       >
-                        {pill.inFlight ? 'Indexing…' : busyId === ev.id ? 'Starting…' : 'Index now'}
+                        {pill.inFlight
+                          ? 'Indexing… · 建立索引中…'
+                          : busyId === ev.id
+                            ? 'Starting… · 启动中…'
+                            : 'Index now · 立即建立索引'}
                       </button>
                     )}
                   </div>

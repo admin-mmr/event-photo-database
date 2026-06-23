@@ -14,6 +14,8 @@ interface LoadMoreProps {
   onLoadMore: () => void;
   /** Singular noun for the "Showing all N …" line, e.g. "photo" / "match". */
   noun?: string;
+  /** Chinese noun for the bilingual "Showing all N …" line, e.g. "照片". */
+  nounZh?: string;
 }
 
 /**
@@ -26,7 +28,7 @@ interface LoadMoreProps {
  * observer to this element (it doubles as the sentinel).
  */
 export const LoadMore = forwardRef<HTMLDivElement, LoadMoreProps>(function LoadMore(
-  { shownCount, total = null, hasMore, loading, onLoadMore, noun = 'photo' },
+  { shownCount, total = null, hasMore, loading, onLoadMore, noun = 'photo', nounZh = '照片' },
   ref,
 ): JSX.Element | null {
   if (shownCount === 0 && !loading) return null;
@@ -37,15 +39,15 @@ export const LoadMore = forwardRef<HTMLDivElement, LoadMoreProps>(function LoadM
       {loading ? (
         <p className="load-more-status" role="status" aria-live="polite">
           <span className="spinner spinner-sm" aria-hidden="true" />
-          Loading more…
+          Loading more… · 正在加载更多…
         </p>
       ) : hasMore ? (
         <button type="button" className="btn btn-light load-more-btn" onClick={onLoadMore}>
-          Load more{total != null ? ` (${shownCount} of ${total})` : ''}
+          Load more{total != null ? ` (${shownCount} of ${total})` : ''} · 加载更多
         </button>
       ) : (
         <p className="muted">
-          Showing all {shownCount} {plural(shownCount)}.
+          Showing all {shownCount} {plural(shownCount)}. · 已显示全部 {shownCount} 张{nounZh}。
         </p>
       )}
     </div>

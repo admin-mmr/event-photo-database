@@ -17,8 +17,8 @@ function fmtWhen(iso: string): string {
 
 function verdictBadge(v: FeedbackVerdict): { label: string; className: string } {
   return v === 'confirmed'
-    ? { label: "That's me", className: 'badge badge-ok' }
-    : { label: 'Wrong match', className: 'badge badge-err' };
+    ? { label: "That's me · 是我", className: 'badge badge-ok' }
+    : { label: 'Wrong match · 匹配错误', className: 'badge badge-err' };
 }
 
 type VerdictFilter = '' | FeedbackVerdict;
@@ -55,7 +55,7 @@ export function FeedbackAdmin(): JSX.Element {
         setForbidden(true);
         setData(null);
       } else {
-        setError(e instanceof Error ? e.message : 'Could not load feedback.');
+        setError(e instanceof Error ? e.message : 'Could not load feedback. · 无法加载反馈。');
       }
     } finally {
       setLoading(false);
@@ -69,9 +69,10 @@ export function FeedbackAdmin(): JSX.Element {
   if (forbidden) {
     return (
       <div>
-        <h2>Match feedback</h2>
+        <h2>Match feedback · 匹配反馈</h2>
         <p className="muted">
-          This review queue is admin-only — sign in with an admin account to view it.
+          This review queue is admin-only — sign in with an admin account to view it. ·
+          此审核队列仅限管理员，请使用管理员账号登录查看。
         </p>
       </div>
     );
@@ -80,12 +81,12 @@ export function FeedbackAdmin(): JSX.Element {
   return (
     <div>
       <div className="gallery-header">
-        <h2>Match feedback</h2>
+        <h2>Match feedback · 匹配反馈</h2>
         {data && (
           <div className="event-meta">
-            <span className="badge badge-ok">{data.counts.confirmed} confirmed</span>
-            <span className="badge badge-err">{data.counts.not_me} wrong</span>
-            <span className="muted event-stat">{data.total} in view</span>
+            <span className="badge badge-ok">{data.counts.confirmed} confirmed · {data.counts.confirmed} 已确认</span>
+            <span className="badge badge-err">{data.counts.not_me} wrong · {data.counts.not_me} 错误</span>
+            <span className="muted event-stat">{data.total} in view · 共 {data.total} 条</span>
           </div>
         )}
       </div>
@@ -94,7 +95,7 @@ export function FeedbackAdmin(): JSX.Element {
         <input
           className="feedback-input"
           type="text"
-          placeholder="Filter by event ID"
+          placeholder="Filter by event ID · 按活动 ID 筛选"
           value={eventId}
           onChange={(e) => setEventId(e.target.value)}
         />
@@ -102,34 +103,34 @@ export function FeedbackAdmin(): JSX.Element {
           className="feedback-input"
           value={verdict}
           onChange={(e) => setVerdict(e.target.value as VerdictFilter)}
-          aria-label="Filter by verdict"
+          aria-label="Filter by verdict · 按结论筛选"
         >
-          <option value="">All verdicts</option>
-          <option value="not_me">Wrong match</option>
-          <option value="confirmed">That&rsquo;s me</option>
+          <option value="">All verdicts · 全部结论</option>
+          <option value="not_me">Wrong match · 匹配错误</option>
+          <option value="confirmed">That&rsquo;s me · 是我</option>
         </select>
         <button className="btn btn-light btn-sm" onClick={() => void load()} disabled={loading}>
-          {loading ? 'Refreshing…' : 'Refresh'}
+          {loading ? 'Refreshing… · 刷新中…' : 'Refresh · 刷新'}
         </button>
       </div>
 
       {error && <p className="error-text">{error}</p>}
 
       {data === null ? (
-        <p className="muted">Loading feedback…</p>
+        <p className="muted">Loading feedback… · 正在加载反馈…</p>
       ) : data.items.length === 0 ? (
-        <p className="muted">No feedback yet for this filter.</p>
+        <p className="muted">No feedback yet for this filter. · 此筛选条件下暂无反馈。</p>
       ) : (
         <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
-                <th>When</th>
-                <th>Verdict</th>
-                <th>Event</th>
-                <th>Photo</th>
-                <th>User</th>
-                <th>Run</th>
+                <th>When · 时间</th>
+                <th>Verdict · 结论</th>
+                <th>Event · 活动</th>
+                <th>Photo · 照片</th>
+                <th>User · 用户</th>
+                <th>Run · 运行</th>
               </tr>
             </thead>
             <tbody>

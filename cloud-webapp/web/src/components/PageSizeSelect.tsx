@@ -14,7 +14,7 @@ interface PageSizeSelectProps {
 export function PageSizeSelect({
   value,
   onChange,
-  label = 'Photos per page',
+  label = 'Photos per page · 每页照片数',
   options = PAGE_SIZE_OPTIONS,
 }: PageSizeSelectProps): JSX.Element {
   return (
@@ -28,7 +28,7 @@ export function PageSizeSelect({
       >
         {options.map((n) => (
           <option key={n} value={n}>
-            {n} / page
+            {n} / page · {n} / 页
           </option>
         ))}
       </select>

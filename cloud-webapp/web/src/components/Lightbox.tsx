@@ -115,7 +115,7 @@ export function Lightbox({
       </div>
       <div className="lightbox-bar" onClick={(e) => e.stopPropagation()}>
         <span className="lightbox-count">
-          {index + 1} of {items.length}
+          {index + 1} / {items.length}
         </span>
         {renderFooter && <div className="lightbox-actions">{renderFooter(item, index)}</div>}
       </div>

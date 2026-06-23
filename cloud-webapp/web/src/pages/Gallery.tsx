@@ -79,6 +79,15 @@ export function Gallery(): JSX.Element {
   const [origBlobs, setOrigBlobs] = useState<Record<string, Blob>>({});
   const origBlobsRef = useRef<Record<string, Blob>>({});
   const origFetching = useRef<Set<string>>(new Set());
+  // Selected ids whose original prefetch FAILED (e.g. a CORS/network error on
+  // the signed-URL blob read). Counted as "settled" so the Save button stops
+  // showing "Preparing…" instead of staying disabled forever; the tap then runs
+  // saveSelected's fetch-then-share fallback, which retries and tolerates
+  // per-photo failures.
+  const [prefetchFailed, setPrefetchFailed] = useState<Set<string>>(new Set());
+  // Watchdog: if a prefetch neither resolves nor rejects (hung request), stop
+  // showing "Preparing…" after this long so the button stays usable.
+  const [prepareTimedOut, setPrepareTimedOut] = useState(false);
   // Object URLs for displaying cached originals; created/revoked in lockstep
   // with `origBlobs` and fully revoked on unmount so we never leak blob URLs.
   const [origUrls, setOrigUrls] = useState<Record<string, string>>({});
@@ -120,11 +129,17 @@ export function Gallery(): JSX.Element {
   }, [sel.selected, lightboxIndex, list]);
   const neededKey = useMemo(() => [...neededIds].sort().join(','), [neededIds]);
 
-  // All selected originals are cached → the batch share can fire synchronously.
-  const selectedReady =
-    sel.count > 0 && [...sel.selected].every((id) => Boolean(origBlobs[id]));
+  // Every selected original has SETTLED — cached, or its prefetch failed. Once
+  // settled we stop blocking the Save button so a failed prefetch can't pin it
+  // on "Preparing…" forever; the tap then takes the fetch-then-share fallback.
+  const selectedSettled =
+    sel.count > 0 &&
+    [...sel.selected].every((id) => Boolean(origBlobs[id]) || prefetchFailed.has(id));
   // True while we're still fetching selected originals (blocks the batch save).
-  const savePreparing = canSavePhotos && sel.count > 0 && !selectedReady;
+  // Clears once everything settles or the watchdog fires, so the button can
+  // never stay permanently disabled.
+  const savePreparing =
+    canSavePhotos && sel.count > 0 && !selectedSettled && !prepareTimedOut;
 
   // Load one page; append unless this is the first page (cursor === null).
   const loadPage = useCallback(
@@ -213,9 +228,17 @@ export function Gallery(): JSX.Element {
         .then((blob) => {
           origBlobsRef.current = { ...origBlobsRef.current, [id]: blob };
           setOrigBlobs(origBlobsRef.current);
+          setPrefetchFailed((prev) => {
+            if (!prev.has(id)) return prev;
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
         })
         .catch(() => {
-          /* leave uncached; save falls back to a download, display to `web` */
+          // Leave uncached and mark settled-as-failed so the Save button stops
+          // waiting; the save falls back to fetch-then-share, display to `web`.
+          setPrefetchFailed((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
         })
         .finally(() => origFetching.current.delete(id));
     }
@@ -235,8 +258,24 @@ export function Gallery(): JSX.Element {
       blobsChanged = true;
     }
     if (blobsChanged) setOrigBlobs(origBlobsRef.current);
+    // Forget failures for ids no longer needed so a future re-select retries.
+    setPrefetchFailed((prev) => {
+      const next = new Set([...prev].filter((id) => neededIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [neededKey]);
+
+  // Prepare watchdog: if the prefetch hasn't settled within a few seconds (e.g.
+  // a hung request), stop showing "Preparing…" so the Save button is tappable
+  // and falls back to fetch-then-share. Reset on selection change or settle.
+  useEffect(() => {
+    setPrepareTimedOut(false);
+    if (!canSavePhotos || sel.count === 0 || selectedSettled) return;
+    const t = setTimeout(() => setPrepareTimedOut(true), 12_000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canSavePhotos, neededKey, selectedSettled]);
 
   // Keep one object URL per cached original for the lightbox <img>. Create for
   // new blobs, revoke for dropped ones. Guarded so React StrictMode's double
@@ -346,10 +385,13 @@ export function Gallery(): JSX.Element {
     setStatus(null);
     try {
       const { included, failed } = await downloadOriginalsZip(eventId, [...sel.selected], `${title}.zip`);
-      const skipped = failed > 0 ? ` (${failed} couldn't be loaded and were skipped)` : '';
-      setStatus(`Downloaded ${included} photo${included === 1 ? '' : 's'} as a ZIP.${skipped}`);
+      const skipped =
+        failed > 0 ? ` (${failed} couldn't be loaded and were skipped · ${failed} 张无法加载，已跳过)` : '';
+      setStatus(
+        `Downloaded ${included} photo${included === 1 ? '' : 's'} as a ZIP.${skipped} · 已将 ${included} 张照片打包为 ZIP 下载。`,
+      );
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : 'Download failed');
+      setNotice(e instanceof Error ? e.message : 'Download failed · 下载失败');
     } finally {
       setDownloading(false);
     }
@@ -369,7 +411,10 @@ export function Gallery(): JSX.Element {
       `Delete ${n} photo${n === 1 ? '' : 's'}?\n\n` +
         `This moves the original${n === 1 ? '' : 's'} to Google Drive Trash ` +
         `(recoverable for ~30 days) and removes ${n === 1 ? 'it' : 'them'} from ` +
-        `the gallery and Find Me.`,
+        `the gallery and Find Me.\n\n` +
+        `删除 ${n} 张照片？\n\n` +
+        `原图将被移至 Google Drive 回收站（约 30 天内可恢复），` +
+        `并从相册和「找到我」中移除。`,
     );
     if (!ok) return;
 
@@ -397,9 +442,11 @@ export function Gallery(): JSX.Element {
     } catch (e) {
       setDeleteFlow(null);
       if (e instanceof ApiError && e.status === 403) {
-        setNotice('Deleting photos is admin-only — sign in with an admin account.');
+        setNotice(
+          'Deleting photos is admin-only — sign in with an admin account. · 删除照片仅限管理员，请使用管理员账号登录。',
+        );
       } else {
-        setNotice(e instanceof Error ? e.message : 'Could not delete photos.');
+        setNotice(e instanceof Error ? e.message : 'Could not delete photos. · 无法删除照片。');
       }
     } finally {
       setDeleting(false);
@@ -424,6 +471,7 @@ export function Gallery(): JSX.Element {
     if (sel.count === 0) return;
     const n = sel.count;
     const label = `${n} photo${n === 1 ? '' : 's'}`;
+    const labelZh = `${n} 张照片`;
     const chosen = list.filter((p) => sel.isSelected(p.photoId));
 
     setSaving(true);
@@ -438,30 +486,54 @@ export function Gallery(): JSX.Element {
     if (canSavePhotos && cached.length === chosen.length) {
       savePhotosIndividually(cached, { title })
         .then((outcome) => {
-          if (outcome === 'shared') setStatus(`Sent ${label} to your share sheet — choose Save to Photos.`);
-          else if (outcome !== 'cancelled') setStatus(`Downloaded ${label}.`);
+          if (outcome === 'shared')
+            setStatus(
+              `Sent ${label} to your share sheet — choose Save to Photos. · 已将 ${labelZh} 发送到分享菜单，请选择「保存到照片」。`,
+            );
+          else if (outcome !== 'cancelled') setStatus(`Downloaded ${label}. · 已下载 ${labelZh}。`);
         })
-        .catch((e) => setNotice(e instanceof Error ? e.message : 'Could not save photos'))
+        .catch((e) => setNotice(e instanceof Error ? e.message : 'Could not save photos · 无法保存照片'))
         .finally(() => setSaving(false));
       return;
     }
 
-    // Fallback (desktop / a blob still loading): fetch then save or download.
+    // Fallback (desktop / a blob still loading / a failed prefetch): fetch then
+    // save or download. Tolerate per-photo failures — one bad original must not
+    // sink the whole save — and only error out if EVERY photo failed.
     try {
       const files: NamedBlob[] = [];
+      let failed = 0;
       for (const p of chosen) {
-        // eslint-disable-next-line no-await-in-loop
-        files.push({ blob: await fetchOriginal(p), filename: filenameFor(p) });
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          files.push({ blob: await fetchOriginal(p), filename: filenameFor(p) });
+        } catch {
+          failed += 1;
+        }
       }
+      if (files.length === 0) {
+        reportClientError('download_failed', 'Save to Photos: every original failed to load', {
+          context: { eventId, requested: chosen.length, failed },
+        });
+        setNotice(
+          'Could not load any of the selected photos. Please try again in a moment. · 无法加载所选的任何照片，请稍后重试。',
+        );
+        return;
+      }
+      const skipped = failed > 0 ? ` (${failed} skipped · 跳过 ${failed} 张)` : '';
       const outcome = await savePhotosIndividually(files, { title });
-      if (outcome === 'shared') setStatus(`Sent ${label} to your share sheet — choose Save to Photos.`);
-      else if (outcome !== 'cancelled') setStatus(`Downloaded ${label}.`);
+      if (outcome === 'shared')
+        setStatus(
+          `Sent ${label} to your share sheet — choose Save to Photos.${skipped} · 已将 ${labelZh} 发送到分享菜单，请选择「保存到照片」。`,
+        );
+      else if (outcome !== 'cancelled')
+        setStatus(`Downloaded ${label}.${skipped} · 已下载 ${labelZh}。`);
     } catch (e) {
       reportClientError('download_failed', 'Save to Photos: original fetch failed', {
         stack: e instanceof Error ? e.stack : undefined,
         context: { eventId, requested: chosen.length, reason: e instanceof Error ? e.message : String(e) },
       });
-      setNotice(e instanceof Error ? e.message : 'Could not save photos');
+      setNotice(e instanceof Error ? e.message : 'Could not save photos · 无法保存照片');
     } finally {
       setSaving(false);
     }
@@ -482,9 +554,9 @@ export function Gallery(): JSX.Element {
         files.push({ blob: await fetchOriginal(p), filename: filenameFor(p) });
       }
       await savePhotosIndividually(files, { title });
-      setStatus(`Saved ${n} photo${n === 1 ? '' : 's'}.`);
+      setStatus(`Saved ${n} photo${n === 1 ? '' : 's'}. · 已保存 ${n} 张照片。`);
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : 'Download failed');
+      setNotice(e instanceof Error ? e.message : 'Download failed · 下载失败');
     } finally {
       setDownloading(false);
     }
@@ -503,15 +575,16 @@ export function Gallery(): JSX.Element {
     setStatus(null);
 
     const report = (outcome: ShareOutcome): void => {
-      if (outcome === 'shared') setStatus('Sent to your share sheet — choose Save to Photos.');
-      else if (outcome !== 'cancelled') setStatus('Saved 1 photo.');
+      if (outcome === 'shared')
+        setStatus('Sent to your share sheet — choose Save to Photos. · 已发送到分享菜单，请选择「保存到照片」。');
+      else if (outcome !== 'cancelled') setStatus('Saved 1 photo. · 已保存 1 张照片。');
     };
 
     const cached = origBlobs[p.photoId];
     if (canSavePhotos && cached) {
       saveToPhone(cached, filenameFor(p), { title })
         .then(report)
-        .catch((e) => setNotice(e instanceof Error ? e.message : 'Could not save photo'))
+        .catch((e) => setNotice(e instanceof Error ? e.message : 'Could not save photo · 无法保存照片'))
         .finally(() => setSaving(false));
       return;
     }
@@ -521,7 +594,7 @@ export function Gallery(): JSX.Element {
         const blob = await fetchOriginal(p);
         report(await saveToPhone(blob, filenameFor(p), { title }));
       } catch (e) {
-        setNotice(e instanceof Error ? e.message : 'Could not save photo');
+        setNotice(e instanceof Error ? e.message : 'Could not save photo · 无法保存照片');
       } finally {
         setSaving(false);
       }
@@ -575,12 +648,12 @@ export function Gallery(): JSX.Element {
           <div className="delete-progress-head">
             <strong>
               {deleteFlow.phase === 'done'
-                ? `Deleted ${deleteFlow.count} photo${deleteFlow.count === 1 ? '' : 's'}`
-                : `Deleting ${deleteFlow.count} photo${deleteFlow.count === 1 ? '' : 's'}…`}
+                ? `Deleted ${deleteFlow.count} photo${deleteFlow.count === 1 ? '' : 's'} · 已删除 ${deleteFlow.count} 张照片`
+                : `Deleting ${deleteFlow.count} photo${deleteFlow.count === 1 ? '' : 's'}… · 正在删除 ${deleteFlow.count} 张照片…`}
             </strong>
             {deleteFlow.phase === 'done' && (
               <button className="btn btn-light btn-sm" onClick={() => setDeleteFlow(null)}>
-                Dismiss
+                Dismiss · 关闭
               </button>
             )}
           </div>
@@ -589,19 +662,31 @@ export function Gallery(): JSX.Element {
             const removalDone = deleteFlow.phase !== 'removing';
             const removal = removalDone ? 'done' : 'active';
             const rows: Array<{ label: string; sub: string; state: 'done' | 'active' }> = [
-              { label: 'Move originals to Drive Trash', sub: 'Recoverable for ~30 days', state: removal },
-              { label: 'Delete stored copies', sub: 'Thumbnail, web & original', state: removal },
-              { label: 'Remove from gallery', sub: 'Index entry cleared', state: removal },
+              {
+                label: 'Move originals to Drive Trash · 将原图移至 Drive 回收站',
+                sub: 'Recoverable for ~30 days · 约 30 天内可恢复',
+                state: removal,
+              },
+              {
+                label: 'Delete stored copies · 删除已存副本',
+                sub: 'Thumbnail, web & original · 缩略图、网页版与原图',
+                state: removal,
+              },
+              {
+                label: 'Remove from gallery · 从相册移除',
+                sub: 'Index entry cleared · 索引记录已清除',
+                state: removal,
+              },
             ];
             const reindexRow =
               deleteFlow.reindex === 'skipped'
                 ? null
                 : {
-                    label: 'Refresh Find Me',
+                    label: 'Refresh Find Me · 刷新「找到我」',
                     sub:
                       deleteFlow.reindex === 'done'
-                        ? 'Find Me updated'
-                        : 'Re-indexing… this can take a few minutes',
+                        ? 'Find Me updated · 「找到我」已更新'
+                        : 'Re-indexing… this can take a few minutes · 正在重新建立索引…可能需要几分钟',
                     state: deleteFlow.reindex,
                   };
             const all = reindexRow ? [...rows, reindexRow] : rows;
@@ -620,7 +705,8 @@ export function Gallery(): JSX.Element {
 
           {deleteFlow.failed > 0 && (
             <p className="error-text delete-failed-note">
-              {deleteFlow.failed} photo{deleteFlow.failed === 1 ? '' : 's'} could not be deleted.
+              {deleteFlow.failed} photo{deleteFlow.failed === 1 ? '' : 's'} could not be deleted. ·{' '}
+              {deleteFlow.failed} 张照片无法删除。
             </p>
           )}
         </div>
@@ -659,9 +745,13 @@ export function Gallery(): JSX.Element {
                 disabled={sel.count === 0 || downloading || saving || deleting}
                 onClick={() => void deleteSelected()}
               >
-                {deleting ? 'Deleting…' : `🗑 Delete${sel.count ? ` ${sel.count}` : ''}`}
+                {deleting
+                  ? 'Deleting… · 删除中…'
+                  : `🗑 Delete${sel.count ? ` ${sel.count}` : ''} · 删除${sel.count ? ` ${sel.count}` : ''}`}
               </button>
-              <span className="muted">Admin only — moves originals to Drive Trash.</span>
+              <span className="muted">
+                Admin only — moves originals to Drive Trash. · 仅限管理员——会将原图移至 Drive 回收站。
+              </span>
             </div>
           )}
         </>
@@ -726,16 +816,16 @@ export function Gallery(): JSX.Element {
                   onClick={() => saveOne(p)}
                 >
                   {!canSavePhotos
-                    ? '⬇ Download'
+                    ? '⬇ Download · 下载'
                     : preparing
-                      ? 'Preparing…'
-                      : '📲 Save to Photos'}
+                      ? 'Preparing… · 准备中…'
+                      : '📲 Save to Photos · 保存到照片'}
                 </button>
                 <button
                   className={`btn btn-sm ${checked ? 'btn-primary' : 'btn-light'}`}
                   onClick={() => selectFromLightbox(item.key)}
                 >
-                  {checked ? '✓ Selected' : 'Select'}
+                  {checked ? '✓ Selected · 已选中' : 'Select · 选择'}
                 </button>
               </>
             );

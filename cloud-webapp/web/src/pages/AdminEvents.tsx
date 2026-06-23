@@ -26,7 +26,7 @@ export function AdminEvents(): JSX.Element {
       setEvents([...r.events].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? '')));
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) setForbidden(true);
-      else setError(e instanceof Error ? e.message : 'Could not load events.');
+      else setError(e instanceof Error ? e.message : 'Could not load events. · 无法加载活动。');
     }
   }, []);
 
@@ -44,7 +44,7 @@ export function AdminEvents(): JSX.Element {
       setDate('');
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not create event.');
+      setError(e instanceof Error ? e.message : 'Could not create event. · 无法创建活动。');
     } finally {
       setBusy(false);
     }
@@ -53,8 +53,11 @@ export function AdminEvents(): JSX.Element {
   if (forbidden) {
     return (
       <div>
-        <h2>Events</h2>
-        <p className="muted">Event management is admin-only — sign in with an admin account.</p>
+        <h2>Events · 活动</h2>
+        <p className="muted">
+          Event management is admin-only — sign in with an admin account. ·
+          活动管理仅限管理员，请使用管理员账号登录。
+        </p>
       </div>
     );
   }
@@ -62,41 +65,41 @@ export function AdminEvents(): JSX.Element {
   return (
     <div>
       <div className="gallery-header">
-        <h2>Events</h2>
+        <h2>Events · 活动</h2>
         <button className="btn btn-light btn-sm" onClick={() => void load()} disabled={busy}>
-          Refresh
+          Refresh · 刷新
         </button>
       </div>
 
       <div className="feedback-filters">
-        <input className="feedback-input" placeholder="Event name" value={name} onChange={(e) => setName(e.target.value)} />
+        <input className="feedback-input" placeholder="Event name · 活动名称" value={name} onChange={(e) => setName(e.target.value)} />
         <input
           className="feedback-input"
           type="date"
           value={date}
           onChange={(e) => setDate(e.target.value)}
-          aria-label="Event date"
+          aria-label="Event date · 活动日期"
         />
         <button className="btn btn-primary btn-sm" onClick={() => void create()} disabled={busy}>
-          Create event
+          Create event · 创建活动
         </button>
       </div>
 
       {error && <p className="error-text">{error}</p>}
 
       {events === null ? (
-        <p className="muted">Loading events…</p>
+        <p className="muted">Loading events… · 正在加载活动…</p>
       ) : events.length === 0 ? (
-        <p className="muted">No events yet.</p>
+        <p className="muted">No events yet. · 暂无活动。</p>
       ) : (
         <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Date</th>
-                <th>Index</th>
-                <th>Links</th>
+                <th>Name · 名称</th>
+                <th>Date · 日期</th>
+                <th>Index · 索引</th>
+                <th>Links · 链接</th>
               </tr>
             </thead>
             <tbody>
@@ -107,7 +110,7 @@ export function AdminEvents(): JSX.Element {
                   <td className="muted">{ev.indexState?.status ?? '—'}</td>
                   <td>
                     <Link className="btn btn-light btn-sm" to={`/admin/events/${encodeURIComponent(ev.id)}/links`}>
-                      Manage links
+                      Manage links · 管理链接
                     </Link>
                   </td>
                 </tr>

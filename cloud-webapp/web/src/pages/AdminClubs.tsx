@@ -25,7 +25,7 @@ export function AdminClubs(): JSX.Element {
       setClubs(r.clubs);
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) setForbidden(true);
-      else setError(e instanceof Error ? e.message : 'Could not load clubs.');
+      else setError(e instanceof Error ? e.message : 'Could not load clubs. · 无法加载俱乐部。');
     }
   }, []);
 
@@ -40,7 +40,7 @@ export function AdminClubs(): JSX.Element {
       await fn();
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Action failed.');
+      setError(e instanceof Error ? e.message : 'Action failed. · 操作失败。');
     } finally {
       setBusy(false);
     }
@@ -59,7 +59,7 @@ export function AdminClubs(): JSX.Element {
   }
 
   async function rename(c: ClubRecord): Promise<void> {
-    const next = window.prompt(`New display name for ${c.normalizedName}`, c.displayName);
+    const next = window.prompt(`New display name for ${c.normalizedName} · ${c.normalizedName} 的新显示名称`, c.displayName);
     if (next === null || !next.trim() || next.trim() === c.displayName) return;
     await act(() => apiPatch<ClubResponse>(`/api/admin/clubs/${encodeURIComponent(c.normalizedName)}`, { displayName: next.trim() }));
   }
@@ -72,8 +72,11 @@ export function AdminClubs(): JSX.Element {
   if (forbidden) {
     return (
       <div>
-        <h2>Clubs</h2>
-        <p className="muted">Club management is admin-only — sign in with an admin account to view it.</p>
+        <h2>Clubs · 俱乐部</h2>
+        <p className="muted">
+          Club management is admin-only — sign in with an admin account to view it. ·
+          俱乐部管理仅限管理员，请使用管理员账号登录查看。
+        </p>
       </div>
     );
   }
@@ -81,46 +84,46 @@ export function AdminClubs(): JSX.Element {
   return (
     <div>
       <div className="gallery-header">
-        <h2>Clubs</h2>
+        <h2>Clubs · 俱乐部</h2>
         <button className="btn btn-light btn-sm" onClick={() => void load()} disabled={busy}>
-          Refresh
+          Refresh · 刷新
         </button>
       </div>
 
       <div className="feedback-filters">
         <input
           className="feedback-input"
-          placeholder="Display name (e.g. New York Runners)"
+          placeholder="Display name (e.g. New York Runners) · 显示名称（例如 New York Runners）"
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
         />
         <input
           className="feedback-input"
-          placeholder="ID (e.g. New_York)"
+          placeholder="ID (e.g. New_York) · ID（例如 New_York）"
           value={normalizedName}
           onChange={(e) => setNormalizedName(e.target.value)}
-          aria-label="Normalized club id"
+          aria-label="Normalized club id · 俱乐部 ID"
         />
         <button className="btn btn-primary btn-sm" onClick={() => void create()} disabled={busy}>
-          Add club
+          Add club · 添加俱乐部
         </button>
       </div>
 
       {error && <p className="error-text">{error}</p>}
 
       {clubs === null ? (
-        <p className="muted">Loading clubs…</p>
+        <p className="muted">Loading clubs… · 正在加载俱乐部…</p>
       ) : clubs.length === 0 ? (
-        <p className="muted">No clubs yet.</p>
+        <p className="muted">No clubs yet. · 暂无俱乐部。</p>
       ) : (
         <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Display name</th>
+                <th>Display name · 显示名称</th>
                 <th>ID</th>
-                <th>Status</th>
-                <th>Actions</th>
+                <th>Status · 状态</th>
+                <th>Actions · 操作</th>
               </tr>
             </thead>
             <tbody>
@@ -133,10 +136,10 @@ export function AdminClubs(): JSX.Element {
                   </td>
                   <td>
                     <button className="btn btn-light btn-sm" onClick={() => void rename(c)} disabled={busy}>
-                      Rename
+                      Rename · 重命名
                     </button>{' '}
                     <button className="btn btn-light btn-sm" onClick={() => void toggle(c)} disabled={busy}>
-                      {c.status === 'active' ? 'Deactivate' : 'Reactivate'}
+                      {c.status === 'active' ? 'Deactivate · 停用' : 'Reactivate · 启用'}
                     </button>
                   </td>
                 </tr>

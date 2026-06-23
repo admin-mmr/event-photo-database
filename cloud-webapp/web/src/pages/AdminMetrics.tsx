@@ -42,7 +42,7 @@ export function AdminMetrics(): JSX.Element {
       setData(r);
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) setForbidden(true);
-      else setError(e instanceof Error ? e.message : 'Could not load metrics.');
+      else setError(e instanceof Error ? e.message : 'Could not load metrics. · 无法加载指标。');
     } finally {
       setLoading(false);
     }
@@ -55,8 +55,8 @@ export function AdminMetrics(): JSX.Element {
   if (forbidden) {
     return (
       <div>
-        <h2>Metrics</h2>
-        <p className="muted">Metrics are admin-only — sign in with an admin account.</p>
+        <h2>Metrics · 指标</h2>
+        <p className="muted">Metrics are admin-only — sign in with an admin account. · 指标仅限管理员，请使用管理员账号登录。</p>
       </div>
     );
   }
@@ -66,11 +66,11 @@ export function AdminMetrics(): JSX.Element {
   return (
     <div>
       <div className="gallery-header">
-        <h2>Metrics</h2>
-        <select className="feedback-input" value={days} onChange={(e) => setDays(Number(e.target.value))} aria-label="Window">
+        <h2>Metrics · 指标</h2>
+        <select className="feedback-input" value={days} onChange={(e) => setDays(Number(e.target.value))} aria-label="Window · 时间范围">
           {WINDOWS.map((w) => (
             <option key={w.days} value={w.days}>
-              Last {w.label}
+              Last {w.label} · 最近 {w.days} 天
             </option>
           ))}
         </select>
@@ -79,30 +79,30 @@ export function AdminMetrics(): JSX.Element {
       {error && <p className="error-text">{error}</p>}
 
       {data === null ? (
-        <p className="muted">{loading ? 'Loading metrics…' : '—'}</p>
+        <p className="muted">{loading ? 'Loading metrics… · 正在加载指标…' : '—'}</p>
       ) : (
         <>
-          <h3 className="muted" style={{ marginBottom: 8 }}>Find Me · last {data.window.sinceDays} days</h3>
+          <h3 className="muted" style={{ marginBottom: 8 }}>Find Me · 找到我 · last {data.window.sinceDays} days · 最近 {data.window.sinceDays} 天</h3>
           <div style={cardRow}>
-            <Stat label="Searches" value={data.searches} />
-            <Stat label="Distinct searchers" value={data.distinctSearchers} />
-            <Stat label="Fused / person" value={`${data.searchesByMode.fused} / ${data.searchesByMode.person}`} />
-            <Stat label="Consent coverage" value={pct(data.consent.coverage)} />
-            <Stat label="Judged precision" value={data.feedback.precision === null ? 'n/a' : pct(data.feedback.precision)} />
-            <Stat label="Confirmed / wrong" value={`${data.feedback.confirmed} / ${data.feedback.not_me}`} />
-            <Stat label="Minor searches" value={data.minorSearches} />
-            <Stat label="Data deletions" value={data.dataDeletions} />
+            <Stat label="Searches · 搜索次数" value={data.searches} />
+            <Stat label="Distinct searchers · 独立搜索者" value={data.distinctSearchers} />
+            <Stat label="Fused / person · 融合 / 人物" value={`${data.searchesByMode.fused} / ${data.searchesByMode.person}`} />
+            <Stat label="Consent coverage · 同意覆盖率" value={pct(data.consent.coverage)} />
+            <Stat label="Judged precision · 评估精度" value={data.feedback.precision === null ? 'n/a · 无' : pct(data.feedback.precision)} />
+            <Stat label="Confirmed / wrong · 确认 / 错误" value={`${data.feedback.confirmed} / ${data.feedback.not_me}`} />
+            <Stat label="Minor searches · 未成年人搜索" value={data.minorSearches} />
+            <Stat label="Data deletions · 数据删除" value={data.dataDeletions} />
           </div>
 
           {data.platform && (
             <>
-              <h3 className="muted" style={{ marginBottom: 8 }}>Platform · current</h3>
+              <h3 className="muted" style={{ marginBottom: 8 }}>Platform · 平台 · current · 当前</h3>
               <div style={cardRow}>
-                <Stat label="Events" value={data.platform.events} />
-                <Stat label="Indexed photos" value={data.platform.photos} />
-                <Stat label="Active clubs" value={data.platform.clubs ?? '—'} />
-                <Stat label="Active users" value={data.platform.activeUsers ?? '—'} />
-                <Stat label="Total users" value={data.platform.users ?? '—'} />
+                <Stat label="Events · 活动" value={data.platform.events} />
+                <Stat label="Indexed photos · 已索引照片" value={data.platform.photos} />
+                <Stat label="Active clubs · 活跃俱乐部" value={data.platform.clubs ?? '—'} />
+                <Stat label="Active users · 活跃用户" value={data.platform.activeUsers ?? '—'} />
+                <Stat label="Total users · 用户总数" value={data.platform.users ?? '—'} />
               </div>
             </>
           )}

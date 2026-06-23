@@ -32,7 +32,7 @@ export function AdminSummary(): JSX.Element {
       setData(r);
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) setForbidden(true);
-      else setError(e instanceof Error ? e.message : 'Could not load the report.');
+      else setError(e instanceof Error ? e.message : 'Could not load the report. · 无法加载报告。');
     } finally {
       setLoading(false);
     }
@@ -67,8 +67,8 @@ export function AdminSummary(): JSX.Element {
   if (forbidden) {
     return (
       <div>
-        <h2>Upload report</h2>
-        <p className="muted">Reporting is admin-only — sign in with an admin account.</p>
+        <h2>Upload report · 上传报告</h2>
+        <p className="muted">Reporting is admin-only — sign in with an admin account. · 报告功能仅限管理员，请使用管理员账号登录。</p>
       </div>
     );
   }
@@ -76,42 +76,42 @@ export function AdminSummary(): JSX.Element {
   return (
     <div>
       <div className="gallery-header">
-        <h2>Upload report</h2>
+        <h2>Upload report · 上传报告</h2>
         <button className="btn btn-light btn-sm" onClick={downloadCsv} disabled={!data}>
-          Export CSV
+          Export CSV · 导出 CSV
         </button>
       </div>
 
       <div className="feedback-filters">
-        <input className="feedback-input" type="date" value={since} onChange={(e) => setSince(e.target.value)} aria-label="From date" />
-        <input className="feedback-input" type="date" value={until} onChange={(e) => setUntil(e.target.value)} aria-label="To date" />
+        <input className="feedback-input" type="date" value={since} onChange={(e) => setSince(e.target.value)} aria-label="From date · 起始日期" />
+        <input className="feedback-input" type="date" value={until} onChange={(e) => setUntil(e.target.value)} aria-label="To date · 结束日期" />
         <button className="btn btn-light btn-sm" onClick={() => void load()} disabled={loading}>
-          {loading ? 'Loading…' : 'Apply'}
+          {loading ? 'Loading… · 加载中…' : 'Apply · 应用'}
         </button>
       </div>
 
       {error && <p className="error-text">{error}</p>}
 
       {data === null ? (
-        <p className="muted">Loading report…</p>
+        <p className="muted">Loading report… · 正在加载报告…</p>
       ) : (
         <>
           <div className="event-meta" style={{ marginBottom: 12 }}>
-            <span className="badge badge-ok">{data.totals.sessions} sessions</span>
-            <span className="badge badge-ok">{data.totals.files} files</span>
+            <span className="badge badge-ok">{data.totals.sessions} sessions · {data.totals.sessions} 次会话</span>
+            <span className="badge badge-ok">{data.totals.files} files · {data.totals.files} 个文件</span>
             <span className="muted event-stat">{data.totals.sizeMb} MB</span>
           </div>
           {data.byClub.length === 0 ? (
-            <p className="muted">No uploads in this range.</p>
+            <p className="muted">No uploads in this range. · 此时间范围内暂无上传。</p>
           ) : (
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Club</th>
-                    <th>Sessions</th>
-                    <th>Files</th>
-                    <th>Size (MB)</th>
+                    <th>Club · 俱乐部</th>
+                    <th>Sessions · 会话</th>
+                    <th>Files · 文件</th>
+                    <th>Size (MB) · 大小（MB）</th>
                   </tr>
                 </thead>
                 <tbody>

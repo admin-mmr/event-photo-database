@@ -13,7 +13,7 @@ interface SortSelectProps {
 export function SortSelect({
   value,
   onChange,
-  label = 'Sort photos',
+  label = 'Sort photos · 排序',
 }: SortSelectProps): JSX.Element {
   return (
     <label className="page-size">

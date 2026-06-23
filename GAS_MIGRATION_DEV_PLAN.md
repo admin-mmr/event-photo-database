@@ -111,6 +111,29 @@ Sheet tabs stay authoritative. `cloud-webapp` gets a write adapter per tab; Fire
 
 Each milestone is independently deployable. Roughly **30–45 dev-days** for one engineer who knows the codebase; G1–G2 dominate.
 
+> **⚠️ STATUS (2026-06-22) — §4A.2 M4 ZH localization done (web).** The whole
+> `cloud-webapp/web` UI is now bilingual using the established inline
+> `English · 中文` pattern (no i18n library/toggle — that would have diverged from
+> the already-bilingual `FindMe`/`VolunteerUpload`/`SelectBar`). Public/attendee
+> flows brought up to parity: `Gallery` (download/save statuses, the admin
+> delete-progress stepper, lightbox footer), `Events` (status pills, relative
+> "updated …" times, sync/index notices), `MyData` (cards, expiry, confirms,
+> notices), the `App` chrome (title, My data, guest/sign-in/out, loading,
+> sign-in card), and shared components `LoadMore`/`Pager`/`PageSizeSelect`/
+> `SortSelect`/`Lightbox`. All **admin** pages + the admin nav links also
+> localized: `AdminUsers`, `AdminClubs`, `AdminEvents`, `AdminLinks`,
+> `AdminAudit`, `AdminMetrics`, `AdminSummary`, `DeletedFiles`, `EmailPrefs`,
+> `FeedbackAdmin` (headings, forms, tables, `window.prompt` strings, error/empty
+> states, action buttons). `VolunteerUpload` was already bilingual and left as-is.
+> Status enum values, RFC-822/CSV payloads, `localStorage` keys, API params, and
+> screen-reader `aria-label`s on icon-only controls were intentionally left
+> untranslated (data/contract, not visible copy). Tests updated where they
+> asserted on the old English-only labels (`MyData.test.tsx`,
+> `FeedbackAdmin.test.tsx`). Suite: web 73/73; tsc + eslint clean.
+> **Remaining for M4:** non-web copy (transactional **email templates** in
+> `api/src/services/emailTemplates.ts`) is still English-only — localize there
+> next if attendee/admin emails need ZH.
+
 > **⚠️ STATUS (2026-06-22) — §4A backlog: eval loop + metrics done.** (a) **Eval feedback loop** (4A.2 M4.4): `matcher/eval/export_feedback_labels.py` turns `match_feedback`(+`match_runs`) into per-event judged-labels CSVs + a judged-P@20 summary with the §3 evidence bar (live `--project` or offline JSON for CI); `run_eval.py --judged-only` scores only judged pairs (gate 0.85). Tested (`eval/test_export_feedback_labels.py`). `EVAL_FEEDBACK_LOOP.md` updated. (b) **Metrics/telemetry** (4A.4): the `/admin/metrics` and `/client-errors` (telemetry) endpoints were already implemented — extended `/admin/metrics` with current control-plane counts (events/photos via Firestore `count()`, users/clubs from the Sheet) and added a `web/src/pages/AdminMetrics.tsx` dashboard (Find Me KPIs + platform totals, mobile-friendly). Suite: api 289/289, web 58/58, eval 4/4; tsc + eslint clean.
 
 > **⚠️ STATUS (2026-06-22) — G6 prepared; G1–G5 code-complete.** All gas-app control-plane functions now exist in `cloud-webapp` (api 289 + web 58 tests green). G6 is operational, not code: **`CUTOVER_RUNBOOK.md`** is the ordered sequence — Phase A provision (DWD scopes `spreadsheets`/`drive`/`gmail.send`, env + `PARTNER_API_KEYS` secret, Firestore indexes, 3 schedulers, deploy) → B parity matrix → C freeze gas-app writes (single-writer) → D 48h dual-run cutover → E retire §7 pieces + tag `gas-app-final`. `gas-app/DEPRECATED.md` marks the old tree read-only (code NOT deleted — it stays as reference until the operator completes cutover); `cloud-webapp/README.md` + root `CLAUDE.md` updated to the new reality. **The actual freeze/flip/decommission are deliberate operator steps and are intentionally not automated here.**
@@ -193,7 +216,7 @@ All of B1–B8 are 🟢 **code-complete but not deployed** — one deploy (api +
 
 | Item | Status | Where it lands |
 |---|---|---|
-| M4 — ZH localization | ⬜ | folds into G2/G4 UI work |
+| M4 — ZH localization | 🟢 (web) | **Web UI fully bilingual** (`English · 中文`), public + admin pages + nav. Not deployed. Remaining: email templates (`api/.../emailTemplates.ts`) still EN-only. See 2026-06-22 status note above. |
 | M4.4 — eval feedback loop wiring (export → `run_eval.py --judged-only`) | 🟡 | after B7 deploy |
 | M5.3 — per-user rate limits (download/original) | 🟡 | cloud-webapp gap, see 4A.4 |
 | M5.x — reCAPTCHA Enterprise setup (keys/env) | 🟡 | deploy step |

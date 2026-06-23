@@ -17,11 +17,11 @@ import { useCallback, useState } from 'react';
 export type GallerySort = 'added_desc' | 'added_asc' | 'taken_desc' | 'taken_asc' | 'name';
 
 export const SORT_OPTIONS: ReadonlyArray<{ value: GallerySort; label: string }> = [
-  { value: 'added_desc', label: 'Time uploaded — newest first' },
-  { value: 'added_asc', label: 'Time uploaded — oldest first' },
-  { value: 'taken_desc', label: 'Time taken — newest first' },
-  { value: 'taken_asc', label: 'Time taken — oldest first' },
-  { value: 'name', label: 'By name' },
+  { value: 'added_desc', label: 'Time uploaded — newest first · 上传时间——最新优先' },
+  { value: 'added_asc', label: 'Time uploaded — oldest first · 上传时间——最早优先' },
+  { value: 'taken_desc', label: 'Time taken — newest first · 拍摄时间——最新优先' },
+  { value: 'taken_asc', label: 'Time taken — oldest first · 拍摄时间——最早优先' },
+  { value: 'name', label: 'By name · 按名称' },
 ];
 export const DEFAULT_SORT: GallerySort = 'added_desc';
 

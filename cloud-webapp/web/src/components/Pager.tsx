@@ -48,7 +48,7 @@ export function Pager({ page, pageCount, onChange }: PagerProps): JSX.Element | 
         disabled={page === 0}
         aria-label="Previous page"
       >
-        ← Prev
+        ← Prev · 上一页
       </button>
       <ul className="pager-pages">
         {items.map((p, i) =>
@@ -78,7 +78,7 @@ export function Pager({ page, pageCount, onChange }: PagerProps): JSX.Element | 
         disabled={page >= pageCount - 1}
         aria-label="Next page"
       >
-        Next →
+        Next · 下一页 →
       </button>
     </nav>
   );
