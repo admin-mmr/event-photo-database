@@ -18,6 +18,7 @@ import {
 import { getRecaptchaToken } from '../lib/recaptcha.js';
 import { useSelection } from '../lib/selection.js';
 import { combineReferences, visibleResults, scoreBand, displayConfidence } from '../lib/results.js';
+import { analyzePhoto, type QualityResult, type QualityIssue } from '../lib/photoQuality.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
 import { canShareImageFiles } from '../lib/share.js';
 import { downloadOriginalsZip } from '../lib/zipDownload.js';
@@ -79,6 +80,16 @@ const STR = {
     uploadYourself: 'Upload a photo of yourself',
     pickHint: 'A clear, front-facing photo works best — a selfie is perfect.',
     chooseTakePhoto: 'Choose / take a photo',
+    photoQualityTitle: 'This photo may be hard to match',
+    photoQualityIntro:
+      'A clearer photo usually finds more of your pictures. We noticed:',
+    qLowResolution:
+      'It’s low-resolution — your face may be too small to match well.',
+    qBlurry: 'It looks blurry.',
+    qDark: 'It looks quite dark.',
+    qBright: 'It looks overexposed (too bright).',
+    searchAnyway: 'Search anyway',
+    chooseAnother: 'Choose a different photo',
     searchByOutfitInstead: 'Search by outfit instead',
     standardSearch: 'Standard search',
     standardSearchDesc:
@@ -170,6 +181,14 @@ const STR = {
     uploadYourself: '上传您的照片',
     pickHint: '清晰的正面照片效果最佳，自拍即可。',
     chooseTakePhoto: '选择或拍摄照片',
+    photoQualityTitle: '这张照片可能不易匹配',
+    photoQualityIntro: '更清晰的照片通常能找到更多您的照片。我们发现：',
+    qLowResolution: '分辨率较低——您的面部可能太小，不易准确匹配。',
+    qBlurry: '照片看起来有些模糊。',
+    qDark: '照片看起来偏暗。',
+    qBright: '照片看起来过曝（太亮）。',
+    searchAnyway: '仍然搜索',
+    chooseAnother: '换一张照片',
     searchByOutfitInstead: '改用服装搜索',
     standardSearch: '标准搜索',
     standardSearchDesc: '使用人脸匹配，最准确，但需要清晰的正面照片。',
@@ -261,6 +280,12 @@ export function FindMe(): JSX.Element {
   // When a reference has no detectable face we hold it here to offer an
   // outfit-only retry (FR-7) without making the user re-pick the file.
   const [noFaceFile, setNoFaceFile] = useState<File | null>(null);
+  // A picked file whose client-side quality check flagged it as poor: we hold
+  // it and show a warning so the user can pick a clearer photo OR search anyway,
+  // rather than silently running a search that can't match well.
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [photoQuality, setPhotoQuality] = useState<QualityResult | null>(null);
+  const [checkingPhoto, setCheckingPhoto] = useState(false);
   const [references, setReferences] = useState<Reference[]>([]);
   const [activeId, setActiveId] = useState<string>(COMBINED);
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
@@ -561,10 +586,58 @@ export function FindMe(): JSX.Element {
     }
   }
 
+  /** Localized explanation for one detected quality issue. */
+  function qualityIssueLabel(issue: QualityIssue): string {
+    switch (issue) {
+      case 'low_resolution':
+        return t.qLowResolution;
+      case 'blurry':
+        return t.qBlurry;
+      case 'dark':
+        return t.qDark;
+      case 'bright':
+        return t.qBright;
+    }
+  }
+
+  /**
+   * Quick client-side quality check on a freshly picked file. If it's clearly
+   * poor (low-res / blurry), hold it and warn so the user can pick a clearer
+   * photo or search anyway; otherwise go straight to search. The check failing
+   * for any reason must never block the search — we just proceed.
+   */
+  async function handlePicked(file: File): Promise<void> {
+    setError(null);
+    setNoFaceFile(null);
+    setPendingFile(null);
+    setPhotoQuality(null);
+    setCheckingPhoto(true);
+    let quality: QualityResult | null = null;
+    try {
+      quality = await analyzePhoto(file);
+    } catch {
+      quality = null;
+    }
+    setCheckingPhoto(false);
+    if (quality && quality.level === 'poor') {
+      setPendingFile(file);
+      setPhotoQuality(quality);
+      return;
+    }
+    void search(file);
+  }
+
+  function dismissQualityWarning(): void {
+    setPendingFile(null);
+    setPhotoQuality(null);
+  }
+
   async function search(file: File, mode: 'fused' | 'person' = 'fused'): Promise<void> {
     setPhase('searching');
     setError(null);
     setNoFaceFile(null);
+    setPendingFile(null);
+    setPhotoQuality(null);
     const form = new FormData();
     form.set('file', file);
     form.set('eventId', eventId);
@@ -856,12 +929,53 @@ export function FindMe(): JSX.Element {
             style={{ display: 'none' }}
             onChange={(e) => {
               const f = e.target.files?.[0];
-              if (f) void search(f);
+              // Reset so re-picking the SAME file still fires onChange.
+              e.target.value = '';
+              if (f) void handlePicked(f);
             }}
           />
-          <button className="btn btn-primary" onClick={() => fileInput.current?.click()}>
-            {t.chooseTakePhoto}
-          </button>
+          {photoQuality && pendingFile ? (
+            <div className="photo-quality-warn" role="alert">
+              <p>
+                <strong>{t.photoQualityTitle}</strong>
+              </p>
+              <p className="muted">{t.photoQualityIntro}</p>
+              <ul>
+                {photoQuality.issues.map((i) => (
+                  <li key={i}>{qualityIssueLabel(i)}</li>
+                ))}
+              </ul>
+              <div className="quality-actions">
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    const f = pendingFile;
+                    dismissQualityWarning();
+                    void search(f);
+                  }}
+                >
+                  {t.searchAnyway}
+                </button>
+                <button
+                  className="btn btn-light"
+                  onClick={() => {
+                    dismissQualityWarning();
+                    fileInput.current?.click();
+                  }}
+                >
+                  {t.chooseAnother}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              className="btn btn-primary"
+              disabled={checkingPhoto}
+              onClick={() => fileInput.current?.click()}
+            >
+              {t.chooseTakePhoto}
+            </button>
+          )}
           {noFaceFile && (
             <button className="btn btn-light" onClick={() => void search(noFaceFile, 'person')}>
               {t.searchByOutfitInstead}
