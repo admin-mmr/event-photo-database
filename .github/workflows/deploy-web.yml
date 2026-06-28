@@ -28,7 +28,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version-file: cloud-webapp/.nvmrc
+          # Pinned to 22.23.1, NOT .nvmrc ("22"): the June 2026 security release
+          # 22.23.0 (CVE-2026-48931, "response queue poisoning in http.Agent")
+          # changed keep-alive socket reuse and exposed a latent node-fetch@2
+          # false-positive "Premature close". That breaks firebase-tools' WIF
+          # token exchange (gaxios -> node-fetch -> https://sts.googleapis.com),
+          # so `firebase deploy` dies with "Failed to authenticate". .nvmrc
+          # resolved to the broken 22.23.0; 22.23.1 carries the fix-forward
+          # (nodejs/node#64004) while keeping the security patch. See
+          # nodejs/node#63989. Drop this pin once .nvmrc moves past 22.23.1.
+          node-version: 22.23.1
           cache: npm
           cache-dependency-path: cloud-webapp/package-lock.json
 
