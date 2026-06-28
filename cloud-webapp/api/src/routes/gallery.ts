@@ -22,7 +22,7 @@ import {
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
-import { requireAdmin } from '../middleware/admin.js';
+import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
 import { signThumbUrls, signPhotoUrl, deletePhotoDerivatives } from '../services/gcsService.js';
 import { trashFile } from '../services/driveService.js';
 import { triggerIndexJob } from '../services/indexerJob.js';
@@ -287,7 +287,7 @@ galleryRouter.get('/events/:id/photos/:photoId/web', requireAuth, async (req, re
  * batch. The re-index is best-effort — the photos are already gone from the
  * gallery, and the scheduled change-scan would catch the Drive change anyway.
  */
-galleryRouter.post('/events/:id/photos/delete', requireAuth, requireAdmin, async (req, res, next) => {
+galleryRouter.post('/events/:id/photos/delete', requireAuth, attachRole, requireAnyAdmin, async (req, res, next) => {
   try {
     const eventId = String(req.params.id);
 

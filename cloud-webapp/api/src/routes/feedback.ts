@@ -24,7 +24,7 @@ import type { Query, DocumentData } from '@google-cloud/firestore';
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
-import { requireAdmin } from '../middleware/admin.js';
+import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
 
 export const feedbackRouter = Router();
 
@@ -72,7 +72,7 @@ feedbackRouter.post('/feedback', requireAuth, async (req, res, next) => {
  * window, so `counts`/`total` describe the returned page. Bump `limit` (≤500)
  * if an admin needs to look further back.
  */
-feedbackRouter.get('/admin/feedback', requireAuth, requireAdmin, async (req, res, next) => {
+feedbackRouter.get('/admin/feedback', requireAuth, attachRole, requireAnyAdmin, async (req, res, next) => {
   try {
     const eventId = typeof req.query.eventId === 'string' && req.query.eventId ? req.query.eventId : undefined;
     const verdictParsed = FeedbackVerdictSchema.safeParse(req.query.verdict);

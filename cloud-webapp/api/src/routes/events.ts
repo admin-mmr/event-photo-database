@@ -10,7 +10,7 @@ import {
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
-import { requireAdmin } from '../middleware/admin.js';
+import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
 import { allowCronOrAdmin } from '../middleware/cronAuth.js';
 import { triggerIndexJob } from '../services/indexerJob.js';
 import { listEventImages } from '../services/driveService.js';
@@ -84,7 +84,7 @@ eventsRouter.get('/events/:id', requireAuth, async (req, res, next) => {
  * and which canonical photos absorbed them, so an admin can verify dedup is
  * working without digging into the GCS manifest.
  */
-eventsRouter.get('/events/:id/duplicates', requireAuth, requireAdmin, async (req, res, next) => {
+eventsRouter.get('/events/:id/duplicates', requireAuth, attachRole, requireAnyAdmin, async (req, res, next) => {
   try {
     const eventId = String(req.params.id);
     const snap = await firestore().collection('photos').where('eventId', '==', eventId).get();

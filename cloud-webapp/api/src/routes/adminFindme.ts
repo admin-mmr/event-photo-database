@@ -26,7 +26,7 @@ import {
 
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
-import { requireAdmin } from '../middleware/admin.js';
+import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
 import { matcherSearch } from '../services/matcherClient.js';
 import { signPhotoUrls, signReferenceUrl, readReference } from '../services/gcsService.js';
 import { getReference, listAllReferences, type AdminReferenceFilter } from '../services/references.js';
@@ -40,7 +40,7 @@ const LIST_MAX = 500;
 /** List stored reference selfies across users, newest first, with optional
  *  filters (?uid, ?email, ?eventId, ?outcome, ?limit). Each item includes a
  *  short-lived signed URL to view the selfie. */
-adminFindmeRouter.get('/admin/findme/uploads', requireAuth, requireAdmin, async (req, res, next) => {
+adminFindmeRouter.get('/admin/findme/uploads', requireAuth, attachRole, requireAnyAdmin, async (req, res, next) => {
   try {
     const str = (v: unknown): string | undefined =>
       typeof v === 'string' && v.trim() ? v.trim() : undefined;
@@ -94,7 +94,8 @@ adminFindmeRouter.get('/admin/findme/uploads', requireAuth, requireAdmin, async 
 adminFindmeRouter.get(
   '/admin/findme/uploads/:uploadId/image',
   requireAuth,
-  requireAdmin,
+  attachRole,
+  requireAnyAdmin,
   async (req, res, next) => {
     try {
       const uploadId = String(req.params.uploadId);
@@ -124,7 +125,8 @@ adminFindmeRouter.get(
 adminFindmeRouter.post(
   '/admin/findme/uploads/:uploadId/reproduce',
   requireAuth,
-  requireAdmin,
+  attachRole,
+  requireAnyAdmin,
   async (req, res, next) => {
     try {
       const parsed = AdminReproduceRequestSchema.safeParse(req.body ?? {});

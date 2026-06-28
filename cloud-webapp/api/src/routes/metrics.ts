@@ -20,7 +20,7 @@ import { firestore } from '../lib/firestore.js';
 import { env } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
-import { requireAdmin } from '../middleware/admin.js';
+import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
 import { listClubs } from '../services/clubStore.js';
 import { listUsers } from '../services/userStore.js';
 
@@ -84,7 +84,7 @@ async function recentDocs(collection: string, since: string): Promise<DocumentDa
   return snap.docs.map((d) => d.data()).filter((d) => String(d.createdAt ?? '') >= since);
 }
 
-metricsRouter.get('/admin/metrics', requireAuth, requireAdmin, async (req, res, next) => {
+metricsRouter.get('/admin/metrics', requireAuth, attachRole, requireAnyAdmin, async (req, res, next) => {
   try {
     const eventId =
       typeof req.query.eventId === 'string' && req.query.eventId ? req.query.eventId : undefined;

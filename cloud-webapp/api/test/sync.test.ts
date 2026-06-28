@@ -20,6 +20,16 @@ vi.mock('../src/middleware/auth.js', () => ({
   },
 }));
 
+// The admin gate is now RBAC (requireAuth → attachRole → requireAnyAdmin).
+// attachRole treats ADMIN_EMAILS (default admin@mmrunners.org) as a bootstrap
+// super_admin BEFORE any Sheet read, so the ADMIN user passes without a lookup.
+// A non-bootstrap user (MEMBER) would otherwise trigger a real Users-sheet read
+// because MASTER_SPREADSHEET_ID is set, so stub the lookup to "no such user"
+// (→ no role → 403) and keep the test offline.
+vi.mock('../src/services/userStore.js', () => ({
+  getUserByEmail: async () => null,
+}));
+
 const reconcile = vi.fn(async () => ({
   spreadsheetId: 'sheet-123',
   scanned: 2,
