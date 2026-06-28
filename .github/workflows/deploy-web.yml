@@ -70,7 +70,9 @@ jobs:
         env:
           PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
         run: |
+          firebase --version
           firebase deploy \
             --project="$PROJECT_ID" \
             --only=hosting,firestore:rules,firestore:indexes,storage \
-            --non-interactive
+            --non-interactive \
+            --debug
