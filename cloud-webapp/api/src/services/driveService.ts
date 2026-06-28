@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto';
 
 import { GoogleAuth } from 'google-auth-library';
 import { env } from '../lib/config.js';
+import { driveFetch } from './driveRateLimit.js';
 
 const DRIVE = 'https://www.googleapis.com/drive/v3/files';
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
@@ -256,14 +257,14 @@ export async function uploadFileToDrive(
     supportsAllDrives: 'true',
     fields: 'id,name',
   });
-  const res = await fetch(`${DRIVE_UPLOAD}?${params}`, {
+  const res = await driveFetch(`${DRIVE_UPLOAD}?${params}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': `multipart/related; boundary=${boundary}`,
     },
     body,
-  });
+  }, 'uploadFileToDrive');
   if (!res.ok) throw new Error(`Drive upload ${res.status}: ${await res.text()}`);
   return (await res.json()) as UploadedDriveFile;
 }
@@ -295,16 +296,160 @@ export async function getOrCreateSubfolder(
     supportsAllDrives: 'true',
     includeItemsFromAllDrives: 'true',
   });
-  const found = (await driveGet(`${DRIVE}?${params}`, token)) as { files?: UploadedDriveFile[] };
+  const findRes = await driveFetch(`${DRIVE}?${params}`, { headers: { Authorization: `Bearer ${token}` } }, 'getOrCreateSubfolder:find');
+  if (!findRes.ok) throw new Error(`Drive folder find ${findRes.status}: ${await findRes.text()}`);
+  const found = (await findRes.json()) as { files?: UploadedDriveFile[] };
   const existing = found.files?.[0];
   if (existing) return existing;
 
   const createParams = new URLSearchParams({ supportsAllDrives: 'true', fields: 'id,name' });
-  const res = await fetch(`${DRIVE}?${createParams}`, {
+  const res = await driveFetch(`${DRIVE}?${createParams}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] }),
-  });
+  }, 'getOrCreateSubfolder:create');
   if (!res.ok) throw new Error(`Drive folder create ${res.status}: ${await res.text()}`);
   return (await res.json()) as UploadedDriveFile;
+}
+
+/**
+ * List immediate child folders of `parentId` (non-recursive), paged. Used by the
+ * full-event rebuild to enumerate club folders and their tag subfolders.
+ */
+export async function listChildFolders(parentId: string, opts?: { token?: string }): Promise<FolderRef[]> {
+  const token = opts?.token ?? (await getDriveToken());
+  const out: FolderRef[] = [];
+  let pageToken: string | undefined;
+  do {
+    const params = new URLSearchParams({
+      q: `'${parentId}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
+      fields: 'nextPageToken,files(id,name)',
+      pageSize: '1000',
+      supportsAllDrives: 'true',
+      includeItemsFromAllDrives: 'true',
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+    const res = await driveFetch(`${DRIVE}?${params}`, { headers: { Authorization: `Bearer ${token}` } }, 'listChildFolders');
+    if (!res.ok) throw new Error(`Drive list folders ${res.status}: ${await res.text()}`);
+    const page = (await res.json()) as { nextPageToken?: string; files?: FolderRef[] };
+    for (const f of page.files ?? []) out.push({ id: String(f.id), name: String(f.name ?? '') });
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+  return out;
+}
+
+// ─── Folder navigation + tree walk (managed-folders rebuild) ──────────────────
+
+const DRIVE_SHORTCUT_MIME_LOCAL = 'application/vnd.google-apps.shortcut';
+
+/** A reference to a Drive folder. */
+export interface FolderRef {
+  id: string;
+  name: string;
+}
+
+/** A non-shortcut media file discovered while walking an event subtree. */
+export interface DriveMediaFile {
+  id: string;
+  name: string;
+  mimeType: string;
+}
+
+/**
+ * Fetch a folder by ID, returning `{ id, name }` or `null` when it doesn't
+ * exist (404) or isn't a folder. Used to open an event's root folder before a
+ * rebuild. Paced via driveFetch.
+ */
+export async function getFolderById(folderId: string, opts?: { token?: string }): Promise<FolderRef | null> {
+  const token = opts?.token ?? (await getDriveToken());
+  const params = new URLSearchParams({ fields: 'id,name,mimeType,trashed', supportsAllDrives: 'true' });
+  const res = await driveFetch(`${DRIVE}/${encodeURIComponent(folderId)}?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  }, 'getFolderById');
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Drive get folder ${res.status}: ${await res.text()}`);
+  const f = (await res.json()) as { id?: string; name?: string; mimeType?: string; trashed?: boolean };
+  if (f.mimeType !== FOLDER_MIME || f.trashed) return null;
+  return { id: String(f.id ?? folderId), name: String(f.name ?? '') };
+}
+
+/**
+ * Find a child folder by exact name under `parentId` WITHOUT creating it
+ * (the non-mutating counterpart of getOrCreateSubfolder). Returns `null` when
+ * absent — used to resolve a club / tag folder that may not have been synced yet.
+ */
+export async function findSubfolder(
+  parentId: string,
+  name: string,
+  opts?: { token?: string },
+): Promise<FolderRef | null> {
+  const token = opts?.token ?? (await getDriveToken());
+  const safe = name.replace(/'/g, "\\'");
+  const params = new URLSearchParams({
+    q: `'${parentId}' in parents and name='${safe}' and mimeType='${FOLDER_MIME}' and trashed=false`,
+    fields: 'files(id,name)',
+    pageSize: '1',
+    supportsAllDrives: 'true',
+    includeItemsFromAllDrives: 'true',
+  });
+  const res = await driveFetch(`${DRIVE}?${params}`, { headers: { Authorization: `Bearer ${token}` } }, 'findSubfolder');
+  if (!res.ok) throw new Error(`Drive find subfolder ${res.status}: ${await res.text()}`);
+  const found = (await res.json()) as { files?: FolderRef[] };
+  return found.files?.[0] ?? null;
+}
+
+/**
+ * Depth-first walk of every descendant of `rootFolderId`, returning every
+ * non-shortcut file whose MIME satisfies `accept`. Mirrors the gas-app
+ * walkMediaFiles: shortcuts are skipped (so we never index our own shortcuts),
+ * and child folders for which `opts.skipChildFolder(name)` returns true are not
+ * recursed into (the caller passes the managed-folder check so Photos_NNN /
+ * Videos / Album buckets are never treated as sources). Iterative to keep the
+ * stack shallow; all listings are paced via driveFetch.
+ */
+export async function walkMediaFiles(
+  rootFolderId: string,
+  accept: (mimeType: string) => boolean,
+  opts?: { token?: string; skipChildFolder?: (name: string) => boolean },
+): Promise<DriveMediaFile[]> {
+  const token = opts?.token ?? (await getDriveToken());
+  const skipChild = opts?.skipChildFolder ?? (() => false);
+  const out: DriveMediaFile[] = [];
+  const stack: string[] = [rootFolderId];
+
+  while (stack.length > 0) {
+    const folderId = stack.pop()!;
+    let pageToken: string | undefined;
+    do {
+      const params = new URLSearchParams({
+        q: `'${folderId}' in parents and trashed=false`,
+        fields: 'nextPageToken,files(id,name,mimeType)',
+        pageSize: '1000',
+        supportsAllDrives: 'true',
+        includeItemsFromAllDrives: 'true',
+      });
+      if (pageToken) params.set('pageToken', pageToken);
+      const res = await driveFetch(`${DRIVE}?${params}`, { headers: { Authorization: `Bearer ${token}` } }, 'walkMediaFiles');
+      if (!res.ok) throw new Error(`Drive walk ${res.status}: ${await res.text()}`);
+      const page = (await res.json()) as {
+        nextPageToken?: string;
+        files?: Array<{ id?: string; name?: string; mimeType?: string }>;
+      };
+      for (const f of page.files ?? []) {
+        const mimeType = String(f.mimeType ?? '');
+        const name = String(f.name ?? '');
+        const id = String(f.id ?? '');
+        if (!id) continue;
+        if (mimeType === FOLDER_MIME) {
+          if (!skipChild(name)) stack.push(id);
+          continue;
+        }
+        if (mimeType === DRIVE_SHORTCUT_MIME_LOCAL) continue; // never index our own shortcuts
+        if (accept(mimeType)) out.push({ id, name, mimeType });
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+  }
+
+  return out;
 }

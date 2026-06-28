@@ -216,6 +216,29 @@ const EnvSchema = z.object({
   // existing tests are unaffected until an operator opts into the pilot gate.
   FINDME_ENABLED: z.enum(['true', 'false']).default('true'),
   FINDME_EVENT_ALLOWLIST: z.string().default(''),
+
+  // ── Managed folders / Special folders (gas-app migration) ─────────────────
+  // Post-upload "special folders" pipeline: per-event Photos_NNN buckets and
+  // per-(event,club,tag) Videos/Album shortcut folders, mirrored to a public
+  // folder-index spreadsheet. Master switch OFF by default so an unconfigured
+  // deploy is a safe no-op (parity with gas-app's "Script Property unset" path).
+  MANAGED_FOLDERS_ENABLED: z.enum(['true', 'false']).default('false'),
+  // Tab on the master Sheet holding the authoritative folder state (gas-app
+  // Special_Folders). Created on first write if missing.
+  SPECIAL_FOLDERS_SHEET_NAME: z.string().default('Special_Folders'),
+  // World-readable Google Sheet the public folder index is written to (gas-app
+  // PUBLIC_ALBUM_INDEX_SHEET_ID). Empty = public-index rewrite is a no-op.
+  PUBLIC_FOLDER_INDEX_SHEET_ID: z.string().default(''),
+  // Max files per Photos_NNN bucket before overflowing to the next bucket
+  // (gas-app MAX_SHORTCUTS_PER_PHOTOS_FOLDER) — a Drive-UI browse-speed cap.
+  MAX_PHOTOS_PER_BUCKET: z.coerce.number().int().positive().default(800),
+  // Cloud Run image-convert service (gas-app CLOUD_RUN_URL). Used to materialise
+  // non-JPEG photos (PNG/HEIC/WEBP) as real JPGs in the Photos_NNN buckets. Empty
+  // = convert disabled, so non-JPEG sources fall back to a shortcut (JPEGs are
+  // always shortcuts under the storage-minimizing policy). The api-runtime SA
+  // must be allowed to invoke it.
+  IMAGE_CONVERT_URL: z.string().default(''),
+  IMAGE_CONVERT_JPG_QUALITY: z.coerce.number().int().min(1).max(100).default(85),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

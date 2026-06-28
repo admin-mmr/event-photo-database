@@ -99,6 +99,17 @@ if [[ -n "${UPLOAD_TASKS_QUEUE:-}" ]]; then ENV_VARS="${ENV_VARS},UPLOAD_TASKS_Q
 ENV_VARS="${ENV_VARS},UPLOAD_TASKS_LOCATION=${UPLOAD_TASKS_LOCATION:-${REGION}}"
 if [[ -n "${UPLOAD_WORKER_URL:-}" ]]; then ENV_VARS="${ENV_VARS},UPLOAD_WORKER_URL=${UPLOAD_WORKER_URL}"; fi
 
+# Managed folders (gas-app migration). OFF by default — the post-upload Photos /
+# Videos / Album rebuild + public folder index only run when MANAGED_FOLDERS_ENABLED
+# is "true". PUBLIC_FOLDER_INDEX_SHEET_ID and IMAGE_CONVERT_URL are only added when
+# exported (merge preserves a live value). Without IMAGE_CONVERT_URL, non-JPEG
+# photos fall back to shortcuts (JPEGs are always shortcuts). DRIVE_MIN_INTERVAL_MS
+# paces all Drive calls (default 120ms ≈ 8 req/s) to stay under the per-user quota.
+ENV_VARS="${ENV_VARS},MANAGED_FOLDERS_ENABLED=${MANAGED_FOLDERS_ENABLED:-false}"
+if [[ -n "${PUBLIC_FOLDER_INDEX_SHEET_ID:-}" ]]; then ENV_VARS="${ENV_VARS},PUBLIC_FOLDER_INDEX_SHEET_ID=${PUBLIC_FOLDER_INDEX_SHEET_ID}"; fi
+if [[ -n "${IMAGE_CONVERT_URL:-}" ]]; then ENV_VARS="${ENV_VARS},IMAGE_CONVERT_URL=${IMAGE_CONVERT_URL}"; fi
+if [[ -n "${DRIVE_MIN_INTERVAL_MS:-}" ]]; then ENV_VARS="${ENV_VARS},DRIVE_MIN_INTERVAL_MS=${DRIVE_MIN_INTERVAL_MS}"; fi
+
 echo "==> Setting env vars: ${ENV_VARS}"
 
 gcloud run deploy "$SERVICE" \

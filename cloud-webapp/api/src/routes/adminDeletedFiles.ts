@@ -28,6 +28,8 @@ import {
   markRestored,
   recordSoftDelete,
 } from '../services/deletedFilesStore.js';
+import { removeShortcutsForTargets } from '../services/specialFoldersService.js';
+import { tryRebuildPublicFolderIndex } from '../services/publicFolderIndexService.js';
 import { actor, effectiveClubScope, handleStoreError, masterSheetId } from './adminShared.js';
 
 export const adminDeletedFilesRouter = Router();
@@ -69,6 +71,17 @@ adminDeletedFilesRouter.post('/admin/deleted-files', requireAuth, attachRole, re
     if (denyOutOfScope(req, res, input.clubName.trim())) return;
     await trashFile(input.driveFileId);
     const file = await recordSoftDelete(sid, input, actor(req));
+    // Retire any managed shortcuts/copies that pointed at this original so they
+    // don't dangle in the public-browse folders. Best-effort + gated; trashed
+    // (recoverable) entries are recreated if the file is restored + rebuilt.
+    if (env.MANAGED_FOLDERS_ENABLED === 'true') {
+      try {
+        await removeShortcutsForTargets([file.driveFileId]);
+        await tryRebuildPublicFolderIndex();
+      } catch (err) {
+        logger.warn({ err, driveFileId: file.driveFileId }, 'managed-folders sweep after delete failed (non-fatal)');
+      }
+    }
     await recordAudit(sid, {
       actorEmail: actor(req),
       action: 'FILE_DELETED',

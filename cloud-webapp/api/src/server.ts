@@ -26,6 +26,7 @@ import { emailDigestRouter } from './routes/emailDigest.js';
 import { adminDeletedFilesRouter } from './routes/adminDeletedFiles.js';
 import { summaryRouter } from './routes/summary.js';
 import { partnerRouter } from './routes/partner.js';
+import { adminManagedFoldersRouter } from './routes/adminManagedFolders.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 
 export function buildServer(): express.Express {
@@ -103,6 +104,7 @@ export function buildServer(): express.Express {
   app.use('/api', adminDeletedFilesRouter);
   app.use('/api', summaryRouter);
   app.use('/api', partnerRouter);
+  app.use('/api', adminManagedFoldersRouter);
 
   // 404 + final error handler must be registered last.
   app.use(notFoundHandler);

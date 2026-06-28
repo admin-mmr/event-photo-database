@@ -8,12 +8,15 @@ import {
 } from '@cloud-webapp/shared';
 
 import { firestore } from '../lib/firestore.js';
+import { env } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
 import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
 import { allowCronOrAdmin } from '../middleware/cronAuth.js';
 import { triggerIndexJob } from '../services/indexerJob.js';
 import { listEventImages } from '../services/driveService.js';
+import { rebuildAllSpecialFoldersForEvent } from '../services/specialFoldersService.js';
+import { tryRebuildPublicFolderIndex } from '../services/publicFolderIndexService.js';
 
 export const eventsRouter = Router();
 
@@ -267,11 +270,29 @@ eventsRouter.post('/admin/index-scan', allowCronOrAdmin, async (req, res, next) 
       }
     }
 
+    // Managed folders (gas-app migration): rebuild Photos_NNN / Videos / Album
+    // for the events whose Drive content changed this scan, then refresh the
+    // public folder index once. Best-effort — never fails the scan. Walks Drive,
+    // so it is gated behind MANAGED_FOLDERS_ENABLED and scoped to changed events;
+    // all Drive calls are paced by driveRateLimit so the burst stays under quota.
+    let foldersRebuilt = 0;
+    if (env.MANAGED_FOLDERS_ENABLED === 'true' && triggered.length > 0) {
+      for (const eventId of triggered) {
+        try {
+          await rebuildAllSpecialFoldersForEvent(eventId);
+          foldersRebuilt++;
+        } catch (err) {
+          logger.warn({ err, eventId }, 'index-scan: special-folders rebuild failed (non-fatal)');
+        }
+      }
+      await tryRebuildPublicFolderIndex();
+    }
+
     logger.info(
-      { triggered: triggered.length, scanned: snap.size, by: req.user?.email ?? 'cron' },
+      { triggered: triggered.length, scanned: snap.size, foldersRebuilt, by: req.user?.email ?? 'cron' },
       'index-scan complete',
     );
-    res.json({ ok: true, scanned: snap.size, triggered, skipped });
+    res.json({ ok: true, scanned: snap.size, triggered, skipped, foldersRebuilt });
   } catch (err) {
     next(err);
   }

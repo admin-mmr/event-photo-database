@@ -24,8 +24,28 @@
 
 import { GoogleAuth } from 'google-auth-library';
 import { env } from '../lib/config.js';
+import { sleep } from './driveRateLimit.js';
 
 const SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
+
+// Sheets has tight per-user quotas (all our calls share one DWD subject), so a
+// burst — e.g. a managed-folders rebuild upserting many Special_Folders rows —
+// can hit 429 RESOURCE_EXHAUSTED. Retry transient 429/5xx with backoff (honour
+// Retry-After) so we slow down instead of failing. Tunable via SHEETS_MAX_RETRIES.
+const SHEETS_MAX_RETRIES = Math.max(0, Number(process.env.SHEETS_MAX_RETRIES ?? 5));
+
+async function sheetsFetch(url: string, init: RequestInit): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, init);
+    if ((res.status === 429 || res.status >= 500) && attempt < SHEETS_MAX_RETRIES) {
+      const ra = Number(res.headers.get('retry-after'));
+      const delay = Number.isFinite(ra) && ra >= 0 ? ra * 1000 : Math.min(32_000, 1000 * 2 ** attempt) + Math.floor(Math.random() * 1000);
+      await sleep(delay);
+      continue;
+    }
+    return res;
+  }
+}
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 // Read/write scope — covers both values.get and values.append. Add THIS exact
 // scope to the DWD client id in the Workspace Admin console.
@@ -89,7 +109,7 @@ export async function getSheetValues(
     valueRenderOption: 'FORMATTED_VALUE',
   });
   const url = `${SHEETS}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}?${params}`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await sheetsFetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) {
     throw new Error(`Sheets API ${res.status} on '${range}': ${await res.text()}`);
   }
@@ -121,7 +141,7 @@ export async function appendSheetValues(
     insertDataOption: 'INSERT_ROWS',
   });
   const url = `${SHEETS}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}:append?${params}`;
-  const res = await fetch(url, {
+  const res = await sheetsFetch(url, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -157,7 +177,7 @@ export async function updateSheetValues(
   const token = opts?.token ?? (await getSheetsToken());
   const params = new URLSearchParams({ valueInputOption: 'RAW' });
   const url = `${SHEETS}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}?${params}`;
-  const res = await fetch(url, {
+  const res = await sheetsFetch(url, {
     method: 'PUT',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -170,4 +190,60 @@ export async function updateSheetValues(
   }
   const json = (await res.json()) as { updatedCells?: number };
   return json.updatedCells ?? 0;
+}
+
+/**
+ * List the tab (sheet) titles in a spreadsheet via `spreadsheets.get` with a
+ * field mask. Used to decide whether a tab needs creating before writing.
+ */
+export async function getSheetTitles(spreadsheetId: string, opts?: { token?: string }): Promise<string[]> {
+  const token = opts?.token ?? (await getSheetsToken());
+  const url = `${SHEETS}/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties.title`;
+  const res = await sheetsFetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`Sheets API get ${res.status}: ${await res.text()}`);
+  const json = (await res.json()) as { sheets?: Array<{ properties?: { title?: string } }> };
+  return (json.sheets ?? []).map((s) => String(s.properties?.title ?? '')).filter(Boolean);
+}
+
+/**
+ * Ensure a tab named `title` exists, creating it via `batchUpdate { addSheet }`
+ * if absent. Idempotent — a no-op when the tab is already present. Returns true
+ * when it created the tab. Requires the read/write `spreadsheets` scope.
+ */
+export async function ensureSheetTab(
+  spreadsheetId: string,
+  title: string,
+  opts?: { token?: string },
+): Promise<boolean> {
+  const token = opts?.token ?? (await getSheetsToken());
+  const titles = await getSheetTitles(spreadsheetId, { token });
+  if (titles.includes(title)) return false;
+  const url = `${SHEETS}/${encodeURIComponent(spreadsheetId)}:batchUpdate`;
+  const res = await sheetsFetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requests: [{ addSheet: { properties: { title } } }] }),
+  });
+  // A concurrent create loses the race with 400 "already exists" — treat as fine.
+  if (!res.ok) {
+    const body = await res.text();
+    if (res.status === 400 && body.toLowerCase().includes('already exists')) return false;
+    throw new Error(`Sheets API addSheet ${res.status} on '${title}': ${body}`);
+  }
+  return true;
+}
+
+/**
+ * Clear a tab's cell contents via `values.clear` (keeps formatting/frozen rows).
+ * Used by the public folder-index writer before rewriting a tab wholesale.
+ */
+export async function clearSheetValues(
+  spreadsheetId: string,
+  range: string,
+  opts?: { token?: string },
+): Promise<void> {
+  const token = opts?.token ?? (await getSheetsToken());
+  const url = `${SHEETS}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}:clear`;
+  const res = await sheetsFetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`Sheets API clear ${res.status} on '${range}': ${await res.text()}`);
 }

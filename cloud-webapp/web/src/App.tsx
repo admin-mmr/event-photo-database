@@ -73,6 +73,7 @@ const STR = {
       report: 'Report',
       trash: 'Trash',
       audit: 'Audit',
+      folders: 'Folders',
       email: 'Email settings',
     },
     menu: 'Menu',
@@ -102,6 +103,7 @@ const STR = {
       report: '报告',
       trash: '回收站',
       audit: '审计',
+      folders: '文件夹',
       email: '邮件设置',
     },
     menu: '菜单',
@@ -128,6 +130,7 @@ import { AdminLinks } from './pages/AdminLinks.js';
 import { AdminAudit } from './pages/AdminAudit.js';
 import { EmailPrefs } from './pages/EmailPrefs.js';
 import { AdminSummary } from './pages/AdminSummary.js';
+import { AdminManagedFolders } from './pages/AdminManagedFolders.js';
 import { DeletedFiles } from './pages/DeletedFiles.js';
 import { AdminMetrics } from './pages/AdminMetrics.js';
 import { MyData } from './pages/MyData.js';
@@ -246,6 +249,9 @@ export function App(): JSX.Element {
                 </Link>
                 <Link to="/admin/deleted" className="nav-link" onClick={closeMenu}>
                   {t.nav.trash}
+                </Link>
+                <Link to="/admin/folders" className="nav-link" onClick={closeMenu}>
+                  {t.nav.folders}
                 </Link>
                 <Link to="/me/email" className="nav-link" onClick={closeMenu}>
                   {t.nav.email}
@@ -369,6 +375,7 @@ export function App(): JSX.Element {
           <Route path="/admin/metrics" element={isGuest ? <Navigate to="/" replace /> : <AdminMetrics />} />
           <Route path="/admin/summary" element={isGuest ? <Navigate to="/" replace /> : <AdminSummary />} />
           <Route path="/admin/deleted" element={isGuest ? <Navigate to="/" replace /> : <DeletedFiles />} />
+          <Route path="/admin/folders" element={isGuest ? <Navigate to="/" replace /> : <AdminManagedFolders />} />
           <Route path="/me/email" element={isGuest ? <Navigate to="/" replace /> : <EmailPrefs />} />
           <Route path="/me/data" element={<MyData />} />
         </Route>

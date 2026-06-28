@@ -35,6 +35,8 @@ import { triggerIndexJob } from './indexerJob.js';
 import { appendUploadLog } from './uploadLogService.js';
 import { initUploadBatch, updateUploadBatch } from './uploadBatchService.js';
 import { buildCreditedFileName } from '../lib/creditedFileName.js';
+import { tryRebuildSpecialFoldersForBatch } from './specialFoldersService.js';
+import { tryRebuildPublicFolderIndex } from './publicFolderIndexService.js';
 
 /**
  * Tag substituted when an upload link carries no tag, so the Drive hierarchy
@@ -471,6 +473,21 @@ export async function enqueueStagedBatch(
     failed,
     batchFolderName,
   });
+
+  // Managed folders (gas-app migration): scoped, inline rebuild of THIS batch's
+  // Photos_NNN / Videos / Album folders + public-index refresh. Best-effort and
+  // gated behind MANAGED_FOLDERS_ENABLED; the rebuild walks Drive but is scoped
+  // to one club/tag + the event's photo buckets (cheap) and every Drive call is
+  // paced by driveRateLimit. Full-event rebuilds run on the index-scan schedule,
+  // never here. Only runs when ≥1 file actually landed.
+  if (copied > 0 && env.MANAGED_FOLDERS_ENABLED === 'true') {
+    try {
+      await tryRebuildSpecialFoldersForBatch(link.eventId, link.clubName, link.tag);
+      await tryRebuildPublicFolderIndex();
+    } catch (err) {
+      logger.warn({ err, eventId: link.eventId, batchId }, 'managed-folders rebuild failed (non-fatal)');
+    }
+  }
 
   return { copied, skippedDuplicates, skippedDuplicateNames };
 }
