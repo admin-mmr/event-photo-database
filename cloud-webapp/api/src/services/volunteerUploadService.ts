@@ -128,13 +128,43 @@ export class UploadLinkError extends Error {
   }
 }
 
+// ── Upload_Links read cache ──────────────────────────────────────────────────
+// validateUploadLink runs once PER FILE (one /session call is minted per
+// upload), so a volunteer uploading a large batch — or several volunteers at
+// once during an event — would otherwise read the WHOLE Upload_Links tab on
+// every single file. Every Sheets read in the app is impersonated as the same
+// DWD subject (env.DWD_SUBJECT), so they all share that one user's
+// `ReadRequestsPerMinutePerUser` quota (60/min). A burst trips
+// 429 RESOURCE_EXHAUSTED and uploads fail mid-batch.
+//
+// A short in-memory TTL cache of the tab collapses a whole batch into ~one read
+// per minute — the same pattern userStore uses for the RBAC hot path. Links
+// change rarely (an admin generates/revokes them), so a 60s staleness window is
+// the accepted trade-off: a freshly minted link becomes usable within a minute,
+// and a revoked link keeps working for at most a minute. Raising the API quota
+// alone would only delay the failure; this removes the per-file read entirely.
+const LINKS_CACHE_TTL_MS = 60_000;
+let linksCache: { at: number; rows: string[][] } | null = null;
+
+async function loadUploadLinks(spreadsheetId: string): Promise<string[][]> {
+  if (linksCache && Date.now() - linksCache.at < LINKS_CACHE_TTL_MS) return linksCache.rows;
+  const rows = await getSheetValues(spreadsheetId, `${env.UPLOAD_LINKS_SHEET_NAME}!A1:K`);
+  linksCache = { at: Date.now(), rows };
+  return rows;
+}
+
+/** Test-only: clear the in-memory Upload_Links cache between cases. */
+export function __clearUploadLinksCache(): void {
+  linksCache = null;
+}
+
 export async function validateUploadLink(token: string): Promise<ValidatedLink> {
   const spreadsheetId = env.MASTER_SPREADSHEET_ID;
   if (!spreadsheetId) {
     throw new UploadLinkError('not_configured', 'Upload links are not configured (no master Sheet).');
   }
 
-  const values = await getSheetValues(spreadsheetId, `${env.UPLOAD_LINKS_SHEET_NAME}!A1:K`);
+  const values = await loadUploadLinks(spreadsheetId);
   const match = values.find((row) => cell(row, LINKS_COL.TOKEN) === token);
   if (!match) throw new UploadLinkError('invalid_token', 'This upload link is not valid.');
   if (cell(match, LINKS_COL.REVOKED_AT)) {

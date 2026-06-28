@@ -9,8 +9,14 @@ process.env.VOLUNTEER_STAGING_PREFIX = 'vol';
 
 // Upload_Links rows keyed by the A1 range the service requests.
 const sheetData: Record<string, string[][]> = {};
+// Per-range read counter so a test can assert the service caches the tab
+// instead of re-reading it on every validateUploadLink call.
+const sheetReads: Record<string, number> = {};
 vi.mock('../src/services/sheetsService.js', () => ({
-  getSheetValues: async (_spreadsheetId: string, range: string) => sheetData[range] ?? [],
+  getSheetValues: async (_spreadsheetId: string, range: string) => {
+    sheetReads[range] = (sheetReads[range] ?? 0) + 1;
+    return sheetData[range] ?? [];
+  },
   // The Upload_Log append (appendUploadLog → appendSheetValues) runs after a
   // batch is copied to Drive. Stubbed so the best-effort logging path succeeds
   // quietly instead of hitting its non-fatal catch on a missing mock export.
@@ -99,6 +105,7 @@ const {
   stagingExtForMime,
   stagingObjectName,
   UploadLinkError,
+  __clearUploadLinksCache,
 } = await import('../src/services/volunteerUploadService.js');
 
 const LINKS_RANGE = 'Upload_Links!A1:K';
@@ -115,7 +122,9 @@ function row(linkId: string, eventId: string, club: string, token: string, revok
 }
 
 beforeEach(() => {
+  __clearUploadLinksCache();
   for (const k of Object.keys(sheetData)) delete sheetData[k];
+  for (const k of Object.keys(sheetReads)) delete sheetReads[k];
   for (const k of Object.keys(eventDocs)) delete eventDocs[k];
   for (const k of Object.keys(objects)) delete objects[k];
   driveUploads.length = 0;
@@ -184,6 +193,23 @@ describe('validateUploadLink', () => {
     const link = await validateUploadLink('tok-good');
     expect(link.eventId).toBe('ev1');
     expect(link.eventName).toBe('');
+  });
+
+  it('reads the Upload_Links tab once across many validate calls (quota guard)', async () => {
+    // Simulate a batch: one /session (→ validateUploadLink) per file, plus a
+    // few invalid-token probes. All must share a single cached Sheet read so a
+    // big batch can't blow the 60 reads/min/user Sheets quota.
+    for (let i = 0; i < 25; i++) await validateUploadLink('tok-good');
+    await expect(validateUploadLink('nope')).rejects.toMatchObject({ code: 'invalid_token' });
+    expect(sheetReads[LINKS_RANGE]).toBe(1);
+  });
+
+  it('re-reads after the cache is cleared', async () => {
+    await validateUploadLink('tok-good');
+    expect(sheetReads[LINKS_RANGE]).toBe(1);
+    __clearUploadLinksCache();
+    await validateUploadLink('tok-good');
+    expect(sheetReads[LINKS_RANGE]).toBe(2);
   });
 });
 
