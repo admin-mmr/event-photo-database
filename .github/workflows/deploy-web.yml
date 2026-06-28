@@ -55,7 +55,15 @@ jobs:
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
       - name: Install firebase-tools
-        run: npm install -g firebase-tools@latest
+        # Pinned, NOT @latest: firebase-tools v15 wraps its ADC path
+        # (autoAuth) in a short hardcoded timeout that the Workload Identity
+        # Federation token exchange overruns, so `firebase deploy` ignores the
+        # valid GOOGLE_APPLICATION_CREDENTIALS file the auth step exports and
+        # dies with "Failed to authenticate, have you run firebase login?".
+        # See https://github.com/firebase/firebase-tools/issues/10726. v14 is
+        # the pre-regression line and authenticates from WIF ADC fine. Bump
+        # only once that bug is fixed upstream (then @latest is safe again).
+        run: npm install -g firebase-tools@14.27.0
 
       - name: Deploy
         working-directory: cloud-webapp
