@@ -18,13 +18,14 @@
  */
 
 import { Router } from 'express';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 
 import { firestore } from '../lib/firestore.js';
 import { env } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
 import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
+import { allowCronOrAdmin } from '../middleware/cronAuth.js';
 import {
   rebuildEventPhotoFolders,
   rebuildAllSpecialFoldersForEvent,
@@ -32,6 +33,13 @@ import {
   backfillSpecialFoldersSharing,
 } from '../services/specialFoldersService.js';
 import { rebuildPublicFolderIndex } from '../services/publicFolderIndexService.js';
+import {
+  enqueueRebuild,
+  drainRebuildQueue,
+  getBatch,
+  latestBatch,
+  type RebuildKind,
+} from '../services/folderRebuildQueue.js';
 import { actor, masterSheetId } from './adminShared.js';
 
 export const adminManagedFoldersRouter = Router();
@@ -52,10 +60,37 @@ async function allEventIds(): Promise<string[]> {
   return snap.docs.map((d) => d.id);
 }
 
-/** Resolve the target event ids: a single `eventId` from the body, or all. */
-async function targetEventIds(body: unknown): Promise<string[]> {
-  const eventId = typeof (body as { eventId?: unknown })?.eventId === 'string' ? (body as { eventId: string }).eventId.trim() : '';
-  return eventId ? [eventId] : allEventIds();
+/** A single `eventId` from the body, trimmed, or '' for the "all events" case. */
+function singleEventId(body: unknown): string {
+  return typeof (body as { eventId?: unknown })?.eventId === 'string' ? (body as { eventId: string }).eventId.trim() : '';
+}
+
+/**
+ * Shared handler for the per-event-loop rebuilds (photos / videos-albums /
+ * migrate-shortcuts). A single `eventId` runs synchronously (one event fits the
+ * 60s request budget); the "all events" case is enqueued as a batch and drained
+ * by the scheduler so it never trips the Hosting/Cloud Run timeout.
+ */
+async function handleRebuild(
+  kind: RebuildKind,
+  req: Request,
+  res: Response,
+  refreshPublic: boolean,
+): Promise<void> {
+  const eventId = singleEventId(req.body);
+  if (eventId) {
+    if (kind === 'videos-albums') await rebuildAllSpecialFoldersForEvent(eventId);
+    else if (kind === 'photos') await rebuildEventPhotoFolders(eventId);
+    else await migrateEventPhotoShortcutsToFiles(eventId);
+    if (refreshPublic) await rebuildPublicFolderIndex();
+    logger.info({ kind, eventId, by: actor(req) }, 'synchronous single-event rebuild');
+    res.json({ ok: true, mode: 'sync', eventId });
+    return;
+  }
+  const ids = await allEventIds();
+  const { id, total } = await enqueueRebuild(kind, ids, { createdBy: actor(req), refreshPublic });
+  logger.info({ kind, batchId: id, total, by: actor(req) }, 'enqueued all-events rebuild batch');
+  res.status(202).json({ ok: true, mode: 'async', batchId: id, total });
 }
 
 adminManagedFoldersRouter.post('/admin/folders/refresh-public', ...guard, async (req, res, next) => {
@@ -85,15 +120,7 @@ adminManagedFoldersRouter.post('/admin/folders/rebuild/:eventId', ...guard, asyn
 adminManagedFoldersRouter.post('/admin/folders/rebuild-photos', ...guard, async (req, res, next) => {
   try {
     if (!masterSheetId(res) || notEnabled(res)) return;
-    const ids = await targetEventIds(req.body);
-    let ok = 0;
-    for (const eventId of ids) {
-      const r = await rebuildEventPhotoFolders(eventId);
-      if (r.ok) ok++;
-    }
-    await rebuildPublicFolderIndex();
-    logger.info({ events: ids.length, ok, by: actor(req) }, 'manual rebuild-photos');
-    res.json({ ok: true, events: ids.length, succeeded: ok });
+    await handleRebuild('photos', req, res, true);
   } catch (err) {
     next(err);
   }
@@ -102,11 +129,7 @@ adminManagedFoldersRouter.post('/admin/folders/rebuild-photos', ...guard, async 
 adminManagedFoldersRouter.post('/admin/folders/rebuild-videos-albums', ...guard, async (req, res, next) => {
   try {
     if (!masterSheetId(res) || notEnabled(res)) return;
-    const ids = await targetEventIds(req.body);
-    for (const eventId of ids) await rebuildAllSpecialFoldersForEvent(eventId);
-    await rebuildPublicFolderIndex();
-    logger.info({ events: ids.length, by: actor(req) }, 'manual rebuild-videos-albums');
-    res.json({ ok: true, events: ids.length });
+    await handleRebuild('videos-albums', req, res, true);
   } catch (err) {
     next(err);
   }
@@ -115,14 +138,37 @@ adminManagedFoldersRouter.post('/admin/folders/rebuild-videos-albums', ...guard,
 adminManagedFoldersRouter.post('/admin/folders/migrate-photo-shortcuts', ...guard, async (req, res, next) => {
   try {
     if (!masterSheetId(res) || notEnabled(res)) return;
-    const ids = await targetEventIds(req.body);
-    const results = [];
-    for (const eventId of ids) {
-      const r = await migrateEventPhotoShortcutsToFiles(eventId);
-      results.push({ eventId, ok: r.ok, message: r.message });
-    }
-    logger.info({ events: ids.length, by: actor(req) }, 'manual migrate-photo-shortcuts');
-    res.json({ ok: true, results });
+    await handleRebuild('migrate-shortcuts', req, res, false);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /admin/folders/rebuild-drain — process queued "all events" rebuild
+ * batches. Cloud Scheduler (`findme-folder-rebuild`) hits this every couple of
+ * minutes via the `allowCronOrAdmin` machine path; an admin can also trigger a
+ * drain by hand. Cheap no-op when nothing is queued. See folderRebuildQueue.ts.
+ */
+adminManagedFoldersRouter.post('/admin/folders/rebuild-drain', allowCronOrAdmin, async (req, res, next) => {
+  try {
+    if (!masterSheetId(res) || notEnabled(res)) return;
+    const summary = await drainRebuildQueue();
+    res.json({ ok: true, ...summary });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /admin/folders/rebuild-status — progress for the UI to poll. `?batchId=`
+ * for a specific batch, otherwise the most recent one.
+ */
+adminManagedFoldersRouter.get('/admin/folders/rebuild-status', ...guard, async (req, res, next) => {
+  try {
+    const batchId = typeof req.query.batchId === 'string' ? req.query.batchId : '';
+    const batch = batchId ? await getBatch(batchId) : await latestBatch();
+    res.json({ ok: true, batch });
   } catch (err) {
     next(err);
   }

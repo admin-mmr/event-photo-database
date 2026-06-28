@@ -186,7 +186,7 @@
 
 ## Cloud Scheduler jobs (machine triggers)
 
-- Four scheduler jobs in `us-central1` POST to `event-photo-api`, all authorized
+- Five scheduler jobs in `us-central1` POST to `event-photo-api`, all authorized
   by the `allowCronOrAdmin` gate (`X-Sync-Token: $SYNC_TRIGGER_TOKEN`):
   `findme-drive-sync` (`/api/admin/sync`, daily reconcile — pre-existing, from
   `provision-sync-scheduler.sh`), `findme-index-scan` (`/api/admin/index-scan`,
@@ -205,12 +205,27 @@
   `unrecognized arguments: --headers=…`. Workaround: delete the job and re-run, or
   do the `update http` by hand with `--update-headers`. TODO: patch the script to
   pick the header flag by verb.
-- **Keep all four PAUSED until Phase B parity sign-off** (`CUTOVER_RUNBOOK.md`
+- **`findme-folder-rebuild`** (`/api/admin/folders/rebuild-drain`, ~every 2 min —
+  `provision-folder-rebuild-scheduler.sh`) drains the managed-folder rebuild
+  queue. The "All events" Photos / Videos+Albums / Migrate admin buttons used to
+  run a Drive-heavy loop inline and **502 at the 60s Hosting/Cloud Run cap**; they
+  now enqueue a batch (`folderRebuildBatches` Firestore collection, written by
+  `api/src/services/folderRebuildQueue.ts`) and return `202`. Each drain claims
+  pending events transactionally (overlapping ticks never double-process),
+  rebuilds them within a ~40s budget so the request stays under the 60s cap, and
+  the drain that empties a batch refreshes the public folder index once. A drain
+  with nothing queued is a single-query no-op, so the 2-min tick is ~free while
+  idle (respects the zero-idle-cost policy). Single-event rebuilds still run
+  synchronously (one event fits 60s). This script **picks the header flag by verb**
+  (`--headers` on create, `--update-headers` on update), so unlike
+  `provision-index-scan-scheduler.sh` it is safe to re-run.
+- **Keep all PAUSED until Phase B parity sign-off** (`CUTOVER_RUNBOOK.md`
   §A4). New jobs are `ENABLED` by default — pause right after creating. A paused
   job can still be triggered manually with `gcloud scheduler jobs run` for
   verification. `findme-drive-sync` especially must be paused during parity since
-  it writes the master Sheet (the SSOT the parity diffs read). `resume` all four
-  after sign-off.
+  it writes the master Sheet (the SSOT the parity diffs read). `resume` them all
+  after sign-off. (`findme-folder-rebuild` only acts when a batch is queued, so
+  it is harmless to leave enabled, but keep it paused with the rest for tidiness.)
 
 ## Indexer notes
 
