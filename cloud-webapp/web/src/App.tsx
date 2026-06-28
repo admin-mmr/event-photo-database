@@ -60,7 +60,7 @@ function MenuIcon({ open }: { open: boolean }): JSX.Element {
 
 const STR = {
   en: {
-    title: 'Event Galleries',
+    title: 'FindMe',
     tagline: 'Browse event photos and find yourself with Find Me.',
     nav: {
       galleries: 'Galleries',
@@ -90,7 +90,7 @@ const STR = {
       'Could not start a guest session. Ask an admin to enable Anonymous sign-in in Firebase.',
   },
   zh: {
-    title: '活动相册',
+    title: '一键找我',
     tagline: '浏览活动照片，并用人脸识别找到照片中的自己。',
     nav: {
       galleries: '相册',

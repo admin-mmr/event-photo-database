@@ -1,4 +1,6 @@
-# cloud-webapp — Event Photo Database, Google Cloud edition
+# cloud-webapp — FindMe (一键找我), Google Cloud edition
+
+> **FindMe / 一键找我** is the user-facing name of this event photo system.
 
 This is the GCP replacement for the Apps Script app in `../gas-app/`.
 Backend on Cloud Run, frontend on Firebase Hosting, metadata in Firestore,
