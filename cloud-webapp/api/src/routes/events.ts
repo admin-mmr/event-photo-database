@@ -82,6 +82,34 @@ eventsRouter.get('/events/:id', requireAuth, async (req, res, next) => {
 });
 
 /**
+ * GET /api/events/:id/album-folders — public-facing list of the event's managed
+ * Album folders (Drive links) so the gallery can offer "Open album in Drive".
+ * Reads the `specialFolders` Firestore cache (mirrors the Special_Folders sheet,
+ * written on every rebuild) — no Sheets quota on this user-facing path. The
+ * folders are shared anyone-with-link, so exposing the URL is safe. One equality
+ * filter (eventId) uses an automatic index; scope is filtered in memory.
+ */
+eventsRouter.get('/events/:id/album-folders', requireAuth, async (req, res, next) => {
+  try {
+    const eventId = String(req.params.id);
+    const snap = await firestore().collection('specialFolders').where('eventId', '==', eventId).get();
+    const folders = snap.docs
+      .map((d) => d.data() as Record<string, unknown>)
+      .filter((r) => r.scope === 'albums' && typeof r.folderUrl === 'string' && r.folderUrl)
+      .map((r) => ({
+        clubName: String(r.clubName ?? ''),
+        tag: String(r.tag ?? ''),
+        folderUrl: String(r.folderUrl),
+        fileCount: typeof r.fileCount === 'number' ? r.fileCount : 0,
+      }))
+      .sort((a, b) => a.clubName.localeCompare(b.clubName) || a.tag.localeCompare(b.tag));
+    res.json({ ok: true, folders });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * GET /api/events/:id/duplicates — admin audit of de-duplicated photos
  * (B6 / FR-2c). Reports how many byte-identical duplicates the indexer collapsed
  * and which canonical photos absorbed them, so an admin can verify dedup is

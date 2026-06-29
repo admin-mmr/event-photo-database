@@ -18,6 +18,9 @@ const STR = {
     rebuildVideosAlbums: 'Rebuild Videos + Albums',
     migrate: 'Migrate photo shortcuts',
     backfill: 'Backfill sharing',
+    dedupe: 'Remove duplicate folders',
+    dedupeDone: (folders: number, rows: number) =>
+      `Removed ${folders} duplicate folder${folders === 1 ? '' : 's'} and ${rows} stale row${rows === 1 ? '' : 's'}.`,
     running: 'Running…',
     forbidden: 'This page is admin-only — sign in with an admin account.',
     notEnabled: 'Managed folders are not enabled on the server (MANAGED_FOLDERS_ENABLED).',
@@ -72,6 +75,8 @@ const STR = {
     rebuildVideosAlbums: '重建 Videos + Albums',
     migrate: '迁移照片快捷方式',
     backfill: '回填共享权限',
+    dedupe: '清除重复文件夹',
+    dedupeDone: (folders: number, rows: number) => `已清除 ${folders} 个重复文件夹和 ${rows} 行过期记录。`,
     running: '执行中…',
     forbidden: '此页面仅限管理员，请使用管理员账号登录。',
     notEnabled: '服务器未启用托管文件夹（MANAGED_FOLDERS_ENABLED）。',
@@ -234,21 +239,25 @@ export function AdminManagedFolders(): JSX.Element {
     [],
   );
 
-  async function run(label: string, fn: () => Promise<unknown>): Promise<void> {
+  async function run(
+    label: string,
+    fn: () => Promise<unknown>,
+    onDone?: (r: Record<string, unknown>) => string,
+  ): Promise<void> {
     const token = (runToken.current += 1);
     setBusy(label);
     setMessage(null);
     setError(null);
     setBatch(null);
     try {
-      const r = (await fn()) as { mode?: string; batchId?: string };
+      const r = (await fn()) as { mode?: string; batchId?: string } & Record<string, unknown>;
       if (r?.mode === 'async' && r.batchId) {
         setMessage(t.queued);
         await driveBatch(r.batchId, token);
         if (runToken.current === token) void loadRecon(eventId);
         return;
       }
-      setMessage(t.done);
+      setMessage(onDone ? onDone(r) : t.done);
       setBusy(null);
       void loadRecon(eventId);
     } catch (e) {
@@ -315,6 +324,19 @@ export function AdminManagedFolders(): JSX.Element {
         </button>
         <button className="btn btn-light btn-sm" disabled={disabled} onClick={() => void run('backfill', () => apiPost('/api/admin/folders/backfill-sharing', {}))}>
           {busy === 'backfill' ? t.running : t.backfill}
+        </button>
+        <button
+          className="btn btn-light btn-sm"
+          disabled={disabled || !oneEvent}
+          onClick={() =>
+            void run(
+              'dedupe',
+              () => apiPost(`/api/admin/folders/dedupe/${encodeURIComponent(eventId)}`, {}),
+              (r) => t.dedupeDone(Number(r.trashedFolders ?? 0), Number(r.rowsRemoved ?? 0)),
+            )
+          }
+        >
+          {busy === 'dedupe' ? t.running : t.dedupe}
         </button>
       </div>
 

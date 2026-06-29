@@ -29,6 +29,7 @@ import {
   getDriveToken,
   getFolderById,
   findSubfolder,
+  findSubfoldersByName,
   getOrCreateSubfolder,
   listChildFolders,
   walkMediaFiles,
@@ -58,6 +59,7 @@ import {
   listAllSpecialFolders,
   loadSpecialFolderRows,
   upsertSpecialFolderRow,
+  deleteSpecialFolderRowsByFolderId,
   ensureSpecialFoldersTab,
   type SpecialFolderRecord,
   type SpecialFolderScope,
@@ -222,6 +224,62 @@ function sid(): string {
   return env.MASTER_SPREADSHEET_ID;
 }
 
+/**
+ * getOrCreate that also HEALS duplicates: `getOrCreateSubfolder` does a
+ * non-atomic find-then-create, so two rebuilds racing on the same managed folder
+ * (e.g. the inline per-upload hook firing for several volunteer folders at once)
+ * can each create one — leaving two "Album"/"Videos"/"Photos_NNN" folders. This
+ * lists ALL same-named folders, keeps the oldest (lowest id, deterministic so
+ * repeated runs converge), trashes the rest (recoverable; their shortcuts/copies
+ * are regenerated idempotently into the survivor), and returns the survivor plus
+ * the trashed ids so the caller can drop their stale Special_Folders rows.
+ */
+async function consolidateManagedSubfolder(
+  parentId: string,
+  name: string,
+  driveToken: string,
+  warnings: string[],
+): Promise<{ folder: { id: string; name: string }; trashedFolderIds: string[] }> {
+  const matches = await findSubfoldersByName(parentId, name, { token: driveToken });
+  if (matches.length <= 1) {
+    const folder = matches[0] ?? (await getOrCreateSubfolder(parentId, name, { token: driveToken }));
+    return { folder: { id: folder.id, name: folder.name }, trashedFolderIds: [] };
+  }
+  const [survivor, ...dups] = matches; // sorted by id ⇒ survivor is the oldest
+  const trashedFolderIds: string[] = [];
+  for (const dup of dups) {
+    const trashed = await trashDriveFile(dup.id, { token: driveToken });
+    if (trashed.ok) trashedFolderIds.push(dup.id);
+    else warnings.push(`Failed to trash duplicate "${name}" folder ${dup.id}: ${trashed.error}`);
+  }
+  if (trashedFolderIds.length) {
+    logger.info({ parentId, name, survivor: survivor!.id, trashed: trashedFolderIds.length }, 'consolidated duplicate managed folder');
+  }
+  return { folder: { id: survivor!.id, name: survivor!.name }, trashedFolderIds };
+}
+
+/**
+ * consolidateManagedSubfolder + immediate stale-row cleanup. Used by the rebuild
+ * so duplicates are healed in place as folders are (re)built.
+ */
+async function getOrHealManagedSubfolder(
+  parentId: string,
+  name: string,
+  spreadsheetId: string,
+  driveToken: string,
+  warnings: string[],
+): Promise<{ id: string; name: string }> {
+  const { folder, trashedFolderIds } = await consolidateManagedSubfolder(parentId, name, driveToken, warnings);
+  if (trashedFolderIds.length) {
+    try {
+      await deleteSpecialFolderRowsByFolderId(spreadsheetId, new Set(trashedFolderIds));
+    } catch (err) {
+      warnings.push(`Trashed ${trashedFolderIds.length} duplicate "${name}" folder(s) but stale-row cleanup failed: ${String(err)}`);
+    }
+  }
+  return folder;
+}
+
 async function dedupeFolderShortcuts(
   existing: ShortcutEntry[],
   folderName: string,
@@ -371,7 +429,7 @@ export async function rebuildEventPhotoFolders(eventId: string): Promise<Service
     const folderName = photosFolderName(b);
     let folder;
     try {
-      folder = await getOrCreateSubfolder(event.driveFolderId, folderName, { token: driveToken });
+      folder = await getOrHealManagedSubfolder(event.driveFolderId, folderName, spreadsheetId, driveToken, warnings);
     } catch (err) {
       warnings.push(`Failed to create or open ${folderName}: ${String(err)}`);
       buckets.push(null);
@@ -550,7 +608,7 @@ async function rebuildClubScopedFolder(
 
   let shortcutFolder;
   try {
-    shortcutFolder = await getOrCreateSubfolder(scopeFolderId, spec.folderName, { token: driveToken });
+    shortcutFolder = await getOrHealManagedSubfolder(scopeFolderId, spec.folderName, spreadsheetId, driveToken, warnings);
   } catch (err) {
     return { ok: false, message: `Failed to create or open ${spec.folderName}: ${String(err)}` };
   }
@@ -753,6 +811,76 @@ export async function rebuildAllSpecialFoldersForEvent(eventId: string): Promise
     scopes.push({ clubName, tag, videos, albums });
   }
   return { photos, scopes };
+}
+
+// ─── Duplicate managed-folder cleanup ─────────────────────────────────────────
+
+export interface DedupeResult {
+  ok: boolean;
+  message: string;
+  trashedFolders: number;
+  rowsRemoved: number;
+  warnings: string[];
+}
+
+/**
+ * Find and remove duplicate managed folders for one event WITHOUT a full relink:
+ * for each Photos_NNN bucket name (under the event root) and each Videos / Album
+ * folder (under every club/tag scope), keep the oldest folder and trash the
+ * rest, then drop the stale Special_Folders rows. Never CREATES a folder (only
+ * consolidates names that already have ≥2 copies), so it is a safe, fast cleanup
+ * an admin can run on its own; a subsequent rebuild repopulates the survivors.
+ */
+export async function dedupeEventManagedFolders(eventId: string): Promise<DedupeResult> {
+  const spreadsheetId = sid();
+  if (!spreadsheetId) return { ok: false, message: 'master Sheet not configured', trashedFolders: 0, rowsRemoved: 0, warnings: [] };
+  const event = await getEventDrive(eventId);
+  if (!event) return { ok: false, message: `Event "${eventId}" not found or has no Drive folder`, trashedFolders: 0, rowsRemoved: 0, warnings: [] };
+
+  const driveToken = await getDriveToken(DRIVE_SCOPE_READWRITE);
+  const warnings: string[] = [];
+  const trashed: string[] = [];
+
+  const consolidateIfDuplicated = async (parentId: string, name: string): Promise<void> => {
+    const matches = await findSubfoldersByName(parentId, name, { token: driveToken });
+    if (matches.length <= 1) return;
+    const r = await consolidateManagedSubfolder(parentId, name, driveToken, warnings);
+    trashed.push(...r.trashedFolderIds);
+  };
+
+  // Photos_NNN buckets live directly under the event root.
+  try {
+    const rootChildren = await listChildFolders(event.driveFolderId, { token: driveToken });
+    const bucketNames = new Set(rootChildren.filter((f) => /^Photos_\d{3}$/.test(f.name)).map((f) => f.name));
+    for (const name of bucketNames) await consolidateIfDuplicated(event.driveFolderId, name);
+  } catch (err) {
+    warnings.push(`Listing Photos_NNN buckets failed: ${String(err)}`);
+  }
+
+  // Videos / Album folders live under each (club, tag) scope.
+  for (const { clubName, tag } of await listEventScopes(eventId)) {
+    const scopeFolderId = await resolveClubTagFolder(event.driveFolderId, clubName, tag, driveToken);
+    if (!scopeFolderId) continue;
+    await consolidateIfDuplicated(scopeFolderId, VIDEOS_FOLDER_NAME);
+    await consolidateIfDuplicated(scopeFolderId, ALBUM_FOLDER_NAME);
+  }
+
+  let rowsRemoved = 0;
+  if (trashed.length) {
+    try {
+      rowsRemoved = await deleteSpecialFolderRowsByFolderId(spreadsheetId, new Set(trashed));
+    } catch (err) {
+      warnings.push(`Stale-row cleanup failed: ${String(err)}`);
+    }
+  }
+  logger.info({ eventId, trashed: trashed.length, rowsRemoved, warnings: warnings.length }, 'dedupeEventManagedFolders done');
+  return {
+    ok: true,
+    message: `Trashed ${trashed.length} duplicate folder(s); removed ${rowsRemoved} stale row(s).`,
+    trashedFolders: trashed.length,
+    rowsRemoved,
+    warnings,
+  };
 }
 
 /**

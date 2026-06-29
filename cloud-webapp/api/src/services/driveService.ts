@@ -399,6 +399,40 @@ export async function findSubfolder(
 }
 
 /**
+ * Return EVERY non-trashed subfolder of `parentId` with the exact name `name`,
+ * sorted by id (deterministic). Unlike findSubfolder (first match only), this
+ * surfaces the duplicates that the non-atomic getOrCreateSubfolder can leave
+ * behind under concurrent rebuilds, so the caller can consolidate them.
+ */
+export async function findSubfoldersByName(
+  parentId: string,
+  name: string,
+  opts?: { token?: string },
+): Promise<FolderRef[]> {
+  const token = opts?.token ?? (await getDriveToken());
+  const safe = name.replace(/'/g, "\\'");
+  const out: FolderRef[] = [];
+  let pageToken: string | undefined;
+  do {
+    const params = new URLSearchParams({
+      q: `'${parentId}' in parents and name='${safe}' and mimeType='${FOLDER_MIME}' and trashed=false`,
+      fields: 'nextPageToken,files(id,name)',
+      pageSize: '100',
+      supportsAllDrives: 'true',
+      includeItemsFromAllDrives: 'true',
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+    const res = await driveFetch(`${DRIVE}?${params}`, { headers: { Authorization: `Bearer ${token}` } }, 'findSubfoldersByName');
+    if (!res.ok) throw new Error(`Drive find subfolders ${res.status}: ${await res.text()}`);
+    const page = (await res.json()) as { nextPageToken?: string; files?: FolderRef[] };
+    for (const f of page.files ?? []) out.push({ id: String(f.id), name: String(f.name ?? '') });
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+  out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return out;
+}
+
+/**
  * Depth-first walk of every descendant of `rootFolderId`, returning every
  * non-shortcut file whose MIME satisfies `accept`. Mirrors the gas-app
  * walkMediaFiles: shortcuts are skipped (so we never index our own shortcuts),

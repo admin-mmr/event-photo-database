@@ -32,6 +32,7 @@ import {
   migrateEventPhotoShortcutsToFiles,
   backfillSpecialFoldersSharing,
   countEventMedia,
+  dedupeEventManagedFolders,
 } from '../services/specialFoldersService.js';
 import { listAllSpecialFolders } from '../services/specialFoldersStore.js';
 import { rebuildPublicFolderIndex } from '../services/publicFolderIndexService.js';
@@ -228,6 +229,25 @@ adminManagedFoldersRouter.get('/admin/folders/reconcile/:eventId', ...guard, asy
       : null;
 
     res.json({ ok: true, eventId, source, folders, index });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /admin/folders/dedupe/:eventId — trash duplicate managed folders for one
+ * event (keep the oldest), drop their stale Special_Folders rows, then refresh
+ * the public index. Single-event so it fits the 60s budget. Use when the
+ * "Managed Albums" sheet shows duplicate rows / Drive shows two Album folders.
+ */
+adminManagedFoldersRouter.post('/admin/folders/dedupe/:eventId', ...guard, async (req, res, next) => {
+  try {
+    if (!masterSheetId(res) || notEnabled(res)) return;
+    const eventId = String(req.params.eventId);
+    const result = await dedupeEventManagedFolders(eventId);
+    await rebuildPublicFolderIndex();
+    logger.info({ eventId, trashed: result.trashedFolders, rows: result.rowsRemoved, by: actor(req) }, 'manual dedupe managed folders');
+    res.json({ eventId, ...result });
   } catch (err) {
     next(err);
   }

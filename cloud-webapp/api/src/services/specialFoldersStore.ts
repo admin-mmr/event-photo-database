@@ -15,7 +15,7 @@
  * "Sheet is world-viewable" rule in CLAUDE.md.
  */
 
-import { appendSheetValues, ensureSheetTab, updateSheetValues } from './sheetsService.js';
+import { appendSheetValues, clearSheetValues, ensureSheetTab, updateSheetValues } from './sheetsService.js';
 import { cell, readTab, rowRange, withTabLock, type SheetRow } from './sheetTable.js';
 import { firestore } from '../lib/firestore.js';
 import { env } from '../lib/config.js';
@@ -190,4 +190,46 @@ export async function upsertSpecialFolderRow(
     }
   });
   await cacheUpsert(record);
+}
+
+/** Best-effort removal of a cache mirror doc (after its Drive folder is trashed). */
+async function cacheDelete(folderId: string): Promise<void> {
+  try {
+    await firestore().collection('specialFolders').doc(folderId).delete();
+  } catch (err) {
+    logger.warn({ err, folderId }, 'specialFolders cache delete failed (non-fatal)');
+  }
+}
+
+/**
+ * Remove every Special_Folders row whose folderId is in `folderIds` (e.g. after
+ * trashing duplicate managed folders). Rewrites the data range in one pass under
+ * the tab lock — the same clear-then-rewrite the public index writer uses — so
+ * the surviving rows keep their order. Returns how many rows were removed.
+ */
+export async function deleteSpecialFolderRowsByFolderId(
+  spreadsheetId: string,
+  folderIds: ReadonlySet<string>,
+  opts?: { token?: string },
+): Promise<number> {
+  if (folderIds.size === 0) return 0;
+  const removed = await withTabLock(tab(), async () => {
+    const rows = await readTab(spreadsheetId, tab(), LAST_COL, COL.FOLDER_ID, 'folderid', opts);
+    const survivors = rows.filter((r) => !folderIds.has(cell(r.cells, COL.FOLDER_ID)));
+    const removedCount = rows.length - survivors.length;
+    if (removedCount === 0) return 0;
+    // Clear all data rows (keep the header), then re-append the survivors.
+    await clearSheetValues(spreadsheetId, `${tab()}!${FIRST_COL}2:${LAST_COL}`, opts);
+    if (survivors.length > 0) {
+      const cells = survivors.map((r) => {
+        const padded = new Array<unknown>(WIDTH).fill('');
+        for (let i = 0; i < WIDTH; i++) padded[i] = r.cells[i] ?? '';
+        return padded;
+      });
+      await appendSheetValues(spreadsheetId, `${tab()}!${FIRST_COL}1`, cells, opts);
+    }
+    return removedCount;
+  });
+  if (removed > 0) await Promise.all([...folderIds].map((id) => cacheDelete(id)));
+  return removed;
 }

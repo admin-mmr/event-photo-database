@@ -56,6 +56,8 @@ const STR = {
     done: 'Done',
     selectPhotos: 'Select photos',
     findMe: '📷 Find Me',
+    openAlbum: '📁 Open album in Drive',
+    openAlbumClub: (club: string) => `📁 ${club} album`,
     couldNotLoadPhotos: 'Could not load photos',
     deletedPhotos: (count: number) =>
       `Deleted ${count} photo${count === 1 ? '' : 's'}`,
@@ -116,6 +118,8 @@ const STR = {
     done: '完成',
     selectPhotos: '选择照片',
     findMe: '📷 人脸识别',
+    openAlbum: '📁 在 Drive 中打开相册',
+    openAlbumClub: (club: string) => `📁 ${club} 相册`,
     couldNotLoadPhotos: '无法加载照片',
     deletedPhotos: (count: number) => `已删除 ${count} 张照片`,
     deletingPhotos: (count: number) => `正在删除 ${count} 张照片…`,
@@ -157,11 +161,20 @@ interface DeleteFlow {
   reindex: 'active' | 'done' | 'skipped';
 }
 
+/** A managed Album folder link for the event (one per club/tag scope). */
+interface AlbumFolder {
+  clubName: string;
+  tag: string;
+  folderUrl: string;
+  fileCount: number;
+}
+
 export function Gallery(): JSX.Element {
   const t = useStrings(STR);
   const { eventId = '' } = useParams();
   const [photos, setPhotos] = useState<GalleryPhoto[] | null>(null);
   const [eventName, setEventName] = useState('');
+  const [albumFolders, setAlbumFolders] = useState<AlbumFolder[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [selectMode, setSelectMode] = useState(false);
@@ -315,6 +328,23 @@ export function Gallery(): JSX.Element {
       })
       .catch(() => {
         /* non-fatal: title falls back to the photos response / eventLabel */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [eventId]);
+
+  // The managed Album folder link(s) so visitors can browse the raw files in
+  // Drive. Best-effort; reduced to one link per club (preferring the club-level
+  // album that holds everything) in `albumLinks`.
+  useEffect(() => {
+    let cancelled = false;
+    apiGet<{ ok: true; folders: AlbumFolder[] }>(`/api/events/${encodeURIComponent(eventId)}/album-folders`)
+      .then((r) => {
+        if (!cancelled) setAlbumFolders(r.folders ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setAlbumFolders([]);
       });
     return () => {
       cancelled = true;
@@ -491,6 +521,18 @@ export function Gallery(): JSX.Element {
   }, [reindexActive, eventId]);
 
   const title = eventLabel({ name: eventName, id: eventId, hasPhotos: list.length > 0 });
+
+  // One album link per club: prefer the club-level album (tag === '') which
+  // contains everything; fall back to the first tag-scoped album otherwise. This
+  // avoids showing several overlapping "Album" links for the same club.
+  const albumLinks = useMemo<AlbumFolder[]>(() => {
+    const byClub = new Map<string, AlbumFolder>();
+    for (const f of albumFolders) {
+      const existing = byClub.get(f.clubName);
+      if (!existing || (f.tag === '' && existing.tag !== '')) byClub.set(f.clubName, f);
+    }
+    return [...byClub.values()];
+  }, [albumFolders]);
 
   async function fetchOriginal(p: GalleryPhoto): Promise<Blob> {
     return apiGetBlob(
@@ -729,6 +771,17 @@ export function Gallery(): JSX.Element {
           >
             {selectMode ? t.done : t.selectPhotos}
           </button>
+          {albumLinks.map((f) => (
+            <a
+              key={f.folderUrl}
+              className="btn btn-light btn-sm"
+              href={f.folderUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {albumLinks.length === 1 ? t.openAlbum : t.openAlbumClub(f.clubName || f.tag || '—')}
+            </a>
+          ))}
           <Link to={`/events/${eventId}/findme`} className="btn btn-primary btn-sm">
             {t.findMe}
           </Link>
