@@ -28,13 +28,49 @@ import {
   rebuildEventPhotoFolders,
   rebuildAllSpecialFoldersForEvent,
   migrateEventPhotoShortcutsToFiles,
+  rebuildEventVideoFolders,
+  rebuildEventAlbumFolders,
+  countEventMedia,
 } from './specialFoldersService.js';
 import { rebuildPublicFolderIndex } from './publicFolderIndexService.js';
 
-/** What a batch rebuilds per event. Maps 1:1 to the synchronous service fns. */
-export type RebuildKind = 'photos' | 'videos-albums' | 'migrate-shortcuts';
+/**
+ * What a batch rebuilds.
+ *   - The "all events" kinds ('photos' | 'videos-albums' | 'migrate-shortcuts')
+ *     map 1:1 to the synchronous service fns and process a LIST OF EVENTS, one
+ *     event per claim (see `pending`/`done`/`failed`).
+ *   - 'full' is a SINGLE-event full rebuild broken into ordered STEPS
+ *     (Photos_NNN → Videos → Albums → public sheet). It used to run inline and
+ *     trip the 60s cap (HTTP 502); now it drains step-by-step like the batches
+ *     and reports per-step progress in `steps` so the UI can show a progress bar.
+ */
+export type RebuildKind = 'photos' | 'videos-albums' | 'migrate-shortcuts' | 'full';
+
+/** Kinds processed by the per-event drain loop (everything except 'full'). */
+type EventLoopKind = Exclude<RebuildKind, 'full'>;
 
 export type BatchStatus = 'running' | 'done';
+
+/** The ordered steps of a single-event 'full' rebuild. 'count' is a quick
+ *  read-only pre-pass that surfaces how many photos/videos the rebuild will
+ *  touch and pre-fills the later steps' denominators. */
+export type StepKey = 'count' | 'photos' | 'videos' | 'albums' | 'public';
+export type StepStatus = 'pending' | 'running' | 'done' | 'failed';
+
+export interface StepProgress {
+  key: StepKey;
+  status: StepStatus;
+  /** Denominator for the step (photos found / scopes to process / index rows). */
+  total?: number;
+  /** Numerator (Photos_NNN folders built / Videos|Album folders touched). */
+  done?: number;
+  /** Short human summary shown under the step label. */
+  note?: string;
+  /** Failure message when status === 'failed'. */
+  error?: string;
+  /** When the current attempt was claimed — used for stale-lease reclaim. */
+  startedAt?: string;
+}
 
 export interface RebuildBatch {
   id: string;
@@ -49,6 +85,10 @@ export interface RebuildBatch {
   failed: Array<{ eventId: string; error: string }>;
   /** Refresh the public folder index once the batch empties. */
   refreshPublic: boolean;
+  /** Single event a 'full' batch targets (undefined for the list kinds). */
+  eventId?: string;
+  /** Ordered step progress for a 'full' batch (undefined for the list kinds). */
+  steps?: StepProgress[];
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -62,6 +102,11 @@ const COLLECTION = 'folderRebuildBatches';
  *  headroom; leftover events roll to the next scheduler tick. */
 const DRAIN_BUDGET_MS = 40_000;
 
+/** A step left 'running' longer than this (its drain died mid-step) is treated
+ *  as abandoned and re-claimable. Every step is idempotent, so re-running just
+ *  resumes — already-represented sources are skipped. */
+const STEP_LEASE_MS = 90_000;
+
 const now = (): string => new Date().toISOString();
 
 function batchRef(id: string) {
@@ -70,7 +115,7 @@ function batchRef(id: string) {
 
 /** Run one event through the rebuild for the given kind. Throws on failure so
  *  the caller can record it against the batch. */
-async function rebuildOne(kind: RebuildKind, eventId: string): Promise<void> {
+async function rebuildOne(kind: EventLoopKind, eventId: string): Promise<void> {
   if (kind === 'videos-albums') {
     await rebuildAllSpecialFoldersForEvent(eventId);
     return;
@@ -108,6 +153,42 @@ export async function enqueueRebuild(
   await ref.set(batch);
   logger.info({ batchId: ref.id, kind, total: eventIds.length, by: opts.createdBy }, 'rebuild batch enqueued');
   return { id: ref.id, total: eventIds.length };
+}
+
+/** The fixed, ordered steps of a single-event full rebuild. */
+const FULL_STEP_KEYS: readonly StepKey[] = ['count', 'photos', 'videos', 'albums', 'public'] as const;
+
+/**
+ * Create a single-event 'full' rebuild batch (Photos_NNN → Videos → Albums →
+ * public sheet). Returns the batch id. Drain ticks run the steps; nothing
+ * Drive-heavy runs here. Replaces the old inline `rebuildAllSpecialFoldersForEvent`
+ * call that 502'd at the 60s cap.
+ */
+export async function enqueueFullRebuild(
+  eventId: string,
+  opts: { createdBy: string },
+): Promise<{ id: string; total: number }> {
+  const ref = firestore().collection(COLLECTION).doc();
+  const ts = now();
+  const steps: StepProgress[] = FULL_STEP_KEYS.map((key) => ({ key, status: 'pending' }));
+  const batch: Omit<RebuildBatch, 'id'> = {
+    kind: 'full',
+    status: 'running',
+    total: 1,
+    pending: [],
+    done: [],
+    failed: [],
+    // Public-index refresh is an explicit step here, not the post-drain hook.
+    refreshPublic: false,
+    eventId,
+    steps,
+    createdBy: opts.createdBy,
+    createdAt: ts,
+    updatedAt: ts,
+  };
+  await ref.set(batch);
+  logger.info({ batchId: ref.id, eventId, by: opts.createdBy }, 'full rebuild batch enqueued');
+  return { id: ref.id, total: 1 };
 }
 
 /** The oldest still-running batch, or null. */
@@ -163,6 +244,151 @@ async function finalizeIfComplete(id: string): Promise<{ justFinished: boolean; 
   });
 }
 
+// ─── 'full' single-event step drain ──────────────────────────────────────────
+
+/** Claim the next runnable step (the first 'pending', or a 'running' one whose
+ *  lease has expired) and mark it 'running'. Returns its key, or null if every
+ *  step is terminal / freshly running. Transactional so overlapping drains never
+ *  run the same step at once. */
+async function claimNextStep(id: string): Promise<StepKey | null> {
+  return firestore().runTransaction(async (tx) => {
+    const snap = await tx.get(batchRef(id));
+    if (!snap.exists) return null;
+    const steps = (snap.get('steps') as StepProgress[] | undefined) ?? [];
+    const nowMs = Date.now();
+    const idx = steps.findIndex(
+      (s) =>
+        s.status === 'pending' ||
+        (s.status === 'running' && s.startedAt != null && nowMs - Date.parse(s.startedAt) > STEP_LEASE_MS),
+    );
+    if (idx === -1) return null;
+    const updated = steps.map((s, i) =>
+      i === idx ? { ...s, status: 'running' as StepStatus, startedAt: now() } : s,
+    );
+    tx.update(batchRef(id), { steps: updated, updatedAt: now() });
+    return steps[idx]!.key;
+  });
+}
+
+/** A step field patch. Values may be `undefined` (the runStep counts are
+ *  optional); patchStep drops those so Firestore never sees an undefined. */
+interface StepPatch {
+  status?: StepStatus;
+  total?: number | undefined;
+  done?: number | undefined;
+  note?: string | undefined;
+  error?: string | undefined;
+}
+
+/** Merge a patch into one step (skipping `undefined` so Firestore never sees it). */
+async function patchStep(id: string, key: StepKey, patch: StepPatch): Promise<void> {
+  await firestore().runTransaction(async (tx) => {
+    const snap = await tx.get(batchRef(id));
+    if (!snap.exists) return;
+    const steps = (snap.get('steps') as StepProgress[] | undefined) ?? [];
+    const updated = steps.map((s) => {
+      if (s.key !== key) return s;
+      const merged: Record<string, unknown> = { ...s };
+      for (const [k, v] of Object.entries(patch)) if (v !== undefined) merged[k] = v;
+      return merged as unknown as StepProgress;
+    });
+    tx.update(batchRef(id), { steps: updated, updatedAt: now() });
+  });
+}
+
+type StepOutcome = {
+  total?: number;
+  done?: number;
+  note?: string;
+  /** Totals to pre-fill on OTHER steps (the count step seeds the denominators). */
+  siblingTotals?: Partial<Record<StepKey, number>>;
+};
+
+/** Run one step's Drive work. Throws only on a fundamental failure (missing
+ *  Sheet / event); per-scope hiccups are folded into the note as warnings. */
+async function runStep(eventId: string, key: StepKey): Promise<StepOutcome> {
+  if (key === 'count') {
+    const c = await countEventMedia(eventId);
+    return {
+      total: c.media,
+      done: c.media,
+      note: `${c.photos} photo(s), ${c.videos} video(s)`,
+      siblingTotals: { photos: c.photos, videos: c.videos, albums: c.media },
+    };
+  }
+  if (key === 'photos') {
+    const r = await rebuildEventPhotoFolders(eventId);
+    if (!r.ok) throw new Error(r.message || 'photo rebuild failed');
+    const d = r.data;
+    return { total: d?.targetFilesScanned ?? 0, done: d?.foldersTouched ?? 0, note: r.message };
+  }
+  if (key === 'videos' || key === 'albums') {
+    const r = key === 'videos' ? await rebuildEventVideoFolders(eventId) : await rebuildEventAlbumFolders(eventId);
+    const warn = r.warnings.length ? `, ${r.warnings.length} warning(s)` : '';
+    return {
+      total: r.scopesProcessed,
+      done: r.foldersTouched,
+      note: `${r.shortcutsCreated} new, ${r.shortcutsExisting} existing${warn}`,
+    };
+  }
+  // key === 'public'
+  const rows = await rebuildPublicFolderIndex();
+  return { total: rows, done: rows, note: `${rows} row(s)` };
+}
+
+/** Flip a 'full' batch to done once every step is terminal (done/failed). */
+async function finalizeFullIfComplete(id: string): Promise<boolean> {
+  return firestore().runTransaction(async (tx) => {
+    const snap = await tx.get(batchRef(id));
+    if (!snap.exists) return false;
+    const b = snap.data() as Omit<RebuildBatch, 'id'>;
+    const steps = b.steps ?? [];
+    const allTerminal = steps.length > 0 && steps.every((s) => s.status === 'done' || s.status === 'failed');
+    if (b.status === 'running' && allTerminal) {
+      tx.update(batchRef(id), { status: 'done', finishedAt: now(), updatedAt: now() });
+      return true;
+    }
+    return false;
+  });
+}
+
+/** Drain a single-event 'full' batch step-by-step within the budget. Each step
+ *  is bounded Drive work that fits the 60s cap, so the request never 502s. */
+async function drainFullBatch(batch: RebuildBatch, budgetMs: number): Promise<DrainSummary> {
+  const eventId = batch.eventId ?? '';
+  const start = Date.now();
+  let processed = 0;
+  let failed = 0;
+
+  while (Date.now() - start < budgetMs) {
+    const key = await claimNextStep(batch.id);
+    if (!key) break;
+    try {
+      const out = await runStep(eventId, key);
+      await patchStep(batch.id, key, { status: 'done', total: out.total, done: out.done, note: out.note });
+      // Seed the later steps' denominators from the count pre-pass.
+      if (out.siblingTotals) {
+        for (const [sibling, total] of Object.entries(out.siblingTotals)) {
+          await patchStep(batch.id, sibling as StepKey, { total });
+        }
+      }
+    } catch (err) {
+      failed++;
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({ err, batchId: batch.id, eventId, step: key }, 'full rebuild step failed');
+      await patchStep(batch.id, key, { status: 'failed', error: msg });
+    }
+    processed++;
+  }
+
+  const justFinished = await finalizeFullIfComplete(batch.id);
+  const after = await batchRef(batch.id).get();
+  const steps = (after.get('steps') as StepProgress[] | undefined) ?? [];
+  const remaining = steps.filter((s) => s.status === 'pending' || s.status === 'running').length;
+  logger.info({ batchId: batch.id, eventId, processed, failed, remaining, finished: justFinished }, 'full rebuild drain tick');
+  return { drained: true, batchId: batch.id, processed, failed, remaining, finished: justFinished };
+}
+
 export interface DrainSummary {
   drained: boolean;
   batchId?: string;
@@ -180,6 +406,9 @@ export interface DrainSummary {
 export async function drainRebuildQueue(budgetMs = DRAIN_BUDGET_MS): Promise<DrainSummary> {
   const batch = await oldestRunningBatch();
   if (!batch) return { drained: false, processed: 0, failed: 0, remaining: 0, finished: false };
+
+  // Single-event 'full' rebuilds drain by ordered step, not by event.
+  if (batch.kind === 'full') return drainFullBatch(batch, budgetMs);
 
   const start = Date.now();
   let processed = 0;

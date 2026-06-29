@@ -22,12 +22,42 @@ const STR = {
     forbidden: 'This page is admin-only — sign in with an admin account.',
     notEnabled: 'Managed folders are not enabled on the server (MANAGED_FOLDERS_ENABLED).',
     done: 'Done.',
-    queued: 'Queued for all events — this runs in the background and continues even if you close this page.',
-    progress: (done: number, failed: number, total: number) =>
-      `Progress: ${done} done, ${failed} failed, ${total} total.`,
+    queued: 'Queued — running in the background. It continues even if you close this page.',
+    progressHead: 'Rebuild progress',
+    overall: (done: number, total: number) => `Step ${Math.min(done + 1, total)} of ${total}`,
+    overallDone: 'All steps complete',
+    batchProgress: (done: number, failed: number, total: number) =>
+      `${done} done, ${failed} failed, of ${total} events`,
     batchDone: (done: number, failed: number, total: number) =>
-      `Finished: ${done} rebuilt, ${failed} failed (of ${total}).`,
+      `Finished: ${done} rebuilt, ${failed} failed (of ${total} events).`,
     allEventsHint: 'For "All events", Photos / Videos + Albums / Migrate run in the background.',
+    // Step labels + sub-notes
+    stepCount: 'Count photos & videos',
+    stepPhotos: 'Build Photos_NNN folders',
+    stepVideos: 'Build Videos folders',
+    stepAlbums: 'Build Album folders',
+    stepPublic: 'Update Managed Albums public sheet',
+    counting: 'Counting…',
+    photosCount: (n: number) => `${n.toLocaleString()} photos`,
+    foldersBuilt: (n: number) => `${n} folder${n === 1 ? '' : 's'}`,
+    scopesBuilt: (n: number) => `${n} folder${n === 1 ? '' : 's'} across scopes`,
+    rowsWritten: (n: number) => `${n} row${n === 1 ? '' : 's'} written`,
+    stPending: 'Waiting',
+    stRunning: 'Running…',
+    stFailed: 'Failed',
+    // Reconciliation line
+    reconChecking: 'Checking counts…',
+    reconSource: 'Source',
+    reconFolders: 'In Photos_NNN',
+    reconVideos: 'Videos',
+    reconIndexed: 'Indexed',
+    reconFaces: (faces: number, photos: number) => `${faces} faces / ${photos} photos`,
+    reconDupes: (n: number) => `${n} duplicate${n === 1 ? '' : 's'}`,
+    reconNoIndex: 'not indexed yet',
+    reconRefresh: 'Refresh counts',
+    reconNote: 'Fewer indexed faces than photos is normal — only photos with a detectable face are indexed.',
+    photosUnit: (n: number) => `${n.toLocaleString()} photos`,
+    videosUnit: (n: number) => `${n} videos`,
   },
   zh: {
     title: '托管文件夹',
@@ -46,29 +76,84 @@ const STR = {
     forbidden: '此页面仅限管理员，请使用管理员账号登录。',
     notEnabled: '服务器未启用托管文件夹（MANAGED_FOLDERS_ENABLED）。',
     done: '完成。',
-    queued: '已为全部活动加入队列——将在后台运行，关闭此页面也会继续。',
-    progress: (done: number, failed: number, total: number) =>
-      `进度：完成 ${done}，失败 ${failed}，共 ${total}。`,
+    queued: '已加入队列——将在后台运行，关闭此页面也会继续。',
+    progressHead: '重建进度',
+    overall: (done: number, total: number) => `第 ${Math.min(done + 1, total)} / ${total} 步`,
+    overallDone: '所有步骤已完成',
+    batchProgress: (done: number, failed: number, total: number) =>
+      `完成 ${done}，失败 ${failed}，共 ${total} 个活动`,
     batchDone: (done: number, failed: number, total: number) =>
-      `已完成：重建 ${done}，失败 ${failed}（共 ${total}）。`,
+      `已完成：重建 ${done}，失败 ${failed}（共 ${total} 个活动）。`,
     allEventsHint: '选择“全部活动”时，Photos / Videos + Albums / 迁移 将在后台运行。',
+    stepCount: '统计照片与视频数量',
+    stepPhotos: '构建 Photos_NNN 文件夹',
+    stepVideos: '构建 Videos 文件夹',
+    stepAlbums: '构建 Album 文件夹',
+    stepPublic: '更新公开相册索引表',
+    counting: '统计中…',
+    photosCount: (n: number) => `${n.toLocaleString()} 张照片`,
+    foldersBuilt: (n: number) => `${n} 个文件夹`,
+    scopesBuilt: (n: number) => `${n} 个文件夹`,
+    rowsWritten: (n: number) => `已写入 ${n} 行`,
+    stPending: '等待中',
+    stRunning: '执行中…',
+    stFailed: '失败',
+    reconChecking: '正在统计…',
+    reconSource: '源文件',
+    reconFolders: 'Photos_NNN 中',
+    reconVideos: 'Videos',
+    reconIndexed: '已索引',
+    reconFaces: (faces: number, photos: number) => `${faces} 张人脸 / ${photos} 张照片`,
+    reconDupes: (n: number) => `${n} 张重复`,
+    reconNoIndex: '尚未索引',
+    reconRefresh: '刷新统计',
+    reconNote: '已索引人脸少于照片数属于正常现象——只有可检测到人脸的照片才会被索引。',
+    photosUnit: (n: number) => `${n.toLocaleString()} 张照片`,
+    videosUnit: (n: number) => `${n} 个视频`,
   },
 };
 
+interface Reconcile {
+  source: { photos: number; videos: number; media: number };
+  folders: { photos: number; videos: number; albums: number };
+  index: { status?: string | null; photos?: number | null; faces?: number | null; duplicates?: number | null } | null;
+}
+
+type StepKey = 'count' | 'photos' | 'videos' | 'albums' | 'public';
+type StepStatus = 'pending' | 'running' | 'done' | 'failed';
+
+interface StepProgress {
+  key: StepKey;
+  status: StepStatus;
+  total?: number;
+  done?: number;
+  note?: string;
+  error?: string;
+}
+
 interface RebuildBatch {
   id: string;
+  kind: string;
   status: 'running' | 'done';
   total: number;
   done: string[];
   failed: Array<{ eventId: string; error: string }>;
+  eventId?: string;
+  steps?: StepProgress[];
 }
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Admin manual controls for the managed-folders pipeline (gas-app migration).
- * Single-event rebuilds run synchronously; "All events" rebuilds are enqueued
- * server-side and drained by the scheduler (folderRebuildQueue.ts), so they no
- * longer trip the 60s Hosting/Cloud Run timeout. An event dropdown replaces the
- * old free-text Event ID box.
+ *
+ * Both single-event ("Rebuild this event", a stepped 'full' batch) and "All
+ * events" rebuilds are enqueued server-side and run in bounded drain ticks, so
+ * neither trips the 60s Hosting/Cloud Run timeout (the old single-event path
+ * 502'd). While the user watches, the browser drives the drain itself (POST
+ * /rebuild-drain, each call < 60s) for near-live progress; the Cloud Scheduler
+ * drain is the backstop if they close the page. A 'full' batch reports per-step
+ * progress (Photos_NNN → Videos → Album → public sheet) shown as a progress bar.
  */
 export function AdminManagedFolders(): JSX.Element {
   const t = useStrings(STR);
@@ -78,7 +163,32 @@ export function AdminManagedFolders(): JSX.Element {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [batch, setBatch] = useState<RebuildBatch | null>(null);
-  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [recon, setRecon] = useState<Reconcile | null>(null);
+  const [reconBusy, setReconBusy] = useState(false);
+  // Bumped on unmount / new run so an in-flight drive loop knows to stop.
+  const runToken = useRef(0);
+
+  // Load the reconciliation counts for a single event (clears for "all events").
+  // A live Drive walk, so only on demand: event change or after a rebuild.
+  const loadRecon = useCallback(async (id: string): Promise<void> => {
+    if (!id) {
+      setRecon(null);
+      return;
+    }
+    setReconBusy(true);
+    try {
+      const r = await apiGet<{ ok: true } & Reconcile>(`/api/admin/folders/reconcile/${encodeURIComponent(id)}`);
+      setRecon({ source: r.source, folders: r.folders, index: r.index });
+    } catch {
+      setRecon(null);
+    } finally {
+      setReconBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadRecon(eventId);
+  }, [eventId, loadRecon]);
 
   useEffect(() => {
     apiGet<ListEventsResponse>('/api/events')
@@ -89,58 +199,63 @@ export function AdminManagedFolders(): JSX.Element {
       });
   }, [t.forbidden]);
 
-  const stopPolling = useCallback(() => {
-    if (pollTimer.current) {
-      clearInterval(pollTimer.current);
-      pollTimer.current = null;
-    }
-  }, []);
+  // Stop any running drive loop when the page unmounts.
+  useEffect(() => () => void (runToken.current += 1), []);
 
-  useEffect(() => stopPolling, [stopPolling]);
-
-  const pollBatch = useCallback(
-    (batchId: string) => {
-      stopPolling();
-      pollTimer.current = setInterval(() => {
-        void apiGet<{ ok: true; batch: RebuildBatch | null }>(
-          `/api/admin/folders/rebuild-status?batchId=${encodeURIComponent(batchId)}`,
-        )
-          .then((r) => {
-            if (!r.batch) return;
-            setBatch(r.batch);
-            if (r.batch.status === 'done') {
-              stopPolling();
-              setBusy(null);
-            }
-          })
-          .catch(() => {
-            /* transient — keep polling */
-          });
-      }, 4000);
+  /**
+   * Drive a queued batch to completion: trigger a drain, read status, repeat.
+   * Drain errors (e.g. a transient 502 on a very large step) are swallowed —
+   * the lease-reclaim on the server resumes the step on the next tick.
+   */
+  const driveBatch = useCallback(
+    async (batchId: string, token: number): Promise<void> => {
+      const statusUrl = `/api/admin/folders/rebuild-status?batchId=${encodeURIComponent(batchId)}`;
+      for (;;) {
+        if (runToken.current !== token) return;
+        try {
+          await apiPost('/api/admin/folders/rebuild-drain', {});
+        } catch {
+          /* transient — the next drain (or the scheduler) picks it up */
+        }
+        if (runToken.current !== token) return;
+        try {
+          const r = await apiGet<{ ok: true; batch: RebuildBatch | null }>(statusUrl);
+          if (r.batch) setBatch(r.batch);
+          if (r.batch?.status === 'done') {
+            setBusy(null);
+            return;
+          }
+        } catch {
+          /* transient — keep going */
+        }
+        await sleep(1500);
+      }
     },
-    [stopPolling],
+    [],
   );
 
   async function run(label: string, fn: () => Promise<unknown>): Promise<void> {
+    const token = (runToken.current += 1);
     setBusy(label);
     setMessage(null);
     setError(null);
     setBatch(null);
-    stopPolling();
     try {
       const r = (await fn()) as { mode?: string; batchId?: string };
       if (r?.mode === 'async' && r.batchId) {
         setMessage(t.queued);
-        pollBatch(r.batchId);
-        return; // busy stays set until the batch finishes
+        await driveBatch(r.batchId, token);
+        if (runToken.current === token) void loadRecon(eventId);
+        return;
       }
       setMessage(t.done);
+      setBusy(null);
+      void loadRecon(eventId);
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) setError(t.forbidden);
       else if (e instanceof ApiError && e.code === 'not_enabled') setError(t.notEnabled);
       else setError(e instanceof Error ? e.message : 'Error');
-    } finally {
-      if (!pollTimer.current) setBusy(null);
+      setBusy(null);
     }
   }
 
@@ -203,15 +318,142 @@ export function AdminManagedFolders(): JSX.Element {
         </button>
       </div>
 
-      {batch && (
-        <p className="muted" style={{ marginTop: 12 }}>
-          {batch.status === 'done'
-            ? t.batchDone(batch.done.length, batch.failed.length, batch.total)
-            : t.progress(batch.done.length, batch.failed.length, batch.total)}
+      {oneEvent && (recon || reconBusy) && (
+        <div className="recon-line" role="status" aria-live="polite">
+          {reconBusy && !recon ? (
+            <span className="muted">{t.reconChecking}</span>
+          ) : recon ? (
+            <>
+              <span>
+                <strong>{t.reconSource}:</strong> {t.photosUnit(recon.source.photos)} · {t.videosUnit(recon.source.videos)}
+              </span>
+              <span className="recon-sep" aria-hidden="true">|</span>
+              <span>
+                <strong>{t.reconFolders}:</strong> {recon.folders.photos} · {t.reconVideos}: {recon.folders.videos}
+              </span>
+              <span className="recon-sep" aria-hidden="true">|</span>
+              <span>
+                <strong>{t.reconIndexed}:</strong>{' '}
+                {recon.index && recon.index.faces != null && recon.index.photos != null ? (
+                  <>
+                    {t.reconFaces(recon.index.faces, recon.index.photos)}
+                    {recon.index.duplicates ? ` · ${t.reconDupes(recon.index.duplicates)}` : ''}
+                  </>
+                ) : (
+                  t.reconNoIndex
+                )}
+              </span>
+              <button
+                className="btn btn-light btn-sm"
+                disabled={reconBusy || disabled}
+                onClick={() => void loadRecon(eventId)}
+              >
+                {t.reconRefresh}
+              </button>
+            </>
+          ) : null}
+        </div>
+      )}
+      {oneEvent && recon && recon.folders.photos < recon.source.photos && (
+        <p className="muted" style={{ fontSize: '0.85em', margin: '4px 0 0' }}>
+          {t.reconNote}
         </p>
+      )}
+
+      {batch?.steps ? (
+        <StepProgressView batch={batch} t={t} />
+      ) : (
+        batch && (
+          <div className="rebuild-progress" role="status" aria-live="polite">
+            <RebuildBar value={batch.done.length + batch.failed.length} max={batch.total} />
+            <p className="muted" style={{ margin: '8px 0 0' }}>
+              {batch.status === 'done'
+                ? t.batchDone(batch.done.length, batch.failed.length, batch.total)
+                : t.batchProgress(batch.done.length, batch.failed.length, batch.total)}
+            </p>
+          </div>
+        )
       )}
       {error && <p className="error-text" style={{ marginTop: 12 }}>{error}</p>}
       {message && !batch && <p className="muted" style={{ marginTop: 12 }}>{message}</p>}
+    </div>
+  );
+}
+
+/** A slim determinate progress bar (completed / total). */
+function RebuildBar({ value, max }: { value: number; max: number }): JSX.Element {
+  const pct = max > 0 ? Math.round((Math.min(value, max) / max) * 100) : 0;
+  return (
+    <div className="rebuild-bar" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+      <span className="rebuild-bar-fill" style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+/** Stepped progress for a single-event 'full' rebuild. */
+function StepProgressView({ batch, t }: { batch: RebuildBatch; t: (typeof STR)['en'] }): JSX.Element {
+  const steps = batch.steps ?? [];
+  const completed = steps.filter((s) => s.status === 'done' || s.status === 'failed').length;
+
+  const labelFor = (k: StepKey): string =>
+    k === 'count'
+      ? t.stepCount
+      : k === 'photos'
+        ? t.stepPhotos
+        : k === 'videos'
+          ? t.stepVideos
+          : k === 'albums'
+            ? t.stepAlbums
+            : t.stepPublic;
+
+  // Sub-line under each step. The count step surfaces photo/video totals up
+  // front; the photos step then shows "<N photos> → <folders>" so the photo
+  // denominator is visible from the first tick onward.
+  const subFor = (s: StepProgress): string => {
+    if (s.key === 'count') {
+      if (s.status === 'done') return s.note ?? '';
+      if (s.status === 'failed') return `${t.stFailed}: ${s.error ?? ''}`;
+      return t.counting;
+    }
+    if (s.status === 'failed') return `${t.stFailed}: ${s.error ?? ''}`;
+    if (s.key === 'photos') {
+      const head = s.total != null ? t.photosCount(s.total) : '';
+      if (s.status === 'done') return head ? `${head} → ${t.foldersBuilt(s.done ?? 0)}` : t.foldersBuilt(s.done ?? 0);
+      if (s.status === 'running') return head ? `${head} → ${t.stRunning}` : t.stRunning;
+      return head || t.stPending; // pending, denominator already known
+    }
+    if (s.key === 'public') {
+      if (s.status === 'done') return s.done != null ? t.rowsWritten(s.done) : (s.note ?? '');
+      return s.status === 'running' ? t.stRunning : t.stPending;
+    }
+    // videos / albums
+    if (s.status === 'pending') return t.stPending;
+    if (s.status === 'running') return t.stRunning;
+    return s.done != null ? `${t.scopesBuilt(s.done)}${s.note ? ` · ${s.note}` : ''}` : (s.note ?? '');
+  };
+
+  return (
+    <div className="rebuild-progress" role="status" aria-live="polite">
+      <div className="rebuild-progress-head">
+        <strong>{t.progressHead}</strong>
+        <span className="muted">
+          {batch.status === 'done' ? t.overallDone : t.overall(completed, steps.length)}
+        </span>
+      </div>
+      <RebuildBar value={completed} max={steps.length} />
+      <div style={{ marginTop: 10 }}>
+        {steps.map((s) => (
+          <div className="rebuild-step" key={s.key}>
+            <span className={`step-badge step-${s.status}`} aria-hidden="true">
+              {s.status === 'done' ? '✓' : s.status === 'failed' ? '✕' : s.status === 'running' ? <span className="step-spin" /> : '•'}
+            </span>
+            <span>
+              <span className="step-label">{labelFor(s.key)}</span>
+              <span className="step-sub">{subFor(s)}</span>
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

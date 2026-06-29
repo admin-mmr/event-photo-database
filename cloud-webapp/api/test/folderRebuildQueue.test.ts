@@ -41,8 +41,23 @@ vi.mock('../src/lib/logger.js', () => ({
 
 vi.mock('../src/services/specialFoldersService.js', () => ({
   rebuildEventPhotoFolders: async (id: string) => {
-    state.rebuilt.push(id);
-    return { ok: true, message: '' };
+    if (state.failOn.has(`photos:${id}`)) return { ok: false, message: `photos boom ${id}` };
+    state.rebuilt.push(`photos:${id}`);
+    return {
+      ok: true,
+      message: '',
+      data: { targetFilesScanned: 1200, foldersTouched: 3, shortcutsCreated: 0, shortcutsExisting: 1200, warnings: [] },
+    };
+  },
+  countEventMedia: async (_id: string) => ({ photos: 339, videos: 5, media: 344 }),
+  rebuildEventVideoFolders: async (id: string) => {
+    state.rebuilt.push(`videos:${id}`);
+    return { ok: true, scopesProcessed: 2, foldersTouched: 2, shortcutsCreated: 5, shortcutsExisting: 0, filesScanned: 5, warnings: [] };
+  },
+  rebuildEventAlbumFolders: async (id: string) => {
+    if (state.failOn.has(`albums:${id}`)) throw new Error(`albums boom ${id}`);
+    state.rebuilt.push(`albums:${id}`);
+    return { ok: true, scopesProcessed: 2, foldersTouched: 2, shortcutsCreated: 9, shortcutsExisting: 0, filesScanned: 9, warnings: [] };
   },
   rebuildAllSpecialFoldersForEvent: async (id: string) => {
     if (state.failOn.has(id)) throw new Error(`boom ${id}`);
@@ -160,5 +175,53 @@ describe('folderRebuildQueue', () => {
   it('is a no-op when nothing is queued', async () => {
     const summary = await q.drainRebuildQueue(60_000);
     expect(summary).toEqual({ drained: false, processed: 0, failed: 0, remaining: 0, finished: false });
+  });
+
+  it('drains a single-event full batch through its 5 steps with counts', async () => {
+    const { id, total } = await q.enqueueFullRebuild('e1', { createdBy: 'admin@x' });
+    expect(total).toBe(1);
+
+    const summary = await q.drainRebuildQueue(60_000);
+    expect(summary.drained).toBe(true);
+    expect(summary.processed).toBe(5);
+    expect(summary.failed).toBe(0);
+    expect(summary.finished).toBe(true);
+    expect(summary.remaining).toBe(0);
+
+    const batch = await q.getBatch(id);
+    expect(batch?.kind).toBe('full');
+    expect(batch?.status).toBe('done');
+    const steps = batch?.steps ?? [];
+    expect(steps.map((s) => s.key)).toEqual(['count', 'photos', 'videos', 'albums', 'public']);
+    expect(steps.every((s) => s.status === 'done')).toBe(true);
+    // The count step surfaces the media totals first.
+    const count = steps.find((s) => s.key === 'count');
+    expect(count?.total).toBe(344);
+    expect(count?.note).toContain('339 photo');
+    // It seeds the videos denominator (5) before the videos step overwrites it
+    // with its own scope-based count once it runs.
+    expect(steps.find((s) => s.key === 'photos')?.total).toBe(1200);
+    expect(steps.find((s) => s.key === 'videos')?.done).toBe(2);
+    expect(state.rebuilt).toEqual(['photos:e1', 'videos:e1', 'albums:e1']);
+    // The public step runs the index refresh exactly once.
+    expect(state.publicRefreshed).toBe(1);
+  });
+
+  it('marks a failed step but still finishes the full batch', async () => {
+    state.failOn.add('albums:e1');
+    const { id } = await q.enqueueFullRebuild('e1', { createdBy: 'admin@x' });
+
+    const summary = await q.drainRebuildQueue(60_000);
+    expect(summary.finished).toBe(true);
+    expect(summary.failed).toBe(1);
+
+    const batch = await q.getBatch(id);
+    expect(batch?.status).toBe('done');
+    const steps = batch?.steps ?? [];
+    const albums = steps.find((s) => s.key === 'albums');
+    expect(albums?.status).toBe('failed');
+    expect(albums?.error).toContain('albums boom e1');
+    // Photos / videos / public still completed despite the album failure.
+    expect(steps.find((s) => s.key === 'public')?.status).toBe('done');
   });
 });

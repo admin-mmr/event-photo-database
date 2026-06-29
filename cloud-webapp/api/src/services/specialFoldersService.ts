@@ -597,6 +597,140 @@ export function rebuildClubAlbumFolder(eventId: string, clubName: string, tag: s
   return rebuildClubScopedFolder(eventId, clubName, tag, ALBUM_SPEC);
 }
 
+// ─── Per-event Videos / Album rebuild (aggregated over scopes) ────────────────
+
+/** A (club, tag) pair under an event that owns its own Videos / Album folder. */
+export interface EventScope {
+  clubName: string;
+  tag: string;
+}
+
+/** Aggregated result of rebuilding one folder kind across every scope. */
+export interface ScopeAggregateResult {
+  ok: boolean;
+  scopesProcessed: number;
+  foldersTouched: number;
+  shortcutsCreated: number;
+  shortcutsExisting: number;
+  filesScanned: number;
+  warnings: string[];
+}
+
+const EMPTY_AGG = (): ScopeAggregateResult => ({
+  ok: true,
+  scopesProcessed: 0,
+  foldersTouched: 0,
+  shortcutsCreated: 0,
+  shortcutsExisting: 0,
+  filesScanned: 0,
+  warnings: [],
+});
+
+/**
+ * Enumerate every (club, tag) scope under an event: each club folder yields a
+ * (club, '') scope plus one (club, tag) scope per tag subfolder. Managed system
+ * folders (Photos_NNN / Videos / Album) are skipped. Drive-listing errors are
+ * logged and yield an empty / partial list rather than throwing — callers treat
+ * "no scopes" as "nothing to rebuild".
+ */
+export async function listEventScopes(eventId: string): Promise<EventScope[]> {
+  const event = await getEventDrive(eventId);
+  if (!event) return [];
+  const driveToken = await getDriveToken(DRIVE_SCOPE_READWRITE);
+  let clubs;
+  try {
+    clubs = await listChildFolders(event.driveFolderId, { token: driveToken });
+  } catch (err) {
+    logger.warn({ err, eventId }, 'listEventScopes: listing club folders failed');
+    return [];
+  }
+  const scopes: EventScope[] = [];
+  for (const club of clubs) {
+    if (isManagedFolderName(club.name)) continue;
+    scopes.push({ clubName: club.name, tag: '' });
+    let tags;
+    try {
+      tags = await listChildFolders(club.id, { token: driveToken });
+    } catch (err) {
+      logger.warn({ err, eventId, club: club.name }, 'listEventScopes: listing tag folders failed');
+      continue;
+    }
+    for (const tag of tags) {
+      if (isManagedFolderName(tag.name)) continue;
+      scopes.push({ clubName: club.name, tag: tag.name });
+    }
+  }
+  return scopes;
+}
+
+/** Fold a single per-scope rebuild kind across every scope into one summary. */
+async function aggregateScopeRebuild(
+  eventId: string,
+  rebuildScope: (clubName: string, tag: string) => Promise<ServiceResult<RebuildResult>>,
+): Promise<ScopeAggregateResult> {
+  const agg = EMPTY_AGG();
+  for (const { clubName, tag } of await listEventScopes(eventId)) {
+    agg.scopesProcessed++;
+    const r = await rebuildScope(clubName, tag).catch(
+      (err): ServiceResult<RebuildResult> => ({ ok: false, message: String(err) }),
+    );
+    if (!r.ok) {
+      agg.ok = false;
+      agg.warnings.push(`${clubName}/${tag || '(no tag)'}: ${r.message}`);
+      continue;
+    }
+    if (r.data) {
+      agg.foldersTouched += r.data.foldersTouched;
+      agg.shortcutsCreated += r.data.shortcutsCreated;
+      agg.shortcutsExisting += r.data.shortcutsExisting;
+      agg.filesScanned += r.data.targetFilesScanned;
+      for (const w of r.data.warnings) agg.warnings.push(w);
+    }
+  }
+  return agg;
+}
+
+/** Rebuild every Videos folder for an event (one per scope). Used as a step. */
+export function rebuildEventVideoFolders(eventId: string): Promise<ScopeAggregateResult> {
+  return aggregateScopeRebuild(eventId, (clubName, tag) => rebuildClubVideoFolder(eventId, clubName, tag));
+}
+
+/** Rebuild every Album folder for an event (one per scope). Used as a step. */
+export function rebuildEventAlbumFolders(eventId: string): Promise<ScopeAggregateResult> {
+  return aggregateScopeRebuild(eventId, (clubName, tag) => rebuildClubAlbumFolder(eventId, clubName, tag));
+}
+
+/** Photo / video / total-media counts for an event's source tree. */
+export interface EventMediaCounts {
+  photos: number;
+  videos: number;
+  media: number;
+}
+
+/**
+ * Count the media in an event's source tree (excluding the managed Photos_NNN /
+ * Videos / Album folders). A quick read-only pre-pass so the UI can show how
+ * many photos a rebuild will touch before any folder work begins. Walks the
+ * tree once and classifies by MIME — the SAME filter the Photos_NNN rebuild
+ * uses, so the photo count matches what that step will materialise.
+ */
+export async function countEventMedia(eventId: string): Promise<EventMediaCounts> {
+  const event = await getEventDrive(eventId);
+  if (!event) return { photos: 0, videos: 0, media: 0 };
+  const driveToken = await getDriveToken(DRIVE_SCOPE_READWRITE);
+  const all = await walkMediaFiles(event.driveFolderId, isMediaFile, {
+    token: driveToken,
+    skipChildFolder: isManagedFolderName,
+  });
+  let photos = 0;
+  let videos = 0;
+  for (const f of all) {
+    if (isPhotoFile(f.mimeType)) photos++;
+    else if (isVideoFile(f.mimeType)) videos++;
+  }
+  return { photos, videos, media: all.length };
+}
+
 // ─── Full-event rebuild ───────────────────────────────────────────────────────
 
 export interface RebuildAllResult {
@@ -613,38 +747,10 @@ export async function rebuildAllSpecialFoldersForEvent(eventId: string): Promise
   const photos = await rebuildEventPhotoFolders(eventId);
   const scopes: RebuildAllResult['scopes'] = [];
 
-  const event = await getEventDrive(eventId);
-  if (!event) return { photos, scopes };
-
-  const driveToken = await getDriveToken(DRIVE_SCOPE_READWRITE);
-  let clubs;
-  try {
-    clubs = await listChildFolders(event.driveFolderId, { token: driveToken });
-  } catch (err) {
-    logger.warn({ err, eventId }, 'rebuildAll: listing club folders failed');
-    return { photos, scopes };
-  }
-
-  const runScope = async (clubName: string, tag: string): Promise<void> => {
+  for (const { clubName, tag } of await listEventScopes(eventId)) {
     const videos = await rebuildClubVideoFolder(eventId, clubName, tag).catch((err) => ({ ok: false, message: String(err) }));
     const albums = await rebuildClubAlbumFolder(eventId, clubName, tag).catch((err) => ({ ok: false, message: String(err) }));
     scopes.push({ clubName, tag, videos, albums });
-  };
-
-  for (const club of clubs) {
-    if (isManagedFolderName(club.name)) continue;
-    await runScope(club.name, '');
-    let tags;
-    try {
-      tags = await listChildFolders(club.id, { token: driveToken });
-    } catch (err) {
-      logger.warn({ err, eventId, club: club.name }, 'rebuildAll: listing tag folders failed');
-      continue;
-    }
-    for (const tag of tags) {
-      if (isManagedFolderName(tag.name)) continue;
-      await runScope(club.name, tag.name);
-    }
   }
   return { photos, scopes };
 }

@@ -31,10 +31,13 @@ import {
   rebuildAllSpecialFoldersForEvent,
   migrateEventPhotoShortcutsToFiles,
   backfillSpecialFoldersSharing,
+  countEventMedia,
 } from '../services/specialFoldersService.js';
+import { listAllSpecialFolders } from '../services/specialFoldersStore.js';
 import { rebuildPublicFolderIndex } from '../services/publicFolderIndexService.js';
 import {
   enqueueRebuild,
+  enqueueFullRebuild,
   drainRebuildQueue,
   getBatch,
   latestBatch,
@@ -104,14 +107,20 @@ adminManagedFoldersRouter.post('/admin/folders/refresh-public', ...guard, async 
   }
 });
 
+/**
+ * POST /admin/folders/rebuild/:eventId — full rebuild for ONE event. Enqueued as
+ * a stepped 'full' batch (Photos_NNN → Videos → Albums → public sheet) and
+ * drained step-by-step, so a large event no longer 502s at the 60s cap. Returns
+ * 202 with the batchId; the UI drives `/rebuild-drain` and polls
+ * `/rebuild-status` for per-step progress.
+ */
 adminManagedFoldersRouter.post('/admin/folders/rebuild/:eventId', ...guard, async (req, res, next) => {
   try {
     if (!masterSheetId(res) || notEnabled(res)) return;
     const eventId = String(req.params.eventId);
-    const result = await rebuildAllSpecialFoldersForEvent(eventId);
-    await rebuildPublicFolderIndex();
-    logger.info({ eventId, by: actor(req) }, 'manual full rebuild for event');
-    res.json({ ok: true, eventId, result });
+    const { id, total } = await enqueueFullRebuild(eventId, { createdBy: actor(req) });
+    logger.info({ eventId, batchId: id, by: actor(req) }, 'enqueued full rebuild batch for event');
+    res.status(202).json({ ok: true, mode: 'async', batchId: id, total });
   } catch (err) {
     next(err);
   }
@@ -169,6 +178,56 @@ adminManagedFoldersRouter.get('/admin/folders/rebuild-status', ...guard, async (
     const batchId = typeof req.query.batchId === 'string' ? req.query.batchId : '';
     const batch = batchId ? await getBatch(batchId) : await latestBatch();
     res.json({ ok: true, batch });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /admin/folders/reconcile/:eventId — a one-glance reconciliation of the
+ * counts that diverge across the pipeline, so an admin can see WHERE photos drop
+ * off without digging through the Sheet / index manifest:
+ *   - source:  media actually in the event's Drive tree (live walk, same MIME
+ *              filter the Photos_NNN rebuild uses)
+ *   - folders: how many entries the managed Photos_NNN / Videos / Album folders
+ *              currently hold (summed Special_Folders fileCount)
+ *   - index:   what the FindMe indexer recorded (photos seen + face vectors);
+ *              fewer faces than photos is expected (no detectable face).
+ */
+adminManagedFoldersRouter.get('/admin/folders/reconcile/:eventId', ...guard, async (req, res, next) => {
+  try {
+    const spreadsheetId = masterSheetId(res);
+    if (!spreadsheetId || notEnabled(res)) return;
+    const eventId = String(req.params.eventId);
+
+    const [source, records, evSnap] = await Promise.all([
+      countEventMedia(eventId),
+      listAllSpecialFolders(spreadsheetId),
+      firestore().collection('events').doc(eventId).get(),
+    ]);
+
+    const folders = { photos: 0, videos: 0, albums: 0 };
+    for (const r of records) {
+      if (r.eventId !== eventId) continue;
+      if (r.scope === 'photos') folders.photos += r.fileCount;
+      else if (r.scope === 'videos') folders.videos += r.fileCount;
+      else if (r.scope === 'albums') folders.albums += r.fileCount;
+    }
+
+    const idx = (evSnap.data()?.indexState ?? null) as Record<string, unknown> | null;
+    const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const index = idx
+      ? {
+          status: typeof idx.status === 'string' ? idx.status : null,
+          photos: num(idx.photoCount),
+          faces: num(idx.faces),
+          persons: num(idx.persons),
+          duplicates: num(idx.duplicates),
+          updatedAt: typeof idx.updatedAt === 'string' ? idx.updatedAt : null,
+        }
+      : null;
+
+    res.json({ ok: true, eventId, source, folders, index });
   } catch (err) {
     next(err);
   }

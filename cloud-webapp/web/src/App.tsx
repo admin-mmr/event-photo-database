@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { continueAsGuest, signInWithGoogle, signOutUser } from './lib/firebase.js';
 import { useAuth } from './lib/useAuth.js';
@@ -58,6 +58,53 @@ function MenuIcon({ open }: { open: boolean }): JSX.Element {
   );
 }
 
+/**
+ * A grouped nav dropdown ("Manage ▾" / "Insights ▾"). Collapses several admin
+ * links under one trigger so the header stays short and the title keeps its
+ * space. On desktop the panel is an absolutely-positioned card; inside the
+ * mobile slide-down menu it expands inline. Closes on outside click / Escape
+ * and whenever a link inside it is chosen.
+ */
+function NavMenu({ label, children }: { label: string; children: ReactNode }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(e: PointerEvent): void {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onKeyDown(e: KeyboardEvent): void {
+      if (e.key === 'Escape') setOpen(false);
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div className={`nav-menu${open ? ' open' : ''}`} ref={ref}>
+      <button
+        type="button"
+        className="nav-link nav-menu-trigger"
+        aria-haspopup="true"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        {label}
+        <span className="nav-caret" aria-hidden="true">▾</span>
+      </button>
+      {/* Clicking any link inside also collapses this group. */}
+      <div className="nav-menu-panel" role="menu" onClick={() => setOpen(false)}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 const STR = {
   en: {
     title: 'FindMe',
@@ -75,6 +122,8 @@ const STR = {
       audit: 'Audit',
       folders: 'Folders',
       email: 'Email settings',
+      manage: 'Manage',
+      insights: 'Insights',
     },
     menu: 'Menu',
     guest: 'Guest',
@@ -105,6 +154,8 @@ const STR = {
       audit: '审计',
       folders: '文件夹',
       email: '邮件设置',
+      manage: '管理',
+      insights: '概览',
     },
     menu: '菜单',
     guest: '访客',
@@ -230,48 +281,52 @@ export function App(): JSX.Element {
               {t.nav.myData}
             </Link>
 
-            {/* Any admin (super_admin or club_admin): the pages the API lets a
-                club_admin open. "Events" here means event configuration. */}
+            {/* Any admin (super_admin or club_admin): operational pages grouped
+                under "Manage". "Events" here means event configuration. */}
             {isAdmin && (
               <>
                 <span className="nav-sep" aria-hidden="true" />
-                <Link to="/admin/events" className="nav-link" onClick={closeMenu}>
-                  {t.nav.events}
-                </Link>
-                <Link to="/admin/users" className="nav-link" onClick={closeMenu}>
-                  {t.nav.users}
-                </Link>
-                <Link to="/admin/clubs" className="nav-link" onClick={closeMenu}>
-                  {t.nav.clubs}
-                </Link>
-                <Link to="/admin/summary" className="nav-link" onClick={closeMenu}>
-                  {t.nav.report}
-                </Link>
-                <Link to="/admin/deleted" className="nav-link" onClick={closeMenu}>
-                  {t.nav.trash}
-                </Link>
-                <Link to="/admin/folders" className="nav-link" onClick={closeMenu}>
-                  {t.nav.folders}
-                </Link>
-                <Link to="/me/email" className="nav-link" onClick={closeMenu}>
-                  {t.nav.email}
-                </Link>
-              </>
-            )}
+                <NavMenu label={t.nav.manage}>
+                  <Link to="/admin/events" className="nav-link" onClick={closeMenu}>
+                    {t.nav.events}
+                  </Link>
+                  <Link to="/admin/users" className="nav-link" onClick={closeMenu}>
+                    {t.nav.users}
+                  </Link>
+                  <Link to="/admin/clubs" className="nav-link" onClick={closeMenu}>
+                    {t.nav.clubs}
+                  </Link>
+                  <Link to="/admin/folders" className="nav-link" onClick={closeMenu}>
+                    {t.nav.folders}
+                  </Link>
+                  <Link to="/admin/deleted" className="nav-link" onClick={closeMenu}>
+                    {t.nav.trash}
+                  </Link>
+                  <Link to="/me/email" className="nav-link" onClick={closeMenu}>
+                    {t.nav.email}
+                  </Link>
+                </NavMenu>
 
-            {/* Super admin only: org-wide oversight. */}
-            {isSuperAdmin && (
-              <>
-                <span className="nav-sep" aria-hidden="true" />
-                <Link to="/admin/metrics" className="nav-link" onClick={closeMenu}>
-                  {t.nav.metrics}
-                </Link>
-                <Link to="/admin/feedback" className="nav-link" onClick={closeMenu}>
-                  {t.nav.feedback}
-                </Link>
-                <Link to="/admin/audit" className="nav-link" onClick={closeMenu}>
-                  {t.nav.audit}
-                </Link>
+                {/* Read-only oversight grouped under "Insights": Report for any
+                    admin; Metrics / Feedback / Audit for super_admins only. */}
+                <NavMenu label={t.nav.insights}>
+                  <Link to="/admin/summary" className="nav-link" onClick={closeMenu}>
+                    {t.nav.report}
+                  </Link>
+                  {isSuperAdmin && (
+                    <>
+                      <Link to="/admin/metrics" className="nav-link" onClick={closeMenu}>
+                        {t.nav.metrics}
+                      </Link>
+                      <Link to="/admin/feedback" className="nav-link" onClick={closeMenu}>
+                        {t.nav.feedback}
+                      </Link>
+                      <Link to="/admin/audit" className="nav-link" onClick={closeMenu}>
+                        {t.nav.audit}
+                      </Link>
+                    </>
+                  )}
+                </NavMenu>
               </>
             )}
 
