@@ -58,6 +58,7 @@ const STR = {
     findMe: '📷 Find Me',
     openAlbum: '📁 Open album in Drive',
     openAlbumClub: (club: string) => `📁 ${club} album`,
+    allAlbums: '📑 All event folders',
     couldNotLoadPhotos: 'Could not load photos',
     deletedPhotos: (count: number) =>
       `Deleted ${count} photo${count === 1 ? '' : 's'}`,
@@ -120,6 +121,7 @@ const STR = {
     findMe: '📷 人脸识别',
     openAlbum: '📁 在 Drive 中打开相册',
     openAlbumClub: (club: string) => `📁 ${club} 相册`,
+    allAlbums: '📑 所有活动文件夹',
     couldNotLoadPhotos: '无法加载照片',
     deletedPhotos: (count: number) => `已删除 ${count} 张照片`,
     deletingPhotos: (count: number) => `正在删除 ${count} 张照片…`,
@@ -175,6 +177,7 @@ export function Gallery(): JSX.Element {
   const [photos, setPhotos] = useState<GalleryPhoto[] | null>(null);
   const [eventName, setEventName] = useState('');
   const [albumFolders, setAlbumFolders] = useState<AlbumFolder[]>([]);
+  const [albumsIndexUrl, setAlbumsIndexUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [selectMode, setSelectMode] = useState(false);
@@ -350,6 +353,23 @@ export function Gallery(): JSX.Element {
       cancelled = true;
     };
   }, [eventId]);
+
+  // The world-readable Managed Albums index sheet (all events' Photo/Video/Album
+  // folders, each a raw Drive link). Best-effort; the link is hidden when the
+  // public index is unconfigured. Event-independent, so fetched once.
+  useEffect(() => {
+    let cancelled = false;
+    apiGet<{ ok: true; url: string | null }>('/api/managed-albums')
+      .then((r) => {
+        if (!cancelled) setAlbumsIndexUrl(r.url ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setAlbumsIndexUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Lazily load the full-size URL for whichever photo the lightbox is showing
   // (and we keep them once fetched). Until it arrives the lightbox shows the
@@ -782,6 +802,11 @@ export function Gallery(): JSX.Element {
               {albumLinks.length === 1 ? t.openAlbum : t.openAlbumClub(f.clubName || f.tag || '—')}
             </a>
           ))}
+          {albumsIndexUrl && (
+            <a className="btn btn-light btn-sm" href={albumsIndexUrl} target="_blank" rel="noopener noreferrer">
+              {t.allAlbums}
+            </a>
+          )}
           <Link to={`/events/${eventId}/findme`} className="btn btn-primary btn-sm">
             {t.findMe}
           </Link>

@@ -172,6 +172,38 @@ describe('folderRebuildQueue', () => {
     expect(batch?.failed).toEqual([{ eventId: 'e2', error: 'boom e2' }]);
   });
 
+  it('reclaims an abandoned in-flight event (lease expired) instead of stranding the batch', async () => {
+    // Simulate a batch whose only event was claimed by a drain that then died:
+    // it sits in `inProgress` with a stale timestamp, nothing in pending, and
+    // nothing recorded — the bug that used to strand the bar at "0 done, 0 failed".
+    const stale = new Date(Date.now() - 5 * 60_000).toISOString();
+    state.docs.set('b1', {
+      kind: 'videos-albums',
+      status: 'running',
+      total: 1,
+      pending: [],
+      inProgress: [{ eventId: 'e1', startedAt: stale }],
+      done: [],
+      failed: [],
+      refreshPublic: true,
+      createdBy: 'admin@x',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: stale,
+    });
+
+    const summary = await q.drainRebuildQueue(60_000);
+    expect(summary.drained).toBe(true);
+    expect(summary.processed).toBe(1);
+    expect(summary.finished).toBe(true);
+    expect(summary.remaining).toBe(0);
+
+    const batch = await q.getBatch('b1');
+    expect(batch?.status).toBe('done');
+    expect(batch?.done).toEqual(['e1']);
+    expect(batch?.inProgress ?? []).toEqual([]);
+    expect(state.rebuilt).toEqual(['e1']);
+  });
+
   it('is a no-op when nothing is queued', async () => {
     const summary = await q.drainRebuildQueue(60_000);
     expect(summary).toEqual({ drained: false, processed: 0, failed: 0, remaining: 0, finished: false });

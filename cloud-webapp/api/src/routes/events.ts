@@ -82,6 +82,22 @@ eventsRouter.get('/events/:id', requireAuth, async (req, res, next) => {
 });
 
 /**
+ * GET /api/managed-albums — the world-readable "Managed Albums" index sheet
+ * (PUBLIC_FOLDER_INDEX_SHEET_ID) as a clickable URL, so the gallery and the
+ * admin page can link people to the full Photo/Video/Album folder listing
+ * (every row a raw Drive folder link). Returns `url: null` when the public
+ * index is unconfigured so callers can simply hide the link. requireAuth keeps
+ * it on the same footing as the other gallery reads. Declared before
+ * `/events/:id` would never match it, but kept here for proximity to the other
+ * managed-folder reads.
+ */
+eventsRouter.get('/managed-albums', requireAuth, (_req, res) => {
+  const id = env.PUBLIC_FOLDER_INDEX_SHEET_ID;
+  const url = id ? `https://docs.google.com/spreadsheets/d/${id}/` : null;
+  res.json({ ok: true, url });
+});
+
+/**
  * GET /api/events/:id/album-folders — public-facing list of the event's managed
  * Album folders (Drive links) so the gallery can offer "Open album in Drive".
  * Reads the `specialFolders` Firestore cache (mirrors the Special_Folders sheet,

@@ -20,8 +20,6 @@
  * batch simply spreads across several drain ticks rather than timing out.
  */
 
-import { FieldValue } from '@google-cloud/firestore';
-
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import {
@@ -79,6 +77,11 @@ export interface RebuildBatch {
   total: number;
   /** Event IDs not yet claimed. */
   pending: string[];
+  /** Events claimed by a drain but not yet finished, with the claim time. A
+   *  drain that dies mid-event (e.g. the request 502s at the 60s cap) leaves its
+   *  event here; once the lease expires another drain reclaims it instead of the
+   *  event being lost — which used to strand a batch at "0 done, 0 failed". */
+  inProgress?: Array<{ eventId: string; startedAt: string }>;
   /** Event IDs rebuilt successfully. */
   done: string[];
   /** Event IDs that failed, with the error message. */
@@ -106,6 +109,13 @@ const DRAIN_BUDGET_MS = 40_000;
  *  as abandoned and re-claimable. Every step is idempotent, so re-running just
  *  resumes — already-represented sources are skipped. */
 const STEP_LEASE_MS = 90_000;
+
+/** An event claimed by a drain that then died (its request 502'd at the 60s cap,
+ *  or a transient network drop) is considered abandoned after this and becomes
+ *  re-claimable. The per-event rebuilds are idempotent (already-represented
+ *  sources are skipped), so a reclaim just resumes. Comfortably above the 60s
+ *  request cap so a still-running event is never reclaimed out from under itself. */
+const EVENT_LEASE_MS = 120_000;
 
 const now = (): string => new Date().toISOString();
 
@@ -143,6 +153,7 @@ export async function enqueueRebuild(
     status: 'running',
     total: eventIds.length,
     pending: [...eventIds],
+    inProgress: [],
     done: [],
     failed: [],
     refreshPublic: opts.refreshPublic ?? true,
@@ -203,27 +214,61 @@ async function oldestRunningBatch(): Promise<RebuildBatch | null> {
   return doc ? ({ id: doc.id, ...doc.data() } as RebuildBatch) : null;
 }
 
-/** Atomically move the next pending event out of the batch so no other drain
- *  picks it up. Returns the claimed event id, or null if none remain. */
+/** Atomically claim the next event to process and record it as in-flight (with a
+ *  claim timestamp) so no other drain picks it up. Prefers an in-flight event
+ *  whose lease has expired (a previous drain died mid-event) and re-stamps it;
+ *  otherwise pops the next pending event. Returns the claimed event id, or null
+ *  if nothing is runnable right now. */
 async function claimNext(id: string): Promise<string | null> {
   return firestore().runTransaction(async (tx) => {
     const snap = await tx.get(batchRef(id));
     if (!snap.exists) return null;
     const pending = (snap.get('pending') as string[] | undefined) ?? [];
+    const inProgress = (snap.get('inProgress') as Array<{ eventId: string; startedAt: string }> | undefined) ?? [];
+    const nowTs = now();
+    const nowMs = Date.now();
+
+    // 1) Reclaim the first abandoned in-flight event (lease expired), re-stamping it.
+    const staleIdx = inProgress.findIndex((e) => nowMs - Date.parse(e.startedAt) > EVENT_LEASE_MS);
+    if (staleIdx !== -1) {
+      const reclaimed = inProgress[staleIdx]!.eventId;
+      const updated = inProgress.map((e, i) => (i === staleIdx ? { eventId: e.eventId, startedAt: nowTs } : e));
+      tx.update(batchRef(id), { inProgress: updated, updatedAt: nowTs });
+      return reclaimed;
+    }
+
+    // 2) Otherwise claim the next pending event and move it to in-flight.
     if (pending.length === 0) return null;
     const [next, ...rest] = pending;
-    tx.update(batchRef(id), { pending: rest, updatedAt: now() });
-    return next ?? null;
+    if (!next) return null;
+    tx.update(batchRef(id), {
+      pending: rest,
+      inProgress: [...inProgress, { eventId: next, startedAt: nowTs }],
+      updatedAt: nowTs,
+    });
+    return next;
   });
 }
 
-/** Record a finished event against the batch. */
+/** Record a finished event against the batch and drop it from the in-flight
+ *  list. Transactional (rather than arrayUnion) because in-flight entries carry
+ *  a timestamp, and a reclaim may have produced more than one entry to clear. */
 async function recordResult(id: string, eventId: string, error: string | null): Promise<void> {
-  await batchRef(id).update(
-    error
-      ? { failed: FieldValue.arrayUnion({ eventId, error }), updatedAt: now() }
-      : { done: FieldValue.arrayUnion(eventId), updatedAt: now() },
-  );
+  await firestore().runTransaction(async (tx) => {
+    const snap = await tx.get(batchRef(id));
+    if (!snap.exists) return;
+    const inProgress = (snap.get('inProgress') as Array<{ eventId: string; startedAt: string }> | undefined) ?? [];
+    const done = (snap.get('done') as string[] | undefined) ?? [];
+    const failed = (snap.get('failed') as Array<{ eventId: string; error: string }> | undefined) ?? [];
+    const remainingInFlight = inProgress.filter((e) => e.eventId !== eventId);
+    const patch: Record<string, unknown> = { inProgress: remainingInFlight, updatedAt: now() };
+    if (error) {
+      if (!failed.some((f) => f.eventId === eventId)) patch.failed = [...failed, { eventId, error }];
+    } else if (!done.includes(eventId)) {
+      patch.done = [...done, eventId];
+    }
+    tx.update(batchRef(id), patch);
+  });
 }
 
 /** Flip a fully-processed batch to `done` exactly once. Returns true only for
@@ -235,7 +280,7 @@ async function finalizeIfComplete(id: string): Promise<{ justFinished: boolean; 
     if (!snap.exists) return { justFinished: false, refreshPublic: false };
     const b = snap.data() as Omit<RebuildBatch, 'id'>;
     const processed = (b.done?.length ?? 0) + (b.failed?.length ?? 0);
-    const empty = (b.pending?.length ?? 0) === 0;
+    const empty = (b.pending?.length ?? 0) === 0 && (b.inProgress?.length ?? 0) === 0;
     if (b.status === 'running' && empty && processed >= b.total) {
       tx.update(batchRef(id), { status: 'done', finishedAt: now(), updatedAt: now() });
       return { justFinished: true, refreshPublic: b.refreshPublic ?? false };
@@ -439,7 +484,9 @@ export async function drainRebuildQueue(budgetMs = DRAIN_BUDGET_MS): Promise<Dra
   }
 
   const after = await batchRef(batch.id).get();
-  const remaining = ((after.get('pending') as string[] | undefined) ?? []).length;
+  const remaining =
+    ((after.get('pending') as string[] | undefined) ?? []).length +
+    ((after.get('inProgress') as unknown[] | undefined) ?? []).length;
   logger.info(
     { batchId: batch.id, kind: batch.kind, processed, failed, remaining, finished: justFinished },
     'rebuild drain tick',

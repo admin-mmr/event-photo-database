@@ -34,6 +34,9 @@ const STR = {
     batchDone: (done: number, failed: number, total: number) =>
       `Finished: ${done} rebuilt, ${failed} failed (of ${total} events).`,
     allEventsHint: 'For "All events", Photos / Videos + Albums / Migrate run in the background.',
+    managedAlbumsLink: '📑 Open Managed Albums sheet',
+    managedAlbumsHint: 'Public, view-only index of every Photo / Video / Album folder — each row links to the raw Google Drive folder. Share this with attendees.',
+    elapsed: (s: string) => `Elapsed ${s}`,
     // Step labels + sub-notes
     stepCount: 'Count photos & videos',
     stepPhotos: 'Build Photos_NNN folders',
@@ -90,6 +93,9 @@ const STR = {
     batchDone: (done: number, failed: number, total: number) =>
       `已完成：重建 ${done}，失败 ${failed}（共 ${total} 个活动）。`,
     allEventsHint: '选择“全部活动”时，Photos / Videos + Albums / 迁移 将在后台运行。',
+    managedAlbumsLink: '📑 打开公开相册索引表',
+    managedAlbumsHint: '公开只读索引，列出所有 Photo / Video / Album 文件夹——每行均链接到原始 Google Drive 文件夹，可分享给参与者。',
+    elapsed: (s: string) => `已用时 ${s}`,
     stepCount: '统计照片与视频数量',
     stepPhotos: '构建 Photos_NNN 文件夹',
     stepVideos: '构建 Videos 文件夹',
@@ -145,9 +151,39 @@ interface RebuildBatch {
   failed: Array<{ eventId: string; error: string }>;
   eventId?: string;
   steps?: StepProgress[];
+  createdAt?: string;
+  finishedAt?: string;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Format an elapsed span (ms) as compact "mm:ss" / "h:mm:ss". */
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
+/** Elapsed run time from the batch's createdAt to finishedAt (or now). Returns
+ *  null if no start time is known. While running it ticks once a second so a
+ *  long, otherwise-quiet rebuild visibly progresses. */
+function useBatchElapsed(batch: RebuildBatch | null): string | null {
+  const [, setTick] = useState(0);
+  const running = batch != null && batch.status !== 'done';
+  useEffect(() => {
+    if (!running) return;
+    const h = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(h);
+  }, [running]);
+  if (!batch?.createdAt) return null;
+  const start = Date.parse(batch.createdAt);
+  if (!Number.isFinite(start)) return null;
+  const end = batch.finishedAt ? Date.parse(batch.finishedAt) : Date.now();
+  return formatElapsed(end - start);
+}
 
 /**
  * Admin manual controls for the managed-folders pipeline (gas-app migration).
@@ -168,6 +204,7 @@ export function AdminManagedFolders(): JSX.Element {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [batch, setBatch] = useState<RebuildBatch | null>(null);
+  const [albumsUrl, setAlbumsUrl] = useState<string | null>(null);
   const [recon, setRecon] = useState<Reconcile | null>(null);
   const [reconBusy, setReconBusy] = useState(false);
   // Bumped on unmount / new run so an in-flight drive loop knows to stop.
@@ -204,8 +241,18 @@ export function AdminManagedFolders(): JSX.Element {
       });
   }, [t.forbidden]);
 
+  // The world-readable Managed Albums index sheet, if configured. Best-effort —
+  // the link is simply hidden when unset or unreachable.
+  useEffect(() => {
+    apiGet<{ ok: true; url: string | null }>('/api/managed-albums')
+      .then((r) => setAlbumsUrl(r.url ?? null))
+      .catch(() => setAlbumsUrl(null));
+  }, []);
+
   // Stop any running drive loop when the page unmounts.
   useEffect(() => () => void (runToken.current += 1), []);
+
+  const elapsed = useBatchElapsed(batch);
 
   /**
    * Drive a queued batch to completion: trigger a drain, read status, repeat.
@@ -276,6 +323,17 @@ export function AdminManagedFolders(): JSX.Element {
     <div>
       <h2>{t.title}</h2>
       <p className="muted">{t.intro}</p>
+
+      {albumsUrl && (
+        <p style={{ margin: '0 0 12px' }}>
+          <a className="btn btn-light btn-sm" href={albumsUrl} target="_blank" rel="noopener noreferrer">
+            {t.managedAlbumsLink}
+          </a>
+          <span className="muted" style={{ display: 'block', fontSize: '0.85em', marginTop: 4 }}>
+            {t.managedAlbumsHint}
+          </span>
+        </p>
+      )}
 
       <div className="feedback-filters">
         <label className="muted" style={{ marginRight: 8 }}>
@@ -383,15 +441,18 @@ export function AdminManagedFolders(): JSX.Element {
       )}
 
       {batch?.steps ? (
-        <StepProgressView batch={batch} t={t} />
+        <StepProgressView batch={batch} t={t} elapsed={elapsed} />
       ) : (
         batch && (
           <div className="rebuild-progress" role="status" aria-live="polite">
             <RebuildBar value={batch.done.length + batch.failed.length} max={batch.total} />
-            <p className="muted" style={{ margin: '8px 0 0' }}>
-              {batch.status === 'done'
-                ? t.batchDone(batch.done.length, batch.failed.length, batch.total)
-                : t.batchProgress(batch.done.length, batch.failed.length, batch.total)}
+            <p className="muted" style={{ margin: '8px 0 0', display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+              <span>
+                {batch.status === 'done'
+                  ? t.batchDone(batch.done.length, batch.failed.length, batch.total)
+                  : t.batchProgress(batch.done.length, batch.failed.length, batch.total)}
+              </span>
+              {elapsed && <span>{t.elapsed(elapsed)}</span>}
             </p>
           </div>
         )
@@ -413,7 +474,15 @@ function RebuildBar({ value, max }: { value: number; max: number }): JSX.Element
 }
 
 /** Stepped progress for a single-event 'full' rebuild. */
-function StepProgressView({ batch, t }: { batch: RebuildBatch; t: (typeof STR)['en'] }): JSX.Element {
+function StepProgressView({
+  batch,
+  t,
+  elapsed,
+}: {
+  batch: RebuildBatch;
+  t: (typeof STR)['en'];
+  elapsed: string | null;
+}): JSX.Element {
   const steps = batch.steps ?? [];
   const completed = steps.filter((s) => s.status === 'done' || s.status === 'failed').length;
 
@@ -460,6 +529,7 @@ function StepProgressView({ batch, t }: { batch: RebuildBatch; t: (typeof STR)['
         <strong>{t.progressHead}</strong>
         <span className="muted">
           {batch.status === 'done' ? t.overallDone : t.overall(completed, steps.length)}
+          {elapsed ? ` · ${t.elapsed(elapsed)}` : ''}
         </span>
       </div>
       <RebuildBar value={completed} max={steps.length} />
