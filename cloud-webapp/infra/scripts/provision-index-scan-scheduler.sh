@@ -25,7 +25,8 @@
 #   - api-runtime@ has roles/run.invoker on the photo-indexer job (so the
 #     scan can launch executions) — see services/indexerJob.ts header.
 #
-# Idempotent: re-running updates the existing job in place.
+# Idempotent: re-running updates the existing job in place (verb-aware header
+# flag — `--headers` on create, `--update-headers` on update).
 
 set -euo pipefail
 
@@ -75,8 +76,10 @@ echo "==> Using OIDC service account: $OIDC_SA (audience $API_URL)"
 
 if gcloud scheduler jobs describe "$JOB" --location="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1; then
   VERB="update http"
+  HEADER_FLAG="--update-headers"
 else
   VERB="create http"
+  HEADER_FLAG="--headers"
 fi
 
 echo "==> ${VERB%% *}-ing scheduler job '$JOB' → POST $URI ($SCHEDULE $TZ)"
@@ -88,7 +91,7 @@ gcloud scheduler jobs $VERB "$JOB" \
   --time-zone="$TZ" \
   --uri="$URI" \
   --http-method=POST \
-  --headers="X-Sync-Token=${SYNC_TRIGGER_TOKEN},Content-Type=application/json" \
+  "$HEADER_FLAG=X-Sync-Token=${SYNC_TRIGGER_TOKEN},Content-Type=application/json" \
   --message-body='{}' \
   --oidc-service-account-email="$OIDC_SA" \
   --oidc-token-audience="$API_URL" \
