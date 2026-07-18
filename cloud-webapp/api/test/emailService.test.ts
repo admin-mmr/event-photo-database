@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // EMAIL_ENABLED defaults to 'false', so sendEmail no-ops without a network call.
-const { buildRawMessage, sendEmail, sendToMany, emailFrom } = await import('../src/services/emailService.js');
+const { buildRawMessage, encodeHeaderValue, sendEmail, sendToMany, emailFrom } = await import(
+  '../src/services/emailService.js'
+);
 
 const content = { subject: 'Hi there', html: '<p>hello</p>', text: 'hello' };
 
@@ -15,6 +17,40 @@ describe('buildRawMessage', () => {
     expect(decoded).toContain('hello'); // text part
     expect(decoded).toContain('<p>hello</p>'); // html part
     expect(decoded).toContain(`From: ${emailFrom()}`);
+  });
+
+  it('RFC 2047-encodes a non-ASCII subject (em dash), leaving ASCII alone', () => {
+    const subject = 'Event Photo Database daily digest — 16 changes';
+    const raw = buildRawMessage('a@x.org', { ...content, subject });
+    const decoded = Buffer.from(raw, 'base64url').toString('utf8');
+    expect(decoded).not.toContain(`Subject: ${subject}`);
+    const encoded = decoded.match(/^Subject: (.+(?:\r\n .+)*)/m)?.[1] ?? '';
+    const roundTripped = encoded
+      .split(/\r\n /)
+      .map((w) => Buffer.from(w.replace(/^=\?UTF-8\?B\?/, '').replace(/\?=$/, ''), 'base64').toString('utf8'))
+      .join('');
+    expect(roundTripped).toBe(subject);
+  });
+});
+
+describe('encodeHeaderValue', () => {
+  it('passes ASCII through untouched', () => {
+    expect(encodeHeaderValue('Hi there')).toBe('Hi there');
+  });
+
+  it('splits long values into <=75-char encoded-words on whole characters', () => {
+    const value = '照片'.repeat(40);
+    const encoded = encodeHeaderValue(value);
+    const words = encoded.split('\r\n ');
+    expect(words.length).toBeGreaterThan(1);
+    for (const w of words) {
+      expect(w.length).toBeLessThanOrEqual(75);
+      expect(w).toMatch(/^=\?UTF-8\?B\?[A-Za-z0-9+/]+={0,2}\?=$/);
+    }
+    const roundTripped = words
+      .map((w) => Buffer.from(w.slice(10, -2), 'base64').toString('utf8'))
+      .join('');
+    expect(roundTripped).toBe(value);
   });
 });
 

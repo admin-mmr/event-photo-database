@@ -57,13 +57,38 @@ export async function getGmailToken(): Promise<string> {
   return cached.token;
 }
 
+/**
+ * RFC 2047-encode a header value when it contains non-ASCII; ASCII passes
+ * through untouched. Headers are ASCII-only per RFC 822 — a raw UTF-8 em dash
+ * in Subject reaches Gmail as charset-guessed mojibake ("Ã¢Â€Â”"). Each
+ * encoded-word stays ≤75 chars and splits on whole characters, so a multi-byte
+ * char never straddles two words; words are joined with folding whitespace.
+ */
+export function encodeHeaderValue(value: string): string {
+  if (/^[\x20-\x7e]*$/.test(value)) return value;
+  const chunks: string[] = [];
+  let chunk = '';
+  for (const ch of value) {
+    if (Buffer.byteLength(chunk + ch, 'utf8') > 45) {
+      chunks.push(chunk);
+      chunk = ch;
+    } else {
+      chunk += ch;
+    }
+  }
+  if (chunk) chunks.push(chunk);
+  return chunks
+    .map((c) => `=?UTF-8?B?${Buffer.from(c, 'utf8').toString('base64')}?=`)
+    .join('\r\n ');
+}
+
 /** Build a base64url-encoded RFC-822 multipart/alternative message. */
 export function buildRawMessage(to: string, content: EmailContent): string {
   const boundary = `mmr_${Date.now().toString(36)}`;
   const headers = [
     `From: ${emailFrom()}`,
     `To: ${to}`,
-    `Subject: ${content.subject}`,
+    `Subject: ${encodeHeaderValue(content.subject)}`,
     'MIME-Version: 1.0',
     `Content-Type: multipart/alternative; boundary="${boundary}"`,
   ].join('\r\n');
