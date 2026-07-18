@@ -110,7 +110,14 @@ gate ever runs. Use the same identity the existing `findme-drive-sync` job uses
 ```
 
 All three scripts add these automatically (they inherit the SA from
-`findme-drive-sync`).
+`findme-drive-sync`). If `findme-drive-sync` itself has no OIDC token (it
+predates the OIDC convention — it worked anyway because the service is publicly
+invokable), the scripts fail with `no OIDC service account found`; export the
+SA explicitly and re-run:
+
+```bash
+export OIDC_SA=api-runtime@mmr-data-pipeline.iam.gserviceaccount.com
+```
 
 **Keep them OFF until parity sign-off (Phase B).** Newly created jobs are
 `ENABLED` by default, so pause each immediately after creating it (a paused job
@@ -260,8 +267,8 @@ now describe the single-app reality.
 - [ ] A1 scopes authorized (spreadsheets, drive, gmail.send)
 - [ ] A2 env + secrets set; partners registered as api_client
 - [ ] A3 indexes deployed
-- [ ] A4 schedulers created + paused (index-scan, digest, purge); `findme-drive-sync` also paused for parity
-- [ ] A5 deployed; `/api/health` green
+- [x] A4 schedulers created + paused (index-scan, digest, purge); `findme-drive-sync` also paused for parity — verified 2026-07-18, all five jobs (incl. folder-rebuild) `PAUSED`, OIDC (`api-runtime@`) attached to all
+- [x] A5 deployed; `/api/health` green — verified 2026-07-18 (commit `cdbba07`)
 - [ ] B parity matrix fully verified over one event cycle
 - [ ] C gas-app writes frozen (web app unpublished, triggers removed)
 - [ ] D 48h clean dual-run
