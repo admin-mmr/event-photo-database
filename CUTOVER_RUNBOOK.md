@@ -87,11 +87,15 @@ literally:
 export SYNC_TRIGGER_TOKEN="$(gcloud secrets versions access latest --secret=SYNC_TRIGGER_TOKEN --project=mmr-data-pipeline)"
 ```
 
-`findme-index-scan` has a maintained script
-(`infra/scripts/provision-index-scan-scheduler.sh <project> <region>`). The other
-two are created directly with `gcloud scheduler jobs create http`, mirroring the
-script: same `--headers="X-Sync-Token=…,Content-Type=application/json"`,
-`--message-body='{}'`, `--attempt-deadline=320s`.
+Each job has a maintained, idempotent script (re-running updates in place —
+the header flag is picked by verb, `--headers` on create / `--update-headers`
+on update):
+
+```bash
+./infra/scripts/provision-index-scan-scheduler.sh mmr-data-pipeline us-central1
+./infra/scripts/provision-email-daily-scheduler.sh mmr-data-pipeline us-central1
+./infra/scripts/provision-deleted-purge-scheduler.sh mmr-data-pipeline us-central1
+```
 
 **OIDC is required, not just the header.** Even though the app authorizes on
 `X-Sync-Token`, Cloud Run's IAM layer runs first, so every scheduler job must also
@@ -105,16 +109,8 @@ gate ever runs. Use the same identity the existing `findme-drive-sync` job uses
   --oidc-token-audience="$API_URL"
 ```
 
-The index-scan script adds these automatically (it inherits the SA from
-`findme-drive-sync`); add them by hand to the `create http` calls for the other
-two.
-
-**Gotcha — script flag bug on re-run.** `provision-index-scan-scheduler.sh` uses
-`--headers`, which is only valid on `gcloud scheduler jobs create http`. If the
-job already exists the script takes the `update http` path, where the flag is
-`--update-headers`, and fails with `unrecognized arguments: --headers=…`. Until
-the script is patched, either delete the job first and let it re-create, or run
-the `update http` by hand with `--update-headers`.
+All three scripts add these automatically (they inherit the SA from
+`findme-drive-sync`).
 
 **Keep them OFF until parity sign-off (Phase B).** Newly created jobs are
 `ENABLED` by default, so pause each immediately after creating it (a paused job
@@ -182,6 +178,21 @@ each test.
 | Duplicates / trash | `/admin/deleted` → `adminDeletedFiles` | soft-delete trashes + ledgers; restore untrashes |
 | Reporting | `/admin/summary` → `summary` | totals match Upload_Log |
 | Partner API | `GET /partner/events`, `POST /partner/links` | key auth works; link pinned to client club |
+
+**Automated harness.** `infra/scripts/parity-check.mjs` exercises this matrix
+against the deployed API (dependency-free, Node 18+). Read-only smoke + shape +
+RBAC by default; `--write` adds a reversible create→readback→deactivate cycle
+for clubs/users/links/masquerade; `--email` / `--partner-key` gate the rest. It
+needs an admin Firebase ID token (grab from DevTools while signed in — see
+`--help`):
+
+```bash
+ADMIN_ID_TOKEN=<jwt> node cloud-webapp/infra/scripts/parity-check.mjs
+ADMIN_ID_TOKEN=<jwt> node cloud-webapp/infra/scripts/parity-check.mjs --write --event=<eventId>
+```
+
+A green run means the API round-trips; the authoritative parity check is still
+eyeballing each Sheet tab (printed per flow) against gas-app.
 
 **Go/no-go:** every row verified on a real (non-production-critical) event for at
 least one full event cycle. Now `resume` the Phase A4 schedulers **and**

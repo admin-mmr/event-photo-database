@@ -156,8 +156,9 @@
 - **`deploy-api.sh` uses `--update-env-vars` (merge), not `--set-env-vars`.**
   `--set-env-vars` wipes every var not re-listed — it repeatedly blanked
   `MATCHER_URL` / `SYNC_TRIGGER_TOKEN`. Optional vars are only set when exported.
-  TODO worth doing: move `SYNC_TRIGGER_TOKEN` into Secret Manager via
-  `--set-secrets` so deploys can't blank it.
+  `SYNC_TRIGGER_TOKEN` now comes from Secret Manager via `--set-secrets` (along
+  with `CONSENT_POLICY_VERSION` and `RECAPTCHA_API_KEY`), so a deploy from a
+  shell that lacks it can never blank it.
 - **Triggering the indexer job needs `roles/run.developer`** on the job for
   `api-runtime@`, not `roles/run.invoker` — we call the Jobs API with env
   overrides, which checks `run.jobs.runWithOverrides` (invoker only has
@@ -191,20 +192,20 @@
   `findme-drive-sync` (`/api/admin/sync`, daily reconcile — pre-existing, from
   `provision-sync-scheduler.sh`), `findme-index-scan` (`/api/admin/index-scan`,
   ~every 10 min — `provision-index-scan-scheduler.sh`), `findme-email-daily`
-  (`/api/admin/email/daily`) and `findme-deleted-purge`
-  (`/api/admin/deleted-files/purge`). The latter two have no script — create them
-  with `gcloud scheduler jobs create http` mirroring the index-scan script.
+  (`/api/admin/email/daily` — `provision-email-daily-scheduler.sh`) and
+  `findme-deleted-purge` (`/api/admin/deleted-files/purge` —
+  `provision-deleted-purge-scheduler.sh`).
 - **Every job needs an OIDC token, not just the header.** Cloud Run IAM runs
   before the app's `X-Sync-Token` gate, so a job without
   `--oidc-service-account-email=api-runtime@mmr-data-pipeline.iam.gserviceaccount.com`
   + `--oidc-token-audience=<service URL>` gets an HTML `403` from Google before
   the app ever sees it. `api-runtime@` already holds `run.invoker` on the service.
-- **`provision-index-scan-scheduler.sh` only works on first create.** It passes
-  `--headers`, valid for `create http`; on re-run the job exists so it takes the
-  `update http` path, where the flag is `--update-headers`, and dies with
-  `unrecognized arguments: --headers=…`. Workaround: delete the job and re-run, or
-  do the `update http` by hand with `--update-headers`. TODO: patch the script to
-  pick the header flag by verb.
+- **All provision scripts are idempotent (verb-aware header flag).** gcloud
+  takes `--headers` on `create http` but `--update-headers` on `update http`;
+  every `provision-*-scheduler.sh` now picks the flag by verb, so re-running any
+  of them updates the existing job in place. (The index-scan script used to pass
+  `--headers` unconditionally and die on re-run with
+  `unrecognized arguments: --headers=…` — fixed.)
 - **`findme-folder-rebuild`** (`/api/admin/folders/rebuild-drain`, ~every 2 min —
   `provision-folder-rebuild-scheduler.sh`) drains the managed-folder rebuild
   queue. The "All events" Photos / Videos+Albums / Migrate admin buttons used to
@@ -216,9 +217,7 @@
   the drain that empties a batch refreshes the public folder index once. A drain
   with nothing queued is a single-query no-op, so the 2-min tick is ~free while
   idle (respects the zero-idle-cost policy). Single-event rebuilds still run
-  synchronously (one event fits 60s). This script **picks the header flag by verb**
-  (`--headers` on create, `--update-headers` on update), so unlike
-  `provision-index-scan-scheduler.sh` it is safe to re-run.
+  synchronously (one event fits 60s).
 - **Keep all PAUSED until Phase B parity sign-off** (`CUTOVER_RUNBOOK.md`
   §A4). New jobs are `ENABLED` by default — pause right after creating. A paused
   job can still be triggered manually with `gcloud scheduler jobs run` for
