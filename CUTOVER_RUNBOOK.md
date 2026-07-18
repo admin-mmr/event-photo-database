@@ -274,13 +274,13 @@ now describe the single-app reality.
 
 ## Decommission checklist (sign-off)
 
-- [ ] A1 scopes authorized (spreadsheets, drive, gmail.send)
-- [ ] A2 env + secrets set; partners registered as api_client
-- [ ] A3 indexes deployed
+- [x] A1 scopes authorized (spreadsheets, drive, gmail.send) — proven live 2026-07-18: parity `--write` wrote the Sheet, event create made a Drive folder, digest email delivered (after also enabling the Gmail *API* on the project — scope and API enable are separate switches)
+- [x] A2 env + secrets set; partners registered as api_client — verified 2026-07-18: `PARTNER_API_KEYS` in Secret Manager + mounted; disposable parity api_client exercised both partner endpoints, then deactivated (key confirmed 403)
+- [x] A3 indexes deployed — verified 2026-07-18: 9/9 composite indexes `READY`, matching `cloud-webapp/infra/firestore.indexes.json`
 - [x] A4 schedulers created + paused (index-scan, digest, purge); `findme-drive-sync` also paused for parity — verified 2026-07-18, all five jobs (incl. folder-rebuild) `PAUSED`, OIDC (`api-runtime@`) attached to all
 - [x] A5 deployed; `/api/health` green — verified 2026-07-18 (commit `cdbba07`)
-- [ ] B parity matrix fully verified over one event cycle
-- [ ] C gas-app writes frozen (web app unpublished, triggers removed)
+- [x] B parity matrix fully verified over one event cycle — signed off 2026-07-18: automated harness green (read-only 12/12, `--write` 17/0, `--email`, `--partner-key`), Cathy eyeballed the master + Managed Albums sheets, digest email received (mojibake subject fixed in PR #3). All five schedulers resumed same evening.
+- [x] C gas-app writes frozen (web app unpublished, triggers removed) — done 2026-07-18: all gas-app triggers removed and the web app deployment archived; cloud-webapp is the single writer
 - [ ] D 48h clean dual-run
 - [ ] E obsolete pieces retired; `gas-app-final` tag pushed
 - [ ] Docs updated (README / CLAUDE.md / this runbook archived)
