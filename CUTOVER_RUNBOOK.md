@@ -35,6 +35,16 @@ Drive read was granted during Find Me; add the rest:
 
 Until a scope propagates, the matching calls return `403 PERMISSION_DENIED`.
 
+**The Gmail API must also be enabled on the GCP project** — the DWD scope
+authorizes the impersonation, but the API itself is a separate switch. When
+disabled, digest/notice sends fail with a non-fatal
+`Gmail send 403 … SERVICE_DISABLED` warning in the api logs while the endpoint
+still returns 200 (found live 2026-07-18):
+
+```bash
+gcloud services enable gmail.googleapis.com --project=mmr-data-pipeline
+```
+
 ### A2. Service config / secrets (Cloud Run env + Secret Manager)
 
 Set on the `event-photo-api` service (`deploy-api.sh --update-env-vars`, or

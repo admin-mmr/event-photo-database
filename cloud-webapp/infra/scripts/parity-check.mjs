@@ -243,6 +243,12 @@ check('email/daily digest', 'Audit_Log + Email_Preferences', async () => {
   if (!DO_EMAIL) skip('pass --email to actually send the digest');
   const r = await api('POST', '/api/admin/email/daily', { body: {} });
   assert(r.status === 200 && r.json?.ok === true, `expected 200 ok, got ${r.status}`);
+  // Send failures are non-fatal server-side (logged 200), so a 200 alone can hide
+  // a broken mail path — e.g. the Gmail API being disabled on the project.
+  assert(
+    !(r.json.recipients > 0 && r.json.sent < r.json.recipients),
+    `digest under-delivered: sent=${r.json.sent} of recipients=${r.json.recipients} (check api logs for Gmail errors)`,
+  );
   return `changes=${r.json.changes} recipients=${r.json.recipients} sent=${r.json.sent}`;
 });
 
