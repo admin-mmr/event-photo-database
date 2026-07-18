@@ -172,7 +172,8 @@ check('managed-albums link', 'public folder index sheet', async () => {
 check('write: club create→readback→deactivate', 'Clubs', async () => {
   if (!DO_WRITE) skip('pass --write to run write checks');
   if (ctx.role !== 'super_admin') skip('club create is super_admin only');
-  const norm = `zzz-parity-${STAMP}`;
+  // normalizedName must match clubStore's NORMALIZED_NAME_RE (alnum + underscores).
+  const norm = `zzz_parity_${STAMP}`;
   const c = await api('POST', '/api/admin/clubs', { body: { displayName: `ZZZ Parity ${STAMP}`, normalizedName: norm } });
   assert(c.status === 201 && c.json?.club?.normalizedName === norm, `create failed: ${c.status} ${c.text.slice(0, 160)}`);
   ctx.createdClubNorm = norm;
@@ -207,9 +208,11 @@ check('write: link generate→rotate→revoke', 'Upload_Links', async () => {
   const id = g.json.link.linkId;
   const rot = await api('POST', `/api/admin/links/${encodeURIComponent(id)}/rotate`, { body: {} });
   assert(rot.status === 200 && rot.json?.link?.version > g.json.link.version, `rotate failed: ${rot.status}`);
-  const rev = await api('POST', `/api/admin/links/${encodeURIComponent(id)}/revoke`, { body: { reason: 'parity-check cleanup' } });
+  // Rotate revokes the old link and mints a NEW linkId — clean up the new one.
+  const rotatedId = rot.json.link.linkId;
+  const rev = await api('POST', `/api/admin/links/${encodeURIComponent(rotatedId)}/revoke`, { body: { reason: 'parity-check cleanup' } });
   assert(rev.status === 200 && rev.json?.link?.status === 'inactive', `revoke (cleanup) failed: ${rev.status}`);
-  return `generated + rotated + revoked link ${id}`;
+  return `generated ${id} + rotated → ${rotatedId} + revoked`;
 });
 
 check('write: masquerade start→end', 'Audit_Log', async () => {
