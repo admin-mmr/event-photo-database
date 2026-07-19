@@ -213,15 +213,38 @@
   now enqueue a batch (`folderRebuildBatches` Firestore collection, written by
   `api/src/services/folderRebuildQueue.ts`) and return `202`. Each drain claims
   pending events transactionally (overlapping ticks never double-process),
-  rebuilds them within a ~40s budget so the request stays under the 60s cap, and
+  rebuilds them within a ~40s budget, and
   the drain that empties a batch refreshes the public folder index once. A drain
   with nothing queued is a single-query no-op, so the 2-min tick is ~free while
   idle (respects the zero-idle-cost policy). Single-event rebuilds still run
-  synchronously (one event fits 60s).
+  synchronously.
+  - **The drain query needs a composite index** on `folderRebuildBatches`
+    (`status` ASC + `createdAt` ASC — `oldestRunningBatch`); it lives in
+    `infra/firestore.indexes.json`. It was missing at first cutover and the drain
+    500'd every tick with `FAILED_PRECONDITION` (caught in Phase D). If you add a
+    new indexed query here, add the index too.
+  - **The api request timeout is 1800s, NOT 60s** (`deploy-api.sh --timeout=1800`).
+    The ~40s budget only bounds *starting* new events; a single large event's
+    rebuild (esp. `migrate-shortcuts`, which does a per-shortcut image-convert)
+    can run well past 60s, and at the old 60s timeout the request was killed
+    mid-event → HTTP 504 with zero committed progress, retried forever. The
+    migrate/rebuild work is idempotent-resumable (converted copies are detected
+    and skipped, trashed shortcuts stay trashed), so a killed run resumes; the
+    long window lets a big event finish in one claim. (The Phase-D fix first set
+    300s for this drain; the timeout was later raised to 1800s so the Cloud Tasks
+    worker `/api/internal/process-batch` can copy a large staged video — up to
+    10 GiB — to Drive in one attempt, which comfortably covers the rebuild case
+    too.) Hosting-routed user paths still cap at 60s (Firebase Hosting max), so
+    only the direct run.app machine calls get the longer window; scale-to-zero /
+    idle cost is unaffected.
 - **Keep all PAUSED until Phase B parity sign-off** (`CUTOVER_RUNBOOK.md`
-  §A4). New jobs are `ENABLED` by default — pause right after creating. A paused
-  job can still be triggered manually with `gcloud scheduler jobs run` for
-  verification. `findme-drive-sync` especially must be paused during parity since
+  §A4). New jobs are `ENABLED` by default — pause right after creating. NOTE: a
+  **paused** job CANNOT be triggered with `gcloud scheduler jobs run` — it fails
+  `FAILED_PRECONDITION: Job.state must be ENABLED for RunJob` (an earlier note
+  here wrongly claimed paused jobs were manually runnable). To exercise a job's
+  target on demand while it's paused, POST the endpoint directly with the
+  `X-Sync-Token` header instead (see the drain example below), or `resume` first.
+  `findme-drive-sync` especially must be paused during parity since
   it writes the master Sheet (the SSOT the parity diffs read). `resume` them all
   after sign-off. (`findme-folder-rebuild` only acts when a batch is queued, so
   it is harmless to leave enabled, but keep it paused with the rest for tidiness.)

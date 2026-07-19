@@ -281,6 +281,15 @@ now describe the single-app reality.
 - [x] A5 deployed; `/api/health` green — verified 2026-07-18 (commit `cdbba07`)
 - [x] B parity matrix fully verified over one event cycle — signed off 2026-07-18: automated harness green (read-only 12/12, `--write` 17/0, `--email`, `--partner-key`), Cathy eyeballed the master + Managed Albums sheets, digest email received (mojibake subject fixed in PR #3). All five schedulers resumed same evening.
 - [x] C gas-app writes frozen (web app unpublished, triggers removed) — done 2026-07-18: all gas-app triggers removed and the web app deployment archived; cloud-webapp is the single writer
-- [ ] D 48h clean dual-run
+- [ ] D 48h clean dual-run — IN PROGRESS. Watch surfaced + fixed a
+  `findme-folder-rebuild` regression on 2026-07-19: (1) the drain query needed a
+  `folderRebuildBatches` composite index that was never in
+  `infra/firestore.indexes.json` (drain 500'd every 2 min with
+  `FAILED_PRECONDITION`) — index added + created live; (2) once draining, a large
+  event's `migrate-shortcuts` rebuild exceeded the 60s Cloud Run request timeout
+  → HTTP 504, zero progress — raised the api timeout (`deploy-api.sh`; initially
+  300s for this drain, later 1800s for the Cloud Tasks video-copy worker).
+  The stuck 10-event batch then completed (10/10). Fixes shipped in PR #6. The
+  48h clean-log clock effectively restarts from this fix.
 - [ ] E obsolete pieces retired; `gas-app-final` tag pushed
 - [ ] Docs updated (README / CLAUDE.md / this runbook archived)
