@@ -112,6 +112,13 @@ if [[ -n "${DRIVE_MIN_INTERVAL_MS:-}" ]]; then ENV_VARS="${ENV_VARS},DRIVE_MIN_I
 
 echo "==> Setting env vars: ${ENV_VARS}"
 
+# --timeout=300 (not 60): the machine-triggered folder-rebuild drain
+# (/admin/folders/rebuild-drain) processes one event per claim, and a single
+# large event's migrate-shortcuts / photo rebuild can legitimately run past 60s
+# (per-shortcut image-convert calls). A 60s request timeout killed the drain
+# mid-event → HTTP 504 with zero progress. Hosting-routed user paths still cap at
+# 60s (Firebase Hosting max), so this only lengthens the direct run.app machine
+# calls; it does not affect idle cost (scale-to-zero is unchanged).
 gcloud run deploy "$SERVICE" \
   --image="$IMAGE" \
   --region="$REGION" \
@@ -124,7 +131,7 @@ gcloud run deploy "$SERVICE" \
   --max-instances=10 \
   --min-instances=0 \
   --concurrency=80 \
-  --timeout=60 \
+  --timeout=300 \
   --update-env-vars="$ENV_VARS" \
   --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_API_KEY=RECAPTCHA_KEY:latest"
 # Auth: we deliberately pass NEITHER --allow-unauthenticated nor
