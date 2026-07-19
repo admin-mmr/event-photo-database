@@ -8,7 +8,7 @@
  * reworded accordingly.
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
 import type {
@@ -67,6 +67,7 @@ const STR = {
     btnFinalizing: 'Finalizing…',
     btnUpload: (n: number): string => `Upload ${n || ''} file${n === 1 ? '' : 's'}`,
     cancel: 'Cancel',
+    retry: 'Retry',
     etaMinSec: (m: number, s: number): string => `~${m} min ${s} sec remaining`,
     etaSec: (s: number): string => `~${s} sec remaining`,
   },
@@ -100,6 +101,7 @@ const STR = {
     btnFinalizing: '正在完成…',
     btnUpload: (n: number): string => `上传 ${n || ''} 个文件`,
     cancel: '取消',
+    retry: '重试',
     etaMinSec: (m: number, s: number): string => `约剩 ${m} 分 ${s} 秒`,
     etaSec: (s: number): string => `约剩 ${s} 秒`,
   },
@@ -161,6 +163,17 @@ export function VolunteerUpload(): JSX.Element {
   const batchId = useMemo(() => crypto.randomUUID(), []);
   const abortRef = useRef<AbortController | null>(null);
   const startRef = useRef<number>(0);
+  // Successful uploads accumulate here across upload rounds so the finalize
+  // (/complete) step can be retried without re-uploading already-sent bytes.
+  const resultsRef = useRef<UploadResult[]>([]);
+  // Auto-start is "armed" only by a fresh file add (drop/pick). This is what
+  // makes Cancel stick: aborting leaves items pending but disarms, so the
+  // uploader doesn't immediately restart them.
+  const armedRef = useRef(false);
+  // Latest items, readable synchronously inside the async upload loop so a round
+  // can pick up files dropped after the run started.
+  const itemsRef = useRef<Item[]>(items);
+  itemsRef.current = items;
 
   const totalBytes = useMemo(() => items.reduce((a, i) => a + i.file.size, 0), [items]);
   const sentBytes = useMemo(() => items.reduce((a, i) => a + i.sent, 0), [items]);
@@ -175,7 +188,10 @@ export function VolunteerUpload(): JSX.Element {
   const addFiles = useCallback((files: FileList | null) => {
     if (!files) return;
     const next: Item[] = Array.from(files).map((file) => ({ file, status: 'pending', sent: 0 }));
+    if (next.length === 0) return;
     setItems((prev) => [...prev, ...next]);
+    // Arm the auto-start effect: a fresh add always means "upload these".
+    armedRef.current = true;
   }, []);
 
   const patch = useCallback((idx: number, p: Partial<Item>) => {
@@ -207,72 +223,25 @@ export function VolunteerUpload(): JSX.Element {
     [token],
   );
 
-  const startUpload = useCallback(async () => {
-    if (items.length === 0 || phase === 'uploading') return;
-    setPhase('uploading');
-    setFatalError(null);
-    startRef.current = Date.now();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-
-    const results: UploadResult[] = [];
-    let nextIdx = 0;
-
-    async function worker(): Promise<void> {
-      while (nextIdx < items.length) {
-        const idx = nextIdx++;
-        const current = items[idx];
-        if (!current) continue;
-        const { file } = current;
-        const mimeType = file.type || '';
-        if (mimeType && !ACCEPTED.has(mimeType)) {
-          patch(idx, { status: 'skipped', error: t.unsupportedType });
-          continue;
-        }
-        patch(idx, { status: 'uploading' });
-        try {
-          const result = await uploadFileResumable(
-            token,
-            batchId,
-            file,
-            mimeType,
-            {
-              onProgress: (sent) => patch(idx, { sent }),
-              onResumed: (from) => patch(idx, { resumedFrom: from }),
-              signal: ctrl.signal,
-            },
-            photographerName,
-          );
-          patch(idx, { status: 'done', sent: file.size, result });
-          results.push(result);
-        } catch (err) {
-          if (err instanceof AbortError) return;
-          patch(idx, { status: 'error', error: err instanceof Error ? err.message : String(err) });
-        }
-      }
+  // Bytes are safely in the cloud by now; file them into Drive + queue indexing.
+  // Split out from the upload loop so it can be retried on its own (the bytes
+  // don't need re-sending) via the Retry button.
+  const finalize = useCallback(async (): Promise<void> => {
+    const results = resultsRef.current;
+    if (results.length === 0) {
+      setFatalError(t.noFilesUploaded);
+      setPhase('idle');
+      return;
     }
-
+    setPhase('finalizing');
     try {
-      await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
-      if (ctrl.signal.aborted) {
-        setPhase('idle');
-        return;
-      }
-      if (results.length === 0) {
-        setFatalError(t.noFilesUploaded);
-        setPhase('idle');
-        return;
-      }
-      // Bytes are now safely in the cloud; this step files them into Drive and
-      // queues indexing. Show it as its own phase rather than a blank wait.
-      setPhase('finalizing');
       const res = await apiPost<CompleteUploadResponse>('/api/volunteer/upload/complete', {
         token,
         batchId,
         items: results.map((r) => ({
           uploadId: r.uploadId,
           objectName: r.objectName,
-          fileName: items.find((i) => i.result?.uploadId === r.uploadId)?.file.name ?? r.objectName,
+          fileName: itemsRef.current.find((i) => i.result?.uploadId === r.uploadId)?.file.name ?? r.objectName,
           bytes: r.bytes,
         })),
       });
@@ -284,9 +253,99 @@ export function VolunteerUpload(): JSX.Element {
       setFatalError(err instanceof Error ? err.message : String(err));
       setPhase('idle');
     }
-  }, [items, phase, token, batchId, patch, photographerName, pollStatus, t]);
+  }, [token, batchId, pollStatus, t]);
+
+  const runUploads = useCallback(async () => {
+    if (phase === 'uploading' || phase === 'finalizing') return;
+    // Nothing new to send — if a prior run already uploaded bytes but the
+    // finalize step failed, just retry finalize (Retry button after an error).
+    if (!itemsRef.current.some((it) => it.status === 'pending')) {
+      if (resultsRef.current.length > 0) {
+        setFatalError(null);
+        void finalize();
+      }
+      return;
+    }
+    setFatalError(null);
+    setPhase('uploading');
+    if (startRef.current === 0) startRef.current = Date.now();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    // One pass over the files that are pending right now. Runs CONCURRENCY
+    // workers over that snapshot; files dropped mid-pass are caught by the
+    // outer do/while, which starts another round.
+    async function round(): Promise<void> {
+      const pending = itemsRef.current
+        .map((it, i) => ({ it, i }))
+        .filter((x) => x.it.status === 'pending');
+      let cursor = 0;
+
+      async function worker(): Promise<void> {
+        while (cursor < pending.length) {
+          const entry = pending[cursor];
+          cursor += 1;
+          if (!entry) continue;
+          const { it, i: idx } = entry;
+          const { file } = it;
+          const mimeType = file.type || '';
+          if (mimeType && !ACCEPTED.has(mimeType)) {
+            patch(idx, { status: 'skipped', error: t.unsupportedType });
+            continue;
+          }
+          patch(idx, { status: 'uploading' });
+          try {
+            const result = await uploadFileResumable(
+              token,
+              batchId,
+              file,
+              mimeType,
+              {
+                onProgress: (sent) => patch(idx, { sent }),
+                onResumed: (from) => patch(idx, { resumedFrom: from }),
+                signal: ctrl.signal,
+              },
+              photographerName,
+            );
+            patch(idx, { status: 'done', sent: file.size, result });
+            resultsRef.current.push(result);
+          } catch (err) {
+            if (err instanceof AbortError) return;
+            patch(idx, { status: 'error', error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+      }
+
+      await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+    }
+
+    try {
+      do {
+        // eslint-disable-next-line no-await-in-loop
+        await round();
+        if (ctrl.signal.aborted) {
+          setPhase('idle');
+          return;
+        }
+      } while (itemsRef.current.some((it) => it.status === 'pending'));
+      await finalize();
+    } catch (err) {
+      setFatalError(err instanceof Error ? err.message : String(err));
+      setPhase('idle');
+    }
+  }, [phase, token, batchId, patch, photographerName, finalize, t]);
+
+  // Auto-start: the moment files are dropped/picked while idle, upload begins —
+  // no button click. Armed only by addFiles, so Cancel and errors don't loop.
+  useEffect(() => {
+    if (!armedRef.current || phase !== 'idle') return;
+    if (!items.some((it) => it.status === 'pending')) return;
+    armedRef.current = false;
+    void runUploads();
+  }, [items, phase, runUploads]);
 
   const cancel = useCallback(() => {
+    armedRef.current = false;
     abortRef.current?.abort();
   }, []);
 
@@ -338,6 +397,10 @@ export function VolunteerUpload(): JSX.Element {
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             e.preventDefault();
+            // Ignore drops during finalize — the upload loop has exited and the
+            // file would be orphaned. Uploading is fine: a running round picks
+            // it up; idle arms the auto-start effect.
+            if (phase === 'finalizing') return;
             addFiles(e.dataTransfer.files);
           }}
           style={{
@@ -366,7 +429,7 @@ export function VolunteerUpload(): JSX.Element {
             accept="image/*,video/mp4,video/quicktime"
             style={{ display: 'none' }}
             onChange={(e) => addFiles(e.target.files)}
-            disabled={phase === 'uploading'}
+            disabled={phase === 'finalizing'}
           />
         </label>
       )}
@@ -432,20 +495,14 @@ export function VolunteerUpload(): JSX.Element {
         </div>
       ) : (
         <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-          <button
-            className="btn btn-primary"
-            disabled={items.length === 0 || phase === 'uploading' || phase === 'finalizing'}
-            onClick={() => void startUpload()}
-          >
-            {phase === 'uploading'
-              ? t.btnUploading
-              : phase === 'finalizing'
-                ? t.btnFinalizing
-                : t.btnUpload(items.length)}
-          </button>
           {phase === 'uploading' && (
             <button className="btn btn-light" onClick={cancel}>
               {t.cancel}
+            </button>
+          )}
+          {phase === 'idle' && fatalError && (
+            <button className="btn btn-primary" onClick={() => void runUploads()}>
+              {t.retry}
             </button>
           )}
         </div>
