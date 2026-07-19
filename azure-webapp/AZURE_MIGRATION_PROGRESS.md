@@ -3,6 +3,12 @@
 Living checklist for the `azure-webapp/` port. Update the checkboxes as work
 lands. The resume prompt at the bottom lets a fresh thread pick up cleanly.
 
+> **⚠ Superseded for planning (2026-07-18):** a full codebase audit found this
+> fork ~90 commits stale against `cloud-webapp/` and changed the strategy —
+> see root **`AZURE_MIGRATION_DEV_PLAN.md`** (decision D1: adapters in
+> `cloud-webapp/` instead of maintaining this copy; `azure-webapp/` keeps only
+> `infra/` + docs). This file remains useful for the infra-script inventory.
+
 _Last updated: 2026-06-20_
 
 ---
