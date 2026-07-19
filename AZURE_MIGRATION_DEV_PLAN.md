@@ -149,12 +149,13 @@ the adapter surface measured in §1.3–1.4 is small and already half-shaped
 (both Python services literally have dual backends today). This also keeps the
 GCP deployment working throughout — no flag-day.
 
-**D2 — Sequence after the GAS cutover.** `CUTOVER_RUNBOOK.md` is mid-Phase-B
-(parity verification, schedulers paused). Do not switch clouds under a cutover.
-Order: finish Phase B–D on GCP → start Azure work (AZ1–AZ2 can overlap Phase
-C/D since they're pure refactors deployed on GCP) → Azure pilot → Azure
-cutover. The Sheet stays SSOT through both moves — that's the whole point of
-keeping it.
+**D2 — Sequence after the GAS cutover.** Status as of 2026-07-18: Phases A–C
+of `CUTOVER_RUNBOOK.md` are **complete** (parity signed off, gas-app writes
+frozen, schedulers resumed); the Phase D 48-hour watch is running, then Phase
+E retires gas-app. Do not switch clouds under a cutover: AZ1–AZ3 are pure
+refactors/scripts that ship on GCP and can start now, but AZ4 (Azure pilot
+deploy) waits until Phase D is stable. The Sheet stays SSOT through both
+moves — that's the whole point of keeping it.
 
 **D3 — Keep Firebase Auth for the migration; Entra External ID is a separate
 later workstream.** `firebase-admin` verification needs only Google's public
@@ -206,7 +207,9 @@ Effort labels: S ≤ 2 days, M ≤ 1 week, L ≤ 3 weeks.
 
 ### AZ0 — Preconditions & subscription prep (S, ops)
 
-- GAS cutover reaches Phase D (cloud-webapp is the writer; gas-app frozen).
+- GAS cutover reaches Phase D — ✅ done 2026-07-18 (cloud-webapp is the
+  writer, gas-app writes frozen, schedulers live; 48 h watch running, Phase E
+  retire follows).
 - Confirm Azure subscription, nonprofit grant status, and whether the Cosmos
   free-tier slot is unclaimed (D5).
 - Pick region + globally-unique name suffix (ACR / storage / cosmos); record
@@ -344,7 +347,7 @@ Mirror `CUTOVER_RUNBOOK.md`'s shape:
 | AZ1 credential provider | M | — | yes (ships on GCP) |
 | AZ2 data adapters | L (the long pole, ~2–4 wks) | AZ1 | yes (ships on GCP) |
 | AZ3 infra fixes | M | — | yes (parallel with AZ2) |
-| AZ4 pilot deploy | M | AZ1–AZ3 | no — after Phase D |
+| AZ4 pilot deploy | M | AZ1–AZ3 | no — after the Phase D watch clears |
 | AZ5 parity + cutover | M | AZ4 | no |
 | AZ6 decommission | S–M | AZ5 | no |
 
