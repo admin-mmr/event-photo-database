@@ -35,6 +35,12 @@ matcher manifest.**
 
 # Item 1 — PRD: capture-time-conditional outfit fusion
 
+> **STATUS (2026-07-19): matcher side implemented + tested** (this branch — `fusion.py`
+> `time_decay` + `fuse(person_weight_fn)`, `pipeline.read_capture_time_ms`,
+> `store.EventEmbeddings.taken_at_ms`, `main.py` behind `FUSION_TIME_CONDITIONAL`; 41
+> matcher tests pass). **No indexer change was needed** — the manifest already carries
+> per-photo `takenAt`. Flag is **off** pending an offline sweep on judged labels.
+
 **Why first:** cheapest change (mostly logic, compute-negligible) that hits the "outfits
 sometimes change" reality head-on, and it converts the static 0.15 person weight from a
 liability into a *conditional* asset.
@@ -65,15 +71,19 @@ Consequences of the fixed weight:
 
 ## Design
 
-**Data plumbing.**
-- Indexer: emit per-photo capture time into the matcher manifest. Add `takenAtMs`
-  (epoch ms, UTC-normalized) and `takenAtSource` to each `faces`/`persons` manifest row
-  (or a compact per-`photoId` map alongside — avoids duplicating on multi-crop photos).
-  Source is the value `capture_time` already computes for Firestore `takenAt`; reuse it,
-  don't re-parse EXIF. Bump manifest `version` 1 → 2; the matcher must read v1 (no times)
-  and v2 alike.
-- Query anchor time: parse the uploaded selfie's EXIF `DateTimeOriginal` in
-  `matcher/main.py`. If absent/unparseable → `anchor = None`.
+**Data plumbing (already in place — no indexer change, no re-index).**
+- Candidate capture time: the indexer **already** writes a per-photo `photos` map into
+  `manifest.json` with `takenAt` (ISO, from the `capture_time` module — see `job.py`).
+  The matcher reads it via `EventEmbeddings.taken_at_ms(photoId)`; no new manifest field
+  and no manifest-version bump. (Discovered during implementation — the original plan
+  assumed a new `takenAtMs` field was needed; it isn't.)
+- Query anchor time: parse the uploaded selfie's EXIF `DateTimeOriginal`
+  (`pipeline.read_capture_time_ms`). Absent/unparseable → `anchor = None` → static weight.
+- **Timezone caveat:** the anchor (naive EXIF, treated as UTC) and candidate `takenAt`
+  (naive EXIF also treated as UTC) share a convention, so the delta is correct for
+  same-zone events. But a candidate whose `takenAtSource` is Drive `modifiedTime` (true
+  UTC) can be skewed vs a naive-local anchor. The broad decay windows (45 min / 3 h)
+  absorb modest skew; revisit if a sweep shows sensitivity.
 
 **Weighting.** In `fuse()`, replace the scalar person weight with an effective per-photo
 weight:
@@ -95,13 +105,13 @@ decay(dt) = 1.0                         if dt <= W_FULL
 - `matcher/fusion.py`: `fuse()` accepts an optional `person_weight_fn(photoId) -> float`
   (or pre-scaled person scores). Keep the existing scalar signature working (default fn
   returns `w_person`).
-- `matcher/main.py search()`: compute `anchor`, build the per-photo weight fn from manifest
-  `takenAtMs`, pass into `fuse()`. Return `personWeight` alongside `faceScore`/`personScore`
-  in results for debuggability/eval.
-- `matcher/store.py`: `build_manifest()` carries the new per-photo time; `EventEmbeddings`
-  exposes it.
-- Config: `PERSON_TIME_W_FULL_MIN`, `PERSON_TIME_W_ZERO_MIN`, `PERSON_TIME_FLOOR` (env),
-  plus a `FUSION_CONFIG_VERSION` string recorded on `match_runs` so eval can group by it.
+- `matcher/main.py search()`: compute `anchor`, build the per-photo weight fn from
+  `event.taken_at_ms(pid)`, pass into `fuse()`. Emits `personWeight` per result for eval.
+- `matcher/store.py`: `EventEmbeddings.taken_at_ms(photoId)` reads the existing manifest
+  `photos[pid].takenAt` (ISO → epoch ms, UTC convention).
+- Config (env): `FUSION_TIME_CONDITIONAL`, `PERSON_TIME_W_FULL_MIN`, `PERSON_TIME_W_ZERO_MIN`,
+  `PERSON_TIME_FLOOR`. Follow-up: record a `FUSION_CONFIG_VERSION` on `match_runs` so eval
+  can group by it.
 
 **Timezone/robustness.** Normalize all times to UTC epoch ms at extraction (EXIF is
 often naïve local time — reuse `capture_time`'s existing handling). Guard against absurd
@@ -111,10 +121,11 @@ deltas (camera clock wrong → treat as missing rather than forcing FLOOR).
 
 - Feature-flag (`FUSION_TIME_CONDITIONAL=true|false`); default off until swept.
 - A/B on accumulated judged labels once ≥2 events meet the evidence bar: sweep
-  `W_FULL`/`W_ZERO`/`FLOOR`; human-approve; measure **judged P@20**, **FP rate**, and the
-  **expander click-rate** recall proxy. Report per `FUSION_CONFIG_VERSION`.
-- No `model_version` bump (embeddings unchanged) — but manifest `version` 2 requires a
-  one-time re-index (or a lazy backfill of `takenAtMs` into existing manifests).
+  `PERSON_TIME_W_FULL_MIN`/`_W_ZERO_MIN`/`_FLOOR`; human-approve; measure **judged P@20**,
+  **FP rate**, and the **expander click-rate** recall proxy. The per-result `personWeight`
+  now emitted by `fuse()` lets eval see how often/how hard the decay engaged.
+- No `model_version` bump (embeddings unchanged) and **no re-index** — capture time is
+  already in existing manifests.
 
 ## Cost / risk / effort
 

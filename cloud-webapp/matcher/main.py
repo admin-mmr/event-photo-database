@@ -193,10 +193,13 @@ def search():
         # Capture-time-conditional outfit weight: scale w_person per candidate by
         # how close its capture time is to the query selfie's. Only engages when
         # the flag is on AND the query has a parseable capture time; a candidate
-        # with no takenAtMs decays to 1.0 (static weight) inside time_decay.
+        # with no takenAt decays to 1.0 (static weight) inside time_decay.
         person_weight_fn = None
         if FUSION_TIME_CONDITIONAL and anchor_ms is not None:
-            photo_time = {h["photoId"]: h.get("takenAtMs") for h in (*face_hits, *person_hits)}
+            photo_time = {
+                pid: event.taken_at_ms(pid)
+                for pid in {h["photoId"] for h in (*face_hits, *person_hits)}
+            }
 
             def person_weight_fn(pid, _w=w_person):  # noqa: E731 - closure over anchor/config
                 t = photo_time.get(pid)

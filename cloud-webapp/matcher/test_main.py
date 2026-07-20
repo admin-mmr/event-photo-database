@@ -275,6 +275,22 @@ class TestTimeDecay:
 
 
 class TestStore:
+    def test_taken_at_ms_from_photos_map(self):
+        # Item 1: capture time comes from the manifest `photos` map (indexer),
+        # parsed as UTC. Unknown photo / no photos map → None (→ static weight).
+        m = build_manifest("ev", "m@v0", [], [])
+        m["photos"] = {"p1": {"takenAt": "2026-06-20T14:30:52"}, "p2": {"takenAt": None}}
+        ev = EventEmbeddings(m, np.zeros((0, 4), np.float32), np.zeros((0, 4), np.float32))
+        from datetime import datetime, timezone
+        expect = int(datetime(2026, 6, 20, 14, 30, 52, tzinfo=timezone.utc).timestamp() * 1000)
+        assert ev.taken_at_ms("p1") == expect
+        assert ev.taken_at_ms("p2") is None      # takenAt None
+        assert ev.taken_at_ms("missing") is None  # photo not in map
+        # build_manifest() alone (no photos key) → empty map, always None.
+        ev2 = EventEmbeddings(build_manifest("ev", "m@v0", [], []),
+                              np.zeros((0, 4), np.float32), np.zeros((0, 4), np.float32))
+        assert ev2.taken_at_ms("p1") is None
+
     def test_roundtrip_and_topk(self, seeded_store):
         ev = EmbeddingStore(seeded_store).load_event("ev1")
         hits = ev.top_k("face", basis(0), k=2)
