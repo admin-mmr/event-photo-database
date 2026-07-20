@@ -27,6 +27,7 @@ import { firestore } from '../lib/firestore.js';
 import {
   getDriveToken,
   uploadFileToDrive,
+  uploadFileToDriveResumable,
   listEventImages,
   getOrCreateSubfolder,
   DRIVE_SCOPE_READWRITE,
@@ -292,6 +293,11 @@ function dedupKey(name: string, size: number): string {
   return `${name.toLowerCase()}|${size}`;
 }
 
+/** Above this size, the staging→Drive copy switches from a single buffered
+ *  multipart upload to the chunked resumable path (bounded memory). Photos all
+ *  stay on the one-request path; only large videos pay the extra round-trips. */
+const INLINE_COPY_MAX_BYTES = 64 * 1024 * 1024;
+
 /**
  * Hand a finished batch of staged objects off to Drive + the indexer:
  *   1. List the event's existing Drive images once so we can skip re-uploads
@@ -317,8 +323,10 @@ function dedupKey(name: string, size: number): string {
  * failed Drive copy for one file is logged and skipped rather than failing the
  * whole batch.
  *
- * NOTE: each object is buffered in memory for the copy (`file.download()`).
- * Fine for photos; revisit with a streamed copy if large videos become common.
+ * NOTE: objects up to INLINE_COPY_MAX_BYTES are buffered in memory for a
+ * one-request multipart copy; anything larger (videos, up to the 10 GiB
+ * MAX_UPLOAD_FILE_BYTES cap) goes through the chunked resumable path so
+ * memory stays bounded at one chunk.
  */
 export async function enqueueStagedBatch(
   link: ValidatedLink,
@@ -410,8 +418,20 @@ export async function enqueueStagedBatch(
       }
 
       const destFolderId = await ensureBatchFolder(custom.photographerName ?? '');
-      const [bytes] = await file.download();
-      await uploadFileToDrive(destFolderId, name, contentType, bytes, { token: driveToken });
+      if (size > INLINE_COPY_MAX_BYTES) {
+        // Large videos: chunked GCS→Drive resumable copy, bounded memory.
+        await uploadFileToDriveResumable(
+          destFolderId,
+          name,
+          contentType,
+          size,
+          async (start, end) => (await file.download({ start, end }))[0],
+          { token: driveToken },
+        );
+      } else {
+        const [bytes] = await file.download();
+        await uploadFileToDrive(destFolderId, name, contentType, bytes, { token: driveToken });
+      }
       seen.add(key);
       copied += 1;
       copiedBytes += size;

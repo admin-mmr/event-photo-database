@@ -57,7 +57,10 @@ export async function enqueueProcessBatchTask(payload: ProcessBatchTaskPayload):
     task: {
       // Name = batchId so a duplicate /complete enqueues at most one task.
       name: `${parent}/tasks/${payload.batchId}`,
-      dispatchDeadline: '600s',
+      // Cloud Tasks' maximum (30 min): a batch with a ~10 GiB video needs well
+      // over the old 600s. Must stay ≤ the api service's Cloud Run --timeout
+      // (deploy-api.sh) or Cloud Run cuts the request before the deadline.
+      dispatchDeadline: '1800s',
       httpRequest: {
         httpMethod: 'POST',
         url: workerUrl,

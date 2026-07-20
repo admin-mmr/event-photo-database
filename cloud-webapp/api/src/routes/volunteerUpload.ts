@@ -21,6 +21,7 @@ import {
   CompleteUploadRequestSchema,
   ProcessBatchRequestSchema,
   ACCEPTED_UPLOAD_MIME,
+  MAX_IMAGE_UPLOAD_FILE_BYTES,
   type CreateUploadSessionResponse,
   type CompleteUploadResponse,
   type UploadBatchStatusResponse,
@@ -90,6 +91,18 @@ volunteerUploadRouter.post(
         ok: false,
         error: 'unsupported_type',
         message: `Unsupported file type: ${effectiveMime}`,
+      });
+      return;
+    }
+
+    // The schema only enforces the absolute (video-sized) ceiling because the
+    // browser-reported MIME can be empty; now that the type is inferred, hold
+    // images to the tighter photo cap.
+    if (effectiveMime.startsWith('image/') && size > MAX_IMAGE_UPLOAD_FILE_BYTES) {
+      res.status(413).json({
+        ok: false,
+        error: 'file_too_large',
+        message: `Image files are limited to ${Math.round(MAX_IMAGE_UPLOAD_FILE_BYTES / 1024 ** 3)} GB.`,
       });
       return;
     }
