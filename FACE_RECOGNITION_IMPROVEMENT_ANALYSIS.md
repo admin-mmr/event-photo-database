@@ -187,3 +187,76 @@ backbone.
 - InsightFace model zoo — https://github.com/deepinsight/insightface/blob/master/model_zoo/README.md ;
   model-choice guide https://www.insightface.ai/guides/choose-face-recognition-model-and-evaluate
 - Bib detection/OCR repos and datasets: linked inline in §5.
+
+---
+
+## 8. July 2026 update (landscape refresh)
+
+Re-validated the §3/§5 package picks against the current (July 2026) landscape and
+practitioner/forum sentiment. **Most of §0–§6 still holds; the deltas below are what
+changed.** These findings drive the concrete, sequenced work in
+`PEOPLE_RECOGNITION_QUALITY_PLAN.md`. Sources dated inline.
+
+**Our stack is community-validated.** [Immich](https://docs.immich.app/features/facial-recognition)
+— the de-facto self-hosted event/library face-tagger — ships **InsightFace `buffalo_l`
+(SCRFD + ArcFace) as ONNX**, the same models we run, and consistently beats PhotoPrism
+on faces (PhotoPrism face recognition widely called "terrible"). So `buffalo_l`/ONNX is
+the right primary; the gains are in signal *fusion*, not the base models. Recurring
+Immich pain to design around: **over-splitting** (one identity → many clusters) and the
+**"ingest the whole event, then cluster once"** rule — which our batch per-event indexer
+already satisfies. (Immich issues #17725 / discussions #21444, #25851 Feb 2026;
+lemmy.world/empty.coffee bakeoffs.)
+
+**Face embedder (§3.2).** AdaFace remains the top on-target swap (MIT, ONNX, ~1× r50
+cost, quality-adaptive margin for low-quality/blur/profile). Confirmed **do NOT** move to
+antelopev2/`glintr100` (R100, ~2× CPU) — InsightFace themselves report `buffalo_l` beats
+antelopev2. New entrants noted but **skipped**: **TopoFR** (NeurIPS 2024; R50 is free-cost
+but gains are on high-quality benchmarks not our regime, repo **license unstated — flag**;
+arXiv 2410.10587); **LVFace** (ICCV 2025 SOTA, ONNX + CPU support, **but weights are
+non-commercial-research-only — disqualified for production**; github.com/bytedance/LVFace).
+
+**Face quality (§3.3).** **CR-FIQA** (CVPR 2023, arXiv 2112.06592) is the practical,
+ONNX-exportable, cheap FIQA to **weight** (not drop) faces — preferred over SER-FIQ
+(needs many stochastic passes → multiplies CPU). 2025 refinements (IG-FIQA, ensemble
+FIQA) are incremental.
+
+**Detection (§2).** SCRFD `det_10g` is still best-in-class on WIDER-Hard at its compute
+point; YOLOv11-face is not better. The lever is **SAHI tiled / multi-scale inference** on
+high-res crowd shots, compute-gated to big/sparse-detection photos to protect the
+free-tier. (arXiv 2507.23341, Jul 2025; IJCMEM 2025.)
+
+**Person/outfit ReID (§3.5).** Confirmed **low ROI to swap the backbone**. 2026 ReID
+survey: OSNet overfits cross-domain, but that barely matters for our same-day 0.15
+channel; CLIP-ReID / TransReID / SOLIDER are GPU-class — skip. If ever needed, OSNet
+`x1.0` via **FastReID** (ONNX/TensorRT export) is the low-risk bump. The real win is
+**fusion logic**: make the outfit weight **conditional on capture-time proximity** and
+adopt **GEFF** (face-anchored appearance gallery) so face bridges outfit changes.
+(ReID survey arXiv 2601.20598; GEFF arXiv 2211.13807; cloth-changing arXiv 2406.09198.)
+
+**Bib OCR (§5).** Two-stage detect→read is still the pattern. **OCR pick updated:
+[RapidOCR](https://github.com/RapidAI/RapidOCR)** (PaddleOCR **PP-OCRv6** models as
+*pure ONNX Runtime*, Apache-2.0) is the best fit for our CPU-ONNX / light-install
+constraint — prefer over raw PaddleOCR (heavy PaddlePaddle dep, 8–12 s CPU cold-init)
+and EasyOCR (weaker on digits). **Our earlier PP-OCRv4/v5 reference is stale — current
+line is PP-OCRv6 (Jun 2026).** docTR/OnnxTR is a document-tuned second choice.
+VLM/MLLM OCRs (Qwen-VL, GOT-OCR2, DeepSeek-OCR, PaddleOCR-VL) read hard scene text but
+are billion-param — **not for the CPU hot path**; use a *hosted* VLM API only as an
+optional fallback on flagged no-read crops (what the RaceTagger commercial service does
+with Gemini, racetagger.cloud blog Feb 2026).
+
+**Bib detector (§5).** No maintained drop-in bib model exists (ericBayless/bib-detector
+et al. are stale academic artifacts). Fine-tune **YOLOv11-n/s** on merged Roboflow +
+RBNR + TGCRBNW. **⚠ Ultralytics YOLOv8/v11 is AGPL-3.0 — a licensing problem for a
+proprietary service; resolve (comply / commercial license / permissive base) before
+shipping.** Newer YOLO isn't uniformly better across domains — validate (ODverse33,
+arXiv 2502.14314, Feb 2025).
+
+**Multi-signal fusion pattern (cross-cutting, new).** Confidence-weighted **union**:
+face (high) + **roster-matched bib** (high, self-verifying → co-primary, not tertiary) +
+partial bib (medium) + same-time-burst appearance (medium) + cross-burst appearance
+(≈ignore); glued by **EXIF capture-time bursts** + **co-occurrence** constraints (two
+people in one frame ≠ same identity); **flag, don't guess** on weak evidence. This maps
+directly onto the two event realities — **bibs not always worn** (face + burst-appearance
+cover the gap) and **outfits sometimes change** (face anchors identity across the change,
+per GEFF). Commercial race services (RaceTagger, 9Pic/BibTrack, Bhaago) all run bib+face
+together for exactly this complementarity.
