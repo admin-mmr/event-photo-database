@@ -38,6 +38,13 @@ app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_BYTES", 25 * 1
 # the fusion threshold instead and is returned uncapped when no top_k is given.
 UNGATED_TOP_K = int(os.environ.get("MATCHER_UNGATED_TOP_K", "500"))
 
+# Fused-score cutoff to use when T-norm (§1.3) is on. T-normed scores are
+# z-scores against the event cohort, not raw cosines, so the raw-cosine
+# DEFAULT_THRESHOLD (0.25) does not apply — a match now sits several std above
+# the cohort mean. Eval-tunable; opt-in, so prod is unaffected until callers
+# pass normalize=1.
+NORM_THRESHOLD = float(os.environ.get("MATCHER_NORM_THRESHOLD", "2.0"))
+
 # EMBEDDINGS_ROOT: gs://<proj>-derivatives in prod; a local dir in dev/tests.
 _store: EmbeddingStore | None = None
 
@@ -63,6 +70,70 @@ def _read_upload():
         logger.exception("image decode failed")
         return None, (jsonify({"error": "bad_image", "detail": "could not decode image"}), 400)
     return img, None
+
+
+def _mean_unit(vectors: list[np.ndarray]) -> np.ndarray | None:
+    """Centroid of L2-normalized vectors, itself L2-normalized (§1.1).
+
+    Averaging unit embeddings and renormalizing is the standard multi-reference
+    query: it cancels the pose/blur noise present in any single shot while
+    keeping the result on the unit sphere so cosine == dot still holds. Returns
+    None for an empty input (or a degenerate centroid at the origin)."""
+    if not vectors:
+        return None
+    mat = np.stack([np.asarray(v, dtype=np.float32).reshape(-1) for v in vectors])
+    mat = mat / np.maximum(np.linalg.norm(mat, axis=1, keepdims=True), 1e-12)
+    centroid = mat.mean(axis=0)
+    norm = float(np.linalg.norm(centroid))
+    if norm < 1e-12:
+        return None
+    return (centroid / norm).astype(np.float32)
+
+
+def _select_reference(result: dict) -> tuple[np.ndarray | None, np.ndarray | None, list[dict]]:
+    """Pick one query face + its person crop from ONE reference image.
+
+    A reference image may contain bystanders, so we take only the most confident
+    *usable* face (not a centroid over the image — that would blend identities)
+    and the person crop associated with it. Returns
+    (face_embedding | None, person_embedding | None, faces_diag) where
+    faces_diag is the per-face quality report used for the no_usable_face 422."""
+    faces_diag = [{"box": f["box"], "quality": f["quality"]} for f in result["faces"]]
+    usable = [f for f in result["faces"] if f["quality"]["usable"]]
+    face = max(usable, key=lambda f: f["score"]) if usable else None
+
+    person = None
+    if result["persons"]:
+        if face is not None:
+            f_idx = result["faces"].index(face)
+            person = next((p for p in result["persons"] if p["face_idx"] == f_idx), None)
+        if person is None:
+            person = max(result["persons"], key=lambda p: p["score"])
+
+    return (
+        face["embedding"] if face is not None else None,
+        person["embedding"] if person is not None else None,
+        faces_diag,
+    )
+
+
+def _fold_prf(event, kind: str, prf_ids: list[str], refs: list[np.ndarray], centroid):
+    """Fold confirmed photos' own embeddings into the query centroid (§1.2).
+
+    For each confirmed photoId, take the crop of `kind` most similar to the
+    current centroid — a confirmed photo can contain other people, so we never
+    blindly fold every crop — append it to `refs`, and return the recomputed
+    centroid. No-op (returns `centroid` unchanged) if there is no centroid yet
+    or nothing to fold."""
+    if centroid is None or not prf_ids:
+        return centroid
+    for pid in prf_ids:
+        crops = event.embeddings_for_photo(kind, pid)
+        if crops.shape[0] == 0:
+            continue
+        best = crops[int(np.argmax(crops @ centroid))]
+        refs.append(best)
+    return _mean_unit(refs)
 
 
 @app.get("/healthz")
@@ -104,8 +175,11 @@ def embed():
 
 @app.post("/search")
 def search():
-    """Form fields: file (image), event_id, top_k?, mode? (fused|face|person),
-    w_face?, w_person?. Returns the per-photo ranking for the event."""
+    """Form fields: file (image; may repeat for multiple reference selfies —
+    §1.1), event_id, top_k?, mode? (fused|face|person), w_face?, w_person?,
+    prf_photo_ids? (comma-separated photoIds the user confirmed — §1.2),
+    normalize? (1/true to T-norm scores — §1.3). Returns the per-photo ranking
+    for the event."""
     event_id = request.form.get("event_id", "").strip()
     if not event_id:
         return jsonify({"error": "missing_event_id"}), 400
@@ -123,49 +197,59 @@ def search():
     # retrieval even when uncapped overall; fused retrieves everything and lets
     # the threshold decide.
     retrieve_k = None if mode == "fused" else (top_k if top_k is not None else UNGATED_TOP_K)
+    normalize = request.form.get("normalize", "").strip().lower() in ("1", "true", "yes")
+    prf_ids = [p.strip() for p in request.form.get("prf_photo_ids", "").split(",") if p.strip()]
 
-    img, err = _read_upload()
-    if err:
-        return err
+    files = request.files.getlist("file")
+    if not files:
+        return jsonify({"error": "missing_file", "detail": "multipart field 'file' required"}), 400
 
-    result = embed_image(img)
-    usable_faces = [f for f in result["faces"] if f["quality"]["usable"]]
-    if not usable_faces and mode != "person":
-        return (
-            jsonify(
-                {
-                    "error": "no_usable_face",
-                    "faces": [{"box": f["box"], "quality": f["quality"]} for f in result["faces"]],
-                }
-            ),
-            422,
-        )
+    # Embed every reference image and keep one query face + person crop each; the
+    # centroid over several selfies is a stronger, less pose-sensitive query.
+    face_refs: list[np.ndarray] = []
+    person_refs: list[np.ndarray] = []
+    faces_diag: list[dict] = []
+    model_version = None
+    for file in files:
+        try:
+            img = decode_image(file.read())
+        except Exception:
+            logger.exception("image decode failed")
+            return jsonify({"error": "bad_image", "detail": "could not decode image"}), 400
+        result = embed_image(img)
+        model_version = result["model_version"]
+        face_emb, person_emb, diag = _select_reference(result)
+        faces_diag.extend(diag)
+        if face_emb is not None:
+            face_refs.append(face_emb)
+        if person_emb is not None:
+            person_refs.append(person_emb)
 
-    # Query = most confident usable face and its associated person crop.
-    query_face = max(usable_faces, key=lambda f: f["score"]) if usable_faces else None
-    query_person = None
-    if result["persons"]:
-        if query_face is not None:
-            qf_idx = result["faces"].index(query_face)
-            query_person = next(
-                (p for p in result["persons"] if p["face_idx"] == qf_idx), None
-            )
-        if query_person is None:
-            query_person = max(result["persons"], key=lambda p: p["score"])
+    if not face_refs and mode != "person":
+        return jsonify({"error": "no_usable_face", "faces": faces_diag}), 422
 
     try:
         event = get_store().load_event(event_id)
     except FileNotFoundError:
         return jsonify({"error": "event_not_indexed", "eventId": event_id}), 404
 
+    # Build the query centroids, then fold in confirmed photos (PRF). PRF picks
+    # the crop in each confirmed photo closest to the current centroid, so it
+    # needs the centroid built from the uploaded selfies first.
+    face_query = _mean_unit(face_refs)
+    person_query = _mean_unit(person_refs)
+    if prf_ids:
+        face_query = _fold_prf(event, "face", prf_ids, face_refs, face_query)
+        person_query = _fold_prf(event, "person", prf_ids, person_refs, person_query)
+
     face_hits = (
-        event.top_photos("face", query_face["embedding"], k=retrieve_k)
-        if query_face is not None and mode in ("fused", "face")
+        event.top_photos("face", face_query, k=retrieve_k, tnorm=normalize)
+        if face_query is not None and mode in ("fused", "face")
         else []
     )
     person_hits = (
-        event.top_photos("person", query_person["embedding"], k=retrieve_k)
-        if query_person is not None and mode in ("fused", "person")
+        event.top_photos("person", person_query, k=retrieve_k, tnorm=normalize)
+        if person_query is not None and mode in ("fused", "person")
         else []
     )
 
@@ -179,6 +263,7 @@ def search():
             person_hits,
             w_face=float(request.form.get("w_face", fusion_mod.DEFAULT_FACE_WEIGHT)),
             w_person=float(request.form.get("w_person", fusion_mod.DEFAULT_PERSON_WEIGHT)),
+            threshold=NORM_THRESHOLD if normalize else fusion_mod.DEFAULT_THRESHOLD,
             top_k=top_k,
         )
 
@@ -186,8 +271,11 @@ def search():
         {
             "eventId": event_id,
             "mode": mode,
-            "modelVersion": result["model_version"],
+            "modelVersion": model_version,
             "indexModelVersion": event.manifest.get("modelVersion"),
+            "normalized": normalize,
+            "numReferences": len(files),
+            "numPrfPhotos": len(prf_ids),
             "results": ranked if top_k is None else ranked[:top_k],
         }
     )
