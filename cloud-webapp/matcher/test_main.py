@@ -240,6 +240,39 @@ class TestFusion:
         with pytest.raises(ValueError):
             fusion_mod.fuse([], [], method="nope")
 
+    def test_person_weight_fn_overrides_scalar(self):
+        # Item 1: a per-photo person weight function replaces the flat w_person.
+        face = [{"photoId": "a", "score": 0.5}]
+        person = [{"photoId": "a", "score": 1.0}]
+        out = fusion_mod.fuse(
+            face, person, w_face=0.85, w_person=0.15, threshold=0.0,
+            person_weight_fn=lambda pid: 0.0,  # fully suppress outfit
+        )
+        assert out[0]["score"] == pytest.approx(0.85 * 0.5)  # person contributes nothing
+        assert out[0]["personWeight"] == pytest.approx(0.0)
+
+
+class TestTimeDecay:
+    W_FULL = 45 * 60_000
+    W_ZERO = 180 * 60_000
+
+    def test_full_weight_within_window(self):
+        assert fusion_mod.time_decay(0, self.W_FULL, self.W_ZERO) == 1.0
+        assert fusion_mod.time_decay(self.W_FULL, self.W_FULL, self.W_ZERO) == 1.0
+        assert fusion_mod.time_decay(-10_000, self.W_FULL, self.W_ZERO) == 1.0  # abs()
+
+    def test_floor_beyond_zero_window(self):
+        assert fusion_mod.time_decay(self.W_ZERO, self.W_FULL, self.W_ZERO, floor=0.0) == 0.0
+        assert fusion_mod.time_decay(10 * self.W_ZERO, self.W_FULL, self.W_ZERO, floor=0.1) == 0.1
+
+    def test_linear_fade_midpoint(self):
+        mid = (self.W_FULL + self.W_ZERO) / 2
+        assert fusion_mod.time_decay(mid, self.W_FULL, self.W_ZERO, floor=0.0) == pytest.approx(0.5)
+
+    def test_none_delta_is_neutral(self):
+        # Unknown capture time → 1.0 so the caller keeps the static weight.
+        assert fusion_mod.time_decay(None, self.W_FULL, self.W_ZERO) == 1.0
+
 
 class TestStore:
     def test_roundtrip_and_topk(self, seeded_store):

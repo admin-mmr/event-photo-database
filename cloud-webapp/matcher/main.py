@@ -23,7 +23,7 @@ import numpy as np
 from flask import Flask, jsonify, request
 
 import fusion as fusion_mod
-from pipeline import decode_image, embed_image
+from pipeline import decode_image, embed_image, read_capture_time_ms
 from store import EmbeddingStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
@@ -37,6 +37,17 @@ app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_BYTES", 25 * 1
 # event ranked by similarity. Fused mode (the default Find-Me path) is gated by
 # the fusion threshold instead and is returned uncapped when no top_k is given.
 UNGATED_TOP_K = int(os.environ.get("MATCHER_UNGATED_TOP_K", "500"))
+
+# Capture-time-conditional outfit fusion (PEOPLE_RECOGNITION_QUALITY_PLAN.md
+# Item 1). Off by default until swept on judged labels. When on, the person
+# (outfit) weight for a candidate photo is scaled by how close its capture time
+# is to the query selfie's — full within W_FULL, fading to FLOOR by W_ZERO. A
+# missing capture time (query or candidate) falls back to the static weight, so
+# this can never regress events/photos without EXIF times.
+FUSION_TIME_CONDITIONAL = os.environ.get("FUSION_TIME_CONDITIONAL", "false").lower() == "true"
+PERSON_TIME_W_FULL_MS = float(os.environ.get("PERSON_TIME_W_FULL_MIN", "45")) * 60_000
+PERSON_TIME_W_ZERO_MS = float(os.environ.get("PERSON_TIME_W_ZERO_MIN", "180")) * 60_000
+PERSON_TIME_FLOOR = float(os.environ.get("PERSON_TIME_FLOOR", "0.0"))
 
 # EMBEDDINGS_ROOT: gs://<proj>-derivatives in prod; a local dir in dev/tests.
 _store: EmbeddingStore | None = None
@@ -53,16 +64,19 @@ def get_store() -> EmbeddingStore:
 
 
 def _read_upload():
-    """Returns (rgb_array, error_response)."""
+    """Returns (rgb_array, raw_bytes, error_response). Raw bytes are handed back
+    so callers can read EXIF (e.g. the capture-time anchor) without re-reading
+    the request stream, which is already consumed here."""
     file = request.files.get("file")
     if file is None:
-        return None, (jsonify({"error": "missing_file", "detail": "multipart field 'file' required"}), 400)
+        return None, None, (jsonify({"error": "missing_file", "detail": "multipart field 'file' required"}), 400)
+    data = file.read()
     try:
-        img = decode_image(file.read())
+        img = decode_image(data)
     except Exception:
         logger.exception("image decode failed")
-        return None, (jsonify({"error": "bad_image", "detail": "could not decode image"}), 400)
-    return img, None
+        return None, None, (jsonify({"error": "bad_image", "detail": "could not decode image"}), 400)
+    return img, data, None
 
 
 @app.get("/healthz")
@@ -72,7 +86,7 @@ def healthz():
 
 @app.post("/embed")
 def embed():
-    img, err = _read_upload()
+    img, _data, err = _read_upload()
     if err:
         return err
     result = embed_image(img)
@@ -124,10 +138,11 @@ def search():
     # the threshold decide.
     retrieve_k = None if mode == "fused" else (top_k if top_k is not None else UNGATED_TOP_K)
 
-    img, err = _read_upload()
+    img, data, err = _read_upload()
     if err:
         return err
 
+    anchor_ms = read_capture_time_ms(data) if FUSION_TIME_CONDITIONAL else None
     result = embed_image(img)
     usable_faces = [f for f in result["faces"] if f["quality"]["usable"]]
     if not usable_faces and mode != "person":
@@ -174,12 +189,31 @@ def search():
     elif mode == "person":
         ranked = [{"photoId": h["photoId"], "score": h["score"], "faceScore": None, "personScore": h["score"]} for h in person_hits]
     else:
+        w_person = float(request.form.get("w_person", fusion_mod.DEFAULT_PERSON_WEIGHT))
+        # Capture-time-conditional outfit weight: scale w_person per candidate by
+        # how close its capture time is to the query selfie's. Only engages when
+        # the flag is on AND the query has a parseable capture time; a candidate
+        # with no takenAtMs decays to 1.0 (static weight) inside time_decay.
+        person_weight_fn = None
+        if FUSION_TIME_CONDITIONAL and anchor_ms is not None:
+            photo_time = {h["photoId"]: h.get("takenAtMs") for h in (*face_hits, *person_hits)}
+
+            def person_weight_fn(pid, _w=w_person):  # noqa: E731 - closure over anchor/config
+                t = photo_time.get(pid)
+                return _w * fusion_mod.time_decay(
+                    None if t is None else (t - anchor_ms),
+                    PERSON_TIME_W_FULL_MS,
+                    PERSON_TIME_W_ZERO_MS,
+                    PERSON_TIME_FLOOR,
+                )
+
         ranked = fusion_mod.fuse(
             face_hits,
             person_hits,
             w_face=float(request.form.get("w_face", fusion_mod.DEFAULT_FACE_WEIGHT)),
-            w_person=float(request.form.get("w_person", fusion_mod.DEFAULT_PERSON_WEIGHT)),
+            w_person=w_person,
             top_k=top_k,
+            person_weight_fn=person_weight_fn,
         )
 
     return jsonify(
