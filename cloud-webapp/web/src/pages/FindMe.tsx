@@ -558,9 +558,11 @@ export function FindMe(): JSX.Element {
       subjectIsMinor: isMinor,
       guardianAttested: guardianOk,
     };
+    const recaptchaToken = await getRecaptchaToken('findme_search');
     const res = await apiPost<SearchResponse, SearchByUploadRequest>(
       `/api/findme/uploads/${encodeURIComponent(u.uploadId)}/search`,
       body,
+      recaptchaToken ? { headers: { 'X-Recaptcha-Token': recaptchaToken } } : undefined,
     );
     pushReference(res, u.url, t.savedLabel);
   }

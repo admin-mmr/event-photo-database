@@ -15,10 +15,10 @@
  *    dedicated bulk-download rate budget); the client zips them in the browser.
  *  - GET  /events/:id/photos/:photoId/original — 302 to a signed URL.
  *
- * Scope notes (tracked in the dev plan):
- *  - Per-user rate limit + reCAPTCHA on this action land with M5.3; for now the
- *    photo-count cap (shared MAX_DOWNLOAD_PHOTOS) plus the rate limits bound
- *    abuse/cost.
+ * Abuse controls: per-user download rate limit, a photo-count cap (shared
+ * MAX_DOWNLOAD_PHOTOS), and a reCAPTCHA Enterprise gate on the sign call
+ * (action 'download') so scripted bulk-signing is deterred alongside search
+ * (M5.3). The reCAPTCHA gate no-ops when unconfigured (see middleware).
  */
 
 import { Router } from 'express';
@@ -28,6 +28,7 @@ import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
 import { downloadRateLimit, originalFetchRateLimit } from '../middleware/rateLimit.js';
+import { requireRecaptcha } from '../middleware/recaptcha.js';
 import { origExtForMime, signOrigUrl } from '../services/gcsService.js';
 
 export const downloadRouter = Router();
@@ -42,7 +43,12 @@ function safeEntryName(name: string, photoId: string, fallbackExt: string): stri
   return cleaned || `${photoId}.${fallbackExt}`;
 }
 
-downloadRouter.post('/events/:id/download', requireAuth, downloadRateLimit(), async (req, res, next) => {
+downloadRouter.post(
+  '/events/:id/download',
+  requireAuth,
+  downloadRateLimit(),
+  requireRecaptcha('download'),
+  async (req, res, next) => {
   try {
     const eventId = String(req.params.id);
 

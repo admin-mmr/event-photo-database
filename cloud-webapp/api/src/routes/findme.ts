@@ -411,6 +411,7 @@ findmeRouter.post(
   '/findme/uploads/:uploadId/search',
   requireAuth,
   findmeSearchRateLimit(),
+  requireRecaptcha('findme_search'),
   async (req, res, next) => {
     try {
       const parsed = SearchByUploadRequestSchema.safeParse(req.body ?? {});
