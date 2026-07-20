@@ -291,6 +291,19 @@ class TestStore:
                               np.zeros((0, 4), np.float32), np.zeros((0, 4), np.float32))
         assert ev2.taken_at_ms("p1") is None
 
+    def test_cohort_stats(self, seeded_store):
+        ev = EmbeddingStore(seeded_store).load_event("ev1")
+        mean, std, n = ev.cohort_stats("face", basis(0))
+        assert n == 3
+        assert mean == pytest.approx((1.0 + 0.8944271 + 0.0) / 3, abs=1e-3)
+        assert std >= 0.0
+        empty = EventEmbeddings(
+            build_manifest("e", "m", [], []),
+            np.zeros((0, DIM), np.float32),
+            np.zeros((0, DIM), np.float32),
+        )
+        assert empty.cohort_stats("face", basis(0)) == (0.0, 1.0, 0)
+
     def test_roundtrip_and_topk(self, seeded_store):
         ev = EmbeddingStore(seeded_store).load_event("ev1")
         hits = ev.top_k("face", basis(0), k=2)
@@ -392,6 +405,26 @@ class TestSearch:
         assert body["results"][0]["photoId"] == "pB.jpg"
         ids = [r["photoId"] for r in body["results"]]
         assert "pA.jpg" in ids
+
+    def test_tnorm_subtracts_cohort_mean(self, client, monkeypatch, seeded_store):
+        # Item 2: with T-norm on and w_person=0, the fused score is the face
+        # score shifted down by the query's cohort mean. Face sims to ev1 are
+        # [1.0, ~0.894, 0.0] → mean ~0.6315, so pA's 1.0 becomes ~0.3685 and the
+        # non-distinctive pB/pC fall below the 0.25 fused threshold.
+        self._env(monkeypatch, seeded_store)
+        monkeypatch.setattr(main_mod, "FUSION_TNORM", True)
+        monkeypatch.setattr(main_mod, "TNORM_ALPHA", 1.0)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "ev1", "w_person": "0"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        mu = (1.0 + 0.8944271 + 0.0) / 3
+        assert body["results"][0]["photoId"] == "pA.jpg"
+        assert body["results"][0]["faceScore"] == pytest.approx(1.0 - mu, abs=1e-3)
+        assert [r["photoId"] for r in body["results"]] == ["pA.jpg"]  # others below threshold
 
     def test_fused_search_uncapped_by_default(self, client, monkeypatch, big_store):
         monkeypatch.setenv("EMBEDDINGS_ROOT", big_store)

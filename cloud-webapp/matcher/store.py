@@ -92,6 +92,21 @@ class EventEmbeddings:
         rec = self.photos.get(photo_id)
         return _iso_to_epoch_ms(rec.get("takenAt")) if rec else None
 
+    def cohort_stats(self, kind: str, query: np.ndarray) -> tuple[float, float, int]:
+        """(mean, std, n) of cosine similarity between `query` and every `kind`
+        crop in the event — the background/impostor distribution used for T-norm
+        score normalization (PEOPLE_RECOGNITION_QUALITY_PLAN.md Item 2). A query
+        that looks generically similar to the whole event has a high mean, so
+        subtracting it penalizes non-distinctive matches. Returns (0.0, 1.0, 0)
+        when the event has no vectors so callers can no-op on n == 0."""
+        vecs = self.vectors[kind]
+        if vecs.size == 0:
+            return (0.0, 1.0, 0)
+        q = np.asarray(query, dtype=np.float32).reshape(-1)
+        q = q / max(np.linalg.norm(q), 1e-12)
+        sims = vecs @ q
+        return (float(sims.mean()), float(sims.std()), int(len(sims)))
+
     def top_k(self, kind: str, query: np.ndarray, k: int | None = 50) -> list[dict]:
         """Cosine top-k crops for `kind` ('face'|'person').
         Returns [{photoId, score, row, ...meta}], best first. Vectors are

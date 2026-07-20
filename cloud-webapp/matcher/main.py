@@ -49,6 +49,15 @@ PERSON_TIME_W_FULL_MS = float(os.environ.get("PERSON_TIME_W_FULL_MIN", "45")) * 
 PERSON_TIME_W_ZERO_MS = float(os.environ.get("PERSON_TIME_W_ZERO_MIN", "180")) * 60_000
 PERSON_TIME_FLOOR = float(os.environ.get("PERSON_TIME_FLOOR", "0.0"))
 
+# T-norm cohort score normalization (PEOPLE_RECOGNITION_QUALITY_PLAN.md Item 2).
+# Off by default until swept. When on, subtract TNORM_ALPHA × (query's mean face
+# similarity to the whole event) from each face score before fusion, so a
+# generically-similar ("looks like everyone") query must clear a higher bar
+# while a distinctive one is unaffected. Enabling it shifts the score scale, so
+# the fused threshold must be re-tuned in the same sweep (per the guardrails).
+FUSION_TNORM = os.environ.get("FUSION_TNORM", "false").lower() == "true"
+TNORM_ALPHA = float(os.environ.get("TNORM_ALPHA", "1.0"))
+
 # EMBEDDINGS_ROOT: gs://<proj>-derivatives in prod; a local dir in dev/tests.
 _store: EmbeddingStore | None = None
 
@@ -189,6 +198,17 @@ def search():
     elif mode == "person":
         ranked = [{"photoId": h["photoId"], "score": h["score"], "faceScore": None, "personScore": h["score"]} for h in person_hits]
     else:
+        # T-norm (Item 2): shift face scores down by the query's cohort mean so
+        # a non-distinctive face doesn't ride a uniformly-high similarity into
+        # false positives. In-place on the local hit list; preserves the pre-norm
+        # value as rawFaceScore for eval. No-op when the event has no faces.
+        if FUSION_TNORM and query_face is not None and face_hits:
+            mu, _sigma, n = event.cohort_stats("face", query_face["embedding"])
+            if n > 0:
+                for h in face_hits:
+                    h["rawFaceScore"] = h["score"]
+                    h["score"] = h["score"] - TNORM_ALPHA * mu
+
         w_person = float(request.form.get("w_person", fusion_mod.DEFAULT_PERSON_WEIGHT))
         # Capture-time-conditional outfit weight: scale w_person per candidate by
         # how close its capture time is to the query selfie's. Only engages when

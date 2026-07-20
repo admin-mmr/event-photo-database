@@ -142,12 +142,18 @@ Ordered fast/free → heavier. Each notes the constraint it targets:
 **[recall] [precision] [no-face] [outfit-change]**.
 
 ## Item 2 — Score normalization / T-norm  **[precision]**
-Subtract each query's mean similarity to a background cohort of event faces before
-thresholding (`FACE_RECOGNITION_IMPROVEMENT_ANALYSIS.md §1.3`). Lets us *lower* the
-threshold for recall without adding false positives, and reduces reliance on large labeled
-sets — a **better lever than nudging the global 0.25 from a few "wrong" annotations**.
-Change: `matcher/main.py`/`store.py` (one extra dot-product pass). Compute-negligible.
-Effort ~1–2 days.
+> **STATUS (2026-07-19): implemented + tested** (this branch — `store.cohort_stats()` +
+> `main.py` behind `FUSION_TNORM` / `TNORM_ALPHA`; 43 matcher tests pass). Flag **off**;
+> enabling shifts the score scale, so the fused threshold must be re-tuned in the same
+> offline sweep that would activate it.
+
+Subtract `TNORM_ALPHA ×` each query's mean similarity to a background cohort of event
+faces before thresholding (`FACE_RECOGNITION_IMPROVEMENT_ANALYSIS.md §1.3`). Lets us
+*lower* the threshold for recall without adding false positives, and reduces reliance on
+large labeled sets — a **better lever than nudging the global 0.25 from a few "wrong"
+annotations**. Implemented: `store.cohort_stats(kind, q)` returns `(mean, std, n)` over the
+event's crops (one extra dot-product pass, compute-negligible); `main.py` subtracts the
+mean from face scores in fused mode and preserves the pre-norm value as `rawFaceScore`.
 
 ## Item 3 — Multi-reference query + pseudo-relevance feedback  **[recall]**
 Let users upload several selfies → query **centroid** (mean of L2-normalized embeddings) +
