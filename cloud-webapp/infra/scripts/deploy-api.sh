@@ -124,9 +124,15 @@ gcloud run deploy "$SERVICE" \
   --max-instances=10 \
   --min-instances=0 \
   --concurrency=80 \
-  --timeout=60 \
+  --timeout=1800 \
   --update-env-vars="$ENV_VARS" \
   --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_API_KEY=RECAPTCHA_KEY:latest"
+# Timeout: 1800s so the Cloud Tasks worker (/api/internal/process-batch) can
+#   copy a large staged video (up to 10 GiB) to Drive in one attempt; it must be
+#   >= the task dispatchDeadline in uploadDispatch.ts. Browser-facing requests
+#   are still cut at ~60s by the Firebase Hosting rewrite, so this only affects
+#   direct callers (Cloud Tasks, schedulers). Zero-idle-cost is unaffected —
+#   instances bill per in-flight request time either way.
 # Auth: we deliberately pass NEITHER --allow-unauthenticated nor
 #   --no-allow-unauthenticated, so deploy leaves the service's IAM policy
 #   untouched. Classic Firebase Hosting → Cloud Run rewrites require the service

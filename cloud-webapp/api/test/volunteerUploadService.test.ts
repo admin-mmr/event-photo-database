@@ -37,6 +37,8 @@ vi.mock('../src/lib/firestore.js', () => ({
 }));
 
 const driveUploads: Array<{ folderId: string; name: string; mimeType: string; size: number }> = [];
+// Chunked resumable uploads (large files), with how many chunks were pulled.
+const resumableUploads: Array<{ folderId: string; name: string; mimeType: string; size: number; chunks: number }> = [];
 // Folder get-or-create calls, in order, so tests can assert the Club/tag/batch path.
 const folderCreates: Array<{ parent: string; name: string }> = [];
 // Existing Drive files the duplicate-check lists (name + size). Mutated per test.
@@ -46,6 +48,28 @@ vi.mock('../src/services/driveService.js', () => ({
   getDriveToken: async () => 'drive-token',
   uploadFileToDrive: async (folderId: string, name: string, mimeType: string, bytes: Uint8Array) => {
     driveUploads.push({ folderId, name, mimeType, size: bytes.length });
+    return { id: `drive-${name}`, name };
+  },
+  // Drains readChunk like the real resumable protocol so the ranged-download
+  // path is exercised and the byte count can be asserted.
+  uploadFileToDriveResumable: async (
+    folderId: string,
+    name: string,
+    mimeType: string,
+    totalBytes: number,
+    readChunk: (start: number, end: number) => Promise<Uint8Array>,
+  ) => {
+    const CHUNK = 32 * 1024 * 1024;
+    let offset = 0;
+    let received = 0;
+    let chunks = 0;
+    while (offset < totalBytes) {
+      const end = Math.min(offset + CHUNK, totalBytes) - 1;
+      received += (await readChunk(offset, end)).length;
+      offset = end + 1;
+      chunks += 1;
+    }
+    resumableUploads.push({ folderId, name, mimeType, size: received, chunks });
     return { id: `drive-${name}`, name };
   },
   // Deterministic, traceable folder id: `<parent>><name>` so a test can read the
@@ -88,7 +112,12 @@ vi.mock('@google-cloud/storage', () => ({
               metadata: objects[objectName]?.metadata,
             },
           ],
-          download: async () => [Buffer.alloc(objects[objectName]?.size ?? 0)],
+          download: async (opts?: { start?: number; end?: number }) => {
+            const size = objects[objectName]?.size ?? 0;
+            const start = opts?.start ?? 0;
+            const end = Math.min(opts?.end ?? size - 1, size - 1);
+            return [Buffer.alloc(Math.max(0, end - start + 1))];
+          },
           delete: async () => {
             deleted.push(objectName);
             return [undefined];
@@ -128,6 +157,7 @@ beforeEach(() => {
   for (const k of Object.keys(eventDocs)) delete eventDocs[k];
   for (const k of Object.keys(objects)) delete objects[k];
   driveUploads.length = 0;
+  resumableUploads.length = 0;
   folderCreates.length = 0;
   existingDriveFiles.length = 0;
   indexTriggers.length = 0;
@@ -248,6 +278,31 @@ describe('enqueueStagedBatch', () => {
       { folderId: batchFolderId, name: 'ClubA_JaneDoe_race-002.jpg', mimeType: 'image/jpeg', size: 200 },
     ]);
     expect(deleted.sort()).toEqual(['vol/ev1/b1/u1.jpg', 'vol/ev1/b1/u2.jpg']);
+    expect(indexTriggers).toEqual(['ev1']);
+  });
+
+  it('copies a large video via the chunked resumable path (never buffered whole)', async () => {
+    const link = await validateUploadLink('tok-good');
+    const size = 70 * 1024 * 1024; // > INLINE_COPY_MAX_BYTES (64 MiB) → 3 × 32 MiB chunks
+    objects['vol/ev1/bv/u1.mp4'] = {
+      exists: true,
+      size,
+      contentType: 'video/mp4',
+      metadata: { originalName: 'finish-line.mp4', photographerName: 'Jane Doe' },
+    };
+
+    const res = await enqueueStagedBatch(link, 'bv', ['vol/ev1/bv/u1.mp4']);
+
+    expect(res).toMatchObject({ copied: 1, skippedDuplicates: 0 });
+    expect(driveUploads).toHaveLength(0); // buffered path not used
+    expect(resumableUploads).toHaveLength(1);
+    expect(resumableUploads[0]).toMatchObject({
+      name: 'ClubA_JaneDoe_finish-line.mp4',
+      mimeType: 'video/mp4',
+      size,
+      chunks: 3,
+    });
+    expect(deleted).toEqual(['vol/ev1/bv/u1.mp4']);
     expect(indexTriggers).toEqual(['ev1']);
   });
 

@@ -269,6 +269,77 @@ export async function uploadFileToDrive(
   return (await res.json()) as UploadedDriveFile;
 }
 
+/** Chunk size for resumable Drive uploads. Must be a multiple of 256 KiB
+ *  (Drive protocol rule); also the copy loop's peak memory per file. */
+export const DRIVE_RESUMABLE_CHUNK_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Upload a large file to Drive via the resumable protocol, pulling the bytes
+ * in DRIVE_RESUMABLE_CHUNK_BYTES slices from `readChunk(start, end)` (both
+ * inclusive) so the whole file is never held in memory. Used by the volunteer
+ * staging→Drive copy for videos, where `file.download()`-into-a-Buffer would
+ * OOM the service (Node buffers also hard-cap near 4 GiB).
+ *
+ * Protocol: an init POST returns a session URI in `Location`; each chunk is
+ * PUT with a `Content-Range`; Drive answers 308 (+ a `Range: bytes=0-N`
+ * committed watermark) until the final chunk returns 200/201 with the file
+ * JSON. Chunks are re-downloaded per PUT, so driveFetch's retry-with-same-body
+ * stays safe.
+ */
+export async function uploadFileToDriveResumable(
+  folderId: string,
+  name: string,
+  mimeType: string,
+  totalBytes: number,
+  readChunk: (start: number, end: number) => Promise<Uint8Array>,
+  opts?: { token?: string },
+): Promise<UploadedDriveFile> {
+  const token = opts?.token ?? (await getDriveToken(DRIVE_SCOPE_READWRITE));
+
+  const params = new URLSearchParams({
+    uploadType: 'resumable',
+    supportsAllDrives: 'true',
+    fields: 'id,name',
+  });
+  const initRes = await driveFetch(`${DRIVE_UPLOAD}?${params}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=UTF-8',
+      'X-Upload-Content-Type': mimeType || 'application/octet-stream',
+      'X-Upload-Content-Length': String(totalBytes),
+    },
+    body: JSON.stringify({ name, parents: [folderId] }),
+  }, 'uploadFileToDriveResumable:init');
+  if (!initRes.ok) throw new Error(`Drive resumable init ${initRes.status}: ${await initRes.text()}`);
+  const sessionUri = initRes.headers.get('location');
+  if (!sessionUri) throw new Error('Drive resumable init: missing Location header');
+
+  let offset = 0;
+  for (;;) {
+    const end = Math.min(offset + DRIVE_RESUMABLE_CHUNK_BYTES, totalBytes) - 1;
+    const chunk = await readChunk(offset, end);
+    const res = await driveFetch(sessionUri, {
+      method: 'PUT',
+      headers: { 'Content-Range': `bytes ${offset}-${end}/${totalBytes}` },
+      body: Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength),
+    }, 'uploadFileToDriveResumable:chunk');
+
+    if (res.status === 308) {
+      const committed = Number(res.headers.get('range')?.match(/-(\d+)$/)?.[1] ?? NaN) + 1;
+      // No forward progress (or no Range header at all) would loop forever on
+      // the same chunk — bail and let the idempotent batch retry start over.
+      if (!Number.isFinite(committed) || committed <= offset) {
+        throw new Error(`Drive resumable upload stalled at byte ${offset} of ${totalBytes} for ${name}`);
+      }
+      offset = committed;
+      continue;
+    }
+    if (res.ok) return (await res.json()) as UploadedDriveFile;
+    throw new Error(`Drive resumable upload ${res.status}: ${await res.text()}`);
+  }
+}
+
 /**
  * Find a child folder by exact name under `parentId`, creating it if absent.
  * Used by the volunteer-upload handoff to rebuild the gas-app

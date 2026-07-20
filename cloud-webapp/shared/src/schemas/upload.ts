@@ -30,9 +30,15 @@ export const ACCEPTED_UPLOAD_MIME = [
   'video/quicktime',
 ] as const;
 
-/** Hard cap on a single file (bytes). Bounds a runaway phone video; tune via
- *  the route if a legitimate use needs more. 1 GiB is generous for photos. */
-export const MAX_UPLOAD_FILE_BYTES = 1024 * 1024 * 1024;
+/** Hard cap on a single file (bytes). 10 GiB admits long event videos; the
+ *  session route applies the tighter MAX_IMAGE_UPLOAD_FILE_BYTES to images
+ *  once it has inferred the MIME type (the browser-reported one here can be
+ *  empty on mobile, so the schema can only enforce the absolute ceiling). */
+export const MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024 * 1024;
+
+/** Tighter per-image cap (bytes). 1 GiB is generous for photos; only videos
+ *  legitimately need more. Enforced in the session route, not the schema. */
+export const MAX_IMAGE_UPLOAD_FILE_BYTES = 1024 * 1024 * 1024;
 
 // ── 1. Initiate a resumable session ──────────────────────────────────────────
 
