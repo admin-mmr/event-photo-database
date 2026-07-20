@@ -293,6 +293,56 @@ class TestStore:
         ev = EventEmbeddings(manifest, np.zeros((0, 4), np.float32), np.zeros((0, 4), np.float32))
         assert ev.top_k("face", np.ones(4), k=5) == []
 
+    def test_embeddings_for_photo_returns_that_photos_crops(self, seeded_store):
+        ev = EmbeddingStore(seeded_store).load_event("ev1")
+        crops = ev.embeddings_for_photo("face", "pB.jpg")
+        assert crops.shape == (1, DIM)
+        assert np.allclose(crops[0], ev.vectors["face"][1])  # pB is row 1
+
+    def test_embeddings_for_photo_collects_multiple_crops(self):
+        faces = np.stack([basis(0), basis(1), basis(2)])
+        meta = [
+            {"photoId": "grp.jpg", "box": [0, 0, 1, 1], "score": 0.9},
+            {"photoId": "grp.jpg", "box": [1, 1, 2, 2], "score": 0.9},
+            {"photoId": "solo.jpg", "box": [0, 0, 1, 1], "score": 0.9},
+        ]
+        ev = EventEmbeddings(build_manifest("e", "v", meta, []), faces, np.zeros((0, DIM), np.float32))
+        assert ev.embeddings_for_photo("face", "grp.jpg").shape == (2, DIM)
+        assert ev.embeddings_for_photo("face", "solo.jpg").shape == (1, DIM)
+
+    def test_embeddings_for_photo_unknown_is_empty(self, seeded_store):
+        ev = EmbeddingStore(seeded_store).load_event("ev1")
+        crops = ev.embeddings_for_photo("face", "nope.jpg")
+        assert crops.shape == (0, DIM)
+
+    def test_tnorm_preserves_order_but_rescales(self, seeded_store):
+        ev = EmbeddingStore(seeded_store).load_event("ev1")
+        raw = ev.top_k("face", basis(0), k=None)
+        norm = ev.top_k("face", basis(0), k=None, tnorm=True)
+        assert [h["photoId"] for h in raw] == [h["photoId"] for h in norm]  # order unchanged
+        assert norm[0]["score"] != pytest.approx(raw[0]["score"])  # but z-scored
+        # z-score of the whole cohort has ~zero mean.
+        assert float(np.mean([h["score"] for h in norm])) == pytest.approx(0.0, abs=1e-5)
+
+
+class TestMeanUnit:
+    def test_empty_is_none(self):
+        assert main_mod._mean_unit([]) is None
+
+    def test_single_vector_normalized(self):
+        out = main_mod._mean_unit([basis(0) * 5.0])  # unnormalized input
+        assert np.allclose(out, basis(0))
+        assert np.linalg.norm(out) == pytest.approx(1.0)
+
+    def test_centroid_is_unit_and_between(self):
+        out = main_mod._mean_unit([basis(0), basis(1)])
+        assert np.linalg.norm(out) == pytest.approx(1.0)
+        assert out[0] == pytest.approx(out[1])  # equidistant from both refs
+        assert out[0] == pytest.approx(1 / np.sqrt(2))
+
+    def test_opposite_vectors_collapse_to_none(self):
+        assert main_mod._mean_unit([basis(0), -basis(0)]) is None
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 2. Endpoints (fake bundle)
@@ -418,6 +468,66 @@ class TestSearch:
             data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "ev1", "mode": "psychic"},
         )
         assert resp.status_code == 400
+
+    def test_multiple_reference_files(self, client, monkeypatch, seeded_store):
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={
+                "file": [
+                    (io.BytesIO(jpeg_bytes()), "a.jpg"),
+                    (io.BytesIO(jpeg_bytes()), "b.jpg"),
+                ],
+                "event_id": "ev1",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["numReferences"] == 2
+        assert body["results"][0]["photoId"] == "pB.jpg"  # same ranking as single ref
+
+    def test_missing_file_400(self, client, monkeypatch, seeded_store):
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post("/search", data={"event_id": "ev1"})
+        assert resp.status_code == 400 and resp.get_json()["error"] == "missing_file"
+
+    def test_normalize_flag_reported_and_thresholds(self, client, monkeypatch, seeded_store):
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        # The 3-photo test cohort yields small z-scores, so drop the (prod-sized)
+        # NORM_THRESHOLD to exercise the T-norm gate rather than the magnitude.
+        monkeypatch.setattr(main_mod, "NORM_THRESHOLD", 0.5)
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "ev1", "normalize": "1"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["normalized"] is True
+        assert body["results"][0]["photoId"] == "pB.jpg"  # strong match clears the z-threshold
+        assert all(r["score"] >= 0.5 for r in body["results"])  # gated on the T-norm threshold
+
+    def test_prf_folds_confirmed_photo(self, client, monkeypatch, seeded_store):
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={
+                "file": (io.BytesIO(jpeg_bytes()), "x.jpg"),
+                "event_id": "ev1",
+                "mode": "face",
+                "prf_photo_ids": "pC.jpg",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["numPrfPhotos"] == 1
+        # pC's face is basis(7); folding it pulls the centroid off basis(0)
+        # toward basis(7), so pC now scores above 0 and joins the ranking.
+        pc = next((r for r in body["results"] if r["photoId"] == "pC.jpg"), None)
+        assert pc is not None and pc["score"] > 0.0
 
 
 # ──────────────────────────────────────────────────────────────────────────────

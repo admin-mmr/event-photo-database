@@ -38,6 +38,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { findmeSearchRateLimit } from '../middleware/rateLimit.js';
 import { requireRecaptcha } from '../middleware/recaptcha.js';
 import { matcherSearch } from '../services/matcherClient.js';
+import { confirmedPhotoIdsForUser } from '../services/feedback.js';
 import {
   signPhotoUrls,
   uploadReference,
@@ -138,10 +139,28 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
     createdAt: nowIso,
   });
 
+  // Pseudo-relevance feedback (§1.2): fold this user's own confirmed matches
+  // for this event back into the query. Best-effort — a read failure must not
+  // break the search, and a first-time search simply has nothing to fold.
+  let prfPhotoIds: string[] = [];
+  try {
+    prfPhotoIds = await confirmedPhotoIdsForUser(user.uid, eventId);
+  } catch (err) {
+    logger.warn({ err, uid: user.uid, eventId }, 'PRF confirmed-photo lookup failed (non-fatal)');
+  }
+
   // No topK: the matcher returns every photo above the fused score threshold,
   // so someone who appears in more than 50 photos gets all of their matches
   // (the UI pages them and downloads in batches under MAX_DOWNLOAD_PHOTOS).
-  const match = await matcherSearch({ image, filename, contentType, eventId, mode });
+  const match = await matcherSearch({
+    image,
+    filename,
+    contentType,
+    eventId,
+    mode,
+    ...(prfPhotoIds.length ? { prfPhotoIds } : {}),
+    ...(env.FINDME_TNORM ? { normalize: true } : {}),
+  });
 
   // Outcome derived once, used for persistence, the alert, and the response.
   const outcome = match.ok ? 'matched' : match.error;
@@ -199,6 +218,7 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
       outcome,
       mode: storedMode,
       resultCount,
+      prfCount: prfPhotoIds.length,
     },
     `Find Me search by ${name}${isGuest ? ' (guest)' : ''} on ${eventId} — ${outcome}`,
   );
