@@ -193,6 +193,23 @@ describe('POST /api/findme/search', () => {
     expect(consents[0]?.data).toMatchObject({ name: 'Test Runner', isGuest: false });
   });
 
+  it('sends several selfies to the matcher as one centroid query', async () => {
+    matcherSearch.mockResolvedValue({ ok: true, eventId: 'ev1', mode: 'fused', results: [] });
+    const res = await request(app)
+      .post('/api/findme/search')
+      .set('x-test-user', USER)
+      .field('name', 'Test Runner')
+      .field('eventId', 'ev1')
+      .field('consent', 'true')
+      .attach('file', JPEG, { filename: 'a.jpg', contentType: 'image/jpeg' })
+      .attach('file', JPEG, { filename: 'b.jpg', contentType: 'image/jpeg' });
+    expect(res.status).toBe(200);
+    const arg = matcherSearch.mock.calls[0]?.[0];
+    expect(arg.images).toHaveLength(2);
+    // Only the first selfie is persisted for reuse.
+    expect(createReference).toHaveBeenCalledTimes(1);
+  });
+
   it('folds only this user\'s confirmed photos for this event into PRF', async () => {
     fakeDb.feedback.push(
       { uid: 'u1', eventId: 'ev1', photoId: 'p9', verdict: 'confirmed', createdAt: '2026-07-02T00:00:00Z' },
