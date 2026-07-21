@@ -22,8 +22,8 @@
  * Drive-scoped token cache.
  */
 
-import { GoogleAuth } from 'google-auth-library';
 import { env } from '../lib/config.js';
+import { mintDwdToken } from '../lib/googleCredentials.js';
 import { sleep } from './driveRateLimit.js';
 
 const SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
@@ -46,48 +46,13 @@ async function sheetsFetch(url: string, init: RequestInit): Promise<Response> {
     return res;
   }
 }
-const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 // Read/write scope — covers both values.get and values.append. Add THIS exact
 // scope to the DWD client id in the Workspace Admin console.
 const SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 
-const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
-
-let cached: { token: string; expiresAt: number } | null = null;
-
 /** Mint (and cache) a Sheets access token via keyless DWD. */
-export async function getSheetsToken(): Promise<string> {
-  if (cached && Date.now() < cached.expiresAt - 60_000) return cached.token;
-
-  const sa = env.DWD_SA;
-  const now = Math.floor(Date.now() / 1000);
-  const claims = JSON.stringify({
-    iss: sa,
-    sub: env.DWD_SUBJECT,
-    scope: SCOPE,
-    aud: TOKEN_URL,
-    iat: now,
-    exp: now + 3600,
-  });
-
-  const client = await auth.getClient();
-  const signRes = await client.request<{ signedJwt: string }>({
-    url: `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${sa}:signJwt`,
-    method: 'POST',
-    data: { payload: claims },
-  });
-
-  const body = new URLSearchParams({
-    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-    assertion: signRes.data.signedJwt,
-  });
-  const tokenRes = await fetch(TOKEN_URL, { method: 'POST', body });
-  if (!tokenRes.ok) {
-    throw new Error(`DWD token exchange failed: ${tokenRes.status} ${await tokenRes.text()}`);
-  }
-  const json = (await tokenRes.json()) as { access_token: string; expires_in: number };
-  cached = { token: json.access_token, expiresAt: Date.now() + json.expires_in * 1000 };
-  return cached.token;
+export function getSheetsToken(): Promise<string> {
+  return mintDwdToken({ scope: SCOPE, subject: env.DWD_SUBJECT });
 }
 
 /**

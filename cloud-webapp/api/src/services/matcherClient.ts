@@ -10,10 +10,8 @@
  * http://localhost:8081 — http URLs skip token minting).
  */
 
-import { GoogleAuth } from 'google-auth-library';
 import { env } from '../lib/config.js';
-
-const auth = new GoogleAuth();
+import { getIdTokenHeaders } from '../lib/googleCredentials.js';
 
 export interface MatcherSearchHit {
   photoId: string;
@@ -32,11 +30,8 @@ export type MatcherSearchResult =
     }
   | { ok: false; status: number; error: string; message: string };
 
-async function authHeaders(url: string): Promise<Record<string, string>> {
-  if (url.startsWith('http://')) return {}; // local dev matcher
-  const client = await auth.getIdTokenClient(env.MATCHER_URL);
-  const headers = await client.getRequestHeaders(url);
-  return Object.fromEntries(Object.entries(headers));
+function authHeaders(url: string): Promise<Record<string, string>> {
+  return getIdTokenHeaders(env.MATCHER_URL, url);
 }
 
 /**

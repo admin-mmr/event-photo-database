@@ -13,12 +13,9 @@
  * are configured; otherwise `/complete` falls back to the inline copy.
  */
 
-import { GoogleAuth } from 'google-auth-library';
-
 import { env } from '../lib/config.js';
+import { getAccessToken } from '../lib/googleCredentials.js';
 import { logger } from '../lib/logger.js';
-
-const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
 
 /** True only when background dispatch is fully configured. */
 export function isUploadDispatchConfigured(): boolean {
@@ -47,10 +44,7 @@ export async function enqueueProcessBatchTask(payload: ProcessBatchTaskPayload):
   const parent = `projects/${env.GCP_PROJECT_ID}/locations/${env.UPLOAD_TASKS_LOCATION}/queues/${env.UPLOAD_TASKS_QUEUE}`;
   const url = `https://cloudtasks.googleapis.com/v2/${parent}/tasks`;
 
-  const client = await auth.getClient();
-  const tokenResp = await client.getAccessToken();
-  const accessToken = typeof tokenResp === 'string' ? tokenResp : tokenResp.token;
-  if (!accessToken) throw new Error('could not mint cloud-platform token for Cloud Tasks');
+  const accessToken = await getAccessToken();
 
   const workerUrl = `${env.UPLOAD_WORKER_URL.replace(/\/$/, '')}/api/internal/process-batch`;
   const body = {

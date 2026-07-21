@@ -12,9 +12,23 @@ const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(8080),
 
+  // Which cloud the app runs on. Selects how Google credentials are obtained
+  // (lib/googleCredentials.ts): 'gcp' uses the metadata server / ADC (keyless);
+  // 'azure' uses an explicit service-account key (GOOGLE_SA_KEY_JSON) since
+  // there is no Google metadata server off GCP. Google Workspace (Sheets/Drive/
+  // Gmail) stays the SSOT under both. Defaults to 'gcp' so the GCP deploy is
+  // unchanged. See AZURE_MIGRATION_DEV_PLAN.md AZ1.
+  CLOUD_PROVIDER: z.enum(['gcp', 'azure']).default('gcp'),
+  // Service-account key JSON (the DWD-enabled SA) used to authenticate to Google
+  // when CLOUD_PROVIDER=azure — there is no metadata server to mint tokens from.
+  // Seeded from Key Vault (AZ4). Ignored on GCP, where ADC is keyless. NEVER set
+  // this on GCP — keep the runtime keyless.
+  GOOGLE_SA_KEY_JSON: z.string().optional(),
+
   // GCP project this Cloud Run service runs in. Used to construct
   // Firestore/Storage client config. On Cloud Run this is auto-detected
-  // from the metadata server, so it's optional in production.
+  // from the metadata server, so it's optional in production. Off GCP
+  // (CLOUD_PROVIDER=azure) it must be set explicitly — see the refine below.
   GCP_PROJECT_ID: z.string().optional(),
 
   // Firebase Auth project. Usually the same as GCP_PROJECT_ID.
@@ -239,7 +253,26 @@ const EnvSchema = z.object({
   // must be allowed to invoke it.
   IMAGE_CONVERT_URL: z.string().default(''),
   IMAGE_CONVERT_JPG_QUALITY: z.coerce.number().int().min(1).max(100).default(85),
-});
+})
+  // Off GCP there is no metadata server to auto-detect the project or mint
+  // tokens, so the Google project id and the SA key must both be explicit.
+  .superRefine((cfg, ctx) => {
+    if (cfg.CLOUD_PROVIDER !== 'azure') return;
+    if (!cfg.GCP_PROJECT_ID) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['GCP_PROJECT_ID'],
+        message: 'GCP_PROJECT_ID is required when CLOUD_PROVIDER=azure (no metadata server to auto-detect it)',
+      });
+    }
+    if (!cfg.GOOGLE_SA_KEY_JSON) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['GOOGLE_SA_KEY_JSON'],
+        message: 'GOOGLE_SA_KEY_JSON is required when CLOUD_PROVIDER=azure (no metadata server / ADC off GCP)',
+      });
+    }
+  });
 
 export type Env = z.infer<typeof EnvSchema>;
 
