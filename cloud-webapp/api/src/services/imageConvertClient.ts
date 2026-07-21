@@ -21,14 +21,11 @@
  * the rebuild engine can collect soft errors into its warnings[].
  */
 
-import { GoogleAuth } from 'google-auth-library';
-
 import { env } from '../lib/config.js';
+import { getIdTokenHeaders } from '../lib/googleCredentials.js';
 import { logger } from '../lib/logger.js';
 import { getDriveToken, DRIVE_SCOPE_READWRITE } from './driveService.js';
 import { sleep } from './driveRateLimit.js';
-
-const auth = new GoogleAuth();
 
 const RETRIABLE_STATUS = new Set<number>([429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 3;
@@ -59,11 +56,8 @@ export function isImageConvertConfigured(): boolean {
   return Boolean(env.IMAGE_CONVERT_URL && env.IMAGE_CONVERT_URL.trim());
 }
 
-async function idTokenHeaders(url: string): Promise<Record<string, string>> {
-  if (url.startsWith('http://')) return {}; // local dev convert service — no IAM
-  const client = await auth.getIdTokenClient(env.IMAGE_CONVERT_URL);
-  const headers = await client.getRequestHeaders(url);
-  return Object.fromEntries(Object.entries(headers));
+function idTokenHeaders(url: string): Promise<Record<string, string>> {
+  return getIdTokenHeaders(env.IMAGE_CONVERT_URL, url);
 }
 
 /**

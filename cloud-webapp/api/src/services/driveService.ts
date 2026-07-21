@@ -17,13 +17,12 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { GoogleAuth } from 'google-auth-library';
 import { env } from '../lib/config.js';
+import { mintDwdToken } from '../lib/googleCredentials.js';
 import { driveFetch } from './driveRateLimit.js';
 
 const DRIVE = 'https://www.googleapis.com/drive/v3/files';
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
-const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
 /** Read-only scope used by the listing/metadata calls (the indexer's scope). */
 export const DRIVE_SCOPE_READONLY = 'https://www.googleapis.com/auth/drive.readonly';
@@ -57,8 +56,6 @@ const SKIP_FOLDER_NAMES = new Set(
     .filter((n) => n.length > 0),
 );
 
-const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
-
 export interface DriveImage {
   id: string;
   name: string;
@@ -69,47 +66,13 @@ export interface DriveImage {
   size?: string;
 }
 
-const tokenCache = new Map<string, { token: string; expiresAt: number }>();
-
 /**
  * Mint (and cache) a Drive access token via keyless DWD. Tokens are cached per
- * scope so the read path (drive.readonly) and the upload path (drive) don't
- * clobber each other.
+ * scope (in googleCredentials) so the read path (drive.readonly) and the upload
+ * path (drive) don't clobber each other.
  */
-export async function getDriveToken(scope: string = DRIVE_SCOPE_READONLY): Promise<string> {
-  const hit = tokenCache.get(scope);
-  if (hit && Date.now() < hit.expiresAt - 60_000) return hit.token;
-
-  const sa = env.DWD_SA;
-  const now = Math.floor(Date.now() / 1000);
-  const claims = JSON.stringify({
-    iss: sa,
-    sub: env.DWD_SUBJECT,
-    scope,
-    aud: TOKEN_URL,
-    iat: now,
-    exp: now + 3600,
-  });
-
-  const client = await auth.getClient();
-  const signRes = await client.request<{ signedJwt: string }>({
-    url: `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${sa}:signJwt`,
-    method: 'POST',
-    data: { payload: claims },
-  });
-
-  const body = new URLSearchParams({
-    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-    assertion: signRes.data.signedJwt,
-  });
-  const tokenRes = await fetch(TOKEN_URL, { method: 'POST', body });
-  if (!tokenRes.ok) {
-    throw new Error(`DWD token exchange failed: ${tokenRes.status} ${await tokenRes.text()}`);
-  }
-  const json = (await tokenRes.json()) as { access_token: string; expires_in: number };
-  const entry = { token: json.access_token, expiresAt: Date.now() + json.expires_in * 1000 };
-  tokenCache.set(scope, entry);
-  return entry.token;
+export function getDriveToken(scope: string = DRIVE_SCOPE_READONLY): Promise<string> {
+  return mintDwdToken({ scope, subject: env.DWD_SUBJECT });
 }
 
 async function driveGet(url: string, token: string): Promise<Record<string, unknown>> {

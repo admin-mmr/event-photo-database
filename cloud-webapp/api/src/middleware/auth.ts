@@ -1,14 +1,19 @@
 import type { Request, Response, NextFunction } from 'express';
 import { getAuth } from 'firebase-admin/auth';
-import { initializeApp, getApps, applicationDefault } from 'firebase-admin/app';
+import { initializeApp, getApps, applicationDefault, cert } from 'firebase-admin/app';
 import { env } from '../lib/config.js';
+import { serviceAccountKey } from '../lib/googleCredentials.js';
 import { logger } from '../lib/logger.js';
 import type { UserRole } from '../lib/roles.js';
 
 // Initialize firebase-admin exactly once. Idempotent across hot-reloads.
+// On GCP, ADC (applicationDefault) is keyless via the metadata server. Off GCP
+// (CLOUD_PROVIDER=azure) there is no metadata server, so use the explicit SA
+// key — the same credential googleCredentials.ts authenticates to Google with.
 if (getApps().length === 0) {
+  const key = serviceAccountKey();
   initializeApp({
-    credential: applicationDefault(),
+    credential: key ? cert(key as Parameters<typeof cert>[0]) : applicationDefault(),
     ...(env.FIREBASE_PROJECT_ID ? { projectId: env.FIREBASE_PROJECT_ID } : {}),
   });
 }

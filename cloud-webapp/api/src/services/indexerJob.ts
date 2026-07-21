@@ -18,10 +18,8 @@
  *     --role="roles/run.developer"
  */
 
-import { GoogleAuth } from 'google-auth-library';
 import { env } from '../lib/config.js';
-
-const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
+import { getAuthedClient, getProjectId } from '../lib/googleCredentials.js';
 
 export interface TriggerResult {
   /** Execution resource name: projects/…/jobs/photo-indexer/executions/<id> */
@@ -32,7 +30,7 @@ export async function triggerIndexJob(
   eventId: string,
   opts?: { force?: boolean },
 ): Promise<TriggerResult> {
-  const project = env.GCP_PROJECT_ID ?? (await auth.getProjectId());
+  const project = await getProjectId();
   const url =
     `https://run.googleapis.com/v2/projects/${project}/locations/${env.GCP_REGION}` +
     `/jobs/${env.INDEXER_JOB_NAME}:run`;
@@ -40,7 +38,7 @@ export async function triggerIndexJob(
   const envOverrides = [{ name: 'EVENT_ID', value: eventId }];
   if (opts?.force) envOverrides.push({ name: 'FORCE_REINDEX', value: '1' });
 
-  const client = await auth.getClient();
+  const client = await getAuthedClient();
   const res = await client.request<{ metadata?: { name?: string }; name?: string }>({
     url,
     method: 'POST',

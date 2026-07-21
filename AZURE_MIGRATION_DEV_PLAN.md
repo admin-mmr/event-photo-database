@@ -223,21 +223,30 @@ Effort labels: S ≤ 2 days, M ≤ 1 week, L ≤ 3 weeks.
 The pieces that break *silently* on Azure, done first because everything
 downstream needs them:
 
-- Extract one Google-credential module (api `lib/googleCredentials.ts`,
-  indexer equivalent in `drive.py`) with two modes: metadata-ADC (GCP) and
-  WIF/SA-key (Azure). Re-point all 7 `GoogleAuth` sites + `firebase-admin`
-  init. Make `GCP_PROJECT_ID`/`FIREBASE_PROJECT_ID` required-explicit env when
-  not on GCP.
-- `matcherClient.ts` / `imageConvertClient.ts`: make OIDC-ID-token minting
-  conditional on provider (internal-ingress plain HTTP on Azure — the
-  `http://` branch already exists).
-- `indexerJob.ts`: introduce a job-trigger interface (Cloud Run Jobs API |
-  Container Apps Jobs start via ARM + managed identity).
-- `uploadDispatch.ts`: Cloud Tasks | Azure Storage Queue behind the same flag
+- ✅ Extract one Google-credential module (api `lib/googleCredentials.ts`) with
+  two modes: metadata-ADC (GCP, keyless) and explicit SA-key (Azure,
+  `GOOGLE_SA_KEY_JSON`). Re-pointed all 7 `GoogleAuth` sites (`sheetsService`,
+  `driveService`, `emailService`, `matcherClient`, `imageConvertClient`,
+  `uploadDispatch`, `indexerJob`) + `firebase-admin` init to it. `CLOUD_PROVIDER`
+  env (default `gcp`) selects the mode; a config `superRefine` makes
+  `GCP_PROJECT_ID` + `GOOGLE_SA_KEY_JSON` required-explicit when
+  `CLOUD_PROVIDER=azure`. The three duplicated DWD signJwt+exchange blocks
+  collapse into one `mintDwdToken` with a shared (sa|subject|scope) cache.
+- ✅ `matcherClient.ts` / `imageConvertClient.ts`: OIDC-ID-token minting now goes
+  through `getIdTokenHeaders`, which returns `{}` on Azure (internal-ingress
+  plain HTTP) and for `http://` local-dev URLs.
+- ⬜ Indexer `drive.py` credential equivalent (Python side — separate follow-up
+  PR within AZ1; the api side above is done and ships on GCP).
+- ⬜ `indexerJob.ts`: introduce a job-trigger interface (Cloud Run Jobs API |
+  Container Apps Jobs start via ARM + managed identity). *(Credentials are now
+  provider-neutral; the job-start API surface is still GCP-specific.)*
+- ⬜ `uploadDispatch.ts`: Cloud Tasks | Azure Storage Queue behind the same flag
   (note `UPLOAD_DISPATCH_TO_WORKER` defaults off — inline path needs nothing).
-- Logger: map pino `severity` fields for Azure Monitor ingestion.
-- **Acceptance:** GCP deploy runs unchanged with `CLOUD_PROVIDER=gcp`; unit
-  tests cover both credential modes.
+- ⬜ Logger: map pino `severity` fields for Azure Monitor ingestion.
+- **Acceptance:** GCP deploy runs unchanged with `CLOUD_PROVIDER=gcp` (default);
+  unit tests cover both credential modes (`api/test/googleCredentials.test.ts`,
+  12 tests). ✅ for the credential module; the remaining ⬜ items above are the
+  rest of AZ1.
 
 ### AZ2 — Data-layer adapters (L, code, ships on GCP)
 

@@ -10,18 +10,13 @@
  * the DWD client and EMAIL_FROM is set.
  */
 
-import { GoogleAuth } from 'google-auth-library';
-
 import { env } from '../lib/config.js';
+import { mintDwdToken } from '../lib/googleCredentials.js';
 import { logger } from '../lib/logger.js';
 import type { EmailContent } from './emailTemplates.js';
 
-const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GMAIL_SEND = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send';
 const SCOPE = 'https://www.googleapis.com/auth/gmail.send';
-
-const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
-let cached: { token: string; expiresAt: number } | null = null;
 
 /** The address mail is sent from / impersonated as (defaults to the DWD subject). */
 export function emailFrom(): string {
@@ -29,32 +24,8 @@ export function emailFrom(): string {
 }
 
 /** Mint (and cache) a Gmail access token via keyless DWD, impersonating EMAIL_FROM. */
-export async function getGmailToken(): Promise<string> {
-  if (cached && Date.now() < cached.expiresAt - 60_000) return cached.token;
-  const now = Math.floor(Date.now() / 1000);
-  const claims = JSON.stringify({
-    iss: env.DWD_SA,
-    sub: emailFrom(),
-    scope: SCOPE,
-    aud: TOKEN_URL,
-    iat: now,
-    exp: now + 3600,
-  });
-  const client = await auth.getClient();
-  const signRes = await client.request<{ signedJwt: string }>({
-    url: `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${env.DWD_SA}:signJwt`,
-    method: 'POST',
-    data: { payload: claims },
-  });
-  const body = new URLSearchParams({
-    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-    assertion: signRes.data.signedJwt,
-  });
-  const res = await fetch(TOKEN_URL, { method: 'POST', body });
-  if (!res.ok) throw new Error(`Gmail DWD token exchange failed: ${res.status} ${await res.text()}`);
-  const json = (await res.json()) as { access_token: string; expires_in: number };
-  cached = { token: json.access_token, expiresAt: Date.now() + json.expires_in * 1000 };
-  return cached.token;
+export function getGmailToken(): Promise<string> {
+  return mintDwdToken({ scope: SCOPE, subject: emailFrom() });
 }
 
 /**
