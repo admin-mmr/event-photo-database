@@ -1,0 +1,31 @@
+# Dockerfile.replay — one-off Cloud Run JOB image for the T-norm/PRF replay
+# (FACE_RECOGNITION_IMPROVEMENT_ANALYSIS §1.2/§1.3). Not a service.
+#
+# It is the matcher image plus (a) google-cloud-firestore, needed only by the
+# prep step, and (b) the eval/ scripts, with the replay entrypoint instead of
+# gunicorn. The ONNX weights are baked in exactly as the matcher does, so the
+# job embeds the searchers' selfies in-cloud and the biometric bytes never
+# leave the ephemeral container.
+#
+# Build context is cloud-webapp/matcher/ (same as the matcher image); models
+# are synced into the context from GCS by run-replay-job.sh before the build.
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libheif1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt .
+# Firestore client is the only dep beyond the matcher's (prepare_replay reads
+# match_feedback / find_me_uploads); run_eval itself needs no firestore.
+RUN pip install --no-cache-dir -r requirements.txt google-cloud-firestore
+
+# Baked model weights (synced from GCS into the context, as in the matcher build).
+COPY model_files/ model_files/
+COPY models/ models/
+COPY *.py ./
+COPY eval/ eval/
+
+ENV MODEL_DIR=/app/model_files
+ENTRYPOINT ["bash", "/app/eval/replay_entrypoint.sh"]

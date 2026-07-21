@@ -11,6 +11,10 @@
 **/pytest-cache-files-*
 **/.venv
 local_store/
-eval/
+# Keep eval *scripts* (eval/Dockerfile.replay copies them into the replay job
+# image); exclude only the biometric/PII data dirs. Inert in the matcher image.
+eval/queries/
+eval/labels/
+eval/local_store/
 *.log
 .DS_Store
