@@ -157,6 +157,38 @@ def big_store(tmp_path):
     return str(tmp_path)
 
 
+# Anchor for the capture-time fusion tests: a fixed query capture time. pX was
+# taken 10 min after (within W_FULL → full outfit weight), pY 6 h after (beyond
+# W_ZERO=3h → outfit weight decays to the floor, 0.0).
+from datetime import datetime, timezone  # noqa: E402
+
+CT_ANCHOR_MS = int(datetime(2026, 6, 20, 12, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+
+
+@pytest.fixture
+def timed_store(tmp_path):
+    """Event 'tev': pX and pY have identical face AND outfit to the query, so
+    without capture-time decay they tie. pX's takenAt is near the query anchor;
+    pY's is hours later, so decay should strip pY's outfit boost only."""
+    faces = np.stack([basis(0), basis(0)])
+    faces_meta = [
+        {"photoId": "pX.jpg", "box": [0, 0, 1, 1], "score": 0.9},
+        {"photoId": "pY.jpg", "box": [0, 0, 1, 1], "score": 0.9},
+    ]
+    persons = np.stack([basis(1), basis(1)])
+    persons_meta = [
+        {"photoId": "pX.jpg", "box": [0, 0, 1, 1], "score": 0.8, "source": "detector"},
+        {"photoId": "pY.jpg", "box": [0, 0, 1, 1], "score": 0.8, "source": "detector"},
+    ]
+    manifest = build_manifest("tev", "test@v0", faces_meta, persons_meta)
+    manifest["photos"] = {
+        "pX.jpg": {"takenAt": "2026-06-20T12:10:00"},  # +10 min (within W_FULL)
+        "pY.jpg": {"takenAt": "2026-06-20T18:00:00"},  # +6 h  (beyond W_ZERO)
+    }
+    write_local(str(tmp_path / "tev"), manifest, faces, persons)
+    return str(tmp_path)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. Pure helpers
 # ──────────────────────────────────────────────────────────────────────────────
@@ -240,6 +272,40 @@ class TestFusion:
         with pytest.raises(ValueError):
             fusion_mod.fuse([], [], method="nope")
 
+    def test_person_weight_fn_overrides_scalar(self):
+        # Capture-time fusion: a per-photo person weight function replaces the
+        # flat w_person (score method only).
+        face = [{"photoId": "a", "score": 0.5}]
+        person = [{"photoId": "a", "score": 1.0}]
+        out = fusion_mod.fuse(
+            face, person, w_face=0.85, w_person=0.15, threshold=0.0,
+            person_weight_fn=lambda pid: 0.0,  # fully suppress outfit
+        )
+        assert out[0]["score"] == pytest.approx(0.85 * 0.5)  # person contributes nothing
+        assert out[0]["personWeight"] == pytest.approx(0.0)
+
+
+class TestTimeDecay:
+    W_FULL = 45 * 60_000
+    W_ZERO = 180 * 60_000
+
+    def test_full_weight_within_window(self):
+        assert fusion_mod.time_decay(0, self.W_FULL, self.W_ZERO) == 1.0
+        assert fusion_mod.time_decay(self.W_FULL, self.W_FULL, self.W_ZERO) == 1.0
+        assert fusion_mod.time_decay(-10_000, self.W_FULL, self.W_ZERO) == 1.0  # abs()
+
+    def test_floor_beyond_zero_window(self):
+        assert fusion_mod.time_decay(self.W_ZERO, self.W_FULL, self.W_ZERO, floor=0.0) == 0.0
+        assert fusion_mod.time_decay(10 * self.W_ZERO, self.W_FULL, self.W_ZERO, floor=0.1) == 0.1
+
+    def test_linear_fade_midpoint(self):
+        mid = (self.W_FULL + self.W_ZERO) / 2
+        assert fusion_mod.time_decay(mid, self.W_FULL, self.W_ZERO, floor=0.0) == pytest.approx(0.5)
+
+    def test_none_delta_is_neutral(self):
+        # Unknown capture time → 1.0 so the caller keeps the static weight.
+        assert fusion_mod.time_decay(None, self.W_FULL, self.W_ZERO) == 1.0
+
 
 class TestStore:
     def test_roundtrip_and_topk(self, seeded_store):
@@ -314,6 +380,22 @@ class TestStore:
         ev = EmbeddingStore(seeded_store).load_event("ev1")
         crops = ev.embeddings_for_photo("face", "nope.jpg")
         assert crops.shape == (0, DIM)
+
+    def test_taken_at_ms_from_photos_map(self):
+        # Capture time comes from the manifest `photos` map (indexer), parsed as
+        # UTC. Unknown photo / no photos map → None (→ static outfit weight).
+        m = build_manifest("ev", "m@v0", [], [])
+        m["photos"] = {"p1": {"takenAt": "2026-06-20T14:30:52"}, "p2": {"takenAt": None}}
+        ev = EventEmbeddings(m, np.zeros((0, 4), np.float32), np.zeros((0, 4), np.float32))
+        from datetime import datetime, timezone
+        expect = int(datetime(2026, 6, 20, 14, 30, 52, tzinfo=timezone.utc).timestamp() * 1000)
+        assert ev.taken_at_ms("p1") == expect
+        assert ev.taken_at_ms("p2") is None      # takenAt None
+        assert ev.taken_at_ms("missing") is None  # photo not in map
+        # build_manifest() alone (no photos key) → empty map, always None.
+        ev2 = EventEmbeddings(build_manifest("ev", "m@v0", [], []),
+                              np.zeros((0, 4), np.float32), np.zeros((0, 4), np.float32))
+        assert ev2.taken_at_ms("p1") is None
 
     def test_tnorm_preserves_order_but_rescales(self, seeded_store):
         ev = EmbeddingStore(seeded_store).load_event("ev1")
@@ -528,6 +610,64 @@ class TestSearch:
         # toward basis(7), so pC now scores above 0 and joins the ranking.
         pc = next((r for r in body["results"] if r["photoId"] == "pC.jpg"), None)
         assert pc is not None and pc["score"] > 0.0
+
+
+class TestCaptureTimeFusion:
+    """Capture-time-conditional outfit fusion (flag off by default).
+
+    pX and pY are identical in face AND outfit to the query, so they tie without
+    decay. With the flag on and an anchor near pX's takenAt, pY's outfit boost
+    decays to the floor (0.0) while pX keeps it — pX pulls ahead, and neither
+    face score is touched. read_capture_time_ms is stubbed so the query's anchor
+    is deterministic without encoding EXIF into the test JPEG."""
+
+    def test_off_by_default_keeps_static_weight(self, client, monkeypatch, timed_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", timed_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "tev"},
+        )
+        assert resp.status_code == 200
+        by = {r["photoId"]: r for r in resp.get_json()["results"]}
+        # No decay → both keep the full 0.15 outfit weight and tie at 1.0.
+        assert by["pX.jpg"]["score"] == pytest.approx(0.85 + 0.15)
+        assert by["pY.jpg"]["score"] == pytest.approx(0.85 + 0.15)
+        assert by["pY.jpg"]["personWeight"] == pytest.approx(0.15)
+
+    def test_decay_suppresses_far_in_time_outfit(self, client, monkeypatch, timed_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", timed_store)
+        monkeypatch.setattr(main_mod, "FUSION_TIME_CONDITIONAL", True)
+        monkeypatch.setattr(main_mod, "read_capture_time_ms", lambda data: CT_ANCHOR_MS)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "tev"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        by = {r["photoId"]: r for r in body["results"]}
+        assert by["pX.jpg"]["score"] == pytest.approx(0.85 + 0.15 * 1.0)  # full outfit
+        assert by["pY.jpg"]["score"] == pytest.approx(0.85)               # outfit decayed away
+        assert by["pX.jpg"]["personWeight"] == pytest.approx(0.15)
+        assert by["pY.jpg"]["personWeight"] == pytest.approx(0.0)
+        assert by["pX.jpg"]["faceScore"] == pytest.approx(by["pY.jpg"]["faceScore"])  # face untouched
+        assert body["results"][0]["photoId"] == "pX.jpg"
+
+    def test_flag_on_but_no_query_exif_falls_back_to_static(self, client, monkeypatch, timed_store):
+        # No parseable anchor (query selfie without EXIF) → static weight, no
+        # regression: pX and pY tie again even with the flag on.
+        monkeypatch.setenv("EMBEDDINGS_ROOT", timed_store)
+        monkeypatch.setattr(main_mod, "FUSION_TIME_CONDITIONAL", True)
+        monkeypatch.setattr(main_mod, "read_capture_time_ms", lambda data: None)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "tev"},
+        )
+        assert resp.status_code == 200
+        by = {r["photoId"]: r for r in resp.get_json()["results"]}
+        assert by["pX.jpg"]["score"] == pytest.approx(by["pY.jpg"]["score"])
 
 
 # ──────────────────────────────────────────────────────────────────────────────

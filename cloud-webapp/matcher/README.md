@@ -63,6 +63,15 @@ curl -F file=@selfie.jpg -F event_id=ev_sample localhost:8081/search
   outfit-only eval numbers.
 - **Env vars:** `MODEL_DIR`, `EMBEDDINGS_ROOT` (`gs://mmr-data-pipeline-derivatives`
   in prod, local dir in dev), `MODEL_VERSION`, `MAX_UPLOAD_BYTES`.
+- **Capture-time-conditional outfit fusion (opt-in, off by default).**
+  `FUSION_TIME_CONDITIONAL=true` scales the per-candidate outfit (person) weight
+  by how close the candidate photo's capture time is to the query selfie's:
+  full within `PERSON_TIME_W_FULL_MIN` (default 45), fading to `PERSON_TIME_FLOOR`
+  (default 0.0) by `PERSON_TIME_W_ZERO_MIN` (default 180). The anchor is the
+  first uploaded selfie's EXIF `DateTimeOriginal`; the candidate time is the
+  indexer's manifest `takenAt` (no re-index needed). A missing time on either
+  side falls back to the static weight — no regression. Fused mode only; the
+  face signal is never touched. Re-tune / sweep before enabling in prod.
 - **Deploy (M2):** private Cloud Run, `--service-account matcher-runtime@…`,
   no `--allow-unauthenticated`; only api-runtime gets `roles/run.invoker`.
   `infra/scripts/deploy-matcher.sh` lands with M2 per the dev plan.

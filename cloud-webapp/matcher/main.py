@@ -23,7 +23,7 @@ import numpy as np
 from flask import Flask, jsonify, request
 
 import fusion as fusion_mod
-from pipeline import decode_image, embed_image
+from pipeline import decode_image, embed_image, read_capture_time_ms
 from store import EmbeddingStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
@@ -44,6 +44,19 @@ UNGATED_TOP_K = int(os.environ.get("MATCHER_UNGATED_TOP_K", "500"))
 # the cohort mean. Eval-tunable; opt-in, so prod is unaffected until callers
 # pass normalize=1.
 NORM_THRESHOLD = float(os.environ.get("MATCHER_NORM_THRESHOLD", "2.0"))
+
+# Capture-time-conditional outfit fusion. Off by default until swept on judged
+# labels. When on, the person (outfit) weight for a candidate photo is scaled by
+# how close its capture time is to the query selfie's — full within W_FULL,
+# fading to FLOOR by W_ZERO. A missing capture time (query selfie has no EXIF
+# DateTimeOriginal, or a candidate has no manifest takenAt) falls back to the
+# static weight, so this can never regress events/photos without capture times.
+# Anchor = the FIRST uploaded selfie's EXIF; candidate = manifest `photos` map,
+# already written by the indexer, so no re-index is required. Fused mode only.
+FUSION_TIME_CONDITIONAL = os.environ.get("FUSION_TIME_CONDITIONAL", "false").lower() == "true"
+PERSON_TIME_W_FULL_MS = float(os.environ.get("PERSON_TIME_W_FULL_MIN", "45")) * 60_000
+PERSON_TIME_W_ZERO_MS = float(os.environ.get("PERSON_TIME_W_ZERO_MIN", "180")) * 60_000
+PERSON_TIME_FLOOR = float(os.environ.get("PERSON_TIME_FLOOR", "0.0"))
 
 # EMBEDDINGS_ROOT: gs://<proj>-derivatives in prod; a local dir in dev/tests.
 _store: EmbeddingStore | None = None
@@ -210,9 +223,16 @@ def search():
     person_refs: list[np.ndarray] = []
     faces_diag: list[dict] = []
     model_version = None
-    for file in files:
+    anchor_ms: int | None = None
+    for i, file in enumerate(files):
+        data = file.read()
+        # Capture-time anchor = the first selfie's EXIF (only read when the flag
+        # is on). Multiple selfies of one search are assumed near-simultaneous,
+        # so the first is a fine anchor for all of them.
+        if i == 0 and FUSION_TIME_CONDITIONAL:
+            anchor_ms = read_capture_time_ms(data)
         try:
-            img = decode_image(file.read())
+            img = decode_image(data)
         except Exception:
             logger.exception("image decode failed")
             return jsonify({"error": "bad_image", "detail": "could not decode image"}), 400
@@ -258,13 +278,35 @@ def search():
     elif mode == "person":
         ranked = [{"photoId": h["photoId"], "score": h["score"], "faceScore": None, "personScore": h["score"]} for h in person_hits]
     else:
+        w_person = float(request.form.get("w_person", fusion_mod.DEFAULT_PERSON_WEIGHT))
+        # Capture-time-conditional outfit weight: scale w_person per candidate by
+        # how close its capture time is to the query selfie's. Only engages when
+        # the flag is on AND the query has a parseable capture time; a candidate
+        # with no takenAt decays to 1.0 (static weight) inside time_decay.
+        person_weight_fn = None
+        if FUSION_TIME_CONDITIONAL and anchor_ms is not None:
+            photo_time = {
+                pid: event.taken_at_ms(pid)
+                for pid in {h["photoId"] for h in (*face_hits, *person_hits)}
+            }
+
+            def person_weight_fn(pid, _w=w_person):  # closure over anchor/config
+                t = photo_time.get(pid)
+                return _w * fusion_mod.time_decay(
+                    None if t is None else (t - anchor_ms),
+                    PERSON_TIME_W_FULL_MS,
+                    PERSON_TIME_W_ZERO_MS,
+                    PERSON_TIME_FLOOR,
+                )
+
         ranked = fusion_mod.fuse(
             face_hits,
             person_hits,
             w_face=float(request.form.get("w_face", fusion_mod.DEFAULT_FACE_WEIGHT)),
-            w_person=float(request.form.get("w_person", fusion_mod.DEFAULT_PERSON_WEIGHT)),
+            w_person=w_person,
             threshold=NORM_THRESHOLD if normalize else fusion_mod.DEFAULT_THRESHOLD,
             top_k=top_k,
+            person_weight_fn=person_weight_fn,
         )
 
     return jsonify(
