@@ -49,7 +49,7 @@ async function load(overrides: Record<string, string | undefined>) {
 }
 
 function stubTokenExchange(accessToken = 'ACCESS_TOKEN', expiresIn = 3600) {
-  const fetchMock = vi.fn(async () => ({
+  const fetchMock = vi.fn(async (_url: string, _init: { body: URLSearchParams }) => ({
     ok: true,
     json: async () => ({ access_token: accessToken, expires_in: expiresIn }),
     text: async () => '',
@@ -76,7 +76,7 @@ describe('mintDwdToken (gcp)', () => {
     expect(token).toBe('DWD_AT');
 
     // signJwt hit iamcredentials for the default DWD SA.
-    const signArg = h.request.mock.calls[0][0];
+    const signArg = h.request.mock.calls[0]![0] as { url: string; data: { payload: string } };
     expect(signArg.url).toContain(
       'indexer-runtime@mmr-data-pipeline.iam.gserviceaccount.com:signJwt',
     );
@@ -84,7 +84,7 @@ describe('mintDwdToken (gcp)', () => {
     expect(claims).toMatchObject({ sub: 'user@x.org', scope: 'scope-a' });
 
     // token exchange carried the signed assertion.
-    const body = fetchMock.mock.calls[0][1].body as URLSearchParams;
+    const body = fetchMock.mock.calls[0]![1].body;
     expect(body.get('assertion')).toBe('SIGNED.JWT');
     expect(body.get('grant_type')).toBe('urn:ietf:params:oauth:grant-type:jwt-bearer');
   });

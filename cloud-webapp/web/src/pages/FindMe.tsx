@@ -78,8 +78,9 @@ const STR = {
     continue: 'Continue',
     addAnotherPhoto: 'Add another photo',
     uploadYourself: 'Upload a photo of yourself',
-    pickHint: 'A clear, front-facing photo works best — a selfie is perfect.',
-    chooseTakePhoto: 'Choose / take a photo',
+    pickHint:
+      'A clear, front-facing photo works best — a selfie is perfect. You can pick a few at once and we’ll combine them for better matches.',
+    chooseTakePhoto: 'Choose / take photo(s)',
     photoQualityTitle: 'This photo may be hard to match',
     photoQualityIntro:
       'A clearer photo usually finds more of your pictures. We noticed:',
@@ -179,7 +180,7 @@ const STR = {
     continue: '继续',
     addAnotherPhoto: '添加另一张照片',
     uploadYourself: '上传您的照片',
-    pickHint: '清晰的正面照片效果最佳，自拍即可。',
+    pickHint: '清晰的正面照片效果最佳，自拍即可。可一次选择多张，我们会合并以提高匹配效果。',
     chooseTakePhoto: '选择或拍摄照片',
     photoQualityTitle: '这张照片可能不易匹配',
     photoQualityIntro: '更清晰的照片通常能找到更多您的照片。我们发现：',
@@ -237,6 +238,9 @@ const STR = {
 
 type Phase = 'consent' | 'pick' | 'searching' | 'results';
 
+/** Client-side cap on selfies per search; mirrors the api's MAX_REFERENCE_IMAGES. */
+const MAX_REFERENCE_IMAGES = 5;
+
 /** One reference selfie and the result set it produced. Result sets are kept
  *  separate per reference (B3) — they only merge in the explicit Combined view. */
 interface Reference {
@@ -277,13 +281,13 @@ export function FindMe(): JSX.Element {
   const [isMinor, setIsMinor] = useState(false);
   const [guardianOk, setGuardianOk] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // When a reference has no detectable face we hold it here to offer an
-  // outfit-only retry (FR-7) without making the user re-pick the file.
-  const [noFaceFile, setNoFaceFile] = useState<File | null>(null);
-  // A picked file whose client-side quality check flagged it as poor: we hold
-  // it and show a warning so the user can pick a clearer photo OR search anyway,
+  // When a reference set has no detectable face we hold the files here to offer
+  // an outfit-only retry (FR-7) without making the user re-pick them.
+  const [noFaceFiles, setNoFaceFiles] = useState<File[]>([]);
+  // Picked files whose client-side quality check flagged them as poor: we hold
+  // them and show a warning so the user can pick clearer photos OR search anyway,
   // rather than silently running a search that can't match well.
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [photoQuality, setPhotoQuality] = useState<QualityResult | null>(null);
   const [checkingPhoto, setCheckingPhoto] = useState(false);
   const [references, setReferences] = useState<Reference[]>([]);
@@ -558,9 +562,11 @@ export function FindMe(): JSX.Element {
       subjectIsMinor: isMinor,
       guardianAttested: guardianOk,
     };
+    const recaptchaToken = await getRecaptchaToken('findme_search');
     const res = await apiPost<SearchResponse, SearchByUploadRequest>(
       `/api/findme/uploads/${encodeURIComponent(u.uploadId)}/search`,
       body,
+      recaptchaToken ? { headers: { 'X-Recaptcha-Token': recaptchaToken } } : undefined,
     );
     pushReference(res, u.url, t.savedLabel);
   }
@@ -606,40 +612,52 @@ export function FindMe(): JSX.Element {
    * photo or search anyway; otherwise go straight to search. The check failing
    * for any reason must never block the search — we just proceed.
    */
-  async function handlePicked(file: File): Promise<void> {
+  async function handlePicked(files: File[]): Promise<void> {
     setError(null);
-    setNoFaceFile(null);
-    setPendingFile(null);
+    setNoFaceFiles([]);
+    setPendingFiles([]);
     setPhotoQuality(null);
+    if (files.length === 0) return;
     setCheckingPhoto(true);
-    let quality: QualityResult | null = null;
-    try {
-      quality = await analyzePhoto(file);
-    } catch {
-      quality = null;
+    // Multiple selfies are averaged into one centroid query (§1.1). We quality-
+    // check them all and only warn if EVERY one is poor — a single sharp shot in
+    // the set is enough to search well.
+    let worst: QualityResult | null = null;
+    let anyOk = false;
+    for (const file of files) {
+      let q: QualityResult | null = null;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        q = await analyzePhoto(file);
+      } catch {
+        q = null;
+      }
+      if (!q || q.level !== 'poor') anyOk = true;
+      if (q && q.level === 'poor') worst = q;
     }
     setCheckingPhoto(false);
-    if (quality && quality.level === 'poor') {
-      setPendingFile(file);
-      setPhotoQuality(quality);
+    if (!anyOk && worst) {
+      setPendingFiles(files);
+      setPhotoQuality(worst);
       return;
     }
-    void search(file);
+    void search(files);
   }
 
   function dismissQualityWarning(): void {
-    setPendingFile(null);
+    setPendingFiles([]);
     setPhotoQuality(null);
   }
 
-  async function search(file: File, mode: 'fused' | 'person' = 'fused'): Promise<void> {
+  async function search(files: File[], mode: 'fused' | 'person' = 'fused'): Promise<void> {
+    if (files.length === 0) return;
     setPhase('searching');
     setError(null);
-    setNoFaceFile(null);
-    setPendingFile(null);
+    setNoFaceFiles([]);
+    setPendingFiles([]);
     setPhotoQuality(null);
     const form = new FormData();
-    form.set('file', file);
+    for (const file of files) form.append('file', file);
     form.set('eventId', eventId);
     form.set('name', name.trim());
     form.set('consent', 'true');
@@ -653,14 +671,15 @@ export function FindMe(): JSX.Element {
         form,
         recaptchaToken ? { headers: { 'X-Recaptcha-Token': recaptchaToken } } : undefined,
       );
-      pushReference(res, URL.createObjectURL(file), mode === 'person' ? t.outfitLabel : t.photoLabel);
+      // Preview the first selfie — it's the one persisted for reuse.
+      pushReference(res, URL.createObjectURL(files[0]!), mode === 'person' ? t.outfitLabel : t.photoLabel);
       setPhase('results');
       // Refresh history so this just-uploaded photo appears in the reuse picker.
       void loadPastUploads(true);
     } catch (e) {
       if (e instanceof ApiError && e.code === 'no_usable_face') {
-        // FR-7: keep the file and offer an outfit/appearance-only retry.
-        setNoFaceFile(file);
+        // FR-7: keep the files and offer an outfit/appearance-only retry.
+        setNoFaceFiles(files);
         setError(t.noUsableFace);
         setPhase('pick');
       } else if (e instanceof ApiError && e.code === 'guardian_required') {
@@ -926,15 +945,17 @@ export function FindMe(): JSX.Element {
             ref={fileInput}
             type="file"
             accept="image/*"
+            multiple
             style={{ display: 'none' }}
             onChange={(e) => {
-              const f = e.target.files?.[0];
-              // Reset so re-picking the SAME file still fires onChange.
+              // Several selfies of the same person → one centroid query (§1.1).
+              const picked = Array.from(e.target.files ?? []).slice(0, MAX_REFERENCE_IMAGES);
+              // Reset so re-picking the SAME file(s) still fires onChange.
               e.target.value = '';
-              if (f) void handlePicked(f);
+              if (picked.length > 0) void handlePicked(picked);
             }}
           />
-          {photoQuality && pendingFile ? (
+          {photoQuality && pendingFiles.length > 0 ? (
             <div className="photo-quality-warn" role="alert">
               <p>
                 <strong>{t.photoQualityTitle}</strong>
@@ -949,7 +970,7 @@ export function FindMe(): JSX.Element {
                 <button
                   className="btn btn-primary"
                   onClick={() => {
-                    const f = pendingFile;
+                    const f = pendingFiles;
                     dismissQualityWarning();
                     void search(f);
                   }}
@@ -976,8 +997,8 @@ export function FindMe(): JSX.Element {
               {t.chooseTakePhoto}
             </button>
           )}
-          {noFaceFile && (
-            <button className="btn btn-light" onClick={() => void search(noFaceFile, 'person')}>
+          {noFaceFiles.length > 0 && (
+            <button className="btn btn-light" onClick={() => void search(noFaceFiles, 'person')}>
               {t.searchByOutfitInstead}
             </button>
           )}

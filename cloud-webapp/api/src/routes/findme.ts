@@ -38,6 +38,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { findmeSearchRateLimit } from '../middleware/rateLimit.js';
 import { requireRecaptcha } from '../middleware/recaptcha.js';
 import { matcherSearch } from '../services/matcherClient.js';
+import { confirmedPhotoIdsForUser } from '../services/feedback.js';
 import {
   signPhotoUrls,
   uploadReference,
@@ -57,17 +58,27 @@ export const findmeRouter = Router();
 
 const ALLOWED_MIMES = new Set(['image/jpeg', 'image/png', 'image/heic', 'image/heif', 'image/webp']);
 
+/** Max reference selfies per search (§1.1 centroid query). Bounds the matcher
+ *  work and the multipart payload; the client caps its picker to match. */
+const MAX_REFERENCE_IMAGES = 5;
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024, files: 1 },
+  limits: { fileSize: 15 * 1024 * 1024, files: MAX_REFERENCE_IMAGES },
 });
+
+interface ReferenceImage {
+  buffer: Buffer;
+  contentType: string;
+  filename: string;
+}
 
 interface RunSearchOpts {
   user: AuthedUser;
   eventId: string;
-  image: Buffer;
-  contentType: string;
-  filename: string;
+  /** One or more reference selfies. Several are averaged into a centroid query
+   *  on the matcher (§1.1); the first is the one persisted for reuse. */
+  images: ReferenceImage[];
   /** Searcher-provided display name (required, validated by the caller). */
   name: string;
   mode: 'fused' | 'person';
@@ -86,7 +97,9 @@ interface RunSearchOpts {
  * caller's try/catch forwards those to the error handler).
  */
 async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
-  const { user, eventId, image, contentType, filename, name, mode, subjectIsMinor, guardianAttested } = opts;
+  const { user, eventId, images, name, mode, subjectIsMinor, guardianAttested } = opts;
+  // The first selfie is the representative one we persist for reuse.
+  const primary = images[0]!;
   // Anonymous guests have no account email — the captured name is how we
   // attribute the search in the admin alert.
   const isGuest = !user.email;
@@ -138,10 +151,26 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
     createdAt: nowIso,
   });
 
+  // Pseudo-relevance feedback (§1.2): fold this user's own confirmed matches
+  // for this event back into the query. Best-effort — a read failure must not
+  // break the search, and a first-time search simply has nothing to fold.
+  let prfPhotoIds: string[] = [];
+  try {
+    prfPhotoIds = await confirmedPhotoIdsForUser(user.uid, eventId);
+  } catch (err) {
+    logger.warn({ err, uid: user.uid, eventId }, 'PRF confirmed-photo lookup failed (non-fatal)');
+  }
+
   // No topK: the matcher returns every photo above the fused score threshold,
   // so someone who appears in more than 50 photos gets all of their matches
   // (the UI pages them and downloads in batches under MAX_DOWNLOAD_PHOTOS).
-  const match = await matcherSearch({ image, filename, contentType, eventId, mode });
+  const match = await matcherSearch({
+    images: images.map((img) => ({ image: img.buffer, filename: img.filename, contentType: img.contentType })),
+    eventId,
+    mode,
+    ...(prfPhotoIds.length ? { prfPhotoIds } : {}),
+    ...(env.FINDME_TNORM ? { normalize: true } : {}),
+  });
 
   // Outcome derived once, used for persistence, the alert, and the response.
   const outcome = match.ok ? 'matched' : match.error;
@@ -159,7 +188,7 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
   if (opts.persistReference) {
     try {
       const uploadId = randomUUID();
-      const gcsPath = await uploadReference(user.uid, uploadId, image, contentType);
+      const gcsPath = await uploadReference(user.uid, uploadId, primary.buffer, primary.contentType);
       const days = subjectIsMinor
         ? env.REFERENCE_RETENTION_DAYS_MINOR
         : env.REFERENCE_RETENTION_DAYS_ADULT;
@@ -169,7 +198,7 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
         uid: user.uid,
         eventId,
         gcsPath,
-        contentType,
+        contentType: primary.contentType,
         mode: storedMode,
         outcome,
         name,
@@ -199,6 +228,8 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
       outcome,
       mode: storedMode,
       resultCount,
+      prfCount: prfPhotoIds.length,
+      numReferences: images.length,
     },
     `Find Me search by ${name}${isGuest ? ' (guest)' : ''} on ${eventId} — ${outcome}`,
   );
@@ -277,7 +308,7 @@ findmeRouter.post(
   requireAuth,
   findmeSearchRateLimit(),
   requireRecaptcha('findme_search'),
-  upload.single('file'),
+  upload.array('file', MAX_REFERENCE_IMAGES),
   async (req, res, next) => {
     try {
       const eventId = String(req.body?.eventId ?? '').trim();
@@ -285,15 +316,20 @@ findmeRouter.post(
         res.status(400).json({ ok: false, error: 'missing_event_id', message: 'eventId is required' });
         return;
       }
-      if (!req.file) {
+      // upload.array yields req.files as an array (possibly of length 1 — the
+      // client sends one field per selfie); several are averaged into a
+      // centroid query on the matcher (§1.1).
+      const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+      if (files.length === 0) {
         res.status(400).json({ ok: false, error: 'missing_file', message: "multipart field 'file' required" });
         return;
       }
-      if (!ALLOWED_MIMES.has(req.file.mimetype)) {
+      const badMime = files.find((f) => !ALLOWED_MIMES.has(f.mimetype));
+      if (badMime) {
         res.status(415).json({
           ok: false,
           error: 'unsupported_format',
-          message: `Unsupported image type '${req.file.mimetype}'`,
+          message: `Unsupported image type '${badMime.mimetype}'`,
         });
         return;
       }
@@ -325,9 +361,11 @@ findmeRouter.post(
       await runSearch(res, {
         user: req.user!,
         eventId,
-        image: req.file.buffer,
-        contentType: req.file.mimetype,
-        filename: req.file.originalname || 'reference.jpg',
+        images: files.map((f) => ({
+          buffer: f.buffer,
+          contentType: f.mimetype,
+          filename: f.originalname || 'reference.jpg',
+        })),
         name: nameParsed.data,
         mode,
         subjectIsMinor: req.body?.subjectIsMinor === 'true',
@@ -411,6 +449,7 @@ findmeRouter.post(
   '/findme/uploads/:uploadId/search',
   requireAuth,
   findmeSearchRateLimit(),
+  requireRecaptcha('findme_search'),
   async (req, res, next) => {
     try {
       const parsed = SearchByUploadRequestSchema.safeParse(req.body ?? {});
@@ -448,9 +487,7 @@ findmeRouter.post(
       await runSearch(res, {
         user: req.user!,
         eventId,
-        image,
-        contentType: rec.contentType,
-        filename: `${rec.uploadId}.jpg`,
+        images: [{ buffer: image, contentType: rec.contentType, filename: `${rec.uploadId}.jpg` }],
         name,
         mode: mode ?? 'fused',
         subjectIsMinor: subjectIsMinor ?? rec.subjectIsMinor,

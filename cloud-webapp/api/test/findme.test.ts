@@ -19,6 +19,8 @@ vi.mock('../src/middleware/auth.js', () => ({
 const fakeDb = {
   events: new Map<string, Record<string, unknown>>(),
   added: [] as Array<{ collection: string; data: Record<string, unknown> }>,
+  // match_feedback rows, queried by confirmedPhotoIdsForUser (PRF §1.2).
+  feedback: [] as Array<Record<string, unknown>>,
 };
 
 vi.mock('../src/lib/firestore.js', () => ({
@@ -31,6 +33,13 @@ vi.mock('../src/lib/firestore.js', () => ({
         fakeDb.added.push({ collection: name, data });
         return { id: `${name}-doc-${fakeDb.added.length}` };
       },
+      where: (field: string, _op: string, value: unknown) => ({
+        get: async () => ({
+          docs: (name === 'match_feedback' ? fakeDb.feedback : [])
+            .filter((d) => d[field] === value)
+            .map((d) => ({ data: () => d })),
+        }),
+      }),
     }),
   }),
 }));
@@ -85,6 +94,7 @@ describe('POST /api/findme/search', () => {
   beforeEach(() => {
     fakeDb.events.clear();
     fakeDb.added.length = 0;
+    fakeDb.feedback.length = 0;
     matcherSearch.mockReset();
     createReference.mockClear();
     fakeDb.events.set('ev1', { name: 'Spring Run 2026' });
@@ -181,6 +191,45 @@ describe('POST /api/findme/search', () => {
     });
     // The captured name is recorded on the consent doc too.
     expect(consents[0]?.data).toMatchObject({ name: 'Test Runner', isGuest: false });
+  });
+
+  it('sends several selfies to the matcher as one centroid query', async () => {
+    matcherSearch.mockResolvedValue({ ok: true, eventId: 'ev1', mode: 'fused', results: [] });
+    const res = await request(app)
+      .post('/api/findme/search')
+      .set('x-test-user', USER)
+      .field('name', 'Test Runner')
+      .field('eventId', 'ev1')
+      .field('consent', 'true')
+      .attach('file', JPEG, { filename: 'a.jpg', contentType: 'image/jpeg' })
+      .attach('file', JPEG, { filename: 'b.jpg', contentType: 'image/jpeg' });
+    expect(res.status).toBe(200);
+    const arg = matcherSearch.mock.calls[0]?.[0];
+    expect(arg.images).toHaveLength(2);
+    // Only the first selfie is persisted for reuse.
+    expect(createReference).toHaveBeenCalledTimes(1);
+  });
+
+  it('folds only this user\'s confirmed photos for this event into PRF', async () => {
+    fakeDb.feedback.push(
+      { uid: 'u1', eventId: 'ev1', photoId: 'p9', verdict: 'confirmed', createdAt: '2026-07-02T00:00:00Z' },
+      { uid: 'u1', eventId: 'ev1', photoId: 'p8', verdict: 'not_me', createdAt: '2026-07-03T00:00:00Z' },
+      { uid: 'u1', eventId: 'other', photoId: 'p7', verdict: 'confirmed', createdAt: '2026-07-04T00:00:00Z' },
+      { uid: 'u2', eventId: 'ev1', photoId: 'p6', verdict: 'confirmed', createdAt: '2026-07-05T00:00:00Z' },
+    );
+    matcherSearch.mockResolvedValue({ ok: true, eventId: 'ev1', mode: 'fused', results: [] });
+
+    const res = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(res.status).toBe(200);
+    // p8 is not_me, p7 is a different event, p6 is a different user → only p9.
+    expect(matcherSearch.mock.calls[0]?.[0]).toMatchObject({ prfPhotoIds: ['p9'] });
+  });
+
+  it('omits prfPhotoIds when the user has no confirmations', async () => {
+    matcherSearch.mockResolvedValue({ ok: true, eventId: 'ev1', mode: 'fused', results: [] });
+    await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(matcherSearch.mock.calls[0]?.[0].prfPhotoIds).toBeUndefined();
+    expect(matcherSearch.mock.calls[0]?.[0].normalize).toBeUndefined(); // T-norm off by default
   });
 
   it('maps no_usable_face to a friendly 422', async () => {

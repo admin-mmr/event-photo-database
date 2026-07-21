@@ -19,7 +19,11 @@ __pycache__/
 pytest-cache-files-*/
 .DS_Store
 
-# Local sample store and biometric eval data stay local (PRD §8) and aren't
-# referenced by the Dockerfile.
+# Local sample store and biometric eval DATA stay local (PRD §8). The eval
+# *scripts* are kept (the replay job image — eval/Dockerfile.replay — needs
+# them); only the biometric/PII data dirs are excluded. They are not referenced
+# by the matcher service Dockerfile, so shipping the scripts is inert there.
 local_store/
-eval/
+eval/queries/
+eval/labels/
+eval/local_store/

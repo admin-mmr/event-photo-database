@@ -138,6 +138,16 @@ const EnvSchema = z.object({
   // rather than failing confusingly.
   MATCHER_URL: z.string().default(''),
 
+  // T-norm cohort score normalization (FACE_RECOGNITION_IMPROVEMENT_ANALYSIS
+  // §1.3). Off by default: T-normed scores are z-scores, not raw cosines, so
+  // the matcher's own MATCHER_NORM_THRESHOLD must be eval-tuned on a labeled
+  // set before this is turned on in prod (§6 sequencing). Flip to '1'/'true'
+  // to have /api/findme searches pass normalize=1 to the matcher.
+  FINDME_TNORM: z
+    .string()
+    .default('')
+    .transform((v) => ['1', 'true', 'yes'].includes(v.trim().toLowerCase())),
+
   // Derivatives bucket (indexer output; gallery + search serving copies).
   DERIVATIVES_BUCKET: z.string().default('mmr-data-pipeline-derivatives'),
 

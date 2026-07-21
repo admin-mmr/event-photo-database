@@ -100,6 +100,201 @@ def judged_metrics_at_k(
     }
 
 
+def _mean_unit(vectors: list) -> "object | None":
+    """Unit centroid of L2-normalized vectors (mirrors matcher.main._mean_unit —
+    kept local so the eval imports only numpy/fusion/store, no flask/onnx)."""
+    import numpy as np
+
+    if not len(vectors):
+        return None
+    mat = np.stack([np.asarray(v, dtype=np.float32).reshape(-1) for v in vectors])
+    mat = mat / np.maximum(np.linalg.norm(mat, axis=1, keepdims=True), 1e-12)
+    centroid = mat.mean(axis=0)
+    norm = float(np.linalg.norm(centroid))
+    return (centroid / norm).astype(np.float32) if norm >= 1e-12 else None
+
+
+def _fold_prf(event, kind: str, prf_ids, refs: list, centroid):
+    """Fold confirmed photos' own crops into the query centroid (mirrors
+    matcher.main._fold_prf): for each photo take the crop closest to the current
+    centroid, append it to `refs`, and recompute. Returns the updated centroid."""
+    import numpy as np
+
+    if centroid is None:
+        return centroid
+    for pid in prf_ids:
+        crops = event.embeddings_for_photo(kind, pid)
+        if crops.shape[0] == 0:
+            continue
+        refs.append(crops[int(np.argmax(crops @ centroid))])
+    return _mean_unit(refs)
+
+
+def _fused_candidates(event, q: dict, w_face: float, w_person: float, tnorm: bool) -> list:
+    """Every candidate photo with its fused score (no threshold, no cap), so a
+    caller can sweep the score threshold itself. `tnorm` z-scores each modality
+    against the event cohort before fusing — the same transform normalize=1 does
+    in production."""
+    face_hits = (
+        event.top_photos("face", q["face"], k=None, tnorm=tnorm) if q.get("face") is not None else []
+    )
+    person_hits = (
+        event.top_photos("person", q["person"], k=None, tnorm=tnorm) if q.get("person") is not None else []
+    )
+    return fusion_mod.fuse(
+        face_hits, person_hits, w_face=w_face, w_person=w_person, threshold=-1e9, top_k=None
+    )
+
+
+def threshold_sweep(
+    event,
+    truth: dict[str, set[str]],
+    query_embeddings: dict,
+    w_face: float,
+    w_person: float,
+    tnorm: bool,
+    negatives: dict[str, set[str]] | None = None,
+    judged: bool = False,
+    n_points: int = 11,
+) -> dict:
+    """Precision/recall of the FUSED result *set* as the score threshold varies.
+
+    This is the operating-point view P@K can't give: the product returns every
+    photo above a fixed cutoff, so the question T-norm answers (§1.3) is "at a
+    given precision, does normalizing let me lower the threshold and recover more
+    recall?" Thresholds are drawn between the min/max observed fused score for
+    THIS variant, so the raw and tnorm curves are each sampled across their own
+    achievable range and compared shape-to-shape. In judged mode only confirmed
+    (`truth`) / wrong (`negatives`) pairs count and recall is omitted (partial
+    labels, EVAL_FEEDBACK_LOOP.md)."""
+    negatives = negatives or {}
+    per_query: dict[str, list] = {}
+    all_scores: list[float] = []
+    for person in truth:
+        q = query_embeddings.get(person)
+        if q is None:
+            continue
+        fused = _fused_candidates(event, q, w_face, w_person, tnorm)
+        per_query[person] = fused
+        all_scores.extend(h["score"] for h in fused)
+
+    if not all_scores:
+        return {"weights": [w_face, w_person], "tnorm": tnorm, "points": []}
+
+    lo, hi = min(all_scores), max(all_scores)
+    thresholds = [lo] if hi == lo else [lo + (hi - lo) * i / (n_points - 1) for i in range(n_points)]
+
+    points = []
+    for t in thresholds:
+        tp = fp = fn = 0
+        for person, relevant in truth.items():
+            fused = per_query.get(person)
+            if fused is None:
+                continue
+            returned = {h["photoId"] for h in fused if h["score"] >= t}
+            if judged:
+                tp += len(returned & relevant)
+                fp += len(returned & negatives.get(person, set()))
+            else:
+                tp += len(returned & relevant)
+                fp += len(returned - relevant)
+                fn += len(relevant - returned)
+        precision = tp / (tp + fp) if (tp + fp) else None
+        recall = None if judged else (tp / (tp + fn) if (tp + fn) else None)
+        points.append(
+            {"threshold": round(float(t), 4), "precision": precision, "recall": recall, "tp": tp, "fp": fp}
+        )
+    return {"weights": [w_face, w_person], "tnorm": tnorm, "points": points}
+
+
+def prf_evaluate(
+    event,
+    truth: dict[str, set[str]],
+    query_embeddings: dict,
+    k: int,
+    fold: int = 1,
+    tnorm: bool = False,
+) -> dict:
+    """Recall lift from pseudo-relevance feedback (§1.2), face modality.
+
+    For each person we simulate a confirmation: fold the first `fold` of their
+    relevant photos into the query (using those photos' OWN stored embeddings,
+    exactly as the matcher does), then measure recall@k on the *remaining* (held
+    out) relevant photos. The folded-in photos are excluded from both the ranking
+    results and the relevant denominator on BOTH the baseline and PRF runs, so
+    the comparison is apples-to-apples — the only difference is whether the query
+    was expanded. A person needs > `fold` relevant photos to contribute."""
+    per_person: dict[str, dict] = {}
+    base_sum = prf_sum = 0.0
+    n = 0
+    for person, relevant in truth.items():
+        q = query_embeddings.get(person)
+        if q is None or q.get("face") is None:
+            continue
+        rel_sorted = sorted(relevant)
+        if len(rel_sorted) <= fold:
+            continue
+        fold_ids = set(rel_sorted[:fold])
+        held = set(rel_sorted[fold:])
+
+        def recall_excluding(query_vec) -> float:
+            ranked = [
+                h["photoId"]
+                for h in event.top_photos("face", query_vec, k=None, tnorm=tnorm)
+                if h["photoId"] not in fold_ids
+            ]
+            hits = sum(1 for pid in ranked[:k] if pid in held)
+            return hits / len(held) if held else 0.0
+
+        base_recall = recall_excluding(q["face"])
+        centroid = _fold_prf(event, "face", fold_ids, [q["face"]], _mean_unit([q["face"]]))
+        prf_recall = recall_excluding(centroid) if centroid is not None else base_recall
+
+        per_person[person] = {
+            "held": len(held),
+            "folded": len(fold_ids),
+            "base_recall": base_recall,
+            "prf_recall": prf_recall,
+        }
+        base_sum += base_recall
+        prf_sum += prf_recall
+        n += 1
+
+    mean = {
+        "base_recall": base_sum / n if n else None,
+        "prf_recall": prf_sum / n if n else None,
+        "lift": (prf_sum - base_sum) / n if n else None,
+    }
+    return {"k": k, "fold": fold, "tnorm": tnorm, "queries": n, "mean": mean, "per_person": per_person}
+
+
+def fused_precision_at_k(
+    event, truth, query_embeddings, k, w_face, w_person, tnorm, negatives=None, judged=False
+) -> float | None:
+    """Mean fused P@K at fixed weights, with or without T-norm. Unlike per-modality
+    P@K (unchanged by the monotonic T-norm), fusion P@K CAN move because tnorm
+    rescales the two modalities relative to each other before the weighted sum."""
+    negatives = negatives or {}
+    total = 0.0
+    n = 0
+    for person, relevant in truth.items():
+        q = query_embeddings.get(person)
+        if q is None:
+            continue
+        ranked = [h["photoId"] for h in _fused_candidates(event, q, w_face, w_person, tnorm)[: k * 3]]
+        if not ranked:
+            continue
+        m = (
+            judged_metrics_at_k(ranked, relevant, negatives.get(person, set()), k)
+            if judged
+            else metrics_at_k(ranked, relevant, k)
+        )
+        if m["precision"] is not None:
+            total += m["precision"]
+            n += 1
+    return total / n if n else None
+
+
 def evaluate(
     event,
     truth: dict[str, set[str]],
@@ -249,6 +444,19 @@ def main() -> int:
         "unjudged results excluded, recall omitted, gate target 0.85 "
         "(EVAL_FEEDBACK_LOOP.md). Use labels from export_feedback_labels.py.",
     )
+    parser.add_argument(
+        "--tnorm",
+        action="store_true",
+        help="add a T-norm (§1.3) analysis: fused P@K raw-vs-normalized and a "
+        "precision/recall-vs-threshold sweep for each, to pick MATCHER_NORM_THRESHOLD.",
+    )
+    parser.add_argument(
+        "--prf",
+        action="store_true",
+        help="add a pseudo-relevance-feedback (§1.2) pass: fold --prf-fold of each "
+        "person's relevant photos into the query and measure recall@k lift on the rest.",
+    )
+    parser.add_argument("--prf-fold", type=int, default=1, help="photos to fold in per person for --prf (default 1)")
     args = parser.parse_args()
 
     from store import EmbeddingStore
@@ -306,6 +514,36 @@ def main() -> int:
             print(f"    {person} ({len(unlabeled)}):")
             for pid in unlabeled:
                 print(f"      {pid}")
+
+    if args.tnorm:
+        bw_f, bw_p = report["best_fusion"]["w_face"], report["best_fusion"]["w_person"]
+        pk_raw = fused_precision_at_k(event, truth, queries, args.k, bw_f, bw_p, False, negatives, args.judged_only)
+        pk_tn = fused_precision_at_k(event, truth, queries, args.k, bw_f, bw_p, True, negatives, args.judged_only)
+        sweeps = {
+            "raw": threshold_sweep(event, truth, queries, bw_f, bw_p, False, negatives, args.judged_only),
+            "tnorm": threshold_sweep(event, truth, queries, bw_f, bw_p, True, negatives, args.judged_only),
+        }
+        report["tnorm_analysis"] = {
+            "weights": [bw_f, bw_p],
+            "fused_precision_at_k": {"raw": pk_raw, "tnorm": pk_tn},
+            "threshold_sweep": sweeps,
+        }
+        print(f"\n=== T-norm analysis (fused wF={bw_f} wP={bw_p}) ===")
+        print(f"  Fused P@{args.k}:  raw={fmt(pk_raw)}   tnorm={fmt(pk_tn)}")
+        for name in ("raw", "tnorm"):
+            print(f"  {name} threshold sweep (threshold → P / R):")
+            for pt in sweeps[name]["points"]:
+                print(f"    t={pt['threshold']:>8.4f}: P={fmt(pt['precision'])}  R={fmt(pt['recall'])}  (tp={pt['tp']} fp={pt['fp']})")
+        print("  → pick MATCHER_NORM_THRESHOLD from the tnorm row that meets your precision target with the most recall.")
+
+    if args.prf:
+        prf = prf_evaluate(event, truth, queries, args.k, fold=args.prf_fold, tnorm=args.judged_only and False)
+        report["prf_analysis"] = prf
+        m = prf["mean"]
+        print(f"\n=== PRF analysis (face, fold={args.prf_fold}, {prf['queries']} eligible people) ===")
+        print(f"  Recall@{args.k}:  base={fmt(m['base_recall'])}   +PRF={fmt(m['prf_recall'])}   lift={fmt(m['lift'])}")
+        if prf["queries"] == 0:
+            print("  ⚠️  No person had more than --prf-fold relevant photos — nothing to hold out.")
 
     if args.report:
         with open(args.report, "w", encoding="utf-8") as f:

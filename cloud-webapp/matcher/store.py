@@ -63,17 +63,45 @@ class EventEmbeddings:
                     f"manifest/{kind} length mismatch: {n_meta} meta rows vs {n_vec} vectors"
                 )
 
-    def top_k(self, kind: str, query: np.ndarray, k: int | None = 50) -> list[dict]:
+    def embeddings_for_photo(self, kind: str, photo_id: str) -> np.ndarray:
+        """Every `kind` ('face'|'person') crop vector belonging to `photo_id`.
+
+        Returns a [n, dim] array (n = number of that photo's crops; rows are the
+        stored L2-normalized embeddings). Empty [0, dim] if the photo has no
+        crops of that kind. Used for pseudo-relevance feedback (§1.2): a photo
+        the user confirmed is a clean in-domain reference, so its own embeddings
+        are folded back into the query."""
+        vecs = self.vectors[kind]
+        rows = [i for i, m in enumerate(self.meta[kind]) if m.get("photoId") == photo_id]
+        if not rows:
+            dim = vecs.shape[1] if vecs.ndim == 2 else 0
+            return np.zeros((0, dim), dtype=np.float32)
+        return vecs[rows]
+
+    def top_k(
+        self, kind: str, query: np.ndarray, k: int | None = 50, tnorm: bool = False
+    ) -> list[dict]:
         """Cosine top-k crops for `kind` ('face'|'person').
         Returns [{photoId, score, row, ...meta}], best first. Vectors are
         L2-normalized so cosine similarity = dot product. `k=None` returns
-        every crop, fully sorted (used when the caller wants no cap)."""
+        every crop, fully sorted (used when the caller wants no cap).
+
+        `tnorm=True` applies test-normalization (§1.3): each raw cosine is
+        turned into a z-score against the event's own crops as the background
+        cohort — (sim - mean) / std over all `kind` vectors. This removes the
+        per-query bias where a "generic-looking" face scores moderately high
+        against everyone, so a single threshold behaves the same for distinctive
+        and generic queries. The transform is affine (monotonic), so it never
+        changes single-query ordering — it only rescales the scores that the
+        fusion threshold and cross-modality blend compare."""
         vecs = self.vectors[kind]
         if vecs.size == 0:
             return []
         q = np.asarray(query, dtype=np.float32).reshape(-1)
         q = q / max(np.linalg.norm(q), 1e-12)
         sims = vecs @ q
+        if tnorm:
+            sims = (sims - float(sims.mean())) / max(float(sims.std()), 1e-6)
         n = len(sims)
         if k is None or k >= n:
             idx = np.argsort(-sims)
@@ -83,13 +111,16 @@ class EventEmbeddings:
             idx = idx[np.argsort(-sims[idx])]
         return [{**self.meta[kind][i], "row": int(i), "score": float(sims[i])} for i in idx]
 
-    def top_photos(self, kind: str, query: np.ndarray, k: int | None = 50) -> list[dict]:
+    def top_photos(
+        self, kind: str, query: np.ndarray, k: int | None = 50, tnorm: bool = False
+    ) -> list[dict]:
         """Per-photo results: max crop score per photo, best first. `k=None`
         returns every photo ranked (no cap) — the caller is expected to gate
-        the list some other way (e.g. the fused score threshold)."""
+        the list some other way (e.g. the fused score threshold). `tnorm` is
+        forwarded to `top_k` (see there)."""
         pool = None if k is None else max(k * 4, 200)
         best: dict[str, dict] = {}
-        for hit in self.top_k(kind, query, k=pool):
+        for hit in self.top_k(kind, query, k=pool, tnorm=tnorm):
             pid = hit["photoId"]
             if pid not in best or hit["score"] > best[pid]["score"]:
                 best[pid] = hit

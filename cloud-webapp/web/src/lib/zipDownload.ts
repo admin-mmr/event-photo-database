@@ -11,6 +11,7 @@
  */
 
 import { apiPost } from './api.js';
+import { getRecaptchaToken } from './recaptcha.js';
 import { downloadBlob } from './share.js';
 import { reportClientError } from './reportError.js';
 import { buildStoreZip, type ZipEntry } from './zip.js';
@@ -50,9 +51,11 @@ export async function downloadOriginalsZip(
   zipName: string,
 ): Promise<ZipDownloadResult> {
   const body: DownloadRequest = { photoIds };
+  const recaptchaToken = await getRecaptchaToken('download');
   const { files } = await apiPost<DownloadSignResponse, DownloadRequest>(
     `/api/events/${encodeURIComponent(eventId)}/download`,
     body,
+    recaptchaToken ? { headers: { 'X-Recaptcha-Token': recaptchaToken } } : undefined,
   );
 
   let failed = 0;
