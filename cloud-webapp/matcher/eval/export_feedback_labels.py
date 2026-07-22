@@ -47,7 +47,7 @@ EXCLUDED_REASONS = {"friend", "group"}
 MIN_JUDGED_PAIRS = 20
 MIN_DISTINCT_USERS = 5
 
-LABEL_FIELDS = ["photoId", "person", "label", "model_version", "tier", "run_id", "uid"]
+LABEL_FIELDS = ["photoId", "person", "label", "model_version", "tier", "run_id", "uid", "search_version"]
 
 
 def verdict_to_label(verdict: str, reason: str | None) -> str | None:
@@ -79,6 +79,16 @@ def build_label_rows(
         run = runs_by_id.get(str(fb.get("runId") or ""), {})
         model_version = str(fb.get("modelVersion") or run.get("modelVersion") or "")
         tier = str(fb.get("tier") or "")
+        # Retrieval-algorithm generation the vote was cast under (§1.1–1.3). The
+        # api denormalizes `searchVersion` onto the feedback doc at click time;
+        # fall back to the feedback/run `algo.version` for votes written before
+        # that, then to '' (pre-versioning — treat as the old pipeline).
+        search_version = str(
+            fb.get("searchVersion")
+            or (fb.get("algo") or {}).get("version")
+            or (run.get("algo") or {}).get("version")
+            or ""
+        )
         rows.append(
             {
                 "photoId": str(fb.get("photoId", "")),
@@ -88,6 +98,7 @@ def build_label_rows(
                 "tier": tier,
                 "run_id": str(fb.get("runId") or ""),
                 "uid": str(fb.get("uid", "")),
+                "search_version": search_version,
                 # event kept out of LABEL_FIELDS (one CSV per event), tracked here:
                 "_eventId": str(fb.get("eventId", "")),
             }
@@ -163,6 +174,13 @@ def main() -> int:
     p.add_argument("--runs-json", default="", help="offline: JSON array of match_runs docs (optional)")
     p.add_argument("--out-dir", default="eval/labels", help="where per-event CSVs are written")
     p.add_argument("--report", default="", help="optional JSON summary path")
+    p.add_argument(
+        "--search-version",
+        default="",
+        help="keep only votes whose search_version has this prefix (e.g. '2026.07') — "
+        "restricts the labels to a retrieval-pipeline generation so old-algorithm "
+        "votes don't confound judged precision. Empty = keep all.",
+    )
     args = p.parse_args()
 
     if args.project:
@@ -175,6 +193,13 @@ def main() -> int:
         raise SystemExit("ERROR: provide --project OR --feedback-json")
 
     rows = build_label_rows(feedback, runs_by_id)
+    if args.search_version:
+        before = len(rows)
+        rows = [r for r in rows if r["search_version"].startswith(args.search_version)]
+        print(
+            f"Filtered to search_version prefix '{args.search_version}': "
+            f"{len(rows)} of {before} labels kept\n"
+        )
     by_event = group_by_event(rows)
 
     summary: dict[str, Any] = {"events": {}}

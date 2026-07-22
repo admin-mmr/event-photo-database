@@ -15,6 +15,8 @@ vi.mock('../src/middleware/auth.js', () => ({
 }));
 
 const added: Array<{ collection: string; doc: Record<string, unknown> }> = [];
+// match_runs docs the run-algo lookup can resolve, keyed by runId.
+const runs: Record<string, Record<string, unknown>> = {};
 
 vi.mock('../src/lib/firestore.js', () => ({
   firestore: () => ({
@@ -23,6 +25,11 @@ vi.mock('../src/lib/firestore.js', () => ({
         added.push({ collection: name, doc });
         return { id: `fb-${added.length}` };
       },
+      doc: (id: string) => ({
+        get: async () => ({
+          data: () => (name === 'match_runs' ? runs[id] : undefined),
+        }),
+      }),
     }),
   }),
 }));
@@ -36,6 +43,7 @@ describe('POST /api/feedback (B7)', () => {
 
   beforeEach(() => {
     added.length = 0;
+    for (const k of Object.keys(runs)) delete runs[k];
   });
 
   it('requires auth', async () => {
@@ -81,5 +89,38 @@ describe('POST /api/feedback (B7)', () => {
       .send({ eventId: 'ev1', photoId: 'p2', verdict: 'confirmed' });
     expect(res.status).toBe(201);
     expect(added[0]!.doc).toMatchObject({ verdict: 'confirmed', runId: null });
+    // No run to resolve → algorithm snapshot is null, but the vote still records.
+    expect(added[0]!.doc).toMatchObject({ searchVersion: null, algo: null });
+  });
+
+  it("stamps the run's algorithm generation onto the vote at click time", async () => {
+    runs['run-7'] = {
+      algo: {
+        version: '2026.07-tnorm-multiref-prf',
+        tnorm: true,
+        prf: false,
+        prfCount: 0,
+        numReferences: 2,
+      },
+    };
+    const res = await request(app)
+      .post('/api/feedback')
+      .set('x-test-user', USER)
+      .send({ eventId: 'ev1', photoId: 'p1', verdict: 'not_me', runId: 'run-7' });
+    expect(res.status).toBe(201);
+    expect(added[0]!.doc).toMatchObject({
+      searchVersion: '2026.07-tnorm-multiref-prf',
+      algo: { version: '2026.07-tnorm-multiref-prf', tnorm: true, numReferences: 2 },
+    });
+  });
+
+  it('records the vote with a null snapshot when the run has no algo (older run)', async () => {
+    runs['run-old'] = { modelVersion: 'm-2026-06' }; // pre-versioning run
+    const res = await request(app)
+      .post('/api/feedback')
+      .set('x-test-user', USER)
+      .send({ eventId: 'ev1', photoId: 'p1', verdict: 'confirmed', runId: 'run-old' });
+    expect(res.status).toBe(201);
+    expect(added[0]!.doc).toMatchObject({ runId: 'run-old', searchVersion: null, algo: null });
   });
 });

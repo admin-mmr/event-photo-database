@@ -58,3 +58,23 @@ Then, only if T-norm wins: set `MATCHER_NORM_THRESHOLD` on the matcher and
 
 > Tip: you just asked members to vote — let the labeled set grow for a week or
 > two, then replay, so the threshold is tuned on more than today's votes.
+
+## Filtering votes by pipeline generation (search_version)
+
+Votes cast **before** the current algorithm (multi-selfie §1.1, PRF §1.2, T-norm
+§1.3) went live were collected on weaker results, so they carry a much higher
+"not me" rate (~32% vs ~8% for face on the current pipeline) that no longer
+reflects reality. Every search run now records a `SEARCH_ALGO_VERSION`, and the
+api denormalizes it onto each `match_feedback` vote as `searchVersion`.
+
+To measure only current-pipeline votes, filter the export by the version prefix:
+
+```
+~/.venvs/findme-eval/bin/python eval/export_feedback_labels.py \
+  --project mmr-data-pipeline --out-dir /tmp/labels --search-version 2026.07
+```
+
+Votes with no `searchVersion` (pre-versioning) sort to `''` and are dropped by
+any non-empty filter — i.e. old-pipeline votes are excluded, not silently mixed
+in. Bump `SEARCH_ALGO_VERSION` (shared `schemas/findme.ts`) on any material
+ranking change so a future generation is likewise separable.

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { SearchAlgoSchema } from './findme.js';
+
 /**
  * Match feedback (dev plan §5A B7 / FR-15; PRD §7). A user marks a result as
  * "not me" (wrong match) or "confirmed" (that's me). Feedback is attached to
@@ -38,6 +40,14 @@ export const FeedbackItemSchema = z.object({
   uid: z.string(),
   email: z.string().nullable(),
   createdAt: z.string(),
+  /**
+   * Retrieval-algorithm generation that produced the voted-on result, copied
+   * from the run at vote time. `null` for votes whose run predates this field
+   * or can't be resolved (older votes, missing runId).
+   */
+  searchVersion: z.string().nullable(),
+  /** Full algorithm descriptor snapshot (knobs), when the run recorded one. */
+  algo: SearchAlgoSchema.nullable(),
 });
 export type FeedbackItem = z.infer<typeof FeedbackItemSchema>;
 

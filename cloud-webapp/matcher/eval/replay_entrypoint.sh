@@ -35,7 +35,7 @@ echo "==> Replaying with T-norm + PRF (judged-only)"
 python eval/run_eval.py \
   --store "$DERIVATIVES" \
   --event-id "$EVENT_ID" \
-  --labels "$OUT/labels.csv" \
+  --labels "$OUT/labels-$EVENT_ID.csv" \
   --queries "$OUT/queries" \
   --k "$K" \
   --judged-only --tnorm --prf \

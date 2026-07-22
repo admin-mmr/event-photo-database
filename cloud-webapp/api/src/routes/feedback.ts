@@ -14,10 +14,12 @@ import { Router } from 'express';
 import {
   FeedbackRequestSchema,
   FeedbackVerdictSchema,
+  SearchAlgoSchema,
   type FeedbackResponse,
   type FeedbackItem,
   type FeedbackVerdict,
   type AdminFeedbackResponse,
+  type SearchAlgo,
 } from '@cloud-webapp/shared';
 import type { Query, DocumentData } from '@google-cloud/firestore';
 
@@ -30,6 +32,27 @@ export const feedbackRouter = Router();
 
 const ADMIN_FEEDBACK_MAX = 500;
 const ADMIN_FEEDBACK_DEFAULT = 100;
+
+/**
+ * Resolve the retrieval-algorithm snapshot for a vote from its search run, so
+ * the label is self-describing (the eval loop can filter by pipeline generation
+ * without joining match_runs, and the snapshot survives run expiry/deletion).
+ * Best-effort: a missing runId, absent run, or unparseable `algo` yields nulls —
+ * a vote must always record even if we can't attribute its algorithm.
+ */
+async function resolveRunAlgo(
+  runId: string | undefined,
+): Promise<{ searchVersion: string | null; algo: SearchAlgo | null }> {
+  if (!runId) return { searchVersion: null, algo: null };
+  try {
+    const snap = await firestore().collection('match_runs').doc(runId).get();
+    const parsed = SearchAlgoSchema.safeParse(snap.data()?.algo);
+    if (parsed.success) return { searchVersion: parsed.data.version, algo: parsed.data };
+  } catch (err) {
+    logger.warn({ err, runId }, 'feedback run-algo lookup failed (non-fatal)');
+  }
+  return { searchVersion: null, algo: null };
+}
 
 feedbackRouter.post('/feedback', requireAuth, async (req, res, next) => {
   try {
@@ -45,6 +68,11 @@ feedbackRouter.post('/feedback', requireAuth, async (req, res, next) => {
     const { eventId, photoId, verdict, runId } = parsed.data;
     const user = req.user!;
 
+    // Stamp the vote with the algorithm generation that produced the result, so
+    // the eval feedback loop can separate current-pipeline labels (§1.1–1.3)
+    // from pre-improvement ones. Denormalized from the run at click time.
+    const { searchVersion, algo } = await resolveRunAlgo(runId);
+
     const ref = await firestore().collection('match_feedback').add({
       uid: user.uid,
       email: user.email ?? null,
@@ -52,10 +80,15 @@ feedbackRouter.post('/feedback', requireAuth, async (req, res, next) => {
       photoId,
       verdict,
       runId: runId ?? null,
+      searchVersion,
+      algo,
       createdAt: new Date().toISOString(),
     });
 
-    logger.info({ eventId, photoId, verdict, runId, uid: user.uid }, 'match feedback recorded');
+    logger.info(
+      { eventId, photoId, verdict, runId, searchVersion, uid: user.uid },
+      'match feedback recorded',
+    );
     const body: FeedbackResponse = { ok: true, feedbackId: ref.id };
     res.status(201).json(body);
   } catch (err) {
@@ -97,6 +130,8 @@ feedbackRouter.get('/admin/feedback', requireAuth, attachRole, requireAnyAdmin, 
         uid: String(data.uid ?? ''),
         email: (data.email as string | null) ?? null,
         createdAt: String(data.createdAt ?? ''),
+        searchVersion: (data.searchVersion as string | null) ?? null,
+        algo: SearchAlgoSchema.safeParse(data.algo).data ?? null,
       };
     });
     if (eventId) items = items.filter((i) => i.eventId === eventId);
