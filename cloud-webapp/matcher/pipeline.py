@@ -36,6 +36,41 @@ def decode_image(data: bytes) -> np.ndarray:
     return np.asarray(img.convert("RGB"))
 
 
+# EXIF Exif-IFD pointer (0x8769) and DateTimeOriginal (0x9003) tag ids.
+_EXIF_IFD = 0x8769
+_DATETIME_ORIGINAL = 0x9003
+
+
+def read_capture_time_ms(data: bytes) -> int | None:
+    """Parse EXIF DateTimeOriginal → epoch milliseconds, or None if absent /
+    unparseable. Used only as the *query anchor* for capture-time-conditional
+    outfit fusion — never for gallery ordering (that is the indexer's
+    `capture_time` module → Firestore `takenAt`).
+
+    EXIF DateTimeOriginal is naive local time ("YYYY:MM:DD HH:MM:SS"); we treat
+    it as UTC to match how candidate `takenAt` is normalized from the manifest
+    (`store._iso_to_epoch_ms`). The absolute offset cancels out in the
+    query↔candidate delta as long as both sides use the same convention, so this
+    only needs to be self-consistent.
+    """
+    from datetime import datetime, timezone
+
+    from PIL import Image
+
+    try:
+        img = Image.open(io.BytesIO(data))
+        exif = img.getexif()
+        if not exif:
+            return None
+        raw = exif.get_ifd(_EXIF_IFD).get(_DATETIME_ORIGINAL)
+        if not raw:
+            return None
+        dt = datetime.strptime(str(raw).strip(), "%Y:%m:%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return None
+
+
 def _iou(a: list[float], b: list[float]) -> float:
     ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
     ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])

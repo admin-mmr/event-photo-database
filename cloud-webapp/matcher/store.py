@@ -49,6 +49,25 @@ def write_local(dir_path: str, manifest: dict, faces: np.ndarray, persons: np.nd
         json.dump(manifest, f, ensure_ascii=False)
 
 
+def _iso_to_epoch_ms(iso: str | None) -> int | None:
+    """Parse the manifest's `takenAt` (ISO-8601, usually zone-less e.g.
+    '2026-06-20T14:30:52') → epoch milliseconds, or None. A zone-less value is
+    treated as UTC to match the query anchor convention in
+    `pipeline.read_capture_time_ms`; the absolute offset cancels in the
+    query↔candidate delta as long as both use the same convention."""
+    if not iso:
+        return None
+    from datetime import datetime, timezone
+
+    try:
+        dt = datetime.fromisoformat(str(iso))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return None
+
+
 class EventEmbeddings:
     """One event's vectors + manifest, ready to query."""
 
@@ -56,12 +75,24 @@ class EventEmbeddings:
         self.manifest = manifest
         self.vectors = {"face": faces, "person": persons}
         self.meta = {"face": manifest.get("faces", []), "person": manifest.get("persons", [])}
+        # Per-photo metadata (photoId → {takenAt, md5, ...}); written by the
+        # indexer. Used for capture-time-conditional outfit fusion. Absent in
+        # manifests built by build_manifest() → taken_at_ms() returns None.
+        self.photos = manifest.get("photos", {})
         for kind in ("face", "person"):
             n_vec, n_meta = len(self.vectors[kind]), len(self.meta[kind])
             if n_vec != n_meta:
                 raise ValueError(
                     f"manifest/{kind} length mismatch: {n_meta} meta rows vs {n_vec} vectors"
                 )
+
+    def taken_at_ms(self, photo_id: str) -> int | None:
+        """Capture time (epoch ms) for a photo from the manifest `photos` map,
+        or None if unknown. Anchor for capture-time-conditional outfit fusion —
+        the indexer already resolves `takenAt` per photo (EXIF → Drive metadata),
+        so this needs no new manifest field and no re-index."""
+        rec = self.photos.get(photo_id)
+        return _iso_to_epoch_ms(rec.get("takenAt")) if rec else None
 
     def embeddings_for_photo(self, kind: str, photo_id: str) -> np.ndarray:
         """Every `kind` ('face'|'person') crop vector belonging to `photo_id`.
