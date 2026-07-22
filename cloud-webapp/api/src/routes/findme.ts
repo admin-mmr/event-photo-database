@@ -22,7 +22,9 @@ import type { Response } from 'express';
 import {
   SearchByUploadRequestSchema,
   SearcherNameSchema,
+  SEARCH_ALGO_VERSION,
   type SearchResponse,
+  type SearchAlgo,
   type MatchResult,
   type ListReferencesResponse,
   type ReferenceUpload,
@@ -262,6 +264,19 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
     return;
   }
 
+  // Retrieval-algorithm descriptor for this run. Stamped on the run and later
+  // denormalized onto each me/not-me vote so the eval feedback loop can tell
+  // current-pipeline votes apart from pre-improvement ones (§1.1–1.3). `tnorm`
+  // reflects what the matcher ACTUALLY applied (match.normalized), not just what
+  // the api requested, so a matcher that ignored the flag is recorded honestly.
+  const algo: SearchAlgo = {
+    version: SEARCH_ALGO_VERSION,
+    tnorm: match.normalized === true,
+    prf: prfPhotoIds.length > 0,
+    prfCount: prfPhotoIds.length,
+    numReferences: images.length,
+  };
+
   // Persist a minimal run record for the feedback loop (M4 / eval doc).
   let runId: string | undefined;
   try {
@@ -270,6 +285,7 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
       eventId,
       mode: match.mode,
       modelVersion: match.modelVersion ?? null,
+      algo,
       resultPhotoIds: match.results.map((r) => r.photoId),
       scores: Object.fromEntries(match.results.map((r) => [r.photoId, r.score])),
       createdAt: nowIso,
@@ -296,6 +312,7 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
     mode: match.mode,
     ...(match.modelVersion !== undefined ? { modelVersion: match.modelVersion } : {}),
     ...(runId !== undefined ? { runId } : {}),
+    algo,
     results,
   };
   res.json(body);

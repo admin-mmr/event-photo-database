@@ -39,6 +39,26 @@ def test_build_label_rows_joins_run_model_version_and_excludes():
     assert rows[0]["_eventId"] == "ev1"
 
 
+def test_search_version_from_feedback_then_run_then_empty():
+    """search_version prefers the vote's own denormalized field, then the run's
+    algo.version, and is '' for pre-versioning votes (treated as old pipeline)."""
+    feedback = [
+        # denormalized straight onto the vote (current api path)
+        {"uid": "u1", "eventId": "ev1", "photoId": "p1", "verdict": "confirmed",
+         "runId": "r1", "searchVersion": "2026.07-tnorm-multiref-prf"},
+        # older vote with no searchVersion → fall back to the run's algo.version
+        {"uid": "u2", "eventId": "ev1", "photoId": "p2", "verdict": "not_me", "runId": "r2"},
+        # no runId and no algo anywhere → '' (old pipeline)
+        {"uid": "u3", "eventId": "ev1", "photoId": "p3", "verdict": "confirmed"},
+    ]
+    runs = {"r2": {"algo": {"version": "2026.07-tnorm-multiref-prf"}}}
+    rows = build_label_rows(feedback, runs)
+    by_person = {r["person"]: r for r in rows}
+    assert by_person["u1"]["search_version"] == "2026.07-tnorm-multiref-prf"
+    assert by_person["u2"]["search_version"] == "2026.07-tnorm-multiref-prf"
+    assert by_person["u3"]["search_version"] == ""
+
+
 def test_judged_precision_and_evidence_bar():
     # 1 confirmed + 1 wrong, 2 users → precision 0.5 but below the evidence bar
     small = [

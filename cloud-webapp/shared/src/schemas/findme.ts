@@ -142,6 +142,39 @@ export const MatchResultSchema = z.object({
 });
 export type MatchResult = z.infer<typeof MatchResultSchema>;
 
+/**
+ * Retrieval-algorithm generation tag. Stamped on every search run and
+ * denormalized onto each feedback vote so the eval feedback loop can separate
+ * votes cast under the current pipeline (multi-selfie centroid §1.1, PRF §1.2,
+ * T-norm §1.3) from pre-improvement votes. This matters because the old ranker
+ * surfaced weaker matches, so its votes carry a much higher "not me" rate
+ * (~32% vs ~8% for face on the current pipeline) that does NOT reflect today's
+ * quality — mixing the two eras confounds any judged-precision measurement.
+ *
+ * Bump this whenever a change materially alters ranking (new embedder, fusion
+ * weights, threshold, a new signal). The date+feature form keeps it sortable
+ * and self-documenting.
+ */
+export const SEARCH_ALGO_VERSION = '2026.07-tnorm-multiref-prf';
+
+/**
+ * Descriptor of the retrieval algorithm that produced a set of results. The
+ * boolean/count knobs let the eval filter precisely (e.g. "T-norm votes only");
+ * `version` is the coarse generation tag for quick grouping.
+ */
+export const SearchAlgoSchema = z.object({
+  version: z.string(),
+  /** T-norm cohort score normalization applied (§1.3, api FINDME_TNORM). */
+  tnorm: z.boolean(),
+  /** Pseudo-relevance feedback folded into the query (§1.2). */
+  prf: z.boolean(),
+  /** Confirmed photos folded in via PRF (0 when `prf` is false). */
+  prfCount: z.number(),
+  /** Reference selfies averaged into the centroid query (§1.1). */
+  numReferences: z.number(),
+});
+export type SearchAlgo = z.infer<typeof SearchAlgoSchema>;
+
 export const SearchResponseSchema = z.object({
   ok: z.literal(true),
   eventId: z.string(),
@@ -149,6 +182,8 @@ export const SearchResponseSchema = z.object({
   modelVersion: z.string().optional(),
   /** ID of the persisted match_runs doc (feeds the M4 feedback loop). */
   runId: z.string().optional(),
+  /** Retrieval algorithm that produced these results (see SEARCH_ALGO_VERSION). */
+  algo: SearchAlgoSchema.optional(),
   results: z.array(MatchResultSchema),
 });
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;

@@ -7,7 +7,7 @@ event and tune T-norm / measure PRF (FACE_RECOGNITION_IMPROVEMENT_ANALYSIS
 It turns live Firestore + the uploads bucket into the two things run_eval
 can't derive itself:
 
-  <out-dir>/labels.csv          judged labels (photoId,person,label,…) — the
+  <out-dir>/labels-<event-id>.csv  judged labels (photoId,person,label,…) — the
                                 confirmed/wrong votes for the event
   <out-dir>/queries/<uid>/…     each judged searcher's reference selfie(s),
                                 the query side of the replay

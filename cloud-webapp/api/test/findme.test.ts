@@ -169,6 +169,10 @@ describe('POST /api/findme/search', () => {
     expect(res.body.results[0].thumbUrl).toBe('https://signed.example/ev1/thumb/p1.jpg');
     expect(res.body.results[0].webUrl).toBe('https://signed.example/ev1/web/p1.jpg');
     expect(res.body.runId).toBeDefined();
+    // The retrieval-algorithm descriptor is returned and reflects this request
+    // (single selfie, no PRF, matcher reported no normalization).
+    expect(res.body.algo).toMatchObject({ tnorm: false, prf: false, prfCount: 0, numReferences: 1 });
+    expect(res.body.algo.version).toBeTruthy();
 
     const consents = fakeDb.added.filter((a) => a.collection === 'consents');
     expect(consents).toHaveLength(1);
@@ -178,6 +182,8 @@ describe('POST /api/findme/search', () => {
     const runs = fakeDb.added.filter((a) => a.collection === 'match_runs');
     expect(runs).toHaveLength(1);
     expect(runs[0]?.data).toMatchObject({ uid: 'u1', eventId: 'ev1', resultPhotoIds: ['p1', 'p2'] });
+    // Run carries the algorithm descriptor so votes can be attributed to it later.
+    expect(runs[0]?.data.algo).toMatchObject({ tnorm: false, prf: false, numReferences: 1 });
 
     // Fresh uploads are persisted for reuse (D7) with the searcher name + outcome.
     expect(createReference).toHaveBeenCalledTimes(1);
