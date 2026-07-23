@@ -92,6 +92,14 @@ class EventEmbeddings:
         rec = self.photos.get(photo_id)
         return _iso_to_epoch_ms(rec.get("takenAt")) if rec else None
 
+    def embeddings_for_photo(self, kind: str, photo_id: str) -> list[np.ndarray]:
+        """All `kind` crop embeddings for a photo (a photo may hold >1 face).
+        Used for pseudo-relevance feedback (Item 3): a confirmed photo's face
+        embeddings are folded back into the query centroid as clean references."""
+        meta = self.meta[kind]
+        vecs = self.vectors[kind]
+        return [np.asarray(vecs[i], np.float32) for i, m in enumerate(meta) if m.get("photoId") == photo_id]
+
     def cohort_stats(self, kind: str, query: np.ndarray) -> tuple[float, float, int]:
         """(mean, std, n) of cosine similarity between `query` and every `kind`
         crop in the event — the background/impostor distribution used for T-norm

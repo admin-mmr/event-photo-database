@@ -72,6 +72,18 @@ def get_store() -> EmbeddingStore:
     return _store
 
 
+def _mean_unit(embs: list) -> "np.ndarray | None":
+    """L2-normalize each embedding, then average into a query centroid (Item 3
+    multi-reference / PRF). Per-ref normalization keeps one large-norm reference
+    from dominating. None for an empty list. The store re-normalizes the query,
+    so the returned mean need not be unit-length."""
+    if not embs:
+        return None
+    arr = np.stack([np.asarray(e, dtype=np.float32).reshape(-1) for e in embs])
+    arr = arr / np.maximum(np.linalg.norm(arr, axis=1, keepdims=True), 1e-12)
+    return arr.mean(axis=0)
+
+
 def _read_upload():
     """Returns (rgb_array, raw_bytes, error_response). Raw bytes are handed back
     so callers can read EXIF (e.g. the capture-time anchor) without re-reading
@@ -147,49 +159,83 @@ def search():
     # the threshold decide.
     retrieve_k = None if mode == "fused" else (top_k if top_k is not None else UNGATED_TOP_K)
 
-    img, data, err = _read_upload()
-    if err:
-        return err
+    # Multi-reference query (Item 3): embed every uploaded selfie, keep each
+    # one's most-confident usable face + its associated person crop, and average
+    # them into a query centroid — averaging out pose/blur in any single shot.
+    # Single-file uploads (the common case) fall through as a centroid-of-one,
+    # identical to the previous behavior.
+    files = request.files.getlist("file")
+    if not files:
+        return jsonify({"error": "missing_file", "detail": "multipart field 'file' required"}), 400
 
-    anchor_ms = read_capture_time_ms(data) if FUSION_TIME_CONDITIONAL else None
-    result = embed_image(img)
-    usable_faces = [f for f in result["faces"] if f["quality"]["usable"]]
-    if not usable_faces and mode != "person":
-        return (
-            jsonify(
-                {
-                    "error": "no_usable_face",
-                    "faces": [{"box": f["box"], "quality": f["quality"]} for f in result["faces"]],
-                }
-            ),
-            422,
-        )
-
-    # Query = most confident usable face and its associated person crop.
-    query_face = max(usable_faces, key=lambda f: f["score"]) if usable_faces else None
-    query_person = None
-    if result["persons"]:
-        if query_face is not None:
-            qf_idx = result["faces"].index(query_face)
-            query_person = next(
-                (p for p in result["persons"] if p["face_idx"] == qf_idx), None
-            )
-        if query_person is None:
-            query_person = max(result["persons"], key=lambda p: p["score"])
+    face_refs, person_refs = [], []
+    all_faces_seen = []  # only for the no_usable_face diagnostic
+    anchor_ms = None
+    query_model_version = None
+    for f in files:
+        try:
+            fdata = f.read()
+            img = decode_image(fdata)
+        except Exception:
+            logger.exception("image decode failed")
+            return jsonify({"error": "bad_image", "detail": "could not decode image"}), 400
+        if anchor_ms is None and FUSION_TIME_CONDITIONAL:
+            anchor_ms = read_capture_time_ms(fdata)
+        res = embed_image(img)
+        query_model_version = res["model_version"]
+        all_faces_seen.extend(res["faces"])
+        usable = [x for x in res["faces"] if x["quality"]["usable"]]
+        qf = max(usable, key=lambda x: x["score"]) if usable else None
+        if qf is not None:
+            face_refs.append(qf["embedding"])
+        qp = None
+        if res["persons"]:
+            if qf is not None:
+                qf_idx = res["faces"].index(qf)
+                qp = next((p for p in res["persons"] if p["face_idx"] == qf_idx), None)
+            if qp is None:
+                qp = max(res["persons"], key=lambda p: p["score"])
+        if qp is not None:
+            person_refs.append(qp["embedding"])
 
     try:
         event = get_store().load_event(event_id)
     except FileNotFoundError:
         return jsonify({"error": "event_not_indexed", "eventId": event_id}), 404
 
+    # Pseudo-relevance feedback (Item 3): fold the face embeddings of photos the
+    # user already confirmed (passed as `confirm_photo_ids`) into the query
+    # centroid — clean, in-domain references that sharpen recall on the rest.
+    prf_used = 0
+    for pid in (s.strip() for s in request.form.get("confirm_photo_ids", "").split(",")):
+        if not pid:
+            continue
+        embs = event.embeddings_for_photo("face", pid)
+        face_refs.extend(embs)
+        prf_used += len(embs)
+
+    if not face_refs and mode != "person":
+        return (
+            jsonify(
+                {
+                    "error": "no_usable_face",
+                    "faces": [{"box": f["box"], "quality": f["quality"]} for f in all_faces_seen],
+                }
+            ),
+            422,
+        )
+
+    face_query = _mean_unit(face_refs)
+    person_query = _mean_unit(person_refs)
+
     face_hits = (
-        event.top_photos("face", query_face["embedding"], k=retrieve_k)
-        if query_face is not None and mode in ("fused", "face")
+        event.top_photos("face", face_query, k=retrieve_k)
+        if face_query is not None and mode in ("fused", "face")
         else []
     )
     person_hits = (
-        event.top_photos("person", query_person["embedding"], k=retrieve_k)
-        if query_person is not None and mode in ("fused", "person")
+        event.top_photos("person", person_query, k=retrieve_k)
+        if person_query is not None and mode in ("fused", "person")
         else []
     )
 
@@ -202,8 +248,8 @@ def search():
         # a non-distinctive face doesn't ride a uniformly-high similarity into
         # false positives. In-place on the local hit list; preserves the pre-norm
         # value as rawFaceScore for eval. No-op when the event has no faces.
-        if FUSION_TNORM and query_face is not None and face_hits:
-            mu, _sigma, n = event.cohort_stats("face", query_face["embedding"])
+        if FUSION_TNORM and face_query is not None and face_hits:
+            mu, _sigma, n = event.cohort_stats("face", face_query)
             if n > 0:
                 for h in face_hits:
                     h["rawFaceScore"] = h["score"]
@@ -243,8 +289,12 @@ def search():
         {
             "eventId": event_id,
             "mode": mode,
-            "modelVersion": result["model_version"],
+            "modelVersion": query_model_version,
             "indexModelVersion": event.manifest.get("modelVersion"),
+            # Query provenance (Item 3): how many selfie references and confirmed
+            # (PRF) photos went into the centroid — surfaced for eval/debug.
+            "queryRefs": len(face_refs),
+            "prfRefs": prf_used,
             "results": ranked if top_k is None else ranked[:top_k],
         }
     )

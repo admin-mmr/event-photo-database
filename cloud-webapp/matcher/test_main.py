@@ -304,6 +304,19 @@ class TestStore:
         )
         assert empty.cohort_stats("face", basis(0)) == (0.0, 1.0, 0)
 
+    def test_embeddings_for_photo(self, seeded_store):
+        # Item 3 (PRF): fetch a photo's face embeddings by id.
+        ev = EmbeddingStore(seeded_store).load_event("ev1")
+        embs = ev.embeddings_for_photo("face", "pA.jpg")
+        assert len(embs) == 1 and np.allclose(embs[0], basis(0))
+        assert ev.embeddings_for_photo("face", "nope.jpg") == []
+
+    def test_mean_unit_centroid(self):
+        # Item 3: per-ref L2-normalize, then average (no renorm of the mean).
+        assert main_mod._mean_unit([]) is None
+        assert np.allclose(main_mod._mean_unit([basis(3) * 5.0]), basis(3))  # per-ref normalized
+        assert np.allclose(main_mod._mean_unit([basis(0), basis(1)]), (basis(0) + basis(1)) / 2)
+
     def test_roundtrip_and_topk(self, seeded_store):
         ev = EmbeddingStore(seeded_store).load_event("ev1")
         hits = ev.top_k("face", basis(0), k=2)
@@ -425,6 +438,39 @@ class TestSearch:
         assert body["results"][0]["photoId"] == "pA.jpg"
         assert body["results"][0]["faceScore"] == pytest.approx(1.0 - mu, abs=1e-3)
         assert [r["photoId"] for r in body["results"]] == ["pA.jpg"]  # others below threshold
+
+    def test_multi_reference_centroid(self, client, monkeypatch, seeded_store):
+        # Item 3: two selfie references average into one query centroid.
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={
+                "file": [(io.BytesIO(jpeg_bytes()), "a.jpg"), (io.BytesIO(jpeg_bytes()), "b.jpg")],
+                "event_id": "ev1",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["queryRefs"] == 2 and body["prfRefs"] == 0
+        assert body["results"][0]["photoId"] == "pB.jpg"  # ranking unchanged vs single ref
+
+    def test_prf_folds_confirmed_photo(self, client, monkeypatch, seeded_store):
+        # Item 3: a confirmed photo's face embedding is folded into the centroid.
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={
+                "file": (io.BytesIO(jpeg_bytes()), "a.jpg"),
+                "event_id": "ev1",
+                "confirm_photo_ids": "pB.jpg",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["prfRefs"] == 1  # pB has one face
+        assert body["queryRefs"] == 2  # 1 upload + 1 confirmed
 
     def test_fused_search_uncapped_by_default(self, client, monkeypatch, big_store):
         monkeypatch.setenv("EMBEDDINGS_ROOT", big_store)

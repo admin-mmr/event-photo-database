@@ -156,10 +156,21 @@ event's crops (one extra dot-product pass, compute-negligible); `main.py` subtra
 mean from face scores in fused mode and preserves the pre-norm value as `rawFaceScore`.
 
 ## Item 3 — Multi-reference query + pseudo-relevance feedback  **[recall]**
-Let users upload several selfies → query **centroid** (mean of L2-normalized embeddings) +
-max-over-references score (§1.1). Fold "Confirmed" photos' face embeddings back into the
-centroid and re-search (§1.2) — reuses `match_feedback`. One of the largest recall jumps,
-nearly free. Change: `matcher/main.py search()`. Effort ~2–3 days.
+> **STATUS (2026-07-19): matcher side implemented + tested** (this branch — `search()`
+> now embeds every uploaded `file`, keeps each one's best usable face + person crop, and
+> averages via `_mean_unit()` into a query centroid; `confirm_photo_ids` folds confirmed
+> photos' face embeddings from the store — `store.embeddings_for_photo()` — into that
+> centroid; response reports `queryRefs`/`prfRefs`. Backward-compatible: a single file with
+> no confirm ids is a centroid-of-one, identical to before. 47 matcher tests pass.
+> **Remaining:** api `findme` route must forward multiple files + `confirm_photo_ids`; web
+> UI for multi-selfie upload and a "find more like these" action driven by confirmations.
+> Max-over-references scoring (vs centroid-only) deferred as an optional refinement.
+
+Let users upload several selfies → query **centroid** (mean of L2-normalized embeddings)
+(§1.1). Fold "Confirmed" photos' face embeddings back into the centroid and re-search
+(§1.2) — reuses `match_feedback`. One of the largest recall jumps, nearly free (matcher
+side). Change: `matcher/main.py search()` + `store.embeddings_for_photo()`, then api/web
+wiring.
 
 ## Item 4 — SAHI tiled detection on high-res crowd photos  **[recall]**
 Keep SCRFD; add optional slicing-aided inference (overlapping tiles → NMS merge) on
