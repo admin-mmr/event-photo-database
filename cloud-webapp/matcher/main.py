@@ -84,6 +84,29 @@ def _mean_unit(embs: list) -> "np.ndarray | None":
     return arr.mean(axis=0)
 
 
+def _select_prf_face(embs: list, centroid) -> "np.ndarray | None":
+    """Pick the ONE face embedding from a confirmed photo to fold into the query
+    (Item 3 PRF). A confirmed photo may be a group shot, so folding every face
+    would pollute the centroid with bystanders. With a selfie centroid, choose
+    the face most similar to it (the confirming user's). Without a centroid, only
+    a lone face is unambiguous — multi-face photos return None (skip) rather than
+    guess."""
+    if not embs:
+        return None
+    if len(embs) == 1:
+        return embs[0]
+    if centroid is None:
+        return None
+    c = np.asarray(centroid, dtype=np.float32).reshape(-1)
+    c = c / max(np.linalg.norm(c), 1e-12)
+
+    def _sim(e) -> float:
+        e = np.asarray(e, dtype=np.float32).reshape(-1)
+        return float(np.dot(e / max(np.linalg.norm(e), 1e-12), c))
+
+    return max(embs, key=_sim)
+
+
 def _read_upload():
     """Returns (rgb_array, raw_bytes, error_response). Raw bytes are handed back
     so callers can read EXIF (e.g. the capture-time anchor) without re-reading
@@ -203,16 +226,24 @@ def search():
     except FileNotFoundError:
         return jsonify({"error": "event_not_indexed", "eventId": event_id}), 404
 
-    # Pseudo-relevance feedback (Item 3): fold the face embeddings of photos the
-    # user already confirmed (passed as `confirm_photo_ids`) into the query
-    # centroid — clean, in-domain references that sharpen recall on the rest.
-    prf_used = 0
+    # Pseudo-relevance feedback (Item 3): fold confirmed photos' faces into the
+    # query centroid — clean, in-domain references that sharpen recall. A
+    # confirmed photo may be a GROUP photo, so fold only the confirming user's
+    # face (the one matching the selfie centroid), never every face in it.
+    selfie_centroid = _mean_unit(face_refs)
+    prf_used, prf_skipped = 0, 0
     for pid in (s.strip() for s in request.form.get("confirm_photo_ids", "").split(",")):
         if not pid:
             continue
         embs = event.embeddings_for_photo("face", pid)
-        face_refs.extend(embs)
-        prf_used += len(embs)
+        if not embs:
+            continue
+        chosen = _select_prf_face(embs, selfie_centroid)
+        if chosen is None:  # multi-face photo with no anchor to disambiguate
+            prf_skipped += 1
+            continue
+        face_refs.append(chosen)
+        prf_used += 1
 
     if not face_refs and mode != "person":
         return (
@@ -293,8 +324,10 @@ def search():
             "indexModelVersion": event.manifest.get("modelVersion"),
             # Query provenance (Item 3): how many selfie references and confirmed
             # (PRF) photos went into the centroid — surfaced for eval/debug.
+            # prfSkipped = confirmed group photos we couldn't disambiguate.
             "queryRefs": len(face_refs),
             "prfRefs": prf_used,
+            "prfSkipped": prf_skipped,
             "results": ranked if top_k is None else ranked[:top_k],
         }
     )

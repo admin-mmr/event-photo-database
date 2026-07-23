@@ -317,6 +317,17 @@ class TestStore:
         assert np.allclose(main_mod._mean_unit([basis(3) * 5.0]), basis(3))  # per-ref normalized
         assert np.allclose(main_mod._mean_unit([basis(0), basis(1)]), (basis(0) + basis(1)) / 2)
 
+    def test_select_prf_face_group_photo(self):
+        # Item 3 fix: a confirmed group photo must fold only the user's face.
+        me, other = basis(0), basis(5)
+        # With a selfie centroid, pick the face most similar to it.
+        assert np.allclose(main_mod._select_prf_face([other, me], basis(0)), me)
+        # A lone face is unambiguous even without a centroid.
+        assert np.allclose(main_mod._select_prf_face([other], None), other)
+        # Multiple faces, no centroid to disambiguate → skip (None), don't guess.
+        assert main_mod._select_prf_face([other, me], None) is None
+        assert main_mod._select_prf_face([], basis(0)) is None
+
     def test_roundtrip_and_topk(self, seeded_store):
         ev = EmbeddingStore(seeded_store).load_event("ev1")
         hits = ev.top_k("face", basis(0), k=2)
@@ -471,6 +482,31 @@ class TestSearch:
         body = resp.get_json()
         assert body["prfRefs"] == 1  # pB has one face
         assert body["queryRefs"] == 2  # 1 upload + 1 confirmed
+
+    def test_prf_group_photo_folds_only_matching_face(self, client, monkeypatch, tmp_path):
+        # Item 3 fix regression: confirming a GROUP photo (two faces) must fold
+        # only the user's face, not the bystander's. Before the fix prfRefs was 2.
+        faces = np.stack([basis(0), basis(5)])  # user + stranger in one photo
+        faces_meta = [
+            {"photoId": "grp.jpg", "box": [0, 0, 50, 50], "score": 0.9},
+            {"photoId": "grp.jpg", "box": [60, 0, 110, 50], "score": 0.9},
+        ]
+        m = build_manifest("evg", "test@v0", faces_meta, [])
+        write_local(str(tmp_path / "evg"), m, faces, np.zeros((0, DIM), np.float32))
+        monkeypatch.setenv("EMBEDDINGS_ROOT", str(tmp_path))
+        set_bundle(make_bundle(basis(0), basis(1)))  # selfie face = basis(0)
+        resp = client.post(
+            "/search",
+            data={
+                "file": (io.BytesIO(jpeg_bytes()), "a.jpg"),
+                "event_id": "evg",
+                "confirm_photo_ids": "grp.jpg",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["prfRefs"] == 1  # ONE face folded, not both
+        assert body["queryRefs"] == 2  # selfie + the one matching PRF face
 
     def test_fused_search_uncapped_by_default(self, client, monkeypatch, big_store):
         monkeypatch.setenv("EMBEDDINGS_ROOT", big_store)

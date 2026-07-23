@@ -160,8 +160,11 @@ mean from face scores in fused mode and preserves the pre-norm value as `rawFace
 > now embeds every uploaded `file`, keeps each one's best usable face + person crop, and
 > averages via `_mean_unit()` into a query centroid; `confirm_photo_ids` folds confirmed
 > photos' face embeddings from the store — `store.embeddings_for_photo()` — into that
-> centroid; response reports `queryRefs`/`prfRefs`. Backward-compatible: a single file with
-> no confirm ids is a centroid-of-one, identical to before. 47 matcher tests pass.
+> centroid; response reports `queryRefs`/`prfRefs`/`prfSkipped`. Backward-compatible: a
+> single file with no confirm ids is a centroid-of-one, identical to before. PRF folds only
+> the confirming user's face from a group photo (`_select_prf_face` picks the face matching
+> the selfie centroid; multi-face photos with no anchor are skipped) — not every face. 49
+> matcher tests pass.
 > **Remaining:** api `findme` route must forward multiple files + `confirm_photo_ids`; web
 > UI for multi-selfie upload and a "find more like these" action driven by confirmations.
 > Max-over-references scoring (vs centroid-only) deferred as an optional refinement.
