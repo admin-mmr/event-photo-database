@@ -3,6 +3,7 @@ import { buildServer } from './server.js';
 import { env } from './lib/config.js';
 import { initDb } from './lib/firestore.js';
 import { logger } from './lib/logger.js';
+import { recaptchaConfigStatus } from './services/recaptcha.js';
 
 const app = buildServer();
 
@@ -15,6 +16,18 @@ const server = app.listen(env.PORT, () => {
     { port: env.PORT, env: env.NODE_ENV, cloud: env.CLOUD_PROVIDER },
     'api listening',
   );
+  const rc = recaptchaConfigStatus();
+  if (rc.partial) {
+    logger.warn(
+      { recaptcha: rc.present },
+      'reCAPTCHA is only PARTIALLY configured — token verification is DISABLED (fail-open). ' +
+        'Set RECAPTCHA_PROJECT_ID, RECAPTCHA_SITE_KEY and RECAPTCHA_API_KEY (check the secret env-var name).',
+    );
+  } else if (rc.configured) {
+    logger.info('reCAPTCHA token verification enabled');
+  } else {
+    logger.info('reCAPTCHA not configured — token verification disabled (expected in local/dev)');
+  }
 });
 
 // Cloud Run sends SIGTERM ~10s before killing the container on a new

@@ -17,7 +17,9 @@ vi.mock('../src/lib/logger.js', () => ({
   logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
 }));
 
-const { verifyRecaptcha, isRecaptchaConfigured } = await import('../src/services/recaptcha.js');
+const { verifyRecaptcha, isRecaptchaConfigured, recaptchaConfigStatus } = await import(
+  '../src/services/recaptcha.js'
+);
 
 function configure(on: boolean): void {
   mockEnv.RECAPTCHA_PROJECT_ID = on ? 'proj' : '';
@@ -115,5 +117,37 @@ describe('verifyRecaptcha', () => {
     const r = await verifyRecaptcha('tok', 'findme_search');
     expect(r.ok).toBe(true);
     expect(r.reason).toBe('verify_error');
+  });
+});
+
+describe('recaptchaConfigStatus', () => {
+  it('reports fully configured', () => {
+    configure(true);
+    const s = recaptchaConfigStatus();
+    expect(s).toEqual({
+      configured: true,
+      partial: false,
+      present: { projectId: true, siteKey: true, apiKey: true },
+    });
+  });
+
+  it('reports unconfigured (all absent, expected in dev)', () => {
+    configure(false);
+    const s = recaptchaConfigStatus();
+    expect(s.configured).toBe(false);
+    expect(s.partial).toBe(false);
+  });
+
+  it('flags the partial (dangerous) case when the API key is missing', () => {
+    // Mirrors the prod incident: project id + site key set, api key blank
+    // (the secret was bound to the wrong env-var name).
+    mockEnv.RECAPTCHA_PROJECT_ID = 'proj';
+    mockEnv.RECAPTCHA_SITE_KEY = 'site-key';
+    mockEnv.RECAPTCHA_API_KEY = '';
+    const s = recaptchaConfigStatus();
+    expect(s.configured).toBe(false);
+    expect(s.partial).toBe(true);
+    expect(s.present).toEqual({ projectId: true, siteKey: true, apiKey: false });
+    expect(isRecaptchaConfigured()).toBe(false);
   });
 });
