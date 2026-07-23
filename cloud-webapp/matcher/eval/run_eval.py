@@ -22,6 +22,11 @@ Usage:
     python eval/run_eval.py --store ./local_store --event-id ev_test \
         --labels eval/labels.csv --queries eval/queries \
         [--k 20] [--report eval/report.json]
+
+Analysis add-ons (map to PEOPLE_RECOGNITION_QUALITY_PLAN.md items, all opt-in):
+    --time-conditional [--time-windows ... --anchors ...]  Item 1 (capture-time fusion)
+    --tnorm                                                Item 2 (T-norm)
+    --prf [--prf-fold N]                                   Item 3 (pseudo-relevance feedback)
 """
 
 from __future__ import annotations
@@ -38,6 +43,43 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import fusion as fusion_mod  # noqa: E402
 
 WEIGHT_SWEEP = [(1.0, 0.0), (0.9, 0.1), (0.8, 0.2), (0.7, 0.3), (0.6, 0.4), (0.5, 0.5), (0.0, 1.0)]
+
+# Default candidate windows for the capture-time-conditional sweep (Item 1):
+# (w_full_min, w_zero_min, floor). Bracket the plan's 45 min / 3 h default with a
+# tighter and a looser pair so the sweep shows how sharply to trust outfit.
+DEFAULT_TIME_WINDOWS = "30:120:0;45:180:0;60:240:0.1"
+
+
+def parse_windows(spec: str) -> list[tuple[float, float, float]]:
+    """Parse '--time-windows' — ';'-separated 'w_full_min:w_zero_min:floor'
+    tuples (minutes; floor in [0,1]) — into a list of float triples."""
+    windows: list[tuple[float, float, float]] = []
+    for part in spec.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            full_s, zero_s, floor_s = part.split(":")
+            windows.append((float(full_s), float(zero_s), float(floor_s)))
+        except ValueError as exc:
+            raise SystemExit(f"bad --time-windows entry '{part}': expected w_full_min:w_zero_min:floor") from exc
+    return windows
+
+
+def load_anchors(path: str) -> dict[str, int]:
+    """Load an '--anchors' JSON {person: epoch_ms | ISO-8601} overriding the
+    reference-selfie EXIF anchor — e.g. real Find-Me upload capture times pulled
+    from `match_runs`, which are the correct anchor for a judged-label sweep."""
+    from store import _iso_to_epoch_ms
+
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    anchors: dict[str, int] = {}
+    for person, val in raw.items():
+        ms = int(val) if isinstance(val, (int, float)) else _iso_to_epoch_ms(str(val))
+        if ms is not None:
+            anchors[person] = ms
+    return anchors
 
 
 def load_labels(path: str) -> dict[str, set[str]]:
@@ -130,11 +172,13 @@ def _fold_prf(event, kind: str, prf_ids, refs: list, centroid):
     return _mean_unit(refs)
 
 
-def _fused_candidates(event, q: dict, w_face: float, w_person: float, tnorm: bool) -> list:
+def _fused_candidates(event, q: dict, w_face: float, w_person: float, tnorm: bool, person_weight_fn=None) -> list:
     """Every candidate photo with its fused score (no threshold, no cap), so a
     caller can sweep the score threshold itself. `tnorm` z-scores each modality
     against the event cohort before fusing — the same transform normalize=1 does
-    in production."""
+    in production. `person_weight_fn(photoId) -> float` (Item 1) overrides the
+    scalar person weight per candidate — used for the capture-time-conditional
+    sweep; None keeps the flat `w_person` (production default)."""
     face_hits = (
         event.top_photos("face", q["face"], k=None, tnorm=tnorm) if q.get("face") is not None else []
     )
@@ -142,8 +186,34 @@ def _fused_candidates(event, q: dict, w_face: float, w_person: float, tnorm: boo
         event.top_photos("person", q["person"], k=None, tnorm=tnorm) if q.get("person") is not None else []
     )
     return fusion_mod.fuse(
-        face_hits, person_hits, w_face=w_face, w_person=w_person, threshold=-1e9, top_k=None
+        face_hits, person_hits, w_face=w_face, w_person=w_person, threshold=-1e9, top_k=None,
+        person_weight_fn=person_weight_fn,
     )
+
+
+def _time_weight_fn(event, anchor_ms, w_person: float, w_full_ms: float, w_zero_ms: float, floor: float):
+    """Build the per-candidate person-weight closure the matcher uses for
+    capture-time-conditional outfit fusion (PEOPLE_RECOGNITION_QUALITY_PLAN.md
+    Item 1) — a faithful mirror of matcher.main.search().
+
+    Returns None when `anchor_ms` is None (the query selfie carried no parseable
+    capture time), so the caller falls back to the flat `w_person` for every
+    candidate — the production no-regression path. A candidate whose own
+    `takenAt` is unknown decays to 1.0 inside `time_decay`, i.e. also the static
+    weight, so only candidates with a known capture time are ever re-weighted."""
+    if anchor_ms is None:
+        return None
+
+    def person_weight_fn(pid, _w=w_person):  # closure over anchor/config, mirrors main.py
+        t = event.taken_at_ms(pid)
+        return _w * fusion_mod.time_decay(
+            None if t is None else (t - anchor_ms),
+            w_full_ms,
+            w_zero_ms,
+            floor,
+        )
+
+    return person_weight_fn
 
 
 def threshold_sweep(
@@ -156,6 +226,7 @@ def threshold_sweep(
     negatives: dict[str, set[str]] | None = None,
     judged: bool = False,
     n_points: int = 11,
+    weight_fn_for=None,
 ) -> dict:
     """Precision/recall of the FUSED result *set* as the score threshold varies.
 
@@ -174,7 +245,8 @@ def threshold_sweep(
         q = query_embeddings.get(person)
         if q is None:
             continue
-        fused = _fused_candidates(event, q, w_face, w_person, tnorm)
+        pwf = weight_fn_for(person) if weight_fn_for is not None else None
+        fused = _fused_candidates(event, q, w_face, w_person, tnorm, person_weight_fn=pwf)
         per_query[person] = fused
         all_scores.extend(h["score"] for h in fused)
 
@@ -268,8 +340,71 @@ def prf_evaluate(
     return {"k": k, "fold": fold, "tnorm": tnorm, "queries": n, "mean": mean, "per_person": per_person}
 
 
+def time_conditional_sweep(
+    event,
+    truth: dict[str, set[str]],
+    query_embeddings: dict,
+    k: int,
+    w_face: float,
+    w_person: float,
+    windows: list[tuple[float, float, float]],
+    tnorm: bool = False,
+    negatives: dict[str, set[str]] | None = None,
+    judged: bool = False,
+) -> dict:
+    """Capture-time-conditional outfit fusion sweep (Item 1).
+
+    Compares the static baseline (flat `w_person`) against each candidate
+    (w_full_min, w_zero_min, floor) window, where the outfit/person weight for a
+    candidate is scaled by `time_decay(|t_cand - anchor|)`. The query anchor is
+    `query_embeddings[person]["anchor_ms"]` — the reference selfie's EXIF capture
+    time, or an `--anchors` override (e.g. the real Find-Me upload time). People
+    (or candidate photos) without a capture time fall back to the static weight,
+    so a variant can only differ from the baseline where times exist on BOTH
+    sides. For each variant we report fused P@K and the precision/recall-vs-
+    threshold operating curve, so a human can pick the window that recovers the
+    most recall at the target precision (guardrails: human-approved, never
+    auto-tuned).
+
+    NOTE: run with the best fusion weights from the main sweep. If that best
+    `w_person` is 0 (face-only), every variant is identical to the baseline —
+    time-conditioning only moves scores when outfit carries weight."""
+    negatives = negatives or {}
+
+    def make_weight_fn_for(w_full_ms, w_zero_ms, floor):
+        def weight_fn_for(person):
+            anchor = (query_embeddings.get(person) or {}).get("anchor_ms")
+            return _time_weight_fn(event, anchor, w_person, w_full_ms, w_zero_ms, floor)
+
+        return weight_fn_for
+
+    variants = [{"label": "static", "window": None, "weight_fn_for": None}]
+    for full_min, zero_min, floor in windows:
+        variants.append(
+            {
+                "label": f"full{full_min:g}m_zero{zero_min:g}m_floor{floor:g}",
+                "window": {"w_full_min": full_min, "w_zero_min": zero_min, "floor": floor},
+                "weight_fn_for": make_weight_fn_for(full_min * 60_000, zero_min * 60_000, floor),
+            }
+        )
+
+    anchored = sum(1 for p in truth if (query_embeddings.get(p) or {}).get("anchor_ms") is not None)
+    out = []
+    for v in variants:
+        pk = fused_precision_at_k(
+            event, truth, query_embeddings, k, w_face, w_person, tnorm, negatives, judged, weight_fn_for=v["weight_fn_for"]
+        )
+        sweep = threshold_sweep(
+            event, truth, query_embeddings, w_face, w_person, tnorm, negatives, judged, weight_fn_for=v["weight_fn_for"]
+        )
+        out.append(
+            {"label": v["label"], "window": v["window"], "fused_precision_at_k": pk, "threshold_sweep": sweep["points"]}
+        )
+    return {"weights": [w_face, w_person], "tnorm": tnorm, "k": k, "anchored_people": anchored, "variants": out}
+
+
 def fused_precision_at_k(
-    event, truth, query_embeddings, k, w_face, w_person, tnorm, negatives=None, judged=False
+    event, truth, query_embeddings, k, w_face, w_person, tnorm, negatives=None, judged=False, weight_fn_for=None
 ) -> float | None:
     """Mean fused P@K at fixed weights, with or without T-norm. Unlike per-modality
     P@K (unchanged by the monotonic T-norm), fusion P@K CAN move because tnorm
@@ -281,7 +416,8 @@ def fused_precision_at_k(
         q = query_embeddings.get(person)
         if q is None:
             continue
-        ranked = [h["photoId"] for h in _fused_candidates(event, q, w_face, w_person, tnorm)[: k * 3]]
+        pwf = weight_fn_for(person) if weight_fn_for is not None else None
+        ranked = [h["photoId"] for h in _fused_candidates(event, q, w_face, w_person, tnorm, person_weight_fn=pwf)[: k * 3]]
         if not ranked:
             continue
         m = (
@@ -388,10 +524,14 @@ def evaluate(
 
 
 def embed_queries(queries_dir: str) -> dict:
-    """Embed reference photos; average multiple references per person."""
+    """Embed reference photos; average multiple references per person. Also
+    reads each person's capture-time anchor (Item 1) from the FIRST reference
+    selfie with a parseable EXIF DateTimeOriginal — mirroring production, where
+    the anchor is the first uploaded selfie's time. `anchor_ms` is None when no
+    reference carries EXIF time (→ static person weight, no regression)."""
     import numpy as np
 
-    from pipeline import decode_image, embed_image
+    from pipeline import decode_image, embed_image, read_capture_time_ms
 
     out = {}
     for person in sorted(os.listdir(queries_dir)):
@@ -399,11 +539,15 @@ def embed_queries(queries_dir: str) -> dict:
         if not os.path.isdir(pdir):
             continue
         face_vecs, person_vecs = [], []
+        anchor_ms = None
         for name in sorted(os.listdir(pdir)):
             path = os.path.join(pdir, name)
             try:
                 with open(path, "rb") as f:
-                    result = embed_image(decode_image(f.read()))
+                    raw = f.read()
+                if anchor_ms is None:
+                    anchor_ms = read_capture_time_ms(raw)
+                result = embed_image(decode_image(raw))
             except Exception as exc:
                 print(f"  SKIP query {person}/{name}: {exc}", file=sys.stderr)
                 continue
@@ -424,8 +568,9 @@ def embed_queries(queries_dir: str) -> dict:
             v = np.mean(np.stack(vecs), axis=0)
             return v / max(np.linalg.norm(v), 1e-12)
 
-        out[person] = {"face": avg(face_vecs), "person": avg(person_vecs)}
-        print(f"  query '{person}': {len(face_vecs)} face refs, {len(person_vecs)} person refs")
+        out[person] = {"face": avg(face_vecs), "person": avg(person_vecs), "anchor_ms": anchor_ms}
+        anchor_note = f"anchor={anchor_ms}" if anchor_ms is not None else "anchor=none"
+        print(f"  query '{person}': {len(face_vecs)} face refs, {len(person_vecs)} person refs, {anchor_note}")
     return out
 
 
@@ -457,6 +602,25 @@ def main() -> int:
         "person's relevant photos into the query and measure recall@k lift on the rest.",
     )
     parser.add_argument("--prf-fold", type=int, default=1, help="photos to fold in per person for --prf (default 1)")
+    parser.add_argument(
+        "--time-conditional",
+        action="store_true",
+        help="add a capture-time-conditional outfit-fusion (Item 1) sweep: scale each "
+        "candidate's person weight by time_decay(|takenAt - query anchor|) and compare "
+        "windows to the static baseline, to pick PERSON_TIME_W_FULL/ZERO/FLOOR.",
+    )
+    parser.add_argument(
+        "--time-windows",
+        default=DEFAULT_TIME_WINDOWS,
+        help="';'-separated w_full_min:w_zero_min:floor tuples for --time-conditional "
+        f"(default '{DEFAULT_TIME_WINDOWS}').",
+    )
+    parser.add_argument(
+        "--anchors",
+        default="",
+        help="JSON {person: epoch_ms | ISO8601} overriding each query's capture-time anchor "
+        "(e.g. real Find-Me upload times from match_runs); default uses the reference selfie's EXIF.",
+    )
     args = parser.parse_args()
 
     from store import EmbeddingStore
@@ -478,6 +642,15 @@ def main() -> int:
             "Expected one subfolder per labeled person (e.g. queries/alice/selfie.jpg) — "
             "see eval/queries/README.md."
         )
+    if args.anchors:
+        anchors = load_anchors(args.anchors)
+        applied = 0
+        for person, ms in anchors.items():
+            if person in queries:
+                queries[person]["anchor_ms"] = ms
+                applied += 1
+        print(f"Applied {applied}/{len(anchors)} anchor overrides from {args.anchors}")
+
     all_people = set(truth) | set(negatives)
     missing = sorted(all_people - set(queries))
     if missing:
@@ -544,6 +717,34 @@ def main() -> int:
         print(f"  Recall@{args.k}:  base={fmt(m['base_recall'])}   +PRF={fmt(m['prf_recall'])}   lift={fmt(m['lift'])}")
         if prf["queries"] == 0:
             print("  ⚠️  No person had more than --prf-fold relevant photos — nothing to hold out.")
+
+    if args.time_conditional:
+        bw_f, bw_p = report["best_fusion"]["w_face"], report["best_fusion"]["w_person"]
+        windows = parse_windows(args.time_windows)
+        tc = time_conditional_sweep(
+            event, truth, queries, args.k, bw_f, bw_p, windows, tnorm=False, negatives=negatives, judged=args.judged_only
+        )
+        report["time_analysis"] = tc
+        print(f"\n=== Capture-time-conditional fusion (Item 1; fused wF={bw_f} wP={bw_p}) ===")
+        print(f"  {tc['anchored_people']}/{len(truth)} people have a query capture-time anchor.")
+        if tc["anchored_people"] == 0:
+            print("  ⚠️  No query has a capture-time anchor — every window equals the static baseline.")
+            print("      Provide real upload times via --anchors, or use reference selfies with EXIF.")
+        if bw_p == 0.0:
+            print("  ⚠️  Best fusion weight is face-only (wP=0) — time-conditioning is inert here.")
+        for v in tc["variants"]:
+            best_pt = max(
+                (p for p in v["threshold_sweep"] if p["precision"] is not None),
+                key=lambda p: (p["precision"], p["tp"]),
+                default=None,
+            )
+            best_str = (
+                f"best-op t={best_pt['threshold']:.4f} P={fmt(best_pt['precision'])} tp={best_pt['tp']} fp={best_pt['fp']}"
+                if best_pt
+                else "no scored points"
+            )
+            print(f"    {v['label']:>24}: P@{args.k}={fmt(v['fused_precision_at_k'])}  {best_str}")
+        print("  → pick the window that keeps precision at target with the most true positives (tp) retained.")
 
     if args.report:
         with open(args.report, "w", encoding="utf-8") as f:

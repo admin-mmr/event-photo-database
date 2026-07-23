@@ -15,12 +15,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from run_eval import (  # noqa: E402
+    _fused_candidates,
     _mean_unit,
+    _time_weight_fn,
     fused_precision_at_k,
+    parse_windows,
     prf_evaluate,
     threshold_sweep,
+    time_conditional_sweep,
 )
-from store import EventEmbeddings, build_manifest  # noqa: E402
+from store import EventEmbeddings, _iso_to_epoch_ms, build_manifest  # noqa: E402
 
 DIM = 16
 
@@ -140,3 +144,78 @@ def test_prf_skips_people_without_enough_photos():
     prf = prf_evaluate(event, truth, queries, k=5, fold=1)
     assert prf["queries"] == 0
     assert prf["mean"]["lift"] is None
+
+
+# ── capture-time-conditional fusion (Item 1) ─────────────────────────────────────
+
+def _timed_event(taken):
+    """rel + far share the same outfit (basis 2); only their faces & capture
+    times differ. `taken` maps photoId → ISO capture time."""
+    event = make_event(
+        face_rows=[("rel", basis(0)), ("far", basis(1))],
+        person_rows=[("rel", basis(2)), ("far", basis(2))],
+    )
+    event.photos = {pid: {"takenAt": iso} for pid, iso in taken.items()}
+    return event
+
+
+def test_parse_windows_parses_triples():
+    assert parse_windows("30:120:0;45:180:0.1") == [(30.0, 120.0, 0.0), (45.0, 180.0, 0.1)]
+    assert parse_windows("") == []
+    with pytest.raises(SystemExit):
+        parse_windows("45:180")  # missing floor
+
+
+def test_time_weight_fn_none_without_anchor():
+    event = make_event([("p", basis(0))])
+    # No query capture time → None → caller keeps the flat production weight.
+    assert _time_weight_fn(event, None, 0.15, 45 * 60_000, 180 * 60_000, 0.0) is None
+
+
+def test_time_weight_fn_decays_by_capture_gap():
+    event = _timed_event({"rel": "2026-06-20T10:00:00", "far": "2026-06-20T22:00:00"})  # 12 h apart
+    anchor = _iso_to_epoch_ms("2026-06-20T10:00:00")
+    fn = _time_weight_fn(event, anchor, 0.15, 45 * 60_000, 180 * 60_000, 0.0)
+    assert fn("rel") == pytest.approx(0.15)   # same time → full person weight
+    assert fn("far") == pytest.approx(0.0)    # 12 h gap ≥ zero window → floor
+    assert fn("unknown") == pytest.approx(0.15)  # candidate w/o takenAt → static (time_decay(None)=1)
+
+
+def test_time_conditional_downweights_far_outfit_score():
+    # far matches ONLY on outfit (same basis-2 person vector), shot 12 h later.
+    # Time-conditioning must strip its outfit boost while leaving the near
+    # same-outfit relevant photo untouched.
+    event = _timed_event({"rel": "2026-06-20T10:00:00", "far": "2026-06-20T22:00:00"})
+    anchor = _iso_to_epoch_ms("2026-06-20T10:00:00")
+    q = {"face": basis(0), "person": basis(2), "anchor_ms": anchor}
+
+    static = {h["photoId"]: h["score"] for h in _fused_candidates(event, q, 0.5, 0.5, tnorm=False)}
+    wfn = _time_weight_fn(event, anchor, 0.5, 45 * 60_000, 180 * 60_000, 0.0)
+    timed = {h["photoId"]: h["score"] for h in _fused_candidates(event, q, 0.5, 0.5, tnorm=False, person_weight_fn=wfn)}
+
+    assert timed["far"] < static["far"]              # outfit boost removed by the time gap
+    assert timed["far"] == pytest.approx(0.0)        # floor=0 → outfit contributes nothing
+    assert timed["rel"] == pytest.approx(static["rel"])  # near candidate unaffected
+
+
+def test_time_conditional_sweep_structure_and_baseline():
+    event = _timed_event({"rel": "2026-06-20T10:00:00", "far": "2026-06-20T22:00:00"})
+    anchor = _iso_to_epoch_ms("2026-06-20T10:00:00")
+    queries = {"alice": {"face": basis(0), "person": basis(2), "anchor_ms": anchor}}
+    truth = {"alice": {"rel"}}
+    negatives = {"alice": {"far"}}
+
+    tc = time_conditional_sweep(
+        event, truth, queries, k=5, w_face=0.5, w_person=0.5,
+        windows=[(45, 180, 0.0)], negatives=negatives, judged=True,
+    )
+    assert tc["anchored_people"] == 1
+    assert [v["label"] for v in tc["variants"]] == ["static", "full45m_zero180m_floor0"]
+    assert all("threshold_sweep" in v and "fused_precision_at_k" in v for v in tc["variants"])
+
+    # A person with no anchor must fall back to static (no crash, inert).
+    tc_none = time_conditional_sweep(
+        event, {"bob": {"rel"}}, {"bob": {"face": basis(0), "person": basis(2)}},
+        k=5, w_face=0.5, w_person=0.5, windows=[(45, 180, 0.0)],
+    )
+    assert tc_none["anchored_people"] == 0
