@@ -41,9 +41,14 @@ UNGATED_TOP_K = int(os.environ.get("MATCHER_UNGATED_TOP_K", "500"))
 # Fused-score cutoff to use when T-norm (§1.3) is on. T-normed scores are
 # z-scores against the event cohort, not raw cosines, so the raw-cosine
 # DEFAULT_THRESHOLD (0.25) does not apply — a match now sits several std above
-# the cohort mean. Eval-tunable; opt-in, so prod is unaffected until callers
-# pass normalize=1.
-NORM_THRESHOLD = float(os.environ.get("MATCHER_NORM_THRESHOLD", "2.0"))
+# the cohort mean. Default 4.0 is eval-derived: the 2026-07-23 judged sweep on
+# event 81a584f7 (91 users / 1516 pairs) put judged precision ≈0.93 at a z-score
+# of ~4 (and ≈1.0 on the smaller event 34f3e38f at ~3), so 4.0 is the
+# precision-first operating point (guardrails: precision-first while data
+# accumulates). It is a GLOBAL default over two events — revisit per-event once
+# more events clear the evidence bar (PEOPLE_RECOGNITION_QUALITY_PLAN.md Item 8).
+# Now on by default via the api's FINDME_TNORM=1; override the env to retune.
+NORM_THRESHOLD = float(os.environ.get("MATCHER_NORM_THRESHOLD", "4.0"))
 
 # Capture-time-conditional outfit fusion. Off by default until swept on judged
 # labels. When on, the person (outfit) weight for a candidate photo is scaled by
