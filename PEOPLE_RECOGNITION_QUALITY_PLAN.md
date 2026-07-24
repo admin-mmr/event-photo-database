@@ -39,7 +39,13 @@ matcher manifest.**
 > `time_decay` + `fuse(person_weight_fn)`, `pipeline.read_capture_time_ms`,
 > `store.EventEmbeddings.taken_at_ms`, `main.py` behind `FUSION_TIME_CONDITIONAL`; 41
 > matcher tests pass). **No indexer change was needed** — the manifest already carries
-> per-photo `takenAt`. Flag is **off** pending an offline sweep on judged labels.
+> per-photo `takenAt`. Flag stays **off**: the 2026-07-23 judged sweep
+> (`run_eval --time-conditional`, harness support added same day) showed **no benefit** on
+> event 81a584f7 — slightly negative at the operating point. Confounded, so inconclusive
+> rather than refuted: only 36/91 query selfies carried an EXIF anchor, the optimal person
+> weight is small (0.1), and query person-crops used face-box fallback (no local
+> `yolov8n.onnx`). Revisit with real upload-time anchors (durable match_runs instrumentation)
+> and a same-day multi-outfit event before spending more on it.
 
 **Why first:** cheapest change (mostly logic, compute-negligible) that hits the "outfits
 sometimes change" reality head-on, and it converts the static 0.15 person weight from a
@@ -142,10 +148,19 @@ Ordered fast/free → heavier. Each notes the constraint it targets:
 **[recall] [precision] [no-face] [outfit-change]**.
 
 ## Item 2 — Score normalization / T-norm  **[precision]**
-> **STATUS (2026-07-19): implemented + tested** (this branch — `store.cohort_stats()` +
-> `main.py` behind `FUSION_TNORM` / `TNORM_ALPHA`; 43 matcher tests pass). Flag **off**;
-> enabling shifts the score scale, so the fused threshold must be re-tuned in the same
-> offline sweep that would activate it.
+> **STATUS (2026-07-23): ENABLED by default** after the first judged sweep on retained
+> reference selfies (EVAL_FEEDBACK_LOOP.md). Shipped as the matcher's `normalize` path
+> (`store.top_photos(tnorm=)` z-scores each modality against the event cohort) gated by
+> `MATCHER_NORM_THRESHOLD`, driven from the api by `FINDME_TNORM` — **not** the earlier
+> `FUSION_TNORM`/`TNORM_ALPHA`/`cohort_stats` sketch, which was superseded before merge.
+> **Sweep result** (`run_eval --judged-only --tnorm`): on event 81a584f7 (91 users /
+> 1516 pairs) T-norm retained materially more true positives at matched precision than raw
+> cosine — P≈0.93 kept tp=895 vs 743, P=1.0 kept 234 vs 175. **Decision:** flip
+> `FINDME_TNORM` default on + set `MATCHER_NORM_THRESHOLD=4.0` (z-score giving P≈0.93 on
+> 81a584f7, ≈1.0 on 34f3e38f — precision-first). **Caveats:** recall is unmeasurable from
+> feedback, so this is a precision-biased choice — watch the expander click-rate proxy;
+> the 4.0 default spans only two events → move to per-event thresholds (Item 8) as more
+> events clear the evidence bar. Rollback is `FINDME_TNORM=''` (no matcher redeploy).
 
 Subtract `TNORM_ALPHA ×` each query's mean similarity to a background cohort of event
 faces before thresholding (`FACE_RECOGNITION_IMPROVEMENT_ANALYSIS.md §1.3`). Lets us
@@ -167,6 +182,16 @@ mean from face scores in fused mode and preserves the pre-norm value as `rawFace
 > PRF only engages when the request carries `confirm_photo_id`(s). **API/UI wiring
 > (multi-file upload, feeding `match_feedback` confirmations as PRF ids) is the remaining
 > work**, deferred to the sweep — same rollout shape as Items 1 & 2.
+>
+> **UPDATE (2026-07-23):** the merged code is the centroid path (`main.py` `_mean_unit` /
+> `_select_reference` / `_fold_prf`, multi-file `file` parts + `prf_photo_ids`), NOT the
+> `FUSION_MULTIREF`/`_query_stack` max-over-references sketch above (superseded before
+> merge). The judged sweep (`run_eval --prf`) showed **no PRF recall lift** on either event
+> (81a584f7 +0.001 over 73 eligible users; 34f3e38f −0.03) — folding a user's own confirmed
+> photo into an already-good centroid adds little. **Keep PRF off; deprioritize.**
+> Multi-reference (averaging several *distinct* selfies) is untested here — the sweep used
+> one retained selfie per user — and remains the more promising half if the UI ships
+> multi-upload.
 
 Let users upload several selfies → query **centroid** (mean of L2-normalized embeddings) +
 max-over-references score (§1.1). Fold "Confirmed" photos' face embeddings back into the

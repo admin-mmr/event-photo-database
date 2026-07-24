@@ -139,13 +139,19 @@ const EnvSchema = z.object({
   MATCHER_URL: z.string().default(''),
 
   // T-norm cohort score normalization (FACE_RECOGNITION_IMPROVEMENT_ANALYSIS
-  // §1.3). Off by default: T-normed scores are z-scores, not raw cosines, so
-  // the matcher's own MATCHER_NORM_THRESHOLD must be eval-tuned on a labeled
-  // set before this is turned on in prod (§6 sequencing). Flip to '1'/'true'
-  // to have /api/findme searches pass normalize=1 to the matcher.
+  // §1.3, PEOPLE_RECOGNITION_QUALITY_PLAN.md Item 2). **ON by default as of the
+  // 2026-07-23 judged sweep** (EVAL_FEEDBACK_LOOP.md): on event 81a584f7
+  // (91 users / 1516 judged pairs) T-norm retained materially more true
+  // positives at matched precision than raw cosine (e.g. P≈0.93 kept tp=895 vs
+  // 743; P=1.0 kept 234 vs 175), because z-scoring removes the per-query "looks
+  // like everyone" bias so one threshold separates all users. The matcher's
+  // MATCHER_NORM_THRESHOLD is tuned to match (see matcher/main.py). Set this to
+  // '' / '0' to disable (instant rollback — no redeploy of the matcher needed).
+  // Verify on more events + watch the expander recall proxy before treating the
+  // number as settled; per-event thresholds are the follow-up (Item 8).
   FINDME_TNORM: z
     .string()
-    .default('')
+    .default('1')
     .transform((v) => ['1', 'true', 'yes'].includes(v.trim().toLowerCase())),
 
   // Derivatives bucket (indexer output; gallery + search serving copies).
