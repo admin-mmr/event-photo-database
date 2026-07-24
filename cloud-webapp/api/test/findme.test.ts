@@ -235,7 +235,7 @@ describe('POST /api/findme/search', () => {
     matcherSearch.mockResolvedValue({ ok: true, eventId: 'ev1', mode: 'fused', results: [] });
     await search(app, { eventId: 'ev1', consent: 'true' });
     expect(matcherSearch.mock.calls[0]?.[0].prfPhotoIds).toBeUndefined();
-    expect(matcherSearch.mock.calls[0]?.[0].normalize).toBeUndefined(); // T-norm off by default
+    expect(matcherSearch.mock.calls[0]?.[0].normalize).toBe(true); // T-norm on by default (2026-07-23 judged sweep)
   });
 
   it('maps no_usable_face to a friendly 422', async () => {
