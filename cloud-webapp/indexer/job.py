@@ -230,6 +230,9 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
     persons_vecs, persons_meta = [], []
     photos_map: dict[str, dict] = {}
     embedded = reused = skipped = 0
+    # Photos whose download/embed failed this run. They are still in Drive, so
+    # they must NOT be treated as deletions below (see `removed`).
+    skipped_ids: set[str] = set()
 
     # Partition into reused (cheap, no I/O) vs changed (needs download+embed).
     changed = []
@@ -375,6 +378,7 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
         result = results.get(pid)
         if result is None:  # download/embed/derivative failed → skip, non-fatal
             skipped += 1
+            skipped_ids.add(pid)
             continue
 
         for face in result["faces"]:
@@ -410,7 +414,11 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
         })
 
     # Photos that disappeared from Drive: drop their rows + Firestore docs.
-    removed = [pid for pid in prev_photos if pid not in photos_map]
+    # A photo we merely FAILED to process this run (transient Drive 5xx, a
+    # decode hiccup) is still in the folder, so it is not a deletion — deleting
+    # it would silently drop a live photo from the gallery on a flaky run. It
+    # stays out of this run's manifest, so the next run re-embeds it.
+    removed = [pid for pid in prev_photos if pid not in photos_map and pid not in skipped_ids]
     for pid in removed:
         fs.delete_photo(pid)
     if removed:

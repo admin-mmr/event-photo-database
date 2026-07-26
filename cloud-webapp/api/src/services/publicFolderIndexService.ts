@@ -88,10 +88,43 @@ export interface ClubAlbumTab {
   rows: unknown[][];
 }
 
+const TAB_NAME_MAX = 100;
+
 /** Sheets forbids []:*?/\ in tab names; cap 100; non-empty. */
 export function sanitizeTabName(name: string): string {
-  const cleaned = name.replace(/[[\]:*?/\\]/g, ' ').trim().slice(0, 100);
+  const cleaned = name.replace(/[[\]:*?/\\]/g, ' ').trim().slice(0, TAB_NAME_MAX);
   return cleaned || 'Club';
+}
+
+/** `${head} ${tail}` within the 100-char cap, shortening HEAD so the tail survives. */
+function joinCapped(head: string, tail: string): string {
+  const t = tail.slice(0, TAB_NAME_MAX - 2);
+  return `${head.slice(0, Math.max(1, TAB_NAME_MAX - t.length - 1)).trim()} ${t}`;
+}
+
+/**
+ * A sanitized tab name that is not already in `used`.
+ *
+ * Uniqueness has to survive the 100-char cap: the previous version appended the
+ * club's normalizedName and re-sanitized the whole string, which sliced the
+ * disambiguator straight back off whenever the base was already at the cap. Two
+ * clubs then got the SAME tab name, and since the rebuild clears-then-writes
+ * each tab in turn, the second club's write wiped the first club's album rows.
+ */
+export function uniqueTabName(
+  preferred: string,
+  fallbackKey: string,
+  used: ReadonlySet<string>,
+): string {
+  const base = sanitizeTabName(preferred);
+  if (!used.has(base)) return base;
+  const withKey = sanitizeTabName(joinCapped(base, fallbackKey));
+  if (!used.has(withKey)) return withKey;
+  // Still taken (two clubs whose keys also collide once capped) — number it.
+  for (let n = 2; ; n += 1) {
+    const candidate = sanitizeTabName(joinCapped(withKey, String(n)));
+    if (!used.has(candidate)) return candidate;
+  }
 }
 
 export function buildClubAlbumTabs(
@@ -125,8 +158,7 @@ export function buildClubAlbumTabs(
       if (a.ev.eventId !== b.ev.eventId) return a.ev.eventId.localeCompare(b.ev.eventId);
       return a.r.tag.localeCompare(b.r.tag);
     });
-    let tabName = sanitizeTabName(displayByNorm.get(norm) ?? norm);
-    if (used.has(tabName)) tabName = sanitizeTabName(`${tabName} ${norm}`);
+    const tabName = uniqueTabName(displayByNorm.get(norm) ?? norm, norm, used);
     used.add(tabName);
     tabs.push({ tabName, rows: list.map(({ ev, r }) => [ev.eventDate, ev.eventName, r.tag, r.folderName, r.fileCount, r.folderUrl, r.lastRefreshedAt]) });
   }

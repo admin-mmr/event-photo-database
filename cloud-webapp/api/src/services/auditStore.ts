@@ -11,6 +11,7 @@
 
 import { randomUUID } from 'node:crypto';
 
+import { inclusiveUntil } from '../lib/dateRange.js';
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { appendSheetValues } from './sheetsService.js';
@@ -136,7 +137,10 @@ export async function listAudit(spreadsheetId: string, filter: AuditFilter = {})
   const rows = await readTab(spreadsheetId, TAB, LAST_COL, COL.AUDIT_ID, 'auditid');
   let recs = rows.map((r) => rowToRecord(r.cells));
   if (filter.since) recs = recs.filter((r) => r.timestamp >= filter.since!);
-  if (filter.until) recs = recs.filter((r) => r.timestamp <= filter.until!);
+  if (filter.until) {
+    const until = inclusiveUntil(filter.until);
+    recs = recs.filter((r) => r.timestamp <= until);
+  }
   if (filter.actorEmail) {
     const a = filter.actorEmail.toLowerCase();
     recs = recs.filter((r) => r.actorEmail.toLowerCase() === a);

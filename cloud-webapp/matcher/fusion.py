@@ -107,5 +107,10 @@ def fuse(
         )
 
     fused = [h for h in fused if method == "rrf" or h["score"] >= threshold]
-    fused.sort(key=lambda h: -h["score"])
+    # photoId is the tie-break, not decoration: `fused` is built by iterating a
+    # SET of photoIds, whose order varies per process (str hash randomization).
+    # Sorting on score alone is stable, so tied photos would keep that arbitrary
+    # order and `top_k` would truncate a different subset on each instance —
+    # the same search returning different photos run to run.
+    fused.sort(key=lambda h: (-h["score"], h["photoId"]))
     return fused if top_k is None else fused[:top_k]

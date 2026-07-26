@@ -128,6 +128,8 @@ class EventEmbeddings:
         vecs = self.vectors[kind]
         if vecs.size == 0:
             return []
+        if k is not None and k <= 0:
+            return []  # "no results", not "one result" (see the max(k, 1) below)
         q = np.asarray(query, dtype=np.float32).reshape(-1)
         q = q / max(np.linalg.norm(q), 1e-12)
         sims = vecs @ q
@@ -150,13 +152,26 @@ class EventEmbeddings:
         the list some other way (e.g. the fused score threshold). `tnorm` is
         forwarded to `top_k` (see there)."""
         pool = None if k is None else max(k * 4, 200)
+        best = self._best_crop_per_photo(kind, query, pool, tnorm)
+        # `pool` caps CROPS, not photos. A photo with many crops (a big group
+        # shot) can fill the pool and crowd distinct photos out, returning fewer
+        # than `k`. Only then — and only if the pool actually held anything back
+        # — rescan uncapped, so the common case keeps the cheap partial sort.
+        if k is not None and len(best) < k and pool is not None and pool < len(self.meta[kind]):
+            best = self._best_crop_per_photo(kind, query, None, tnorm)
+        ranked = sorted(best.values(), key=lambda h: -h["score"])
+        return ranked if k is None else ranked[:k]
+
+    def _best_crop_per_photo(
+        self, kind: str, query: np.ndarray, pool: int | None, tnorm: bool
+    ) -> dict[str, dict]:
+        """photoId → its highest-scoring crop, over the top `pool` crops."""
         best: dict[str, dict] = {}
         for hit in self.top_k(kind, query, k=pool, tnorm=tnorm):
             pid = hit["photoId"]
             if pid not in best or hit["score"] > best[pid]["score"]:
                 best[pid] = hit
-        ranked = sorted(best.values(), key=lambda h: -h["score"])
-        return ranked if k is None else ranked[:k]
+        return best
 
 
 class EmbeddingStore:
