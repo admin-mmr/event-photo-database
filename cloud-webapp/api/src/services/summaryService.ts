@@ -4,6 +4,7 @@
  * totals for a date range, broken down by club. Read-only.
  */
 
+import { inclusiveUntil } from '../lib/dateRange.js';
 import { cell, readTab } from './sheetTable.js';
 
 const TAB = 'Upload_Log';
@@ -48,11 +49,12 @@ export async function summarize(
 
   const perClub = new Map<string, ClubSummary>();
   const totals = { sessions: 0, files: 0, sizeMb: 0 };
+  const until = filter?.until ? inclusiveUntil(filter.until) : undefined;
 
   for (const r of rows) {
     const ts = cell(r.cells, COL.UPLOAD_TIMESTAMP);
     if (filter?.since && ts < filter.since) continue;
-    if (filter?.until && ts > filter.until) continue;
+    if (until && ts > until) continue;
     const clubName = cell(r.cells, COL.CLUB_NAME);
     if (filter?.clubName !== undefined && clubName !== filter.clubName) continue;
 

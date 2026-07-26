@@ -5,6 +5,7 @@ import {
   buildVideoFolderRows,
   buildClubAlbumTabs,
   sanitizeTabName,
+  uniqueTabName,
   type EventInfo,
 } from '../src/services/publicFolderIndexService.js';
 import type { SpecialFolderRecord } from '../src/services/specialFoldersStore.js';
@@ -82,5 +83,50 @@ describe('sanitizeTabName', () => {
   it('strips forbidden chars and falls back to Club', () => {
     expect(sanitizeTabName('A/B:C')).toBe('A B C');
     expect(sanitizeTabName('   ')).toBe('Club');
+  });
+
+  it('caps at the 100-char Sheets limit', () => {
+    expect(sanitizeTabName('X'.repeat(120))).toHaveLength(100);
+  });
+});
+
+describe('uniqueTabName', () => {
+  it('returns the preferred name when it is free', () => {
+    expect(uniqueTabName('岚山', 'lanshan', new Set())).toBe('岚山');
+  });
+
+  it('disambiguates a collision with the club key', () => {
+    expect(uniqueTabName('Chicago', 'chicago_b', new Set(['Chicago']))).toBe('Chicago chicago_b');
+  });
+
+  it('still disambiguates when the name is already at the 100-char cap', () => {
+    // Re-truncating the joined string used to slice the key back off, handing
+    // two clubs the same tab — the second write then cleared the first's rows.
+    const long = 'X'.repeat(100);
+    const out = uniqueTabName('X'.repeat(120), 'clubB', new Set([long]));
+    expect(out).not.toBe(long);
+    expect(out.length).toBeLessThanOrEqual(100);
+    expect(out.endsWith('clubB')).toBe(true);
+  });
+
+  it('falls back to a counter when the key-suffixed name is also taken', () => {
+    const used = new Set(['Chicago', 'Chicago chicago']);
+    expect(uniqueTabName('Chicago', 'chicago', used)).toBe('Chicago chicago 2');
+  });
+});
+
+describe('buildClubAlbumTabs tab-name uniqueness', () => {
+  it('never emits two tabs with the same name, even at the length cap', () => {
+    const events = [ev('e1', '2026-06-01', 'Race')];
+    // Two distinct clubs whose display names are identical AND over the cap.
+    const clubs = [club('clubA', 'Y'.repeat(120)), club('clubB', 'Y'.repeat(120))];
+    const records = [
+      rec({ scope: 'albums', clubName: 'clubA', tag: 'a', folderName: 'Album' }),
+      rec({ scope: 'albums', clubName: 'clubB', tag: 'b', folderName: 'Album' }),
+    ];
+    const tabs = buildClubAlbumTabs(records, events, clubs);
+    expect(tabs).toHaveLength(2);
+    expect(new Set(tabs.map((t) => t.tabName)).size).toBe(2);
+    for (const t of tabs) expect(t.tabName.length).toBeLessThanOrEqual(100);
   });
 });

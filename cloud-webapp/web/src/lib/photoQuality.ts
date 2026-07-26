@@ -104,7 +104,10 @@ export async function analyzePhoto(file: File): Promise<QualityResult | null> {
 
   const naturalW = img.naturalWidth || img.width;
   const naturalH = img.naturalHeight || img.height;
-  if (!naturalW || !naturalH) return null;
+  if (!naturalW || !naturalH) {
+    URL.revokeObjectURL(img.src); // every other exit path revokes; don't pin the File
+    return null;
+  }
 
   const scale = Math.min(1, WORK_SIZE / Math.max(naturalW, naturalH));
   const w = Math.max(1, Math.round(naturalW * scale));

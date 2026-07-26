@@ -196,6 +196,52 @@ def test_undecodable_photo_skipped_not_fatal(env):
     assert "bad" not in fs.photos
 
 
+def test_transient_failure_does_not_delete_a_photo_still_in_drive(env):
+    """A flaky download must not look like a deletion.
+
+    f2 is edited in Drive (new md5 → needs re-embed) and its download then
+    fails. It is still in the folder, so its Firestore doc must survive; the
+    run reports it as skipped, not removed.
+    """
+    drive, fs, blobs = env
+    _run(drive, fs, blobs)
+    assert "f2" in fs.photos
+
+    drive.files["f2"]["md5Checksum"] = "md5-b-v2"
+    ok_download = drive.download
+
+    def flaky(file_id):
+        if file_id == "f2":
+            raise RuntimeError("Drive 500 transient")
+        return ok_download(file_id)
+
+    drive.download = flaky
+
+    summary = _run(drive, fs, blobs)
+    assert summary["skipped"] == 1
+    assert summary["removed"] == 0
+    assert "f2" in drive.files  # still in Drive...
+    assert "f2" in fs.photos  # ...so its doc must not be deleted
+
+
+def test_transient_failure_recovers_on_the_next_run(env):
+    """The skipped photo is left out of the manifest, so the next run re-embeds
+    it and it returns to the store — the failure is self-healing."""
+    drive, fs, blobs = env
+    _run(drive, fs, blobs)
+
+    drive.files["f2"]["md5Checksum"] = "md5-b-v2"
+    ok_download = drive.download
+    drive.download = lambda fid: (_ for _ in ()).throw(RuntimeError("boom")) if fid == "f2" else ok_download(fid)
+    _run(drive, fs, blobs)
+
+    drive.download = ok_download
+    summary = _run(drive, fs, blobs)
+    assert summary["embedded"] == 1 and summary["skipped"] == 0 and summary["removed"] == 0
+    manifest = json.loads(blobs.read(f"ev1/{EMB_DIR}/{MANIFEST}"))
+    assert {m["photoId"] for m in manifest["faces"]} == {"f1", "f2"}
+
+
 def test_folder_id_from_firestore_event_doc(env):
     drive, fs, blobs = env
     summary = _run(drive, fs, blobs)  # cfg has no drive_folder_id → from FakeFS

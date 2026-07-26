@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
+  analyzePhoto,
   classifyPhotoQuality,
   MIN_SHORT_SIDE,
   MIN_SHARPNESS,
@@ -57,5 +58,60 @@ describe('classifyPhotoQuality', () => {
     const r = classifyPhotoQuality(metrics({ width: 200, height: 200, brightness: 20 }));
     expect(r.issues).toEqual(expect.arrayContaining(['low_resolution', 'dark']));
     expect(r.level).toBe('poor');
+  });
+});
+
+/**
+ * `analyzePhoto` mints a blob URL per call. Every exit path must revoke it —
+ * an un-revoked URL pins the whole File in memory for the life of the page,
+ * and the Find-Me flow analyzes a selfie on every pick/retake.
+ */
+describe('analyzePhoto object-URL lifetime', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** Stub createObjectURL/revokeObjectURL + Image; returns the revoke spy. */
+  function stubImageLoad(dims: { naturalWidth: number; naturalHeight: number }) {
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn(() => 'blob:stub-url'),
+      revokeObjectURL: revoke,
+    });
+    class StubImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      naturalWidth = dims.naturalWidth;
+      naturalHeight = dims.naturalHeight;
+      width = dims.naturalWidth;
+      height = dims.naturalHeight;
+      #src = '';
+      set src(v: string) {
+        this.#src = v;
+        queueMicrotask(() => this.onload?.());
+      }
+      get src() {
+        return this.#src;
+      }
+    }
+    vi.stubGlobal('Image', StubImage);
+    return revoke;
+  }
+
+  const file = () => new File([new Uint8Array([1, 2, 3])], 'selfie.jpg', { type: 'image/jpeg' });
+
+  it('revokes the blob URL when the image reports zero dimensions', async () => {
+    const revoke = stubImageLoad({ naturalWidth: 0, naturalHeight: 0 });
+    await expect(analyzePhoto(file())).resolves.toBeNull();
+    expect(revoke).toHaveBeenCalledWith('blob:stub-url');
+  });
+
+  it('revokes the blob URL when no 2d canvas context is available', async () => {
+    const revoke = stubImageLoad({ naturalWidth: 800, naturalHeight: 600 });
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    await expect(analyzePhoto(file())).resolves.toBeNull();
+    expect(revoke).toHaveBeenCalledWith('blob:stub-url');
   });
 });

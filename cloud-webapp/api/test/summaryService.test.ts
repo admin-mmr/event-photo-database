@@ -54,4 +54,29 @@ describe('summarize', () => {
     expect(chi.totals.files).toBe(30);
     expect(chi.byClub).toHaveLength(1);
   });
+
+  it('includes the whole final day for a date-only until', async () => {
+    // The admin screen's <input type="date"> sends "YYYY-MM-DD". Comparing that
+    // against a full ISO timestamp used to exclude every row on that last day.
+    sheetData[RANGE] = [
+      HEADER,
+      logRow('CHI', '10', '1', '2026-06-15T09:30:00.000Z', 'a'),
+      logRow('CHI', '20', '2', '2026-06-15T23:59:59.000Z', 'b'),
+      logRow('NYC', '7', '3', '2026-06-16T00:00:00.000Z', 'c'),
+    ];
+    const s = await summarize(SID, { since: '2026-06-15', until: '2026-06-15' });
+    expect(s.totals.sessions).toBe(2);
+    expect(s.totals.files).toBe(30); // next day still excluded
+  });
+
+  it('leaves an until that already carries a time exactly as given', async () => {
+    sheetData[RANGE] = [
+      HEADER,
+      logRow('CHI', '10', '1', '2026-06-15T09:00:00.000Z', 'a'),
+      logRow('CHI', '20', '2', '2026-06-15T11:00:00.000Z', 'b'),
+    ];
+    const s = await summarize(SID, { until: '2026-06-15T10:00:00.000Z' });
+    expect(s.totals.sessions).toBe(1);
+    expect(s.totals.files).toBe(10);
+  });
 });

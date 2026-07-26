@@ -284,6 +284,25 @@ class TestFusion:
         assert out[0]["score"] == pytest.approx(0.85 * 0.5)  # person contributes nothing
         assert out[0]["personWeight"] == pytest.approx(0.0)
 
+    def test_ties_break_on_photo_id_not_set_order(self):
+        # `fuse` iterates a SET of photoIds, whose order varies per process
+        # (str hash randomization). Tied scores must still rank deterministically.
+        face = [{"photoId": p, "score": 1.0} for p in ("echo", "alpha", "delta", "bravo")]
+        out = fusion_mod.fuse(face, [], threshold=0.0)
+        assert [h["photoId"] for h in out] == ["alpha", "bravo", "delta", "echo"]
+
+    def test_tied_top_k_truncation_is_deterministic(self):
+        # The regression that matters: with a cap, a nondeterministic tie order
+        # returns a DIFFERENT photo run to run for the very same query.
+        face = [{"photoId": p, "score": 1.0} for p in ("echo", "alpha", "delta", "bravo")]
+        assert fusion_mod.fuse(face, [], threshold=0.0, top_k=1)[0]["photoId"] == "alpha"
+
+    def test_tie_break_does_not_disturb_score_order(self):
+        # Alphabetical order only applies WITHIN a score tie.
+        face = [{"photoId": "zulu", "score": 0.9}, {"photoId": "alpha", "score": 0.2}]
+        out = fusion_mod.fuse(face, [], threshold=0.0)
+        assert [h["photoId"] for h in out] == ["zulu", "alpha"]
+
 
 class TestTimeDecay:
     W_FULL = 45 * 60_000
@@ -331,6 +350,32 @@ class TestStore:
         ev = EmbeddingStore(seeded_store).load_event("ev1")
         photos = [h["photoId"] for h in ev.top_photos("face", basis(0), k=None)]
         assert set(photos) == {"pA.jpg", "pB.jpg", "pC.jpg"}
+
+    def test_one_crop_heavy_photo_does_not_crowd_out_others(self, tmp_path):
+        # `top_photos` pools the top max(k*4, 200) CROPS before deduping to
+        # photos. A single group shot owning more crops than the pool used to
+        # fill it entirely, so genuine lower-ranked photos vanished.
+        n_crowd = 240
+        faces = np.stack(
+            [basis(0)] * n_crowd + [unit(basis(0) * 0.99 + basis(1) * 0.5)]
+        )
+        faces_meta = [{"photoId": "crowd.jpg", "box": [0, 0, 9, 9], "score": 0.9}] * n_crowd
+        faces_meta = [dict(m) for m in faces_meta]
+        faces_meta.append({"photoId": "other.jpg", "box": [0, 0, 9, 9], "score": 0.9})
+        manifest = build_manifest("crowded", "test@v0", faces_meta, [])
+        write_local(str(tmp_path / "crowded"), manifest, faces, np.zeros((0, DIM), np.float32))
+
+        ev = EmbeddingStore(str(tmp_path)).load_event("crowded")
+        photos = [h["photoId"] for h in ev.top_photos("face", basis(0), k=5)]
+        assert photos == ["crowd.jpg", "other.jpg"]
+
+    def test_top_k_zero_or_negative_returns_nothing(self, seeded_store):
+        # The k >= n guard falls through to `k = max(k, 1)`, which used to turn
+        # "give me no crops" into "give me one crop".
+        ev = EmbeddingStore(seeded_store).load_event("ev1")
+        assert ev.top_k("face", basis(0), k=0) == []
+        assert ev.top_k("face", basis(0), k=-3) == []
+        assert len(ev.top_k("face", basis(0), k=1)) == 1  # k=1 still works
 
     def test_query_normalization(self, seeded_store):
         ev = EmbeddingStore(seeded_store).load_event("ev1")
