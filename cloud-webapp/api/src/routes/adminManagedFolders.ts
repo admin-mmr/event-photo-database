@@ -30,6 +30,7 @@ import {
   rebuildEventPhotoFolders,
   rebuildAllSpecialFoldersForEvent,
   migrateEventPhotoShortcutsToFiles,
+  resyncEventManagedFolderNames,
   backfillSpecialFoldersSharing,
   countEventMedia,
   dedupeEventManagedFolders,
@@ -149,6 +150,34 @@ adminManagedFoldersRouter.post('/admin/folders/migrate-photo-shortcuts', ...guar
   try {
     if (!masterSheetId(res) || notEnabled(res)) return;
     await handleRebuild('migrate-shortcuts', req, res, false);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /admin/folders/resync-names — re-point managed-folder entry names at
+ * their (renamed) source photos. Run after the capture-time backfill has
+ * renamed the originals: a shortcut keeps the name it was created with, and a
+ * plain rebuild skips photos that are already represented, so the Photos_NNN /
+ * Videos / Album folders would otherwise keep sorting by the old names.
+ *
+ * Requires an `eventId` (Drive-heavy; pair it with the per-event backfill).
+ * DRY RUN unless the body sets `apply: true` — the dry run returns the planned
+ * renames so they can be eyeballed before anything on Drive changes.
+ */
+adminManagedFoldersRouter.post('/admin/folders/resync-names', ...guard, async (req, res, next) => {
+  try {
+    if (!masterSheetId(res) || notEnabled(res)) return;
+    const eventId = singleEventId(req.body);
+    if (!eventId) {
+      res.status(400).json({ ok: false, error: 'invalid_request', message: 'eventId is required' });
+      return;
+    }
+    const apply = (req.body as { apply?: unknown })?.apply === true;
+    const out = await resyncEventManagedFolderNames(eventId, { apply });
+    logger.info({ eventId, apply, by: actor(req) }, 'managed-folder name re-sync');
+    res.status(out.ok ? 200 : 404).json({ ok: out.ok, message: out.message, apply, ...out.data });
   } catch (err) {
     next(err);
   }

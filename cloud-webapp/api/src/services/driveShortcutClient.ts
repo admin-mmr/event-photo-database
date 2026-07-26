@@ -336,6 +336,30 @@ export async function setFileAppProperties(
   }
 }
 
+/**
+ * Renames a file. Used to re-sync a managed folder's entry names with their
+ * source photos after a capture-time rename: a shortcut carries its OWN name,
+ * fixed when it was created, so renaming the target leaves the shortcut stale.
+ */
+export async function renameDriveFile(
+  fileId: string,
+  name: string,
+  opts?: { token?: string },
+): Promise<UpdateFileResult> {
+  const url = `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?fields=id&supportsAllDrives=true`;
+  try {
+    const res = await driveFetch(url, {
+      method: 'PATCH',
+      headers: { ...authHeaders(await token(opts)), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    }, 'renameDriveFile');
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`, status: res.status };
+    return { ok: true, status: res.status };
+  } catch (err) {
+    return { ok: false, error: String(err), status: 0 };
+  }
+}
+
 /** User-facing Drive folder URL (works for My Drive and Shared Drive folders). */
 export function driveFolderUrl(folderId: string): string {
   return `https://drive.google.com/drive/folders/${folderId}`;

@@ -8,12 +8,13 @@ import {
   photoCopyDestName,
   isNoisyName,
   planShortcutDedupe,
+  planManagedEntryRenames,
   isManagedFolderName,
   isPhotoFile,
   isVideoFile,
   isMediaFile,
 } from '../src/services/specialFoldersService.js';
-import type { ShortcutEntry } from '../src/services/driveShortcutClient.js';
+import type { ShortcutEntry, ManagedCopyEntry } from '../src/services/driveShortcutClient.js';
 
 describe('photosFolderName', () => {
   it('zero-pads to three digits', () => {
@@ -92,6 +93,66 @@ describe('planShortcutDedupe', () => {
     const { survivors, trashShortcutIds } = planShortcutDedupe(existing);
     expect(survivors).toHaveLength(2);
     expect(trashShortcutIds).toHaveLength(0);
+  });
+});
+
+describe('planManagedEntryRenames', () => {
+  const sc = (id: string, name: string, targetId: string): ShortcutEntry => ({ id, name, targetId });
+  const cp = (id: string, name: string, sourcePhotoId: string): ManagedCopyEntry => ({ id, name, sourcePhotoId });
+
+  it('re-points a shortcut at its renamed target', () => {
+    const sources = new Map([['tA', '20260620-143052_A.jpg']]);
+    expect(planManagedEntryRenames([sc('s1', 'A.jpg', 'tA')], [], sources)).toEqual([
+      { id: 's1', from: 'A.jpg', to: '20260620-143052_A.jpg' },
+    ]);
+  });
+
+  it('is a no-op once names already match (idempotent re-run)', () => {
+    const sources = new Map([['tA', 'A.jpg']]);
+    expect(planManagedEntryRenames([sc('s1', 'A.jpg', 'tA')], [], sources)).toEqual([]);
+  });
+
+  it('leaves an entry alone when its source is gone', () => {
+    expect(planManagedEntryRenames([sc('s1', 'A.jpg', 'tGone')], [], new Map())).toEqual([]);
+  });
+
+  it('renames a converted copy to the source stem with a .jpg extension', () => {
+    const sources = new Map([['tA', '20260620-143052_A.heic']]);
+    expect(planManagedEntryRenames([], [cp('c1', 'A.jpg', 'tA')], sources)).toEqual([
+      { id: 'c1', from: 'A.jpg', to: '20260620-143052_A.jpg' },
+    ]);
+  });
+
+  it('keeps converted copies collision-free within the folder', () => {
+    // Two different sources whose renamed stems collide once both become .jpg.
+    const sources = new Map([
+      ['tA', '20260620-143052_shot.heic'],
+      ['tB', '20260620-143052_shot.png'],
+    ]);
+    const out = planManagedEntryRenames([], [cp('c1', 'a.jpg', 'tA'), cp('c2', 'b.jpg', 'tB')], sources);
+    const names = out.map((r) => r.to);
+    expect(new Set(names).size).toBe(2);
+    expect(names).toContain('20260620-143052_shot.jpg');
+  });
+
+  it('does not let a copy steal a name a shortcut already holds', () => {
+    const sources = new Map([
+      ['tA', '20260620-143052_x.jpg'], // shortcut keeps this exact name
+      ['tB', '20260620-143052_x.heic'], // copy would want the same .jpg name
+    ]);
+    const out = planManagedEntryRenames([sc('s1', 'old.jpg', 'tA')], [cp('c1', 'c.jpg', 'tB')], sources);
+    const copyRename = out.find((r) => r.id === 'c1');
+    expect(copyRename?.to).not.toBe('20260620-143052_x.jpg');
+  });
+
+  it('is deterministic regardless of input order', () => {
+    const sources = new Map([
+      ['tA', 'a-new.jpg'],
+      ['tB', 'b-new.jpg'],
+    ]);
+    const a = planManagedEntryRenames([sc('s1', 'a.jpg', 'tA'), sc('s2', 'b.jpg', 'tB')], [], sources);
+    const b = planManagedEntryRenames([sc('s2', 'b.jpg', 'tB'), sc('s1', 'a.jpg', 'tA')], [], sources);
+    expect(a).toEqual(b);
   });
 });
 
