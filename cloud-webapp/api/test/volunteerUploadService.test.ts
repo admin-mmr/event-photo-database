@@ -41,8 +41,9 @@ const driveUploads: Array<{ folderId: string; name: string; mimeType: string; si
 const resumableUploads: Array<{ folderId: string; name: string; mimeType: string; size: number; chunks: number }> = [];
 // Folder get-or-create calls, in order, so tests can assert the Club/tag/batch path.
 const folderCreates: Array<{ parent: string; name: string }> = [];
-// Existing Drive files the duplicate-check lists (name + size). Mutated per test.
-const existingDriveFiles: Array<{ name: string; size: string }> = [];
+// Existing Drive files the duplicate-check lists. `md5Checksum` is the primary
+// dedup key; name/size is only the fallback for a file Drive didn't hash.
+const existingDriveFiles: Array<{ name: string; size: string; md5Checksum?: string }> = [];
 vi.mock('../src/services/driveService.js', () => ({
   DRIVE_SCOPE_READWRITE: 'rw-scope',
   getDriveToken: async () => 'drive-token',
@@ -79,7 +80,14 @@ vi.mock('../src/services/driveService.js', () => ({
     return { id: `${parent}>${name}`, name };
   },
   listEventImages: async () =>
-    existingDriveFiles.map((f) => ({ id: `id-${f.name}`, name: f.name, relPath: f.name, mimeType: 'image/jpeg', size: f.size })),
+    existingDriveFiles.map((f) => ({
+      id: `id-${f.name}`,
+      name: f.name,
+      relPath: f.name,
+      mimeType: 'image/jpeg',
+      size: f.size,
+      ...(f.md5Checksum === undefined ? {} : { md5Checksum: f.md5Checksum }),
+    })),
 }));
 
 const indexTriggers: string[] = [];
@@ -96,6 +104,8 @@ interface FakeObj {
   size: number;
   contentType?: string;
   metadata?: Record<string, string>;
+  /** GCS reports MD5 base64-encoded; the service converts it to Drive's hex. */
+  md5Hash?: string;
 }
 const objects: Record<string, FakeObj> = {};
 const deleted: string[] = [];
@@ -110,6 +120,7 @@ vi.mock('@google-cloud/storage', () => ({
               size: objects[objectName]?.size,
               contentType: objects[objectName]?.contentType,
               metadata: objects[objectName]?.metadata,
+              md5Hash: objects[objectName]?.md5Hash,
             },
           ],
           download: async (opts?: { start?: number; end?: number }) => {
@@ -354,6 +365,105 @@ describe('enqueueStagedBatch', () => {
     expect(driveUploads).toHaveLength(0);
     expect(deleted).toEqual(['vol/ev1/bd/u1.jpg']); // duplicate staged copy cleaned up
     expect(indexTriggers).toHaveLength(0); // nothing copied → no trigger
+  });
+
+  // ── Content-hash dedup ────────────────────────────────────────────────────
+  // MD5, not name+size, is the duplicate key. name+size quietly stopped working
+  // once the capture-time rename shipped: stored files gained a
+  // `YYYYMMDD-HHMMSS_` prefix that a fresh upload's credited name never has.
+  // One real event accumulated 982 redundant Drive files this way.
+
+  // base64("\x01\x02...") stand-ins — only equality matters, not the real digest.
+  const MD5_A = Buffer.from('a'.repeat(16), 'binary').toString('base64');
+  const MD5_B = Buffer.from('b'.repeat(16), 'binary').toString('base64');
+  const HEX_A = Buffer.from(MD5_A, 'base64').toString('hex');
+
+  it('skips a re-upload whose Drive copy was RENAMED by the capture-time prefix', async () => {
+    const link = await validateUploadLink('tok-good');
+    // Same bytes, but Drive now stores it under the prefixed name. The old
+    // name+size key could never match this; the hash does.
+    existingDriveFiles.push({
+      name: '20260726-075713_ClubA_JaneDoe_race-001.jpg',
+      size: '100',
+      md5Checksum: HEX_A,
+    });
+    objects['vol/ev1/bh1/u1.jpg'] = {
+      exists: true,
+      size: 100,
+      contentType: 'image/jpeg',
+      md5Hash: MD5_A,
+      metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
+    };
+
+    const res = await enqueueStagedBatch(link, 'bh1', ['vol/ev1/bh1/u1.jpg']);
+
+    expect(res).toMatchObject({ copied: 0, skippedDuplicates: 1 });
+    expect(driveUploads).toHaveLength(0);
+  });
+
+  it('skips the same bytes credited to a DIFFERENT photographer', async () => {
+    const link = await validateUploadLink('tok-good');
+    existingDriveFiles.push({ name: 'ClubA_JaneDoe_race-001.jpg', size: '100', md5Checksum: HEX_A });
+    objects['vol/ev1/bh2/u1.jpg'] = {
+      exists: true,
+      size: 100,
+      contentType: 'image/jpeg',
+      md5Hash: MD5_A,
+      metadata: { originalName: 'race-001.jpg', photographerName: 'Someone Else' },
+    };
+
+    const res = await enqueueStagedBatch(link, 'bh2', ['vol/ev1/bh2/u1.jpg']);
+    expect(res).toMatchObject({ copied: 0, skippedDuplicates: 1 });
+  });
+
+  it('still copies genuinely different bytes that happen to share a name and size', async () => {
+    const link = await validateUploadLink('tok-good');
+    existingDriveFiles.push({ name: 'ClubA_JaneDoe_race-001.jpg', size: '100', md5Checksum: HEX_A });
+    objects['vol/ev1/bh3/u1.jpg'] = {
+      exists: true,
+      size: 100,
+      contentType: 'image/jpeg',
+      md5Hash: MD5_B, // different photo, same name+size
+      metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
+    };
+
+    const res = await enqueueStagedBatch(link, 'bh3', ['vol/ev1/bh3/u1.jpg']);
+    expect(res).toMatchObject({ copied: 1, skippedDuplicates: 0 });
+  });
+
+  it('dedupes by hash within one batch even when the names differ', async () => {
+    const link = await validateUploadLink('tok-good');
+    objects['vol/ev1/bh4/u1.jpg'] = {
+      exists: true,
+      size: 42,
+      contentType: 'image/jpeg',
+      md5Hash: MD5_A,
+      metadata: { originalName: 'first.jpg', photographerName: 'Jane Doe' },
+    };
+    objects['vol/ev1/bh4/u2.jpg'] = {
+      exists: true,
+      size: 42,
+      contentType: 'image/jpeg',
+      md5Hash: MD5_A,
+      metadata: { originalName: 'second-name.jpg', photographerName: 'Jane Doe' },
+    };
+
+    const res = await enqueueStagedBatch(link, 'bh4', ['vol/ev1/bh4/u1.jpg', 'vol/ev1/bh4/u2.jpg']);
+    expect(res).toMatchObject({ copied: 1, skippedDuplicates: 1 });
+  });
+
+  it('falls back to name+size when the staged object has no md5', async () => {
+    const link = await validateUploadLink('tok-good');
+    existingDriveFiles.push({ name: 'ClubA_JaneDoe_race-001.jpg', size: '100', md5Checksum: HEX_A });
+    objects['vol/ev1/bh5/u1.jpg'] = {
+      exists: true,
+      size: 100,
+      contentType: 'image/jpeg',
+      metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
+    };
+
+    const res = await enqueueStagedBatch(link, 'bh5', ['vol/ev1/bh5/u1.jpg']);
+    expect(res).toMatchObject({ copied: 0, skippedDuplicates: 1 });
   });
 
   it('treats a second identical file within the same batch as a duplicate', async () => {

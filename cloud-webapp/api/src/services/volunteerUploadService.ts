@@ -289,8 +289,39 @@ export interface BatchResult {
  * actually write to Drive) so a re-upload through the same link — which produces
  * the same `<Club>_<Photographer>_<original>` name — is recognised as a dup.
  */
-function dedupKey(name: string, size: number): string {
+/**
+ * Fallback duplicate key for the rare file with no MD5. Content hash is the
+ * primary key — see `gcsMd5ToHex`.
+ */
+export function dedupKey(name: string, size: number): string {
   return `${name.toLowerCase()}|${size}`;
+}
+
+/**
+ * Normalize GCS's base64 MD5 to Drive's lowercase hex so the two are comparable.
+ *
+ * Content hash — not name+size — is the duplicate key. name+size silently
+ * stopped catching anything once the capture-time rename shipped: stored files
+ * now carry a `YYYYMMDD-HHMMSS_` prefix, so an existing
+ * `20260726-075713_MMR_Jane_IMG_1.jpg` no longer matches a re-upload's freshly
+ * credited `MMR_Jane_IMG_1.jpg`. It also missed the same bytes credited to a
+ * different photographer, and raced across concurrent batches. MD5 is exactly
+ * what the indexer already uses downstream to collapse these into one photo
+ * (manifest `duplicates`), so matching on it here refuses the copy instead of
+ * cleaning up after it — a real event ended up with 982 redundant Drive files,
+ * each of which then multiplied into its own Photos_NNN and Album shortcut.
+ *
+ * Returns '' when the hash is absent/unparseable, which sends the caller to the
+ * name+size fallback rather than treating "unknown" as "not a duplicate".
+ */
+export function gcsMd5ToHex(md5Base64: string | null | undefined): string {
+  if (!md5Base64) return '';
+  try {
+    const hex = Buffer.from(md5Base64, 'base64').toString('hex').toLowerCase();
+    return /^[0-9a-f]{32}$/.test(hex) ? hex : '';
+  } catch {
+    return '';
+  }
 }
 
 /** Above this size, the staging→Drive copy switches from a single buffered
@@ -346,10 +377,16 @@ export async function enqueueStagedBatch(
   // Snapshot existing Drive files for the duplicate check. Best-effort: if the
   // listing fails we proceed WITHOUT dedup rather than blocking the upload (the
   // indexer dedups by content hash downstream, so a stray dup is not fatal).
+  // Primary key is the content hash; name+size only covers a file with no MD5.
+  const seenHashes = new Set<string>();
   const seen = new Set<string>();
   try {
     const existing = await listEventImages(folderId, { token: driveToken });
-    for (const f of existing) seen.add(dedupKey(f.name, Number(f.size ?? 0)));
+    for (const f of existing) {
+      const hash = String(f.md5Checksum ?? '').toLowerCase();
+      if (hash) seenHashes.add(hash);
+      seen.add(dedupKey(f.name, Number(f.size ?? 0)));
+    }
   } catch (err) {
     logger.warn({ err, eventId: link.eventId, folderId }, 'duplicate-check listing failed (proceeding without dedup)');
   }
@@ -405,12 +442,19 @@ export async function enqueueStagedBatch(
       });
 
       // Duplicate-check against existing Drive files AND earlier files in this
-      // same batch. Skip + clean up rather than writing a second copy.
+      // same batch. Skip + clean up rather than writing a second copy. Matched
+      // on content hash so a re-upload is caught regardless of what the file is
+      // now called on Drive (the capture-time rename changes that).
       const key = dedupKey(name, size);
-      if (seen.has(key)) {
+      const hash = gcsMd5ToHex(meta.md5Hash);
+      const isDuplicate = hash ? seenHashes.has(hash) : seen.has(key);
+      if (isDuplicate) {
         skippedDuplicates += 1;
         skippedDuplicateNames.push(name);
-        logger.info({ eventId: link.eventId, batchId, objectName, name }, 'duplicate skipped');
+        logger.info(
+          { eventId: link.eventId, batchId, objectName, name, matchedOn: hash ? 'md5' : 'name+size' },
+          'duplicate skipped',
+        );
         await file
           .delete({ ignoreNotFound: true })
           .catch((err) => logger.warn({ err, objectName }, 'duplicate cleanup failed (non-fatal)'));
@@ -432,6 +476,8 @@ export async function enqueueStagedBatch(
         const [bytes] = await file.download();
         await uploadFileToDrive(destFolderId, name, contentType, bytes, { token: driveToken });
       }
+      // Register both keys so the rest of THIS batch dedupes against it too.
+      if (hash) seenHashes.add(hash);
       seen.add(key);
       copied += 1;
       copiedBytes += size;
