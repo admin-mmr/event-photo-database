@@ -40,15 +40,10 @@ export async function apiGet<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-/** GET a binary response as a Blob (e.g. a single original photo). */
-export async function apiGetBlob(path: string): Promise<Blob> {
-  const res = await fetch(path, {
-    method: 'GET',
-    headers: { Accept: 'image/*, application/octet-stream', ...(await authHeader()) },
-  });
-  if (!res.ok) throw await parseError(res, `GET ${path} failed: HTTP ${res.status}`);
-  return res.blob();
-}
+// NOTE: there is deliberately no `apiGetBlob` here. Reading photo bytes by
+// pointing fetch() at an api path that 302s to a signed GCS URL is what broke
+// "Save to Photos" on iOS Safari — see lib/originals.ts, which signs first and
+// fetches the signed URL directly.
 
 export async function apiDelete<T>(path: string): Promise<T> {
   const res = await fetch(path, {
