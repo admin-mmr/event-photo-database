@@ -390,6 +390,15 @@ export interface DriveMediaFile {
   /** Drive's content MD5 (lowercase hex). Absent for the odd file Drive
    *  doesn't hash; callers must treat '' as "unknown", not "unique". */
   md5Checksum?: string;
+  /**
+   * Slash-joined path from the walk root ("Club/tag/batch/IMG_1.jpg"), matching
+   * the indexer's `relPath` (indexer/drive.py list_images). Set by
+   * walkMediaFiles; optional so the existing callers that only need id/md5 can
+   * keep building bare DriveMediaFile literals.
+   */
+  relPath?: string;
+  /** Byte size as Drive reports it (a decimal string), when known. */
+  size?: string;
 }
 
 /**
@@ -477,6 +486,10 @@ export async function findSubfoldersByName(
  * recursed into (the caller passes the managed-folder check so Photos_NNN /
  * Videos / Album buckets are never treated as sources). Iterative to keep the
  * stack shallow; all listings are paced via driveFetch.
+ *
+ * Each returned file carries its `relPath` (path from `rootFolderId`) and `size`
+ * so callers that need to report *where* a file lives — or order files the way
+ * the indexer does — don't have to walk again.
  */
 export async function walkMediaFiles(
   rootFolderId: string,
@@ -486,15 +499,15 @@ export async function walkMediaFiles(
   const token = opts?.token ?? (await getDriveToken());
   const skipChild = opts?.skipChildFolder ?? (() => false);
   const out: DriveMediaFile[] = [];
-  const stack: string[] = [rootFolderId];
+  const stack: Array<{ id: string; rel: string }> = [{ id: rootFolderId, rel: '' }];
 
   while (stack.length > 0) {
-    const folderId = stack.pop()!;
+    const { id: folderId, rel } = stack.pop()!;
     let pageToken: string | undefined;
     do {
       const params = new URLSearchParams({
         q: `'${folderId}' in parents and trashed=false`,
-        fields: 'nextPageToken,files(id,name,mimeType,md5Checksum)',
+        fields: 'nextPageToken,files(id,name,mimeType,md5Checksum,size)',
         pageSize: '1000',
         supportsAllDrives: 'true',
         includeItemsFromAllDrives: 'true',
@@ -504,19 +517,22 @@ export async function walkMediaFiles(
       if (!res.ok) throw new Error(`Drive walk ${res.status}: ${await res.text()}`);
       const page = (await res.json()) as {
         nextPageToken?: string;
-        files?: Array<{ id?: string; name?: string; mimeType?: string; md5Checksum?: string }>;
+        files?: Array<{ id?: string; name?: string; mimeType?: string; md5Checksum?: string; size?: string }>;
       };
       for (const f of page.files ?? []) {
         const mimeType = String(f.mimeType ?? '');
         const name = String(f.name ?? '');
         const id = String(f.id ?? '');
         if (!id) continue;
+        const relPath = `${rel}${name}`;
         if (mimeType === FOLDER_MIME) {
-          if (!skipChild(name)) stack.push(id);
+          if (!skipChild(name)) stack.push({ id, rel: `${relPath}/` });
           continue;
         }
         if (mimeType === DRIVE_SHORTCUT_MIME_LOCAL) continue; // never index our own shortcuts
-        if (accept(mimeType)) out.push({ id, name, mimeType, md5Checksum: String(f.md5Checksum ?? '') });
+        if (accept(mimeType)) {
+          out.push({ id, name, mimeType, md5Checksum: String(f.md5Checksum ?? ''), relPath, size: String(f.size ?? '') });
+        }
       }
       pageToken = page.nextPageToken;
     } while (pageToken);

@@ -267,6 +267,76 @@ export const PurgeResponseSchema = z.object({
 });
 export type PurgeResponse = z.infer<typeof PurgeResponseSchema>;
 
+// ── Duplicate-file removal ────────────────────────────────────────────────────
+
+/** One file inside a byte-identical duplicate group, as it exists in Drive. */
+export const DuplicateFileSchema = z.object({
+  driveFileId: z.string(),
+  name: z.string().default(''),
+  /** Path from the event's Drive root, e.g. "Club/tag/batch/IMG_1.jpg". */
+  relPath: z.string().default(''),
+  mimeType: z.string().default(''),
+  clubName: z.string().default(''),
+  batchFolderName: z.string().default(''),
+  sizeBytes: z.number().int().nonnegative().default(0),
+});
+export type DuplicateFile = z.infer<typeof DuplicateFileSchema>;
+
+/** Files sharing one content hash: the copy we keep + the copies we can remove. */
+export const DuplicateGroupSchema = z.object({
+  contentHash: z.string(),
+  canonical: DuplicateFileSchema,
+  duplicates: z.array(DuplicateFileSchema),
+});
+export type DuplicateGroup = z.infer<typeof DuplicateGroupSchema>;
+
+export const DuplicateScanResponseSchema = z.object({
+  ok: z.literal(true),
+  eventId: z.string(),
+  eventName: z.string().default(''),
+  /** Media files walked in the event's source tree (managed folders excluded). */
+  filesScanned: z.number().int().nonnegative(),
+  /** Files Drive gave no md5 for — never treated as duplicates. */
+  unhashedFiles: z.number().int().nonnegative(),
+  duplicateFiles: z.number().int().nonnegative(),
+  reclaimableBytes: z.number().int().nonnegative(),
+  groups: z.array(DuplicateGroupSchema),
+});
+export type DuplicateScanResponse = z.infer<typeof DuplicateScanResponseSchema>;
+
+/**
+ * POST body for the removal pass. DRY RUN unless `apply` is exactly `true`.
+ * `limit` caps files per call so the request fits the 60s Hosting budget;
+ * `hashes` narrows the run to specific duplicate groups.
+ */
+export const RemoveDuplicatesRequestSchema = z.object({
+  apply: z.boolean().optional(),
+  limit: z.number().int().positive().max(2000).optional(),
+  hashes: z.array(z.string().min(1)).max(2000).optional(),
+});
+export type RemoveDuplicatesRequest = z.infer<typeof RemoveDuplicatesRequestSchema>;
+
+export const RemoveDuplicatesResponseSchema = z.object({
+  ok: z.literal(true),
+  eventId: z.string(),
+  /** false = nothing was written; the `planned` list is what a run would trash. */
+  apply: z.boolean(),
+  message: z.string().default(''),
+  /** Duplicates eligible for removal in this caller's scope. */
+  candidates: z.number().int().nonnegative(),
+  removed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  /** Eligible duplicates left over (limit/time budget) — call again to continue. */
+  remaining: z.number().int().nonnegative(),
+  bytesReclaimed: z.number().int().nonnegative(),
+  /** Populated on a dry run instead of `removed`. */
+  planned: z.array(DuplicateFileSchema),
+  warnings: z.array(z.string()),
+  /** True when files were trashed: the index still references them until re-run. */
+  reindexRecommended: z.boolean().default(false),
+});
+export type RemoveDuplicatesResponse = z.infer<typeof RemoveDuplicatesResponseSchema>;
+
 // ── Reporting (dev plan G5.2) ─────────────────────────────────────────────────
 
 export const ClubSummarySchema = z.object({

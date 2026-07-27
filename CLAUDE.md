@@ -94,6 +94,50 @@
   Symptom of missing CORS: Save-to-Photos / Download-ZIP fail in the browser
   console with a CORS error while the signed URL itself opens fine in a new tab.
 
+## Duplicate-file removal (three layers, don't confuse them)
+
+- "Duplicates" means three different things in this repo; a bug report about
+  duplicates has to be pinned to the right layer first:
+  1. **Duplicate photos in the index** — the indexer collapses byte-identical
+     images by Drive's `md5Checksum` (`indexer/job.py`, `duplicateCount`), so
+     search/gallery show one copy. Audit with
+     `GET /api/events/:id/duplicates`. Nothing is deleted.
+  2. **Duplicate entries in the managed folders** — `dedupePhotosByContent` /
+     `planShortcutDedupe` keep Photos_NNN / Album from linking the same content
+     twice, and `POST /api/admin/folders/dedupe/:eventId` trashes duplicate
+     *managed folders* (two "Album" folders from a raced rebuild).
+  3. **Duplicate FILES still sitting in Drive** — the actual redundant uploads.
+     Layers 1 and 2 only ignore them; the tool below is what removes them.
+- **The tool:** `GET /api/admin/duplicates/:eventId` scans the event's live Drive
+  tree and reports the groups; `POST /api/admin/duplicates/:eventId/remove`
+  trashes the redundant copies (`api/src/services/duplicateFilesService.ts`).
+  Admin UI at `/admin/duplicates`; shell wrapper
+  `./cloud-webapp/infra/scripts/remove-duplicate-files.sh [--apply] [event-id …]`
+  (machine token, same `allowCronOrAdmin` gate as `resync-names`).
+- **Non-negotiables baked into the service** — keep them if you touch it:
+  - **DRY RUN unless the body says `apply: true`** (truthy-but-not-`true` must
+    not write), matching the resync-names convention.
+  - **The surviving copy is the first in `relPath` order** — the exact rule
+    `indexer/job.py` uses when it collapses by md5. Diverge and the tool trashes
+    the file the live index points at, so the gallery loses that photo until the
+    next re-index. Sort by code point (Python's `sorted()`), NOT `localeCompare`.
+  - **Removal is a soft delete**, reusing the G5.1 lifecycle: Drive trash +
+    a `Deleted_Files` row + `removeShortcutsForTargets` + public-index refresh +
+    an audit row. Never `files.delete` — the purge job owns permanent deletion.
+    The Sheet row is written only AFTER the trash call succeeds.
+  - **Managed folders are never walked** (`skipChildFolder: isManagedFolderName`)
+    — their contents are deliberate copies/shortcuts, not duplicates.
+  - **A file with no md5 is always kept.** Unknown ≠ duplicate.
+  - **Bounded per call** (file cap + ~40s budget) with `remaining` in the
+    response, because user-facing calls still die at the 60s Hosting cap; the UI
+    and script just call again.
+  - A club_admin's scan/removal is filtered to their own club's subtree *before*
+    grouping, so they never see or touch another club's files; a machine caller
+    (X-Sync-Token, no Firebase user) runs unscoped — do NOT let it fall through
+    to `effectiveClubScope`'s `__none__` sentinel, which silently matches nothing.
+- After a removal run the index still lists the trashed copies until the event is
+  re-indexed (`reindexRecommended: true` in the response says so).
+
 ## Monitoring the Cloud Run indexer job
 
 - **Tail logs live** (closest to `tail -f`) with the Logging API:

@@ -121,6 +121,7 @@ const STR = {
       trash: 'Trash',
       audit: 'Audit',
       folders: 'Folders',
+      duplicates: 'Duplicate files',
       email: 'Email settings',
       manage: 'Manage',
       insights: 'Insights',
@@ -153,6 +154,7 @@ const STR = {
       trash: '回收站',
       audit: '审计',
       folders: '文件夹',
+      duplicates: '重复文件',
       email: '邮件设置',
       manage: '管理',
       insights: '概览',
@@ -182,6 +184,7 @@ import { AdminAudit } from './pages/AdminAudit.js';
 import { EmailPrefs } from './pages/EmailPrefs.js';
 import { AdminSummary } from './pages/AdminSummary.js';
 import { AdminManagedFolders } from './pages/AdminManagedFolders.js';
+import { AdminDuplicates } from './pages/AdminDuplicates.js';
 import { DeletedFiles } from './pages/DeletedFiles.js';
 import { AdminMetrics } from './pages/AdminMetrics.js';
 import { MyData } from './pages/MyData.js';
@@ -298,6 +301,9 @@ export function App(): JSX.Element {
                   </Link>
                   <Link to="/admin/folders" className="nav-link" onClick={closeMenu}>
                     {t.nav.folders}
+                  </Link>
+                  <Link to="/admin/duplicates" className="nav-link" onClick={closeMenu}>
+                    {t.nav.duplicates}
                   </Link>
                   <Link to="/admin/deleted" className="nav-link" onClick={closeMenu}>
                     {t.nav.trash}
@@ -431,6 +437,7 @@ export function App(): JSX.Element {
           <Route path="/admin/summary" element={isGuest ? <Navigate to="/" replace /> : <AdminSummary />} />
           <Route path="/admin/deleted" element={isGuest ? <Navigate to="/" replace /> : <DeletedFiles />} />
           <Route path="/admin/folders" element={isGuest ? <Navigate to="/" replace /> : <AdminManagedFolders />} />
+          <Route path="/admin/duplicates" element={isGuest ? <Navigate to="/" replace /> : <AdminDuplicates />} />
           <Route path="/me/email" element={isGuest ? <Navigate to="/" replace /> : <EmailPrefs />} />
           <Route path="/me/data" element={<MyData />} />
         </Route>
