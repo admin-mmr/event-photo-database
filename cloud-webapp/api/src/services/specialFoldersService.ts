@@ -1003,8 +1003,18 @@ export interface ShortcutSweepResult {
  * Remove every managed entry (shortcut or materialised copy) pointing at the
  * given deleted target file IDs, across every managed folder in Special_Folders.
  * Entries are TRASHED (recoverable). Each touched row's fileCount is decremented.
+ *
+ * `opts.eventId` narrows the sweep to one event's managed folders. Cost here is
+ * two Drive list calls PER managed folder, so an unscoped sweep walks every
+ * folder in the system no matter how few files were deleted — seconds of work
+ * that can only ever find nothing, since a managed folder's shortcuts point at
+ * photos of its own event. Callers deleting within a single event should pass
+ * it; the default stays unscoped for callers that delete across events.
  */
-export async function removeShortcutsForTargets(targetFileIds: ReadonlyArray<string>): Promise<ShortcutSweepResult> {
+export async function removeShortcutsForTargets(
+  targetFileIds: ReadonlyArray<string>,
+  opts: { eventId?: string | undefined } = {},
+): Promise<ShortcutSweepResult> {
   const result: ShortcutSweepResult = { shortcutsRemoved: 0, foldersTouched: 0, errors: [] };
   const targets = new Set(targetFileIds.filter((id) => id && id.trim()));
   if (targets.size === 0) return result;
@@ -1019,6 +1029,7 @@ export async function removeShortcutsForTargets(targetFileIds: ReadonlyArray<str
   let records: SpecialFolderRecord[];
   try {
     records = await listAllSpecialFolders(spreadsheetId);
+    if (opts.eventId) records = records.filter((r) => r.eventId === opts.eventId);
   } catch (err) {
     result.errors.push(`Could not load Special_Folders: ${String(err)}`);
     return result;

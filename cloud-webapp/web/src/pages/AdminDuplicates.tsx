@@ -36,6 +36,7 @@ const STR = {
       `Move ${n} duplicate file${n === 1 ? '' : 's'} to Drive's trash? The kept copy of each stays put, and anything trashed can be restored from the Deleted files page.`,
     removed: (n: number, size: string) =>
       `Moved ${n} duplicate file${n === 1 ? '' : 's'} to trash — ${size} reclaimed.`,
+    working: (done: number, total: number) => `Moving files to trash — ${done} of ${total} done…`,
     partial: (n: number) => `${n} still to go — run it again to continue.`,
     failedSome: (n: number) => `${n} file${n === 1 ? '' : 's'} could not be trashed.`,
     reindexNote:
@@ -70,6 +71,7 @@ const STR = {
     confirm: (n: number) =>
       `确定将 ${n} 个重复文件移入 Drive 回收站吗？每组保留的那份不受影响，已移入回收站的文件可在“已删除文件”页面恢复。`,
     removed: (n: number, size: string) => `已将 ${n} 个重复文件移入回收站——释放 ${size}。`,
+    working: (done: number, total: number) => `正在移入回收站——已完成 ${done} / ${total}…`,
     partial: (n: number) => `仍有 ${n} 个待处理——再次运行即可继续。`,
     failedSome: (n: number) => `${n} 个文件无法移入回收站。`,
     reindexNote: '在重新索引该活动之前，搜索索引仍会包含已删除的副本（活动 → 建立索引）。',
@@ -94,6 +96,23 @@ function fmtBytes(bytes: number): string {
 /** Groups rendered in the preview table — enough to judge, not a data dump. */
 const MAX_GROUPS_SHOWN = 25;
 
+/**
+ * Safety stop for the removal loop below. Each round trashes a server-bounded
+ * batch, so this is far more rounds than any real event needs — it exists only
+ * so a server that kept reporting `remaining` could never spin forever.
+ */
+const MAX_REMOVE_ROUNDS = 60;
+
+/** Running totals across the rounds of one "Move duplicates to trash" press. */
+interface RemovalTotals {
+  removed: number;
+  failed: number;
+  remaining: number;
+  bytesReclaimed: number;
+  warnings: string[];
+  reindexRecommended: boolean;
+}
+
 function fileLine(f: DuplicateFile): string {
   return f.relPath || f.name || f.driveFileId;
 }
@@ -113,7 +132,8 @@ export function AdminDuplicates(): JSX.Element {
   const [events, setEvents] = useState<EventSummary[] | null>(null);
   const [eventId, setEventId] = useState('');
   const [scan, setScan] = useState<DuplicateScanResponse | null>(null);
-  const [result, setResult] = useState<RemoveDuplicatesResponse | null>(null);
+  const [result, setResult] = useState<RemovalTotals | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [busy, setBusy] = useState<'scan' | 'remove' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
@@ -145,23 +165,57 @@ export function AdminDuplicates(): JSX.Element {
     }
   }, [t.scanFailed]);
 
+  /**
+   * Trash every duplicate in the event, one press.
+   *
+   * The server trashes a bounded batch per call — it has to, since the whole
+   * request must fit Firebase Hosting's 60s ceiling — and reports what is left
+   * in `remaining`. So keep calling while it makes progress instead of asking
+   * the admin to press the button once per batch (an event with a few hundred
+   * duplicates needs several rounds). A round that removes nothing means every
+   * remaining file is failing, so stop rather than retry the same files forever.
+   */
   async function remove(): Promise<void> {
     if (!scan || scan.duplicateFiles === 0) return;
     if (!window.confirm(t.confirm(scan.duplicateFiles))) return;
+    const eventId = scan.eventId;
+    const totals: RemovalTotals = {
+      removed: 0,
+      failed: 0,
+      remaining: 0,
+      bytesReclaimed: 0,
+      warnings: [],
+      reindexRecommended: false,
+    };
     setBusy('remove');
     setError(null);
+    setResult(null);
+    setProgress({ done: 0, total: scan.duplicateFiles });
     try {
-      const r = await apiPost<RemoveDuplicatesResponse>(
-        `/api/admin/duplicates/${encodeURIComponent(scan.eventId)}/remove`,
-        { apply: true },
-      );
-      setResult(r);
-      // Re-scan so the table reflects Drive as it is now (and shows any
-      // duplicates left beyond this batch's cap).
-      await runScan(scan.eventId);
+      for (let round = 0; round < MAX_REMOVE_ROUNDS; round += 1) {
+        const r = await apiPost<RemoveDuplicatesResponse>(
+          `/api/admin/duplicates/${encodeURIComponent(eventId)}/remove`,
+          { apply: true },
+        );
+        totals.removed += r.removed;
+        totals.failed += r.failed;
+        totals.bytesReclaimed += r.bytesReclaimed;
+        totals.remaining = r.remaining;
+        totals.reindexRecommended = totals.reindexRecommended || r.reindexRecommended;
+        for (const w of r.warnings) if (!totals.warnings.includes(w)) totals.warnings.push(w);
+        setProgress({ done: totals.removed, total: totals.removed + r.remaining });
+        if (r.remaining === 0 || r.removed === 0) break;
+      }
+      setResult({ ...totals, warnings: [...totals.warnings] });
+      // Re-scan so the table reflects Drive as it is now.
+      await runScan(eventId);
     } catch (e) {
+      // Whatever earlier rounds trashed is real — show it alongside the error
+      // rather than losing it.
+      if (totals.removed > 0) setResult({ ...totals, warnings: [...totals.warnings] });
       setError(e instanceof Error ? e.message : t.removeFailed);
     } finally {
+      setProgress(null);
       setBusy(null);
     }
   }
@@ -220,6 +274,12 @@ export function AdminDuplicates(): JSX.Element {
       </div>
 
       {error && <p className="error-text">{error}</p>}
+
+      {progress && (
+        <p className="muted" role="status" aria-live="polite">
+          {t.working(progress.done, progress.total)}
+        </p>
+      )}
 
       {result && (
         <div className="rebuild-progress" role="status" aria-live="polite">
