@@ -45,6 +45,29 @@
 > folders would keep sorting by the pre-rename names. The re-sync renames the
 > entries in place, which preserves their sharing grants and avoids re-running
 > image-convert over every non-JPEG. Both steps are idempotent.
+>
+> **Rehearsing on one event, cheaply.** `backfill-capture-time.sh` passes
+> `FORCE_REINDEX=1`, which re-downloads and re-embeds the whole event. That is
+> only needed when `takenAt` is not populated yet. If the event was already
+> indexed since the capture-time feature shipped, run the job WITHOUT force —
+> the rename is applied to reused photos too, so nothing is re-downloaded or
+> re-embedded and the run costs almost nothing:
+>
+> ```
+> gcloud run jobs execute photo-indexer --project=<proj> --region=us-central1 \
+>   --update-env-vars=EVENT_ID=<id>,CAPTURE_TIME_RENAME=1 --wait
+> ```
+>
+> Execution-time `--update-env-vars` is an override, so `CAPTURE_TIME_RENAME`
+> does not stick to the job definition. Do **NOT** reach for `LIMIT` to try "just
+> a few photos" on an already-indexed event — it truncates the Drive listing
+> before the diff, so every photo outside the cap looks deleted and loses its
+> Firestore doc (see the env notes in `indexer/job.py`). Bound the blast radius
+> by picking one small event instead.
+>
+> If the rename is silently doing nothing, check the job log for
+> `rename SKIP … 403`: that is the read-write Drive scope missing on the DWD
+> client, and it is the single most common cause.
 
 Goal: let people view event photos in the order they were *taken* (not uploaded),
 on **two surfaces**:
