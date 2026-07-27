@@ -39,7 +39,7 @@ import { logger } from '../lib/logger.js';
 import { firestore } from '../lib/firestore.js';
 import { getDriveToken, walkMediaFiles, DRIVE_SCOPE_READWRITE, type DriveMediaFile } from './driveService.js';
 import { trashDriveFile } from './driveShortcutClient.js';
-import { recordSoftDelete } from './deletedFilesStore.js';
+import { recordSoftDeletes } from './deletedFilesStore.js';
 import { isManagedFolderName, isVideoFile, removeShortcutsForTargets } from './specialFoldersService.js';
 import { tryRebuildPublicFolderIndex } from './publicFolderIndexService.js';
 
@@ -90,13 +90,40 @@ export interface ServiceOutcome<T> {
 
 /**
  * Default cap on files trashed per removal call. Each file costs a Drive PATCH
- * plus a Sheet append, so a user-facing call (60s Firebase Hosting ceiling) has
- * to stop somewhere and report `remaining`; the UI / script just calls again.
+ * plus a share of a batched Sheet append, so a user-facing call (60s Firebase
+ * Hosting ceiling) has to stop somewhere and report `remaining`; the UI / script
+ * just calls again.
  */
 export const DEFAULT_REMOVE_LIMIT = 150;
 
-/** Wall-clock budget for one removal call, well inside the 60s Hosting cap. */
-const REMOVE_BUDGET_MS = 40_000;
+/**
+ * Wall-clock budget for one removal call, measured from the moment the call
+ * starts and covering EVERYTHING it does — the live Drive scan, the trashing
+ * loop and the managed-folder sweep.
+ *
+ * This used to clock only the trashing loop, which is the bug that made the tool
+ * unusable on a real event: the scan of a ~2,000-file tree takes 10–17s and the
+ * sweep takes seconds more, so `scan + 40s loop + sweep` sailed past the 60s
+ * Firebase Hosting ceiling and every single call died at 59.98s with a 502. The
+ * files were being trashed, but the caller never got the result — so the UI
+ * showed only an error, `remaining` never came back, and pressing the button
+ * again just repeated the same doomed request.
+ */
+const CALL_BUDGET_MS = 45_000;
+
+/**
+ * Tail of the budget held back for the post-loop shortcut sweep + public-index
+ * refresh, so the work that keeps managed folders consistent is never the thing
+ * that runs out of clock.
+ */
+const SWEEP_RESERVE_MS = 10_000;
+
+/**
+ * Duplicates trashed per round trip: the chunk's Drive PATCHes go out together,
+ * then the survivors are ledgered in one batched Sheets append. Kept modest so a
+ * chunk cannot overshoot the deadline by much, and so Drive sees a sane rate.
+ */
+const TRASH_CHUNK = 10;
 
 /**
  * Media we consider. Any `image/*` matches the indexer's own filter
@@ -244,9 +271,11 @@ export async function scanEventDuplicates(
  * Trash the redundant copies found by `scanEventDuplicates`, ledgering each one
  * in Deleted_Files so it stays restorable. DRY RUN unless `apply` is true.
  *
- * Bounded by `limit` (files) and an internal wall-clock budget; whatever is left
- * comes back as `remaining` for the next call. Idempotent: a trashed file drops
- * out of the next scan, so re-running only ever picks up what is still there.
+ * Bounded by `limit` (files) and a wall-clock budget covering the WHOLE call —
+ * scan included — so the response always comes back inside the 60s Hosting
+ * ceiling; whatever is left comes back as `remaining` for the next call.
+ * Idempotent: a trashed file drops out of the next scan, so re-running only ever
+ * picks up what is still there.
  */
 export async function removeEventDuplicates(
   eventId: string,
@@ -256,11 +285,16 @@ export async function removeEventDuplicates(
     hashes?: ReadonlyArray<string> | undefined;
     clubScope?: string | undefined;
     actorEmail: string;
+    /** Whole-call wall-clock budget; overridable for tests. */
+    budgetMs?: number;
   },
 ): Promise<ServiceOutcome<DuplicateRemovalResult>> {
+  const startedAt = Date.now();
+  const budgetMs = opts.budgetMs && opts.budgetMs > 0 ? opts.budgetMs : CALL_BUDGET_MS;
   const apply = opts.apply === true;
   const limit = opts.limit && opts.limit > 0 ? opts.limit : DEFAULT_REMOVE_LIMIT;
   const scan = await scanEventDuplicates(eventId, { clubScope: opts.clubScope });
+  const scanMs = Date.now() - startedAt;
   if (!scan.ok || !scan.data) return { ok: false, message: scan.message };
 
   const wanted = opts.hashes && opts.hashes.length > 0 ? new Set(opts.hashes.map((h) => h.toLowerCase())) : null;
@@ -301,52 +335,73 @@ export async function removeEventDuplicates(
   if (!spreadsheetId) return { ok: false, message: 'MASTER_SPREADSHEET_ID is not set — cannot ledger removals' };
 
   const driveToken = await getDriveToken(DRIVE_SCOPE_READWRITE);
-  const started = Date.now();
+  // Stop starting new chunks once the sweep's reserve is all that is left. The
+  // deadline is anchored to the start of the CALL, so a slow scan eats into the
+  // trashing time rather than pushing the response past the Hosting ceiling.
+  const trashDeadline = startedAt + budgetMs - SWEEP_RESERVE_MS;
+  const target = Math.min(limit, work.length);
   const trashedIds: string[] = [];
   let processed = 0;
 
-  for (const { dup, keptRelPath, contentHash } of work) {
-    if (processed >= limit || Date.now() - started > REMOVE_BUDGET_MS) break;
-    processed += 1;
+  while (processed < target) {
+    // Always run the first chunk: if the scan alone spent the budget, doing a
+    // little work beats returning zero progress forever (the UI and the shell
+    // script both stop looping on a round that removes nothing).
+    if (processed > 0 && Date.now() >= trashDeadline) break;
+    const chunk = work.slice(processed, Math.min(processed + TRASH_CHUNK, target));
+    processed += chunk.length;
 
-    const res = await trashDriveFile(dup.driveFileId, { token: driveToken });
-    if (!res.ok) {
-      result.failed += 1;
-      result.warnings.push(`Trash failed for ${dup.relPath}: ${res.error}`);
-      continue;
-    }
+    const outcomes = await Promise.all(
+      chunk.map(async (item) => ({ item, res: await trashDriveFile(item.dup.driveFileId, { token: driveToken }) })),
+    );
+
     // Ledger AFTER the trash succeeded, so the sheet never claims a delete that
-    // did not happen. A failed ledger write is loud but not fatal — the file is
-    // already in Drive's own trash and recoverable from there.
+    // did not happen — one batched append for the whole chunk. A failed ledger
+    // write is loud but not fatal: the files are already in Drive's own trash
+    // and recoverable from there.
+    const ledger: Array<{ dup: DuplicateFileInfo; keptRelPath: string; contentHash: string }> = [];
+    for (const { item, res } of outcomes) {
+      if (!res.ok) {
+        result.failed += 1;
+        result.warnings.push(`Trash failed for ${item.dup.relPath}: ${res.error}`);
+        continue;
+      }
+      ledger.push(item);
+      trashedIds.push(item.dup.driveFileId);
+      result.removed += 1;
+      result.bytesReclaimed += item.dup.sizeBytes;
+    }
+    if (ledger.length === 0) continue;
     try {
-      await recordSoftDelete(
+      await recordSoftDeletes(
         spreadsheetId,
-        {
+        ledger.map(({ dup, keptRelPath, contentHash }) => ({
           driveFileId: dup.driveFileId,
           fileName: dup.name,
           eventId,
           clubName: dup.clubName,
           batchFolderName: dup.batchFolderName,
           reason: `duplicate (md5 ${contentHash}) of ${keptRelPath}`,
-        },
+        })),
         opts.actorEmail,
       );
     } catch (err) {
-      result.warnings.push(`Trashed ${dup.relPath} but the Deleted_Files ledger write failed: ${String(err)}`);
+      const names = ledger.map((l) => l.dup.relPath).join(', ');
+      result.warnings.push(`Trashed ${names} but the Deleted_Files ledger write failed: ${String(err)}`);
     }
-    trashedIds.push(dup.driveFileId);
-    result.removed += 1;
-    result.bytesReclaimed += dup.sizeBytes;
   }
 
   result.remaining = Math.max(0, work.length - processed);
 
   // Retire managed shortcuts/copies that pointed at the now-trashed originals so
   // Photos_NNN / Album don't dangle, then refresh the public index — one sweep
-  // for the whole batch. Best-effort and gated, exactly like the delete route.
+  // for the whole batch. Scoped to this event: another event's managed folders
+  // cannot hold a shortcut to these files, and sweeping them all costs two Drive
+  // list calls per folder in the entire system. Best-effort and gated, exactly
+  // like the delete route.
   if (trashedIds.length > 0 && env.MANAGED_FOLDERS_ENABLED === 'true') {
     try {
-      const sweep = await removeShortcutsForTargets(trashedIds);
+      const sweep = await removeShortcutsForTargets(trashedIds, { eventId });
       for (const e of sweep.errors) result.warnings.push(`Shortcut sweep: ${e}`);
       await tryRebuildPublicFolderIndex();
     } catch (err) {
@@ -355,7 +410,13 @@ export async function removeEventDuplicates(
   }
 
   logger.info(
-    { ...result, planned: result.planned.length, warnings: result.warnings.length },
+    {
+      ...result,
+      planned: result.planned.length,
+      warnings: result.warnings.length,
+      scanMs,
+      totalMs: Date.now() - startedAt,
+    },
     'removeEventDuplicates done',
   );
   return {

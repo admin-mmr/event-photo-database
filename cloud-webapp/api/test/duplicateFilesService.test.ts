@@ -26,10 +26,15 @@ vi.mock('../src/services/driveShortcutClient.js', () => ({
   trashDriveFile: (...a: unknown[]) => trashDriveFile(...a),
 }));
 
-const recordSoftDelete = vi.fn();
+const recordSoftDeletes = vi.fn();
 vi.mock('../src/services/deletedFilesStore.js', () => ({
-  recordSoftDelete: (...a: unknown[]) => recordSoftDelete(...a),
+  recordSoftDeletes: (...a: unknown[]) => recordSoftDeletes(...a),
 }));
+
+/** Every file the ledger was told about, flattened across the batched calls. */
+type LedgerInput = { driveFileId: string; reason: string; fileName: string; clubName: string; batchFolderName: string };
+const ledgered = (): LedgerInput[] =>
+  recordSoftDeletes.mock.calls.flatMap((c) => c[1] as LedgerInput[]);
 
 const removeShortcutsForTargets = vi.fn();
 vi.mock('../src/services/specialFoldersService.js', () => ({
@@ -76,7 +81,7 @@ beforeEach(() => {
   walkMediaFiles.mockReset().mockResolvedValue([]);
   getDriveToken.mockReset().mockResolvedValue('tok');
   trashDriveFile.mockReset().mockResolvedValue({ ok: true, status: 200 });
-  recordSoftDelete.mockReset().mockResolvedValue({ deleteId: 'd1' });
+  recordSoftDeletes.mockReset().mockResolvedValue([{ deleteId: 'd1' }]);
   removeShortcutsForTargets.mockReset().mockResolvedValue({ shortcutsRemoved: 0, foldersTouched: 0, errors: [] });
   tryRebuildPublicFolderIndex.mockReset().mockResolvedValue(undefined);
   eventDoc.mockReset().mockResolvedValue({ data: () => ({ driveFolderId: 'root1', name: 'Spring Meet' }) });
@@ -200,7 +205,7 @@ describe('removeEventDuplicates', () => {
     expect(out.data!.planned.map((p) => p.driveFileId)).toEqual(['dup1', 'dup2']);
     expect(out.data!.removed).toBe(0);
     expect(trashDriveFile).not.toHaveBeenCalled();
-    expect(recordSoftDelete).not.toHaveBeenCalled();
+    expect(recordSoftDeletes).not.toHaveBeenCalled();
   });
 
   it('trashes every duplicate but never the canonical', async () => {
@@ -216,9 +221,10 @@ describe('removeEventDuplicates', () => {
   it('ledgers each removal with the club, batch and the copy that was kept', async () => {
     walkMediaFiles.mockResolvedValue(threeDupes);
     await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
-    const [sheetId, rec, actorEmail] = recordSoftDelete.mock.calls[0]! as [string, Record<string, string>, string];
+    const [sheetId, , actorEmail] = recordSoftDeletes.mock.calls[0]! as [string, unknown, string];
     expect(sheetId).toBe('sheet1');
     expect(actorEmail).toBe('a@x.org');
+    const rec = ledgered()[0]!;
     expect(rec).toMatchObject({
       driveFileId: 'dup1',
       fileName: '2.jpg',
@@ -229,19 +235,35 @@ describe('removeEventDuplicates', () => {
     expect(rec.reason).toContain('Club/t/b/1.jpg');
   });
 
+  it('ledgers a whole batch in one Sheets append, not one call per file', async () => {
+    walkMediaFiles.mockResolvedValue(threeDupes);
+    await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
+    expect(recordSoftDeletes).toHaveBeenCalledTimes(1);
+    expect(ledgered().map((l) => l.driveFileId)).toEqual(['dup1', 'dup2']);
+  });
+
   it('does not ledger a file whose trash call failed', async () => {
     walkMediaFiles.mockResolvedValue(threeDupes);
     trashDriveFile.mockResolvedValueOnce({ ok: false, error: 'HTTP 403', status: 403 });
     const out = await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
     expect(out.data!.failed).toBe(1);
     expect(out.data!.removed).toBe(1);
-    expect(recordSoftDelete.mock.calls.map((c) => (c[1] as { driveFileId: string }).driveFileId)).toEqual(['dup2']);
+    expect(ledgered().map((l) => l.driveFileId)).toEqual(['dup2']);
     expect(out.data!.warnings[0]).toContain('Club/t/b/2.jpg');
+  });
+
+  it('ledgers nothing at all when every trash in the batch failed', async () => {
+    walkMediaFiles.mockResolvedValue(threeDupes);
+    trashDriveFile.mockResolvedValue({ ok: false, error: 'HTTP 403', status: 403 });
+    const out = await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
+    expect(out.data!.removed).toBe(0);
+    expect(out.data!.failed).toBe(2);
+    expect(recordSoftDeletes).not.toHaveBeenCalled();
   });
 
   it('still counts a removal (and warns) when the ledger write fails', async () => {
     walkMediaFiles.mockResolvedValue(threeDupes);
-    recordSoftDelete.mockRejectedValueOnce(new Error('sheet down'));
+    recordSoftDeletes.mockRejectedValueOnce(new Error('sheet down'));
     const out = await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
     expect(out.data!.removed).toBe(2);
     expect(out.data!.warnings.join(' ')).toContain('ledger write failed');
@@ -269,7 +291,9 @@ describe('removeEventDuplicates', () => {
   it('sweeps managed shortcuts for the trashed originals and refreshes the index', async () => {
     walkMediaFiles.mockResolvedValue(threeDupes);
     await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
-    expect(removeShortcutsForTargets).toHaveBeenCalledWith(['dup1', 'dup2']);
+    // Scoped to this event: another event's managed folders cannot point at
+    // these files, and sweeping them all costs Drive calls per folder.
+    expect(removeShortcutsForTargets).toHaveBeenCalledWith(['dup1', 'dup2'], { eventId: 'ev1' });
     expect(tryRebuildPublicFolderIndex).toHaveBeenCalledTimes(1);
   });
 
@@ -279,6 +303,56 @@ describe('removeEventDuplicates', () => {
     expect(out.data!.removed).toBe(0);
     expect(removeShortcutsForTargets).not.toHaveBeenCalled();
     expect(tryRebuildPublicFolderIndex).not.toHaveBeenCalled();
+  });
+
+  // The 502 this tool shipped with: the wall-clock budget clocked only the
+  // trashing loop, so a real event spent ~15s scanning Drive, then a full 40s
+  // trashing, then swept — and Firebase Hosting killed the request at 60s. The
+  // caller got no result at all, so `remaining` never came back and every retry
+  // repeated the same doomed request.
+  describe('call budget', () => {
+    /** 40 duplicates: enough that the loop must stop on time, not on `limit`. */
+    const manyDupes = [
+      file('keep', 'Club/t/b/000.jpg', 'dup'),
+      ...Array.from({ length: 40 }, (_, i) => file(`dup${i}`, `Club/t/b/${String(i + 1).padStart(3, '0')}.jpg`, 'dup')),
+    ];
+
+    it('charges the Drive scan against the budget, not just the trashing loop', async () => {
+      // A scan slower than the whole budget must leave (almost) no trashing
+      // time — previously the loop started a fresh 40s of work regardless.
+      walkMediaFiles.mockImplementation(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+        return manyDupes;
+      });
+      const out = await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org', budgetMs: 50 });
+      // One chunk still runs, so a caller looping on `remaining` makes progress.
+      expect(out.data!.removed).toBe(10);
+      expect(out.data!.remaining).toBe(30);
+    });
+
+    it('returns a usable partial result instead of running to the Hosting cap', async () => {
+      walkMediaFiles.mockResolvedValue(manyDupes);
+      trashDriveFile.mockImplementation(async () => {
+        await new Promise((r) => setTimeout(r, 15));
+        return { ok: true, status: 200 };
+      });
+      const started = Date.now();
+      const out = await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org', budgetMs: 60 });
+      expect(Date.now() - started).toBeLessThan(400);
+      expect(out.ok).toBe(true);
+      expect(out.data!.removed).toBeGreaterThan(0);
+      expect(out.data!.removed).toBeLessThan(40);
+      // Everything not done is reported back so the next call resumes.
+      expect(out.data!.removed + out.data!.remaining).toBe(40);
+      expect(out.message).toContain('run again to continue');
+    });
+
+    it('drains the whole event when the budget is ample', async () => {
+      walkMediaFiles.mockResolvedValue(manyDupes);
+      const out = await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
+      expect(out.data!.removed).toBe(40);
+      expect(out.data!.remaining).toBe(0);
+    });
   });
 
   it('only touches the scoped club when a club_admin applies', async () => {

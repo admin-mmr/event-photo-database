@@ -128,9 +128,30 @@
   - **Managed folders are never walked** (`skipChildFolder: isManagedFolderName`)
     — their contents are deliberate copies/shortcuts, not duplicates.
   - **A file with no md5 is always kept.** Unknown ≠ duplicate.
-  - **Bounded per call** (file cap + ~40s budget) with `remaining` in the
+  - **Bounded per call** (file cap + a wall-clock budget) with `remaining` in the
     response, because user-facing calls still die at the 60s Hosting cap; the UI
     and script just call again.
+    - **The budget must be anchored to the START OF THE CALL and cover the scan
+      and the sweep, not just the trashing loop.** It originally clocked only the
+      loop, so a real event (2,053 files) spent ~15s scanning Drive, then a full
+      40s trashing, then swept — and *every* remove call died at 59.98s with a
+      **502**. Files were being trashed, but the caller never got a response, so
+      `remaining` never came back and each retry repeated the same doomed
+      request. `CALL_BUDGET_MS` (45s) now starts before the scan and holds back
+      `SWEEP_RESERVE_MS` (10s) for the shortcut sweep. The first chunk always
+      runs, so even a scan-dominated call makes forward progress.
+    - **Bulk work must batch its Sheet writes.** Per-file `recordSoftDelete` was
+      a lock + a Sheets round-trip each; `recordSoftDeletes` appends a whole
+      chunk in one call (files are trashed 10 at a time in parallel, then
+      ledgered together — still strictly after their trash succeeded).
+    - `removeShortcutsForTargets` takes an `eventId` — pass it. Unscoped it does
+      two Drive list calls for *every* managed folder in the system, which can
+      only ever find nothing, since a managed folder's shortcuts point at photos
+      of its own event.
+  - **The admin UI keeps calling until `remaining` is 0** (`MAX_REMOVE_ROUNDS`),
+    stopping early on a round that removes nothing — otherwise a few hundred
+    duplicates means a few hundred/150 button presses. `remove-duplicate-files.sh`
+    already looped this way.
   - A club_admin's scan/removal is filtered to their own club's subtree *before*
     grouping, so they never see or touch another club's files; a machine caller
     (X-Sync-Token, no Firebase user) runs unscoped — do NOT let it fall through

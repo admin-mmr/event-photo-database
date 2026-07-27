@@ -38,9 +38,10 @@
 #
 # Tunables (env): PROJECT, REGION, API_BASE, API_SERVICE, BATCH_LIMIT, MAX_ROUNDS.
 #
-# Each POST is bounded server-side (a file cap plus a ~40s budget) so it fits the
-# 60s Firebase Hosting ceiling; this script just calls again while the response
-# still reports files remaining.
+# Each POST is bounded server-side (a file cap plus a wall-clock budget covering
+# the whole call — Drive scan included) so it fits the 60s Firebase Hosting
+# ceiling; this script just calls again while the response still reports files
+# remaining.
 
 set -euo pipefail
 
@@ -56,7 +57,7 @@ EVENTS=()
 for arg in "$@"; do
   case "$arg" in
     --apply) APPLY=1 ;;
-    -h|--help) sed -n '2,43p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,44p' "$0"; exit 0 ;;
     -*) echo "ERROR: unknown flag '$arg'" >&2; exit 1 ;;
     *) EVENTS+=("$arg") ;;
   esac

@@ -63,19 +63,23 @@ const json = (body: unknown): Response =>
   new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
 /**
- * Route each request by URL so the page's real call sequence works. `scans` is
- * consumed in order, so the re-scan after a removal can differ from the first.
+ * Route each request by URL so the page's real call sequence works. Both `scans`
+ * and `removes` are consumed in order (the last entry repeats), so the re-scan
+ * after a removal can differ from the first, and the server can hand back the
+ * bounded-batch responses the page is supposed to keep following.
  */
-function mockApi(opts: { scans: unknown[]; remove?: unknown }): ReturnType<typeof vi.fn> {
+function mockApi(opts: { scans: unknown[]; remove?: unknown; removes?: unknown[] }): ReturnType<typeof vi.fn> {
   const calls = vi.fn();
   const scans = [...opts.scans];
+  const removes = opts.removes ? [...opts.removes] : [opts.remove];
+  const next = (queue: unknown[]): unknown => (queue.length > 1 ? queue.shift() : queue[0]);
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
       const u = String(url);
       calls(u, init?.method ?? 'GET');
-      if (u.endsWith('/remove')) return json(opts.remove);
-      if (u.includes('/api/admin/duplicates/')) return json(scans.length > 1 ? scans.shift() : scans[0]);
+      if (u.endsWith('/remove')) return json(next(removes));
+      if (u.includes('/api/admin/duplicates/')) return json(next(scans));
       return json(EVENTS);
     }),
   );
@@ -149,6 +153,48 @@ describe('<AdminDuplicates />', () => {
     expect(screen.getByText(/re-indexed/i)).toBeTruthy();
     // The follow-up scan replaced the table with the "nothing left" state.
     await waitFor(() => expect(screen.getByText(/no byte-identical duplicates/i)).toBeTruthy());
+  });
+
+  // The server can only trash a bounded batch per call — the whole request has
+  // to fit Firebase Hosting's 60s ceiling — so a big event needs several rounds.
+  // One press has to drain it, or an admin faces a dozen identical presses.
+  it('keeps going while the server reports files remaining, and totals them up', async () => {
+    const calls = mockApi({
+      scans: [SCAN, EMPTY_SCAN],
+      removes: [
+        { ...REMOVED, removed: 150, remaining: 100, bytesReclaimed: 150 * 1024 * 1024 },
+        { ...REMOVED, removed: 100, remaining: 0, bytesReclaimed: 100 * 1024 * 1024 },
+      ],
+    });
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    renderPage();
+    await scanEvent();
+
+    fireEvent.click(await screen.findByRole('button', { name: /move duplicates to trash/i }));
+
+    await waitFor(() => expect(screen.getByText(/moved 250 duplicate files to trash/i)).toBeTruthy());
+    expect(screen.getByText(/250\.0 MB reclaimed/i)).toBeTruthy();
+    expect(calls.mock.calls.filter(([, method]) => method === 'POST')).toHaveLength(2);
+    // Nothing left over, so no "run it again" nag.
+    expect(screen.queryByText(/still to go/i)).toBeNull();
+  });
+
+  it('stops instead of looping when a round trashes nothing', async () => {
+    // Every file is failing to trash: `remaining` never falls, so following it
+    // blindly would retry the same doomed files forever.
+    const calls = mockApi({
+      scans: [SCAN],
+      remove: { ...REMOVED, removed: 0, failed: 5, remaining: 5, bytesReclaimed: 0, reindexRecommended: false },
+    });
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    renderPage();
+    await scanEvent();
+
+    fireEvent.click(await screen.findByRole('button', { name: /move duplicates to trash/i }));
+
+    await waitFor(() => expect(screen.getByText(/5 files could not be trashed/i)).toBeTruthy());
+    expect(calls.mock.calls.filter(([, method]) => method === 'POST')).toHaveLength(1);
+    expect(screen.getByText(/5 still to go/i)).toBeTruthy();
   });
 
   it('says so plainly when there are no duplicates', async () => {

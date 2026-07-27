@@ -110,39 +110,68 @@ export async function listDeleted(
   return recs;
 }
 
+export interface SoftDeleteInput {
+  driveFileId: string;
+  fileName?: string | undefined;
+  eventId?: string | undefined;
+  clubName: string;
+  batchFolderName?: string | undefined;
+  uploadedBy?: string | undefined;
+  reason?: string | undefined;
+}
+
+function toDeletedRec(input: SoftDeleteInput, actorEmail: string): DeletedFile {
+  return {
+    deleteId: randomUUID(),
+    driveFileId: input.driveFileId.trim(),
+    fileName: input.fileName ?? '',
+    eventId: input.eventId ?? '',
+    clubName: input.clubName ?? '',
+    batchFolderName: input.batchFolderName ?? '',
+    uploadedBy: input.uploadedBy ?? '',
+    deletedAt: new Date().toISOString(),
+    deletedBy: actorEmail.trim().toLowerCase(),
+    deletedReason: input.reason ?? '',
+    restoredAt: '',
+    restoredBy: '',
+    purgedAt: '',
+    status: 'deleted',
+  };
+}
+
 export async function recordSoftDelete(
   spreadsheetId: string,
-  input: {
-    driveFileId: string;
-    fileName?: string | undefined;
-    eventId?: string | undefined;
-    clubName: string;
-    batchFolderName?: string | undefined;
-    uploadedBy?: string | undefined;
-    reason?: string | undefined;
-  },
+  input: SoftDeleteInput,
   actorEmail: string,
 ): Promise<DeletedFile> {
-  if (!input.driveFileId.trim()) throw new DeletedFilesError('invalid', 'driveFileId is required');
+  const [rec] = await recordSoftDeletes(spreadsheetId, [input], actorEmail);
+  return rec!;
+}
+
+/**
+ * Ledger MANY soft deletes in one `values.append` under a single tab lock.
+ *
+ * WHY: a per-file `recordSoftDelete` costs a lock acquisition plus a Sheets
+ * round-trip each, so a bulk pass (the duplicate-file tool trashes hundreds)
+ * spends most of its wall clock waiting on Sheets and blows the request budget.
+ * Sheets appends N rows as happily as one, so the batch is near-free.
+ *
+ * Callers must still append only files whose Drive trash already succeeded —
+ * the ledger must never claim a delete that did not happen.
+ */
+export async function recordSoftDeletes(
+  spreadsheetId: string,
+  inputs: ReadonlyArray<SoftDeleteInput>,
+  actorEmail: string,
+): Promise<DeletedFile[]> {
+  if (inputs.length === 0) return [];
+  for (const input of inputs) {
+    if (!input.driveFileId.trim()) throw new DeletedFilesError('invalid', 'driveFileId is required');
+  }
   return withTabLock(TAB, async () => {
-    const rec: DeletedFile = {
-      deleteId: randomUUID(),
-      driveFileId: input.driveFileId.trim(),
-      fileName: input.fileName ?? '',
-      eventId: input.eventId ?? '',
-      clubName: input.clubName ?? '',
-      batchFolderName: input.batchFolderName ?? '',
-      uploadedBy: input.uploadedBy ?? '',
-      deletedAt: new Date().toISOString(),
-      deletedBy: actorEmail.trim().toLowerCase(),
-      deletedReason: input.reason ?? '',
-      restoredAt: '',
-      restoredBy: '',
-      purgedAt: '',
-      status: 'deleted',
-    };
-    await appendSheetValues(spreadsheetId, `${TAB}!A1`, [recToRow(rec)]);
-    return rec;
+    const recs = inputs.map((input) => toDeletedRec(input, actorEmail));
+    await appendSheetValues(spreadsheetId, `${TAB}!A1`, recs.map(recToRow));
+    return recs;
   });
 }
 
