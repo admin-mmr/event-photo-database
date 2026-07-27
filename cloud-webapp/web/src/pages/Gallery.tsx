@@ -8,7 +8,12 @@ import type {
   DeletePhotosResponse,
 } from '@cloud-webapp/shared';
 import { apiGet, apiPost, ApiError } from '../lib/api.js';
-import { fetchOriginalBlob } from '../lib/originals.js';
+import {
+  OriginalsFetcher,
+  PREFETCH_MAX_PHOTOS,
+  PREFETCH_DEBOUNCE_MS,
+  type OriginalEntry,
+} from '../lib/originals.js';
 import { useAuth } from '../lib/useAuth.js';
 import { useSelection } from '../lib/selection.js';
 import { eventLabel } from '../lib/eventLabel.js';
@@ -215,17 +220,38 @@ export function Gallery(): JSX.Element {
   //     share once they're cached.
   //  2. On mobile the lightbox shows this original (full res) instead of the
   //     downsized `web` derivative.
-  // A ref mirrors the state so the prefetch effect can skip already-cached
-  // photos without taking `origBlobs` as a dependency (which would re-fire it).
+  // Both go through one fetcher per event: it caches, joins concurrent
+  // requests for the same photo and caps how many transfers run at once, so the
+  // prefetch, the save fallback and the ZIP cannot download the same original
+  // more than once between them. `origBlobs` mirrors its cache into render
+  // state (the blobs are shared, not copied).
+  const originals = useRef<OriginalsFetcher | null>(null);
+  if (!originals.current) originals.current = new OriginalsFetcher(eventId);
   const [origBlobs, setOrigBlobs] = useState<Record<string, Blob>>({});
-  const origBlobsRef = useRef<Record<string, Blob>>({});
-  const origFetching = useRef<Set<string>>(new Set());
   // Selected ids whose original prefetch FAILED (e.g. a CORS/network error on
   // the signed-URL blob read). Counted as "settled" so the Save button stops
   // showing "Preparing…" instead of staying disabled forever; the tap then runs
   // saveSelected's fetch-then-share fallback, which retries and tolerates
   // per-photo failures.
   const [prefetchFailed, setPrefetchFailed] = useState<Set<string>>(new Set());
+
+  /** Mirror one settled original into render state. Shared by the prefetch, the
+   *  save fallback and the ZIP so all three report progress identically. */
+  const recordSettled = useCallback((photoId: string, entry: OriginalEntry | null): void => {
+    if (entry) {
+      setOrigBlobs((prev) =>
+        prev[photoId] === entry.blob ? prev : { ...prev, [photoId]: entry.blob },
+      );
+      setPrefetchFailed((prev) => {
+        if (!prev.has(photoId)) return prev;
+        const next = new Set(prev);
+        next.delete(photoId);
+        return next;
+      });
+      return;
+    }
+    setPrefetchFailed((prev) => (prev.has(photoId) ? prev : new Set(prev).add(photoId)));
+  }, []);
   // Watchdog: if a prefetch neither resolves nor rejects (hung request), stop
   // showing "Preparing…" after this long so the button stays usable.
   const [prepareTimedOut, setPrepareTimedOut] = useState(false);
@@ -280,7 +306,11 @@ export function Gallery(): JSX.Element {
   // Clears once everything settles or the watchdog fires, so the button can
   // never stay permanently disabled.
   const savePreparing =
-    canSavePhotos && sel.count > 0 && !selectedSettled && !prepareTimedOut;
+    canSavePhotos &&
+    sel.count > 0 &&
+    sel.count <= PREFETCH_MAX_PHOTOS &&
+    !selectedSettled &&
+    !prepareTimedOut;
 
   // Load one page; append unless this is the first page (cursor === null).
   const loadPage = useCallback(
@@ -313,8 +343,8 @@ export function Gallery(): JSX.Element {
     // Drop cached originals from the previous event and revoke their URLs.
     for (const url of Object.values(origUrlsRef.current)) URL.revokeObjectURL(url);
     origUrlsRef.current = {};
-    origBlobsRef.current = {};
-    origFetching.current = new Set();
+    originals.current?.abort();
+    originals.current = new OriginalsFetcher(eventId);
     setOrigBlobs({});
     setOrigUrls({});
     loadPage(null).catch((e: ApiError | Error) => setError(e.message));
@@ -390,49 +420,37 @@ export function Gallery(): JSX.Element {
   // Prefetch the originals we need (current lightbox photo + selected) so a save
   // can share synchronously and the lightbox can show full res. Mobile only —
   // desktop saves go through the on-demand download path and don't need this.
-  // Reads the ref (not `origBlobs` state) to skip cached photos, so adding a
-  // blob doesn't re-fire this effect; it re-runs only when `neededKey` changes.
+  //
+  // Debounced so ticking checkboxes doesn't fire a signing call per tick, and
+  // skipped above PREFETCH_MAX_PHOTOS: buffering a whole page of full-resolution
+  // originals is hundreds of megabytes the user may never ask for. Past the cap
+  // the Save button stays live and fetches on tap.
   useEffect(() => {
-    if (!canSavePhotos) return;
-    for (const id of neededIds) {
-      if (origBlobsRef.current[id] || origFetching.current.has(id)) continue;
-      const p = list.find((x) => x.photoId === id);
-      if (!p) continue;
-      origFetching.current.add(id);
-      fetchOriginal(p)
-        .then((blob) => {
-          origBlobsRef.current = { ...origBlobsRef.current, [id]: blob };
-          setOrigBlobs(origBlobsRef.current);
-          setPrefetchFailed((prev) => {
-            if (!prev.has(id)) return prev;
-            const next = new Set(prev);
-            next.delete(id);
-            return next;
-          });
-        })
-        .catch(() => {
-          // Leave uncached and mark settled-as-failed so the Save button stops
-          // waiting; the save falls back to fetch-then-share, display to `web`.
-          setPrefetchFailed((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
-        })
-        .finally(() => origFetching.current.delete(id));
-    }
+    const fetcher = originals.current;
+    if (!canSavePhotos || !fetcher) return;
+    const ids = [...neededIds].filter((id) => list.some((x) => x.photoId === id));
+    if (ids.length === 0 || ids.length > PREFETCH_MAX_PHOTOS) return;
+    const timer = setTimeout(() => {
+      void fetcher.fetch(ids, { onSettled: recordSettled });
+    }, PREFETCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canSavePhotos, neededKey, list]);
 
   // Drop cached originals we no longer need (bounds mobile memory — realistic
-  // selections are dozens; the 200-photo server cap is the hard bound). Revoke
-  // their object URLs too. Keyed on `neededKey` so it runs when the set shrinks.
+  // selections are dozens; the 200-photo server cap is the hard bound). Their
+  // object URLs are revoked by the effect below, which follows `origBlobs`.
+  // Keyed on `neededKey` so it runs when the set shrinks.
   useEffect(() => {
-    let blobsChanged = false;
-    for (const id of Object.keys(origBlobsRef.current)) {
-      if (neededIds.has(id)) continue;
-      const next = { ...origBlobsRef.current };
-      delete next[id];
-      origBlobsRef.current = next;
-      blobsChanged = true;
+    const fetcher = originals.current;
+    if (!fetcher) return;
+    if (fetcher.retain(neededIds)) {
+      setOrigBlobs((prev) => {
+        const next: Record<string, Blob> = {};
+        for (const id of Object.keys(prev)) if (neededIds.has(id)) next[id] = prev[id]!;
+        return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+      });
     }
-    if (blobsChanged) setOrigBlobs(origBlobsRef.current);
     // Forget failures for ids no longer needed so a future re-select retries.
     setPrefetchFailed((prev) => {
       const next = new Set([...prev].filter((id) => neededIds.has(id)));
@@ -555,8 +573,15 @@ export function Gallery(): JSX.Element {
     return [...byClub.values()];
   }, [albumFolders]);
 
+  /** One original through the shared fetcher: cached if we have it, joined if
+   *  it's already in flight, transferred once otherwise. */
   async function fetchOriginal(p: GalleryPhoto): Promise<Blob> {
-    return fetchOriginalBlob(eventId, p.photoId);
+    const fetcher = originals.current;
+    if (!fetcher) throw new Error('originals fetcher unavailable');
+    const { entries } = await fetcher.fetch([p.photoId], { onSettled: recordSettled });
+    const entry = entries[0];
+    if (!entry) throw new Error(`original unavailable: ${p.photoId}`);
+    return entry.blob;
   }
 
   /** B1 ZIP download — the right call on desktop, the worst case on iOS (lands
@@ -569,7 +594,16 @@ export function Gallery(): JSX.Element {
     setNotice(null);
     setStatus(null);
     try {
-      const { included, failed } = await downloadOriginalsZip(eventId, [...sel.selected], `${title}.zip`);
+      const fetcher = originals.current;
+      if (!fetcher) throw new Error('originals fetcher unavailable');
+      // Same fetcher as the save prefetch, so anything already in hand is zipped
+      // from cache instead of pulled down a second time.
+      const { included, failed } = await downloadOriginalsZip(
+        fetcher,
+        eventId,
+        [...sel.selected],
+        `${title}.zip`,
+      );
       const skipped = failed > 0 ? t.downloadZipSkipped(failed) : '';
       setStatus(t.downloadZip(included, skipped));
     } catch (e) {
@@ -650,8 +684,9 @@ export function Gallery(): JSX.Element {
     setStatus(null);
 
     const cached = chosen
-      .map((p) => ({ blob: origBlobs[p.photoId], filename: filenameFor(p) }))
-      .filter((it): it is NamedBlob => Boolean(it.blob));
+      .map((p) => originals.current?.get(p.photoId))
+      .filter((e): e is OriginalEntry => e !== undefined)
+      .map((e) => ({ blob: e.blob, filename: e.filename }));
 
     // Fast path: all originals cached → share synchronously (no awaited fetch).
     if (canSavePhotos && cached.length === chosen.length) {
@@ -669,19 +704,18 @@ export function Gallery(): JSX.Element {
     // save or download. Tolerate per-photo failures — one bad original must not
     // sink the whole save — and only error out if EVERY photo failed.
     try {
-      const files: NamedBlob[] = [];
-      let failed = 0;
-      for (const p of chosen) {
-        try {
-          // eslint-disable-next-line no-await-in-loop
-          files.push({ blob: await fetchOriginal(p), filename: filenameFor(p) });
-        } catch {
-          failed += 1;
-        }
-      }
+      const fetcher = originals.current;
+      if (!fetcher) throw new Error('originals fetcher unavailable');
+      // JOINS whatever the prefetch already has in flight rather than starting a
+      // duplicate set of transfers.
+      const { entries, failed, sampleErrors } = await fetcher.fetch(
+        chosen.map((p) => p.photoId),
+        { onSettled: recordSettled },
+      );
+      const files: NamedBlob[] = entries.map((e) => ({ blob: e.blob, filename: e.filename }));
       if (files.length === 0) {
         reportClientError('download_failed', 'Save to Photos: every original failed to load', {
-          context: { eventId, requested: chosen.length, failed },
+          context: { eventId, requested: chosen.length, failed, sampleErrors },
         });
         setNotice(t.couldNotLoadAny);
         return;

@@ -46,6 +46,8 @@ export const ORIG_EXT_BY_MIME: Record<string, string> = {
   'image/heif': 'heif',
   'image/webp': 'webp',
   'image/tiff': 'tif',
+  'image/bmp': 'bmp',
+  'image/avif': 'avif',
 };
 
 export function origExtForMime(mimeType: string | undefined): string {

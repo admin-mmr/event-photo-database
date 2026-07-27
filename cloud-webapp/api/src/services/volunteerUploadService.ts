@@ -31,7 +31,14 @@ import {
   listEventImages,
   getOrCreateSubfolder,
   DRIVE_SCOPE_READWRITE,
+  type UploadedDriveFile,
 } from './driveService.js';
+import {
+  claimUploadedFile,
+  recordClaimTarget,
+  releaseUploadedFile,
+  type ClaimInput,
+} from './uploadDedupService.js';
 import { triggerIndexJob } from './indexerJob.js';
 import { appendUploadLog } from './uploadLogService.js';
 import { initUploadBatch, updateUploadBatch } from './uploadBatchService.js';
@@ -415,6 +422,9 @@ export async function enqueueStagedBatch(
   let failed = 0;
   const skippedDuplicateNames: string[] = [];
   for (const objectName of objectNames) {
+    // Set once we hold an atomic claim, so a failed copy hands it back rather
+    // than barring the file from ever being uploaded again.
+    let claim: ClaimInput | null = null;
     try {
       const file = bucket.file(objectName);
       const [exists] = await file.exists();
@@ -441,18 +451,37 @@ export async function enqueueStagedBatch(
         originalFileName: originalName,
       });
 
-      // Duplicate-check against existing Drive files AND earlier files in this
-      // same batch. Skip + clean up rather than writing a second copy. Matched
-      // on content hash so a re-upload is caught regardless of what the file is
-      // now called on Drive (the capture-time rename changes that).
+      // Duplicate-check in two layers. The snapshot covers everything already in
+      // Drive when this batch started, matched on content hash so a re-upload is
+      // caught regardless of what the file is now called there (the capture-time
+      // rename changes that). The atomic claim then covers what a snapshot
+      // structurally cannot: a CONCURRENT batch for the same event, which took
+      // its own snapshot before either had written anything. Skip + clean up
+      // rather than writing a second copy.
       const key = dedupKey(name, size);
       const hash = gcsMd5ToHex(meta.md5Hash);
-      const isDuplicate = hash ? seenHashes.has(hash) : seen.has(key);
-      if (isDuplicate) {
+      const seenAlready = hash ? seenHashes.has(hash) : seen.has(key);
+      const candidate: ClaimInput = {
+        eventId: link.eventId,
+        dedupKey: hash || key,
+        name,
+        batchId,
+      };
+      // Only hold the claim when WE won it, so a later failure can never release
+      // a claim that belongs to another batch.
+      const won = seenAlready ? false : await claimUploadedFile(candidate);
+      if (won) claim = candidate;
+      if (!won) {
         skippedDuplicates += 1;
         skippedDuplicateNames.push(name);
         logger.info(
-          { eventId: link.eventId, batchId, objectName, name, matchedOn: hash ? 'md5' : 'name+size' },
+          {
+            eventId: link.eventId,
+            batchId,
+            objectName,
+            name,
+            matchedOn: seenAlready ? (hash ? 'md5' : 'name+size') : 'claim',
+          },
           'duplicate skipped',
         );
         await file
@@ -462,9 +491,10 @@ export async function enqueueStagedBatch(
       }
 
       const destFolderId = await ensureBatchFolder(custom.photographerName ?? '');
+      let uploaded: UploadedDriveFile;
       if (size > INLINE_COPY_MAX_BYTES) {
         // Large videos: chunked GCS→Drive resumable copy, bounded memory.
-        await uploadFileToDriveResumable(
+        uploaded = await uploadFileToDriveResumable(
           destFolderId,
           name,
           contentType,
@@ -474,8 +504,11 @@ export async function enqueueStagedBatch(
         );
       } else {
         const [bytes] = await file.download();
-        await uploadFileToDrive(destFolderId, name, contentType, bytes, { token: driveToken });
+        uploaded = await uploadFileToDrive(destFolderId, name, contentType, bytes, { token: driveToken });
       }
+      // Point the claim at what it produced so an admin delete can release it.
+      await recordClaimTarget(candidate, uploaded.id);
+      claim = null;
       // Register both keys so the rest of THIS batch dedupes against it too.
       if (hash) seenHashes.add(hash);
       seen.add(key);
@@ -488,6 +521,9 @@ export async function enqueueStagedBatch(
         .catch((err) => logger.warn({ err, objectName }, 'staged object cleanup failed (non-fatal)'));
     } catch (err) {
       failed += 1;
+      // Hand back a claim we took but never turned into a Drive file, so the
+      // Cloud Tasks retry (or a later re-upload) isn't rejected as a duplicate.
+      if (claim) await releaseUploadedFile(claim);
       logger.error({ err, eventId: link.eventId, batchId, objectName }, 'staged object copy to Drive failed');
     }
   }

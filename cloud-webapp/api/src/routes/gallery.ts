@@ -26,6 +26,7 @@ import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
 import { signThumbUrls, signPhotoUrl, deletePhotoDerivatives } from '../services/gcsService.js';
 import { trashFile } from '../services/driveService.js';
 import { triggerIndexJob } from '../services/indexerJob.js';
+import { releaseClaimsForDriveFile } from '../services/uploadDedupService.js';
 
 export const galleryRouter = Router();
 
@@ -328,6 +329,11 @@ galleryRouter.post('/events/:id/photos/delete', requireAuth, attachRole, require
         await deletePhotoDerivatives(eventId, photoId, mimeType);
         // eslint-disable-next-line no-await-in-loop
         await firestore().collection('photos').doc(photoId).delete();
+        // 4. Upload-dedup claim → released, so a volunteer can upload this photo
+        //    again. Without this the claim outlives the file it describes and
+        //    reports the re-upload as a duplicate forever.
+        // eslint-disable-next-line no-await-in-loop
+        await releaseClaimsForDriveFile(photoId);
         deleted.push(photoId);
       } catch (err) {
         logger.warn({ err, eventId, photoId }, 'admin delete: photo removal failed');

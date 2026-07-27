@@ -25,9 +25,38 @@ vi.mock('../src/services/sheetsService.js', () => ({
 }));
 
 const eventDocs: Record<string, Record<string, unknown> | undefined> = {};
+// Backing store for the `upload_dedup` claim collection. `create()` rejects with
+// the gRPC ALREADY_EXISTS code when the doc is present, exactly as Firestore
+// does — that atomicity is the whole point of the claim, so the double has to
+// model it rather than just recording writes.
+const dedupDocs = new Map<string, Record<string, unknown>>();
 vi.mock('../src/lib/firestore.js', () => ({
   firestore: () => ({
     collection: (name: string) => {
+      if (name === 'upload_dedup') {
+        return {
+          doc: (id: string) => ({
+            create: async (data: Record<string, unknown>) => {
+              if (dedupDocs.has(id)) {
+                throw Object.assign(new Error('6 ALREADY_EXISTS: entity already exists'), { code: 6 });
+              }
+              dedupDocs.set(id, data);
+            },
+            set: async (data: Record<string, unknown>) =>
+              dedupDocs.set(id, { ...dedupDocs.get(id), ...data }),
+            delete: async () => dedupDocs.delete(id),
+          }),
+          where: (field: string, _op: string, value: unknown) => ({
+            get: async () => {
+              const hits = [...dedupDocs.entries()].filter(([, d]) => d[field] === value);
+              return {
+                size: hits.length,
+                docs: hits.map(([id]) => ({ ref: { delete: async () => dedupDocs.delete(id) } })),
+              };
+            },
+          }),
+        };
+      }
       if (name !== 'events') throw new Error(`unexpected collection ${name}`);
       return {
         doc: (id: string) => ({ get: async () => ({ data: () => eventDocs[id] }) }),
@@ -173,6 +202,7 @@ beforeEach(() => {
   existingDriveFiles.length = 0;
   indexTriggers.length = 0;
   deleted.length = 0;
+  dedupDocs.clear();
 
   sheetData[LINKS_RANGE] = [
     ['LINK_ID', 'EVENT_ID', 'CLUB_NAME', 'TOKEN', '', '', '', 'REVOKED_AT', '', '', 'TAG'],
@@ -429,6 +459,57 @@ describe('enqueueStagedBatch', () => {
 
     const res = await enqueueStagedBatch(link, 'bh3', ['vol/ev1/bh3/u1.jpg']);
     expect(res).toMatchObject({ copied: 1, skippedDuplicates: 0 });
+  });
+
+  // ── Cross-batch claim ─────────────────────────────────────────────────────
+  // The listing snapshot is taken once per batch, so a batch cannot see what a
+  // CONCURRENT batch for the same event is writing. `existingDriveFiles` models
+  // that faithfully: uploads never appear in it, so a second batch runs against
+  // exactly the stale view a racing worker would have. One photographer's five
+  // overlapping sessions duplicated their overlap this way.
+
+  it('skips a photo a concurrent batch already claimed, despite a stale snapshot', async () => {
+    const link = await validateUploadLink('tok-good');
+    const staged = (batch: string) => ({
+      exists: true,
+      size: 100,
+      contentType: 'image/jpeg',
+      md5Hash: MD5_A,
+      metadata: { originalName: `race-001.jpg`, photographerName: 'Jane Doe' },
+      _batch: batch,
+    });
+    objects['vol/ev1/bc1/u1.jpg'] = staged('bc1');
+    objects['vol/ev1/bc2/u1.jpg'] = staged('bc2');
+
+    const first = await enqueueStagedBatch(link, 'bc1', ['vol/ev1/bc1/u1.jpg']);
+    // Deliberately do NOT add the copy to existingDriveFiles — the second batch
+    // sees the same pre-upload listing a concurrent worker would.
+    const second = await enqueueStagedBatch(link, 'bc2', ['vol/ev1/bc2/u1.jpg']);
+
+    expect(first).toMatchObject({ copied: 1, skippedDuplicates: 0 });
+    expect(second).toMatchObject({ copied: 0, skippedDuplicates: 1 });
+    expect(driveUploads).toHaveLength(1);
+  });
+
+  it('lets exactly one of two genuinely concurrent batches copy the same photo', async () => {
+    const link = await validateUploadLink('tok-good');
+    for (const b of ['cc1', 'cc2', 'cc3']) {
+      objects[`vol/ev1/${b}/u1.jpg`] = {
+        exists: true,
+        size: 100,
+        contentType: 'image/jpeg',
+        md5Hash: MD5_A,
+        metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
+      };
+    }
+
+    const results = await Promise.all(
+      ['cc1', 'cc2', 'cc3'].map((b) => enqueueStagedBatch(link, b, [`vol/ev1/${b}/u1.jpg`])),
+    );
+
+    expect(results.reduce((n, r) => n + r.copied, 0)).toBe(1);
+    expect(results.reduce((n, r) => n + r.skippedDuplicates, 0)).toBe(2);
+    expect(driveUploads).toHaveLength(1);
   });
 
   it('dedupes by hash within one batch even when the names differ', async () => {
