@@ -165,8 +165,15 @@ adminManagedFoldersRouter.post('/admin/folders/migrate-photo-shortcuts', ...guar
  * Requires an `eventId` (Drive-heavy; pair it with the per-event backfill).
  * DRY RUN unless the body sets `apply: true` — the dry run returns the planned
  * renames so they can be eyeballed before anything on Drive changes.
+ *
+ * Gated by `allowCronOrAdmin`, not the plain admin `guard`: step 1 of the rename
+ * procedure (backfill-capture-time.sh) is a shell script, so step 2 has to be
+ * runnable from a shell too — otherwise the two halves can't be scripted over a
+ * list of events. The gate is a strict superset of `guard` (it falls through to
+ * requireAuth → attachRole → requireAnyAdmin), so admins in the browser are
+ * unaffected, and the header path is disabled when SYNC_TRIGGER_TOKEN is empty.
  */
-adminManagedFoldersRouter.post('/admin/folders/resync-names', ...guard, async (req, res, next) => {
+adminManagedFoldersRouter.post('/admin/folders/resync-names', allowCronOrAdmin, async (req, res, next) => {
   try {
     if (!masterSheetId(res) || notEnabled(res)) return;
     const eventId = singleEventId(req.body);

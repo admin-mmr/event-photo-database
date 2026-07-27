@@ -22,7 +22,16 @@ Env:
   MODEL_DIR           matcher ONNX models
   MATCHER_DIR         where matcher/*.py lives (default ../matcher, /app/matcher in Docker)
   FORCE_REINDEX=1     ignore the old manifest, re-embed everything
-  LIMIT               cap photo count (spike/testing)
+  LIMIT               cap photo count. FRESH EVENTS ONLY — see below.
+
+LIMIT is not a safe "try it on a few photos" switch on an event that is ALREADY
+indexed. It truncates the Drive listing before anything else, so every photo
+outside the cap is missing from this run's `photos_map` and is therefore treated
+as deleted-from-Drive: its Firestore doc is removed and it drops out of the
+manifest. Use it only for a first-time spike on an unindexed event. To rehearse
+a capture-time rename cheaply on a live event, run WITHOUT force instead — the
+rename is applied to reused photos too, so no photo is re-downloaded or
+re-embedded (CAPTURE_TIME_SORT_DESIGN §8).
 """
 
 from __future__ import annotations
