@@ -12,9 +12,9 @@ import {
   apiGet,
   apiUpload,
   apiPost,
-  apiGetBlob,
   ApiError,
 } from '../lib/api.js';
+import { fetchOriginalBlob } from '../lib/originals.js';
 import { getRecaptchaToken } from '../lib/recaptcha.js';
 import { useSelection } from '../lib/selection.js';
 import { combineReferences, visibleResults, scoreBand, displayConfidence } from '../lib/results.js';
@@ -461,7 +461,7 @@ export function FindMe(): JSX.Element {
     for (const id of sel.selected) {
       if (origBlobsRef.current[id] || origFetching.current.has(id)) continue;
       origFetching.current.add(id);
-      apiGetBlob(`/api/events/${encodeURIComponent(eventId)}/photos/${encodeURIComponent(id)}/original`)
+      fetchOriginalBlob(eventId, id)
         .then((blob) => {
           origBlobsRef.current = { ...origBlobsRef.current, [id]: blob };
           setOrigBlobs(origBlobsRef.current);
@@ -820,9 +820,7 @@ export function FindMe(): JSX.Element {
             try {
               if (photoId === undefined) throw new Error('missing id');
               // eslint-disable-next-line no-await-in-loop
-              const blob = await apiGetBlob(
-                `/api/events/${encodeURIComponent(eventId)}/photos/${encodeURIComponent(photoId)}/original`,
-              );
+              const blob = await fetchOriginalBlob(eventId, photoId);
               slots[i] = { blob, filename: `${photoId}.jpg` };
             } catch {
               failed += 1;

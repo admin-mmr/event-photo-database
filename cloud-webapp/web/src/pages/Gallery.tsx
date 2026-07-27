@@ -7,7 +7,8 @@ import type {
   PhotoWebUrlResponse,
   DeletePhotosResponse,
 } from '@cloud-webapp/shared';
-import { apiGet, apiPost, apiGetBlob, ApiError } from '../lib/api.js';
+import { apiGet, apiPost, ApiError } from '../lib/api.js';
+import { fetchOriginalBlob } from '../lib/originals.js';
 import { useAuth } from '../lib/useAuth.js';
 import { useSelection } from '../lib/selection.js';
 import { eventLabel } from '../lib/eventLabel.js';
@@ -555,9 +556,7 @@ export function Gallery(): JSX.Element {
   }, [albumFolders]);
 
   async function fetchOriginal(p: GalleryPhoto): Promise<Blob> {
-    return apiGetBlob(
-      `/api/events/${encodeURIComponent(eventId)}/photos/${encodeURIComponent(p.photoId)}/original`,
-    );
+    return fetchOriginalBlob(eventId, p.photoId);
   }
 
   /** B1 ZIP download — the right call on desktop, the worst case on iOS (lands

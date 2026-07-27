@@ -127,19 +127,34 @@ downloadRouter.post(
 });
 
 /**
- * GET /api/events/:id/photos/:photoId/original — 302 to a short-lived signed
- * GCS URL for the original (FR-12). Powers the "save photos individually"
- * option, which on iOS hands the files to the share sheet ("Save N Images to
- * Photos"), and the full-res lightbox.
+ * GET /api/events/:id/photos/:photoId/original — hand back a short-lived signed
+ * GCS URL for the original (FR-12). Powers "save photos individually", which on
+ * iOS feeds the share sheet ("Save N Images to Photos"), and the full-res
+ * lightbox.
+ *
+ * TWO RESPONSE SHAPES:
+ *   - `?format=json` → `{ ok, url, filename }`. Use this whenever the caller
+ *     intends to read the BYTES (`fetch(url).blob()`).
+ *   - default        → 302 to the signed URL. For plain navigation / `<img>`,
+ *     where no CORS read is involved.
+ *
+ * Why the split: following a cross-origin redirect from `fetch()` is not
+ * equivalent to fetching the signed URL directly. On the redirected hop the
+ * browser taints the origin (`Origin: null`) and may still carry the
+ * `Authorization` header from the first hop — the first makes GCS's CORS config
+ * (which lists explicit web origins) not match, the second makes GCS reject a
+ * signed URL that already carries its own auth. Behaviour varies by browser and
+ * version, which is exactly what made "Save to Photos" fail on iOS Safari while
+ * the ZIP path — which fetches signed URLs directly — kept working. Asking for
+ * JSON and fetching the URL ourselves puts the byte read on the same proven
+ * path as the ZIP.
  *
  * Cost: the original bytes are the heavy part of this app, and one user "Save
  * to Photos" fans out into N of these. We deliberately do NOT stream the bytes
  * through the service — that would proxy every byte through Cloud Run AND the
  * Firebase Hosting `/api/**` rewrite, billing them as Hosting egress ($0.15/GB)
- * on top of Cloud Run. Redirecting to a signed URL keeps the heavy transfer
- * GCS → browser (GCS egress only), and the client follows the redirect
- * transparently (`fetch(...).blob()`). The browser drops the Authorization
- * header on the cross-origin hop; the signed URL carries its own auth.
+ * on top of Cloud Run. Either shape keeps the heavy transfer GCS → browser, and
+ * the JSON shape costs the same number of api round-trips as the redirect did.
  *
  * Requires browser CORS on the derivatives bucket so the blob is readable —
  * see infra/scripts/provision-derivatives-cors.sh.
@@ -170,11 +185,18 @@ downloadRouter.get(
         disposition: encodeURIComponent(filename),
       });
 
-      logger.info({ eventId, photoId, by: req.user?.email }, 'single orig signed-url redirect');
-      // Don't cache the redirect past the signed URL's TTL — re-signing returns
-      // no photo bytes, so it's cheap. The image bytes themselves are cached by
-      // the browser per the GCS object's response headers.
+      // Don't cache past the signed URL's TTL — re-signing returns no photo
+      // bytes, so it's cheap. The image bytes themselves are cached by the
+      // browser per the GCS object's response headers.
       res.setHeader('Cache-Control', 'no-store');
+
+      if (String(req.query.format ?? '') === 'json') {
+        logger.info({ eventId, photoId, by: req.user?.email }, 'single orig signed-url (json)');
+        res.json({ ok: true, url, filename });
+        return;
+      }
+
+      logger.info({ eventId, photoId, by: req.user?.email }, 'single orig signed-url redirect');
       res.redirect(302, url);
     } catch (err) {
       next(err);

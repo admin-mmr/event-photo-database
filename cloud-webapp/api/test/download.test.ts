@@ -159,4 +159,38 @@ describe('GET /api/events/:id/photos/:photoId/original (individual download)', (
     // No photo bytes flow through the service / Hosting rewrite.
     expect(res.headers['cache-control']).toContain('no-store');
   });
+
+  // ?format=json exists so the browser never has to follow a CROSS-ORIGIN
+  // redirect to read bytes: that hop taints the origin (GCS CORS lists explicit
+  // web origins, not "null") and can carry the first hop's Authorization header
+  // into a signed URL that already has its own auth. It broke Save-to-Photos on
+  // iOS Safari while the ZIP path, which fetches signed URLs directly, worked.
+  it('returns the signed URL as JSON when format=json', async () => {
+    const res = await request(app)
+      .get('/api/events/ev1/photos/p1/original?format=json')
+      .set('x-test-user', USER)
+      .redirects(0);
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.url).toBe('https://storage.example/signed/ev1/p1?sig=abc');
+    expect(res.body.filename).toBe('IMG_001.jpg');
+    expect(res.headers['cache-control']).toContain('no-store');
+  });
+
+  it('still enforces auth and event ownership in json mode', async () => {
+    expect((await request(app).get('/api/events/ev1/photos/p1/original?format=json')).status).toBe(401);
+    const wrongEvent = await request(app)
+      .get('/api/events/ev1/photos/px/original?format=json')
+      .set('x-test-user', USER);
+    expect(wrongEvent.status).toBe(404);
+  });
+
+  it('only switches shape for an exact format=json (anything else still redirects)', async () => {
+    const res = await request(app)
+      .get('/api/events/ev1/photos/p1/original?format=xml')
+      .set('x-test-user', USER)
+      .redirects(0);
+    expect(res.status).toBe(302);
+  });
 });
