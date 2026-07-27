@@ -387,6 +387,9 @@ export interface DriveMediaFile {
   id: string;
   name: string;
   mimeType: string;
+  /** Drive's content MD5 (lowercase hex). Absent for the odd file Drive
+   *  doesn't hash; callers must treat '' as "unknown", not "unique". */
+  md5Checksum?: string;
 }
 
 /**
@@ -491,7 +494,7 @@ export async function walkMediaFiles(
     do {
       const params = new URLSearchParams({
         q: `'${folderId}' in parents and trashed=false`,
-        fields: 'nextPageToken,files(id,name,mimeType)',
+        fields: 'nextPageToken,files(id,name,mimeType,md5Checksum)',
         pageSize: '1000',
         supportsAllDrives: 'true',
         includeItemsFromAllDrives: 'true',
@@ -501,7 +504,7 @@ export async function walkMediaFiles(
       if (!res.ok) throw new Error(`Drive walk ${res.status}: ${await res.text()}`);
       const page = (await res.json()) as {
         nextPageToken?: string;
-        files?: Array<{ id?: string; name?: string; mimeType?: string }>;
+        files?: Array<{ id?: string; name?: string; mimeType?: string; md5Checksum?: string }>;
       };
       for (const f of page.files ?? []) {
         const mimeType = String(f.mimeType ?? '');
@@ -513,7 +516,7 @@ export async function walkMediaFiles(
           continue;
         }
         if (mimeType === DRIVE_SHORTCUT_MIME_LOCAL) continue; // never index our own shortcuts
-        if (accept(mimeType)) out.push({ id, name, mimeType });
+        if (accept(mimeType)) out.push({ id, name, mimeType, md5Checksum: String(f.md5Checksum ?? '') });
       }
       pageToken = page.nextPageToken;
     } while (pageToken);

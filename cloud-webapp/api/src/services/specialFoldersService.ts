@@ -193,6 +193,38 @@ export function planManagedEntryRenames(
 }
 
 /**
+ * Collapse byte-identical photos to ONE canonical file before linking.
+ *
+ * The rebuild used to dedupe only by Drive file id, so a photo uploaded twice —
+ * two distinct ids, identical bytes — was linked twice, and every rebuild gave
+ * it another shortcut in Photos_NNN AND in Album. One real event carried 982
+ * such duplicates behind 1003 unique photos, which is why a single filename
+ * could return a dozen rows in Drive search.
+ *
+ * The indexer already collapses these by md5 for search/gallery (manifest
+ * `duplicates`); this makes the managed folders agree. Canonical = first in the
+ * caller's sort order, so the choice is stable across runs. A file Drive gives
+ * no md5 for is always kept — unknown must not read as "duplicate".
+ */
+export function dedupePhotosByContent(
+  photos: ReadonlyArray<DriveMediaFile>,
+): { photos: DriveMediaFile[]; duplicatesSkipped: number } {
+  const seen = new Set<string>();
+  const out: DriveMediaFile[] = [];
+  let duplicatesSkipped = 0;
+  for (const p of photos) {
+    const hash = String(p.md5Checksum ?? '').toLowerCase();
+    if (hash && seen.has(hash)) {
+      duplicatesSkipped += 1;
+      continue;
+    }
+    if (hash) seen.add(hash);
+    out.push(p);
+  }
+  return { photos: out, duplicatesSkipped };
+}
+
+/**
  * A "Copy of …" / " (N)" decorated name (loses the clean-name tiebreak in
  * planShortcutDedupe). Matches gas-app parseNoisyName: the counter form requires
  * a SPACE before "(N)" so a legitimate "Photo(2020).jpg" is not treated as noisy.
@@ -451,11 +483,12 @@ export async function rebuildEventPhotoFolders(eventId: string): Promise<Service
   const root = await getFolderById(event.driveFolderId, { token: driveToken });
   if (!root) return { ok: false, message: `Cannot open event Drive folder "${event.driveFolderId}"` };
 
-  const photos = await walkMediaFiles(event.driveFolderId, isPhotoFile, {
+  const allPhotos = await walkMediaFiles(event.driveFolderId, isPhotoFile, {
     token: driveToken,
     skipChildFolder: isManagedFolderName,
   });
-  photos.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  allPhotos.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const { photos, duplicatesSkipped } = dedupePhotosByContent(allPhotos);
 
   const warnings: string[] = [];
   if (photos.length === 0) {
@@ -555,12 +588,13 @@ export async function rebuildEventPhotoFolders(eventId: string): Promise<Service
 
   const created = conversionsCreated + shortcutsCreated;
   logger.info(
-    { eventId, photos: photos.length, buckets: totalBuckets, conversionsCreated, shortcutsCreated, entriesExisting, warnings: warnings.length },
+    { eventId, photos: photos.length, duplicatesSkipped, buckets: totalBuckets, conversionsCreated, shortcutsCreated, entriesExisting, warnings: warnings.length },
     'rebuildEventPhotoFolders done',
   );
+  const dupNote = duplicatesSkipped > 0 ? `, ${duplicatesSkipped} byte-identical duplicate(s) skipped` : '';
   return {
     ok: true,
-    message: `Rebuilt ${foldersTouched} Photos_NNN folder(s): ${created} new (${conversionsCreated} converted, ${shortcutsCreated} shortcut), ${entriesExisting} existing`,
+    message: `Rebuilt ${foldersTouched} Photos_NNN folder(s): ${created} new (${conversionsCreated} converted, ${shortcutsCreated} shortcut), ${entriesExisting} existing${dupNote}`,
     data: {
       shortcutsCreated: created,
       shortcutsExisting: entriesExisting,

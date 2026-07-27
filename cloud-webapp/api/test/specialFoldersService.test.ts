@@ -9,12 +9,14 @@ import {
   isNoisyName,
   planShortcutDedupe,
   planManagedEntryRenames,
+  dedupePhotosByContent,
   isManagedFolderName,
   isPhotoFile,
   isVideoFile,
   isMediaFile,
 } from '../src/services/specialFoldersService.js';
 import type { ShortcutEntry, ManagedCopyEntry } from '../src/services/driveShortcutClient.js';
+import type { DriveMediaFile } from '../src/services/driveService.js';
 
 describe('photosFolderName', () => {
   it('zero-pads to three digits', () => {
@@ -153,6 +155,49 @@ describe('planManagedEntryRenames', () => {
     const a = planManagedEntryRenames([sc('s1', 'a.jpg', 'tA'), sc('s2', 'b.jpg', 'tB')], [], sources);
     const b = planManagedEntryRenames([sc('s2', 'b.jpg', 'tB'), sc('s1', 'a.jpg', 'tA')], [], sources);
     expect(a).toEqual(b);
+  });
+});
+
+describe('dedupePhotosByContent', () => {
+  const f = (id: string, md5?: string): DriveMediaFile => ({
+    id,
+    name: `${id}.jpg`,
+    mimeType: 'image/jpeg',
+    ...(md5 === undefined ? {} : { md5Checksum: md5 }),
+  });
+
+  it('keeps one file per content hash, preferring the first in order', () => {
+    const { photos, duplicatesSkipped } = dedupePhotosByContent([
+      f('a', 'HASH1'),
+      f('b', 'hash1'), // same bytes, different Drive id — the re-upload
+      f('c', 'hash2'),
+    ]);
+    expect(photos.map((p) => p.id)).toEqual(['a', 'c']);
+    expect(duplicatesSkipped).toBe(1);
+  });
+
+  it('is case-insensitive on the hash', () => {
+    const { photos } = dedupePhotosByContent([f('a', 'ABCDEF'), f('b', 'abcdef')]);
+    expect(photos.map((p) => p.id)).toEqual(['a']);
+  });
+
+  it('KEEPS files with no md5 — unknown is not the same as duplicate', () => {
+    const { photos, duplicatesSkipped } = dedupePhotosByContent([f('a'), f('b'), f('c', '')]);
+    expect(photos.map((p) => p.id)).toEqual(['a', 'b', 'c']);
+    expect(duplicatesSkipped).toBe(0);
+  });
+
+  it('is a no-op when every photo is unique', () => {
+    const { photos, duplicatesSkipped } = dedupePhotosByContent([f('a', 'h1'), f('b', 'h2')]);
+    expect(photos).toHaveLength(2);
+    expect(duplicatesSkipped).toBe(0);
+  });
+
+  it('collapses a large duplicate run to a single entry', () => {
+    const many = Array.from({ length: 12 }, (_, i) => f(`dup${i}`, 'same'));
+    const { photos, duplicatesSkipped } = dedupePhotosByContent(many);
+    expect(photos).toHaveLength(1);
+    expect(duplicatesSkipped).toBe(11);
   });
 });
 
