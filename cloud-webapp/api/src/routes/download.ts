@@ -13,7 +13,10 @@
  *
  *  - POST /events/:id/download — sign the whole selection in ONE call (keeps the
  *    dedicated bulk-download rate budget); the client zips them in the browser.
- *  - GET  /events/:id/photos/:photoId/original — 302 to a signed URL.
+ *  - POST /events/:id/originals/sign — the same batch signing on the per-photo
+ *    `original_fetch` budget, for the "Save to Photos" / lightbox byte paths.
+ *  - GET  /events/:id/photos/:photoId/original — one signed URL, as JSON
+ *    (`?format=json`) or a 302.
  *
  * Abuse controls: per-user download rate limit, a photo-count cap (shared
  * MAX_DOWNLOAD_PHOTOS), and a reCAPTCHA Enterprise gate on the sign call
@@ -21,7 +24,7 @@
  * (M5.3). The reCAPTCHA gate no-ops when unconfigured (see middleware).
  */
 
-import { Router } from 'express';
+import { Router, type RequestHandler } from 'express';
 import { DownloadRequestSchema, type DownloadSignResponse } from '@cloud-webapp/shared';
 
 import { firestore } from '../lib/firestore.js';
@@ -43,12 +46,15 @@ function safeEntryName(name: string, photoId: string, fallbackExt: string): stri
   return cleaned || `${photoId}.${fallbackExt}`;
 }
 
-downloadRouter.post(
-  '/events/:id/download',
-  requireAuth,
-  downloadRateLimit(),
-  requireRecaptcha('download'),
-  async (req, res, next) => {
+/**
+ * Shared handler behind both sign routes: validate the selection, keep only
+ * photos that really belong to the event, and return one short-lived signed URL
+ * per photo with a stable, de-duplicated entry name. The two routes differ only
+ * in which rate-limit bucket they draw down; `logLabel` tells them apart in the
+ * logs.
+ */
+function signSelectionHandler(logLabel: string): RequestHandler {
+  return async function handler(req, res, next): Promise<void> {
   try {
     const eventId = String(req.params.id);
 
@@ -116,7 +122,7 @@ downloadRouter.post(
 
     logger.info(
       { eventId, requested: photoIds.length, included: files.length, by: req.user?.email },
-      'zip download signed',
+      logLabel,
     );
     res.setHeader('Cache-Control', 'no-store');
     const body: DownloadSignResponse = { ok: true, files };
@@ -124,7 +130,34 @@ downloadRouter.post(
   } catch (err) {
     next(err);
   }
-});
+  };
+}
+
+downloadRouter.post(
+  '/events/:id/download',
+  requireAuth,
+  downloadRateLimit(),
+  requireRecaptcha('download'),
+  signSelectionHandler('zip download signed'),
+);
+
+/**
+ * POST /api/events/:id/originals/sign — batch-sign a selection for the byte
+ * paths ("Save to Photos", the ZIP, the full-res lightbox).
+ *
+ * Same payload as the ZIP route, drawn from the per-photo `original_fetch`
+ * budget instead of the bulk-ZIP one. It exists because the client used to sign
+ * one photo per request: selecting a 200-match page meant 200 api round-trips
+ * before a single byte moved, and burned the daily `original_fetch` budget in a
+ * couple of selections. One call now covers the whole selection.
+ */
+downloadRouter.post(
+  '/events/:id/originals/sign',
+  requireAuth,
+  originalFetchRateLimit(),
+  requireRecaptcha('download'),
+  signSelectionHandler('originals signed'),
+);
 
 /**
  * GET /api/events/:id/photos/:photoId/original — hand back a short-lived signed

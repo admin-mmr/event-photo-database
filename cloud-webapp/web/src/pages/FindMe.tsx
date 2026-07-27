@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import type {
   SearchResponse,
@@ -14,7 +14,12 @@ import {
   apiPost,
   ApiError,
 } from '../lib/api.js';
-import { fetchOriginalBlob } from '../lib/originals.js';
+import {
+  OriginalsFetcher,
+  PREFETCH_MAX_PHOTOS,
+  PREFETCH_DEBOUNCE_MS,
+  type OriginalEntry,
+} from '../lib/originals.js';
 import { getRecaptchaToken } from '../lib/recaptcha.js';
 import { useSelection } from '../lib/selection.js';
 import { combineReferences, visibleResults, scoreBand, displayConfidence } from '../lib/results.js';
@@ -241,6 +246,7 @@ type Phase = 'consent' | 'pick' | 'searching' | 'results';
 /** Client-side cap on selfies per search; mirrors the api's MAX_REFERENCE_IMAGES. */
 const MAX_REFERENCE_IMAGES = 5;
 
+
 /** One reference selfie and the result set it produced. Result sets are kept
  *  separate per reference (B3) — they only merge in the explicit Combined view. */
 interface Reference {
@@ -297,25 +303,49 @@ export function FindMe(): JSX.Element {
   const [saving, setSaving] = useState(false);
   // Save-to-Photos progress (C9): how many originals have been fetched so far.
   const [saveProgress, setSaveProgress] = useState<{ done: number; total: number } | null>(null);
-  // Original blobs cached per photo for "Save to Photos". iOS only honours
-  // navigator.share inside the tap's transient activation, so we must NOT await
-  // a network fetch before sharing — we prefetch the selected originals here and
-  // share synchronously once they're cached. The ref mirrors the state so the
-  // prefetch effect can skip cached ids without depending on origBlobs.
+  // Every byte read goes through one fetcher per event: it caches, joins
+  // concurrent requests for the same photo and caps how many transfers run at
+  // once, so the prefetch below, the save fallback and the ZIP cannot download
+  // the same original more than once between them.
+  //
+  // iOS only honours navigator.share inside the tap's transient activation, so
+  // we must NOT await a network fetch before sharing — the selection is
+  // prefetched here and shared synchronously once it's cached.
+  const originals = useRef<OriginalsFetcher | null>(null);
+  if (!originals.current) originals.current = new OriginalsFetcher(eventId);
+  // Mirrors the fetcher's cache into render state (blobs are shared, not copied).
   const [origBlobs, setOrigBlobs] = useState<Record<string, Blob>>({});
-  const origBlobsRef = useRef<Record<string, Blob>>({});
-  const origFetching = useRef<Set<string>>(new Set());
-  // Selected ids whose original prefetch FAILED (e.g. a CORS/network error on
-  // the signed-URL blob read). These count as "settled" so the Save button
-  // doesn't stay disabled on "Preparing…" forever — tapping it then runs the
-  // fetch-then-share fallback in saveSelected(), which retries and tolerates
-  // per-photo failures (degrading to a download where the share can't fire).
+  // Selected ids whose original FAILED to load (e.g. a CORS/network error on the
+  // signed-URL read). These count as "settled" so the Save button doesn't stay
+  // disabled on "Preparing…" forever — tapping it then runs the fetch-then-share
+  // fallback, which tolerates per-photo failures.
   const [prefetchFailed, setPrefetchFailed] = useState<Set<string>>(new Set());
   // Belt-and-suspenders: if a prefetch neither resolves nor rejects (a hung
   // request), stop showing "Preparing…" after this long so the button is usable.
+  // Tapping then JOINS the transfers already running instead of starting a
+  // duplicate set — the duplicate set is what used to saturate a phone's
+  // connection and end in "could not load any of the selected photos".
   const [prepareTimedOut, setPrepareTimedOut] = useState(false);
   // Transient success line after a save/download (C9), announced via aria-live.
   const [status, setStatus] = useState<string | null>(null);
+
+  /** Mirror one settled original into render state. Shared by the prefetch, the
+   *  save fallback and the ZIP so all three report progress identically. */
+  const recordSettled = useCallback((photoId: string, entry: OriginalEntry | null): void => {
+    if (entry) {
+      setOrigBlobs((prev) =>
+        prev[photoId] === entry.blob ? prev : { ...prev, [photoId]: entry.blob },
+      );
+      setPrefetchFailed((prev) => {
+        if (!prev.has(photoId)) return prev;
+        const next = new Set(prev);
+        next.delete(photoId);
+        return next;
+      });
+      return;
+    }
+    setPrefetchFailed((prev) => (prev.has(photoId) ? prev : new Set(prev).add(photoId)));
+  }, []);
   // Index into `visible` of the photo open in the lightbox, or null (C4/C5).
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   // Past reference selfies the user can reuse to search this event (D7/FR-10b).
@@ -389,9 +419,14 @@ export function FindMe(): JSX.Element {
   // On mobile, true while we're still prefetching selected originals (the Save
   // button shows "Preparing…" and stays disabled until they're all in hand). It
   // clears once everything settles or the prepare watchdog times out, so the
-  // button can never stay permanently disabled.
+  // button can never stay permanently disabled. Selections past the prefetch cap
+  // are never blocked on preparing — nothing is being prefetched for them.
   const savePreparing =
-    canSavePhotos && sel.count > 0 && !selectedSettled && !prepareTimedOut;
+    canSavePhotos &&
+    sel.count > 0 &&
+    sel.count <= PREFETCH_MAX_PHOTOS &&
+    !selectedSettled &&
+    !prepareTimedOut;
   const preparedCount = useMemo(
     () => [...sel.selected].filter((id) => Boolean(origBlobs[id])).length,
     [sel.selected, origBlobs],
@@ -454,48 +489,37 @@ export function FindMe(): JSX.Element {
   }, [shown.length, lightboxIndex]);
 
   // Prefetch selected originals (mobile only) so the batch "Save to Photos" can
-  // share synchronously inside the tap. Reads the ref to skip cached ids, so
-  // adding a blob doesn't re-fire; re-runs only when the selected set changes.
+  // share synchronously inside the tap.
+  //
+  // Debounced, because ticking boxes one at a time would otherwise fire a
+  // signing call per tick; and skipped entirely above PREFETCH_MAX_PHOTOS, since
+  // buffering a whole 200-match page of full-resolution originals is hundreds of
+  // megabytes the user never asked for — they may only want the ZIP. Above the
+  // cap the Save button stays live and fetches on tap instead.
   useEffect(() => {
-    if (!canSavePhotos) return;
-    for (const id of sel.selected) {
-      if (origBlobsRef.current[id] || origFetching.current.has(id)) continue;
-      origFetching.current.add(id);
-      fetchOriginalBlob(eventId, id)
-        .then((blob) => {
-          origBlobsRef.current = { ...origBlobsRef.current, [id]: blob };
-          setOrigBlobs(origBlobsRef.current);
-          // A retry succeeded → no longer a failed id.
-          setPrefetchFailed((prev) => {
-            if (!prev.has(id)) return prev;
-            const next = new Set(prev);
-            next.delete(id);
-            return next;
-          });
-        })
-        .catch(() => {
-          // Leave uncached and mark it settled-as-failed so the Save button
-          // stops waiting; saveSelected's fallback retries + degrades to a
-          // download for this one.
-          setPrefetchFailed((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
-        })
-        .finally(() => origFetching.current.delete(id));
-    }
+    const fetcher = originals.current;
+    if (!canSavePhotos || !fetcher) return;
+    const ids = [...sel.selected];
+    if (ids.length === 0 || ids.length > PREFETCH_MAX_PHOTOS) return;
+    const timer = setTimeout(() => {
+      void fetcher.fetch(ids, { onSettled: recordSettled });
+    }, PREFETCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canSavePhotos, selectedKey]);
 
   // Drop cached originals no longer selected (bounds mobile memory). Keyed on
   // the selected set so it runs when the selection shrinks or switches tabs.
   useEffect(() => {
-    let changed = false;
-    for (const id of Object.keys(origBlobsRef.current)) {
-      if (sel.isSelected(id)) continue;
-      const next = { ...origBlobsRef.current };
-      delete next[id];
-      origBlobsRef.current = next;
-      changed = true;
+    const fetcher = originals.current;
+    if (!fetcher) return;
+    if (fetcher.retain(sel.selected)) {
+      setOrigBlobs((prev) => {
+        const next: Record<string, Blob> = {};
+        for (const id of Object.keys(prev)) if (sel.isSelected(id)) next[id] = prev[id]!;
+        return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+      });
     }
-    if (changed) setOrigBlobs(origBlobsRef.current);
     // Forget failures for ids no longer selected so a future re-select retries.
     setPrefetchFailed((prev) => {
       const next = new Set([...prev].filter((id) => sel.isSelected(id)));
@@ -503,6 +527,9 @@ export function FindMe(): JSX.Element {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedKey]);
+
+  // Cancel anything still transferring when the page unmounts.
+  useEffect(() => () => originals.current?.abort(), []);
 
   // Prepare watchdog: if the prefetch hasn't settled within a few seconds (e.g.
   // a hung request that never resolves or rejects), stop showing "Preparing…"
@@ -733,15 +760,22 @@ export function FindMe(): JSX.Element {
   }
 
   async function downloadSelected(): Promise<void> {
-    if (sel.count === 0) return;
+    const fetcher = originals.current;
+    if (sel.count === 0 || !fetcher) return;
+    const ids = [...sel.selected];
     setDownloading(true);
     setError(null);
     setStatus(null);
+    setSaveProgress({ done: fetcher.countCached(ids), total: ids.length });
     try {
+      // Same fetcher as the save prefetch, so anything already in hand is zipped
+      // from cache instead of pulled down a second time.
       const { included, failed } = await downloadOriginalsZip(
+        fetcher,
         eventId,
-        [...sel.selected],
+        ids,
         'my-photos.zip',
+        { onProgress: (done, total) => setSaveProgress({ done, total }) },
       );
       const skipped = failed > 0 ? t.downloadSkipped(failed) : '';
       setStatus(t.downloadedZip(included, skipped));
@@ -749,6 +783,7 @@ export function FindMe(): JSX.Element {
       setError(e instanceof Error ? e.message : t.downloadFailed);
     } finally {
       setDownloading(false);
+      setSaveProgress(null);
     }
   }
 
@@ -771,14 +806,17 @@ export function FindMe(): JSX.Element {
    *
    * iOS only honours navigator.share while the tap's *transient activation* is
    * live, so we must NOT await a network fetch before calling it. On mobile the
-   * selected originals are prefetched into `origBlobs` (the button stays disabled
-   * — "Preparing…" — until they're all cached), so the fast path builds the files
-   * and shares synchronously in the same tick. The fetch-then-share fallback only
-   * runs on desktop, where the helper degrades to per-file downloads and
-   * activation doesn't matter.
+   * selected originals are prefetched (the button stays disabled — "Preparing…"
+   * — until they're all cached), so the fast path builds the files and shares
+   * synchronously in the same tick. The fetch-then-share fallback runs on
+   * desktop, for selections past the prefetch cap, and when the user taps while
+   * transfers are still running — in that last case it JOINS them through the
+   * shared fetcher rather than starting a second set, which is what used to
+   * saturate a phone's connection and fail every photo.
    */
   function saveSelected(): void {
-    if (sel.count === 0) return;
+    const fetcher = originals.current;
+    if (sel.count === 0 || !fetcher) return;
     const ids = [...sel.selected];
     const n = ids.length;
     setError(null);
@@ -787,11 +825,9 @@ export function FindMe(): JSX.Element {
     // Fast path: every selected original is cached → share synchronously.
     if (canSavePhotos && selectedReady) {
       const files: NamedBlob[] = ids
-        .map((id) => {
-          const blob = origBlobs[id];
-          return blob ? { blob, filename: `${id}.jpg` } : null;
-        })
-        .filter((f): f is NamedBlob => f !== null);
+        .map((id) => fetcher.get(id))
+        .filter((e): e is OriginalEntry => e !== undefined)
+        .map((e) => ({ blob: e.blob, filename: e.filename }));
       setSaving(true);
       savePhotosIndividually(files, { title: t.shareTitle })
         .then((outcome) => reportSave(outcome, files.length))
@@ -800,49 +836,32 @@ export function FindMe(): JSX.Element {
       return;
     }
 
-    // Fallback (desktop, or a blob still loading): fetch with a small concurrency
-    // pool and tolerate per-photo failures, then save/download. Slots preserve
-    // order so filenames stay stable.
     void (async () => {
       setSaving(true);
-      setSaveProgress({ done: 0, total: n });
+      setSaveProgress({ done: fetcher.countCached(ids), total: n });
       try {
-        const slots: (NamedBlob | null)[] = new Array<NamedBlob | null>(n).fill(null);
         let done = 0;
-        let failed = 0;
-        let cursor = 0;
-        const CONCURRENCY = 5;
-        const worker = async (): Promise<void> => {
-          while (cursor < n) {
-            const i = cursor;
-            cursor += 1;
-            const photoId = ids[i];
-            try {
-              if (photoId === undefined) throw new Error('missing id');
-              // eslint-disable-next-line no-await-in-loop
-              const blob = await fetchOriginalBlob(eventId, photoId);
-              slots[i] = { blob, filename: `${photoId}.jpg` };
-            } catch {
-              failed += 1;
-            } finally {
-              done += 1;
-              setSaveProgress({ done, total: n });
-            }
-          }
-        };
-        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, n) }, () => worker()));
+        const { entries, failed, sampleErrors } = await fetcher.fetch(ids, {
+          onSettled: (photoId, entry) => {
+            recordSettled(photoId, entry);
+            done += 1;
+            setSaveProgress({ done, total: n });
+          },
+        });
 
-        const files = slots.filter((f): f is NamedBlob => f !== null);
-        if (files.length === 0) {
+        if (entries.length === 0) {
           reportClientError('download_failed', 'Save to Photos: every original failed to load', {
-            context: { eventId, requested: n, failed },
+            context: { eventId, requested: n, failed, sampleErrors },
           });
           setError(t.couldNotLoadAny);
           return;
         }
         reportSave(
-          await savePhotosIndividually(files, { title: t.shareTitle }),
-          files.length,
+          await savePhotosIndividually(
+            entries.map((e) => ({ blob: e.blob, filename: e.filename })),
+            { title: t.shareTitle },
+          ),
+          entries.length,
           failed,
         );
       } catch (e) {
