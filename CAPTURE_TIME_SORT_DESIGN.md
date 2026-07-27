@@ -22,11 +22,29 @@
 >   `infra/firestore.indexes.json`.
 > - Backfill: `infra/scripts/backfill-capture-time.sh` force-reindexes all
 >   events (dry-run by default).
+> - Managed-folder re-sync: `POST /api/admin/folders/resync-names`
+>   (`resyncEventManagedFolderNames`) renames the Photos_NNN / Videos / Album
+>   entries to match their renamed sources. **Required after the backfill** —
+>   see below. Dry-run unless the body sets `apply: true`.
 >
 > Operator prerequisites for the Drive-direct surface: grant the read-write
 > Drive scope to the DWD client (Workspace Admin console) and set
 > `CAPTURE_TIME_RENAME=1` on the photo-indexer job. The in-app time sort needs
 > neither — just a reindex to populate `takenAt`.
+>
+> **Renaming existing files is a TWO-step procedure, in this order:**
+>
+> 1. Rename the originals in the upload folders —
+>    `backfill-capture-time.sh <project> --apply [event-id …]`.
+> 2. Re-sync the managed folders — `POST /api/admin/folders/resync-names`
+>    with `{"eventId": "...", "apply": true}` per event.
+>
+> Step 2 is not optional and a plain rebuild will NOT do it. A Drive shortcut
+> stores its own name, fixed when it was created, and `rebuildEventPhotoFolders`
+> skips any photo that is already represented — so after step 1 the managed
+> folders would keep sorting by the pre-rename names. The re-sync renames the
+> entries in place, which preserves their sharing grants and avoids re-running
+> image-convert over every non-JPEG. Both steps are idempotent.
 
 Goal: let people view event photos in the order they were *taken* (not uploaded),
 on **two surfaces**:

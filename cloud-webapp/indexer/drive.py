@@ -37,13 +37,32 @@ SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 # Folders that hold shortcuts / duplicate copies rather than original photos.
 # We never recurse into them, so only real photo files in the event's normal
 # folders get indexed (avoids the duplicate-photo inflation those folders cause).
-# Matched case-insensitively on the folder's display name. Override via the
-# SKIP_FOLDER_NAMES env var (comma-separated) if the convention changes.
+# Matched case-insensitively on the folder's display name. Extra names can be
+# added via the SKIP_FOLDER_NAMES env var (comma-separated).
 SKIP_FOLDER_NAMES = frozenset(
     n.strip().lower()
-    for n in os.environ.get("SKIP_FOLDER_NAMES", "Photos_zzz").split(",")
+    for n in os.environ.get("SKIP_FOLDER_NAMES", "").split(",")
     if n.strip()
 )
+
+# The managed folders the api creates (mirrors isManagedFolderName in
+# specialFoldersService.ts): "Photos_NNN" buckets plus "Videos" / "Album", all
+# children of the event's own Drive folder — the very folder we walk.
+#
+# Skipping them by NAME PREFIX rather than an exact list matters: shortcuts are
+# already excluded by mimeType, but a non-JPEG photo is materialised in
+# Photos_NNN as a real converted JPG, which would otherwise be indexed as a
+# second, distinct photo — and, under CAPTURE_TIME_RENAME=1, renamed as if it
+# were an original. The old default only listed "Photos_zzz", which no longer
+# matches anything the api creates. (The prefix still covers "Photos_zzz".)
+MANAGED_FOLDER_NAMES = frozenset({"videos", "album"})
+MANAGED_FOLDER_PREFIX = "photos_"
+
+
+def is_skipped_folder(name: str) -> bool:
+    """True for a managed/shortcut folder we must not recurse into."""
+    n = name.strip().lower()
+    return n in SKIP_FOLDER_NAMES or n in MANAGED_FOLDER_NAMES or n.startswith(MANAGED_FOLDER_PREFIX)
 
 
 # Read-write scope, needed only for the capture-time rename (files.update).
@@ -160,8 +179,10 @@ class DriveClient:
           - Shortcut files (mimeType application/vnd.google-apps.shortcut) are
             never indexed — their targets appear as real files elsewhere in the
             tree, so indexing the shortcut too would double-count the photo.
-          - Folders named in SKIP_FOLDER_NAMES (e.g. "Photos_zzz") are not
-            recursed into; those hold the shortcut/duplicate copies.
+          - Managed folders (`is_skipped_folder`: "Photos_*", "Videos",
+            "Album", plus anything in SKIP_FOLDER_NAMES) are not recursed into;
+            they hold shortcuts and converted copies of photos that already
+            live in the normal upload folders.
         """
         items: list[dict] = []
         page_token = None
@@ -182,8 +203,8 @@ class DriveClient:
                 mime = f["mimeType"]
                 rel_path = f"{rel}{f['name']}"
                 if mime == FOLDER_MIME:
-                    if f["name"].strip().lower() in SKIP_FOLDER_NAMES:
-                        continue  # shortcut/duplicate folder — don't index it
+                    if is_skipped_folder(f["name"]):
+                        continue  # managed shortcut/copy folder — don't index it
                     items += self.list_images(f["id"], rel=f"{rel_path}/")
                 elif mime == SHORTCUT_MIME:
                     continue  # never index shortcuts (targets exist as real files)

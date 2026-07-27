@@ -41,11 +41,13 @@ import {
   listShortcutsInFolder,
   listManagedCopiesInFolder,
   setFileAppProperties,
+  renameDriveFile,
   trashDriveFile,
   getDriveFileBasics,
   driveFolderUrl,
   SOURCE_PHOTO_ID_PROPERTY,
   type ShortcutEntry,
+  type ManagedCopyEntry,
 } from './driveShortcutClient.js';
 import {
   grantAnyoneRead,
@@ -136,6 +138,58 @@ export function photoCopyDestName(sourceName: string, usedNames: ReadonlySet<str
     if (!usedNames.has(withSuffix)) return withSuffix;
     suffix++;
   }
+}
+
+/** One managed-folder entry whose name has drifted from its source photo. */
+export interface ManagedEntryRename {
+  id: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * Plan the renames needed to re-sync ONE managed folder with its sources.
+ *
+ * A shortcut stores its OWN name, fixed when it was created, so renaming the
+ * target on Drive (the capture-time backfill) leaves every existing shortcut
+ * showing the old name — and the rebuild won't fix it, because a photo that is
+ * already represented is skipped. Same for a converted copy, whose name was
+ * derived from the source at conversion time.
+ *
+ * `sourceNameById` maps source photo id → its CURRENT Drive name. A source that
+ * is absent (photo left the event folder) is left alone rather than guessed at.
+ * Pure + deterministic so the collision handling is unit-testable.
+ */
+export function planManagedEntryRenames(
+  shortcuts: ReadonlyArray<ShortcutEntry>,
+  copies: ReadonlyArray<ManagedCopyEntry>,
+  sourceNameById: ReadonlyMap<string, string>,
+): ManagedEntryRename[] {
+  const byId = <T extends { id: string }>(a: T, b: T): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const renames: ManagedEntryRename[] = [];
+  const used = new Set<string>();
+
+  // Shortcuts mirror the source name verbatim — Drive allows duplicate names in
+  // a folder and the create path never deduped them either, so don't start now.
+  for (const s of [...shortcuts].sort(byId)) {
+    const src = sourceNameById.get(s.targetId);
+    if (src && src !== s.name) renames.push({ id: s.id, from: s.name, to: src });
+    used.add(src && src !== s.name ? src : s.name);
+  }
+
+  // Converted copies keep the ".jpg" extension and stay collision-free within
+  // the folder, exactly as photoCopyDestName assigns them at conversion time.
+  for (const c of [...copies].sort(byId)) {
+    const src = sourceNameById.get(c.sourcePhotoId);
+    if (!src) {
+      used.add(c.name);
+      continue;
+    }
+    const desired = photoCopyDestName(src, used);
+    if (desired !== c.name) renames.push({ id: c.id, from: c.name, to: desired });
+    used.add(desired);
+  }
+  return renames;
 }
 
 /**
@@ -1095,4 +1149,121 @@ export async function migrateEventPhotoShortcutsToFiles(eventId: string): Promis
   await rebuildEventPhotoFolders(eventId);
   logger.info({ eventId, ...result, warnings: result.warnings.length }, 'migrateEventPhotoShortcutsToFiles done');
   return { ok: true, message: `Migrated Photos_NNN for "${event.name}": ${result.conversionsCreated} converted, ${result.shortcutsTrashed} shortcut(s) removed`, data: result };
+}
+
+// ─── Managed-folder name re-sync (after a capture-time rename) ───────────────
+
+export interface NameResyncResult {
+  /** Managed folders inspected (Photos_NNN + per-scope Videos/Album). */
+  foldersScanned: number;
+  /** Entries whose name no longer matched their source. */
+  drifted: number;
+  renamed: number;
+  failed: number;
+  /** Populated on a dry run instead of `renamed`. */
+  planned: ManagedEntryRename[];
+  warnings: string[];
+}
+
+const EMPTY_RESYNC = (): NameResyncResult => ({
+  foldersScanned: 0,
+  drifted: 0,
+  renamed: 0,
+  failed: 0,
+  planned: [],
+  warnings: [],
+});
+
+/**
+ * Re-sync every managed-folder entry's name with its source photo.
+ *
+ * Run this AFTER the capture-time backfill has renamed the originals
+ * (`backfill-capture-time.sh`). A shortcut carries its own name from creation
+ * time and `rebuildEventPhotoFolders` skips any photo already represented, so
+ * without this pass the Photos_NNN / Videos / Album folders keep sorting by the
+ * pre-rename names.
+ *
+ * Renaming in place (rather than trashing and re-creating) keeps the existing
+ * sharing grants, avoids re-running image-convert on every non-JPEG, and can
+ * never leave a folder empty if it stops partway. Idempotent: a second run
+ * finds nothing drifted. Dry-run by default — pass `{ apply: true }` to write.
+ */
+export async function resyncEventManagedFolderNames(
+  eventId: string,
+  opts: { apply?: boolean } = {},
+): Promise<ServiceResult<NameResyncResult>> {
+  const apply = opts.apply === true;
+  const event = await getEventDrive(eventId);
+  if (!event) return { ok: false, message: `Event "${eventId}" not found or has no Drive folder` };
+
+  const driveToken = await getDriveToken(DRIVE_SCOPE_READWRITE);
+  const result = EMPTY_RESYNC();
+
+  // Source of truth: every real media file OUTSIDE the managed folders, by id.
+  const sources = await walkMediaFiles(event.driveFolderId, isMediaFile, {
+    token: driveToken,
+    skipChildFolder: isManagedFolderName,
+  });
+  const sourceNameById = new Map(sources.map((f) => [f.id, f.name]));
+  if (sourceNameById.size === 0) {
+    return { ok: true, message: 'No source media found; nothing to re-sync.', data: result };
+  }
+
+  const resyncFolder = async (folderId: string, label: string): Promise<void> => {
+    result.foldersScanned++;
+    let shortcuts: ShortcutEntry[];
+    let copies: ManagedCopyEntry[];
+    try {
+      shortcuts = await listShortcutsInFolder(folderId, { token: driveToken });
+      copies = await listManagedCopiesInFolder(folderId, { token: driveToken });
+    } catch (err) {
+      result.warnings.push(`Listing ${label} failed: ${String(err)}`);
+      return;
+    }
+    for (const r of planManagedEntryRenames(shortcuts, copies, sourceNameById)) {
+      result.drifted++;
+      if (!apply) {
+        result.planned.push(r);
+        continue;
+      }
+      const res = await renameDriveFile(r.id, r.to, { token: driveToken });
+      if (res.ok) {
+        result.renamed++;
+      } else {
+        result.failed++;
+        result.warnings.push(`Rename failed in ${label} for "${r.from}" → "${r.to}": ${res.error}`);
+      }
+    }
+  };
+
+  // Photos_NNN buckets sit directly under the event root.
+  try {
+    for (const child of await listChildFolders(event.driveFolderId, { token: driveToken })) {
+      if (/^Photos_\d{3}$/.test(child.name)) await resyncFolder(child.id, child.name);
+    }
+  } catch (err) {
+    result.warnings.push(`Listing Photos_NNN buckets failed: ${String(err)}`);
+  }
+
+  // Videos / Album live under each (club, tag) scope.
+  for (const { clubName, tag } of await listEventScopes(eventId)) {
+    const scopeFolderId = await resolveClubTagFolder(event.driveFolderId, clubName, tag, driveToken);
+    if (!scopeFolderId) continue;
+    const scopeLabel = `${clubName}/${tag || '(no tag)'}`;
+    for (const name of [VIDEOS_FOLDER_NAME, ALBUM_FOLDER_NAME]) {
+      const folder = await findSubfolder(scopeFolderId, name, { token: driveToken });
+      if (folder) await resyncFolder(folder.id, `${scopeLabel}/${name}`);
+    }
+  }
+
+  logger.info(
+    { eventId, apply, ...result, planned: result.planned.length, warnings: result.warnings.length },
+    'resyncEventManagedFolderNames done',
+  );
+  const verb = apply ? `renamed ${result.renamed}` : `would rename ${result.drifted} (dry run)`;
+  return {
+    ok: true,
+    message: `Name re-sync for "${event.name}": ${verb} across ${result.foldersScanned} managed folder(s)${result.failed ? `, ${result.failed} failed` : ''}`,
+    data: result,
+  };
 }
