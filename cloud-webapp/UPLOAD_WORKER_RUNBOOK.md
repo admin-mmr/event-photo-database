@@ -19,13 +19,23 @@ gcloud services enable cloudtasks.googleapis.com --project=mmr-data-pipeline
 gcloud tasks queues create upload-process --location=us-central1 --project=mmr-data-pipeline
 ```
 
-Optional: cap throughput / retries (defaults are fine to start). The copy is
-idempotent (dedups by credited name + size), so retries are safe.
+Cap throughput / retries. The copy is idempotent (dedups on content hash, with
+an atomic per-file claim across batches), so retries are safe.
 
 ```
 gcloud tasks queues update upload-process --location=us-central1 --project=mmr-data-pipeline \
-  --max-attempts=5 --max-dispatches-per-second=5
+  --max-attempts=5 --max-dispatches-per-second=5 --max-concurrent-dispatches=1
 ```
+
+`--max-concurrent-dispatches=1` is not optional in spirit, even though gcloud
+treats it as such: without it the queue keeps the Cloud Tasks default of 1000,
+so several batches for the same event run at once. Each one snapshots the
+event's existing Drive files before the others have written anything, so
+overlapping photos are invisible to each snapshot and get copied twice — one
+photographer uploading five sessions a few minutes apart produced exactly that.
+The Firestore claim in `uploadDedupService` is what actually makes this safe;
+serialising the queue keeps concurrent workers from racing on Drive folder
+creation as well, and costs nothing (a batch is minutes of I/O, not CPU).
 
 ## 3. Let the api runtime enqueue tasks
 
