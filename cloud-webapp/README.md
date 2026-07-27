@@ -67,11 +67,18 @@ in the audit log.
 | Email prefs / digest | `/api/admin/email-prefs`, `/api/admin/email/daily` | `/me/email` |
 | Audit | `/api/admin/audit` | `/admin/audit` |
 | Deleted files / trash | `/api/admin/deleted-files` | `/admin/deleted` |
+| Duplicate files | `/api/admin/duplicates/:eventId`, `…/remove` | `/admin/duplicates` |
 | Reporting | `/api/admin/summary` | `/admin/summary` |
 | Partner API | `/api/partner/events`, `/api/partner/links` | (API key) |
 
+The duplicate-file tool scans an event's live Drive tree for byte-identical
+copies and trashes the redundant ones through the same soft-delete lifecycle as
+the trash page (Drive trash + `Deleted_Files` row + audit), keeping the copy the
+indexer keeps. It is a dry run unless the POST body says `apply: true`, and it is
+also runnable from a shell: `infra/scripts/remove-duplicate-files.sh --apply`.
+
 RBAC: `requireSuperAdmin` for user/club management; `requireAnyAdmin` +
-club-scope for events/links/trash/reporting; partner routes use an API key
+club-scope for events/links/trash/duplicates/reporting; partner routes use an API key
 (`X-Api-Key`, secret in env/Secret Manager — never the Sheet). Required config
 and the deploy/cutover sequence are in `../CUTOVER_RUNBOOK.md`.
 

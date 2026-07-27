@@ -27,6 +27,7 @@ import { adminDeletedFilesRouter } from './routes/adminDeletedFiles.js';
 import { summaryRouter } from './routes/summary.js';
 import { partnerRouter } from './routes/partner.js';
 import { adminManagedFoldersRouter } from './routes/adminManagedFolders.js';
+import { adminDuplicatesRouter } from './routes/adminDuplicates.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 
 export function buildServer(): express.Express {
@@ -105,6 +106,7 @@ export function buildServer(): express.Express {
   app.use('/api', summaryRouter);
   app.use('/api', partnerRouter);
   app.use('/api', adminManagedFoldersRouter);
+  app.use('/api', adminDuplicatesRouter);
 
   // 404 + final error handler must be registered last.
   app.use(notFoundHandler);
