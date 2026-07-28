@@ -497,10 +497,13 @@ export async function enqueueStagedBatch(
         batchId,
       };
       // Only hold the claim when WE won it, so a later failure can never release
-      // a claim that belongs to another batch.
-      const won = seenAlready ? false : await claimUploadedFile(candidate);
-      if (won) claim = candidate;
-      if (!won) {
+      // a claim that belongs to another batch. `seenAlready` means the snapshot
+      // matched a file that is genuinely in Drive, so it counts as confirmed.
+      const claimRes = seenAlready
+        ? { won: false, confirmedInDrive: true }
+        : await claimUploadedFile(candidate);
+      if (claimRes.won) claim = candidate;
+      if (!claimRes.won) {
         skippedDuplicates += 1;
         skippedDuplicateNames.push(name);
         logger.info(
@@ -510,12 +513,31 @@ export async function enqueueStagedBatch(
             objectName,
             name,
             matchedOn: seenAlready ? (hash ? 'md5' : 'name+size') : 'claim',
+            confirmedInDrive: claimRes.confirmedInDrive,
           },
           'duplicate skipped',
         );
-        await file
-          .delete({ ignoreNotFound: true })
-          .catch((err) => logger.warn({ err, objectName }, 'duplicate cleanup failed (non-fatal)'));
+        // DELETE THE STAGED BYTES ONLY WHEN THE DUPLICATE IS PROVEN.
+        //
+        // An unstamped claim means "someone appears to be copying this", not
+        // "this is in Drive" — and a request killed mid-copy leaves exactly that
+        // corpse behind (no catch block runs). Deleting on it destroyed 9
+        // volunteer photos across the 2026-07-27 timeout incident and the
+        // 2026-07-28 recovery OOM: skipped as a duplicate that never existed,
+        // with the only copy of the bytes thrown away.
+        //
+        // Keeping them costs nothing — the bucket's lifecycle rule reclaims the
+        // space, and until then upload-recovery can still put them in Drive.
+        if (claimRes.confirmedInDrive) {
+          await file
+            .delete({ ignoreNotFound: true })
+            .catch((err) => logger.warn({ err, objectName }, 'duplicate cleanup failed (non-fatal)'));
+        } else {
+          logger.warn(
+            { eventId: link.eventId, batchId, objectName, name },
+            'skipped an UNCONFIRMED duplicate — keeping the staged copy so it stays recoverable',
+          );
+        }
         continue;
       }
 

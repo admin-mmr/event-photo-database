@@ -190,6 +190,8 @@ const {
   UploadLinkError,
   __clearUploadLinksCache,
 } = await import('../src/services/volunteerUploadService.js');
+// Real (unmocked) — tests seed claim docs under the same ids the service uses.
+const { claimId } = await import('../src/services/uploadDedupService.js');
 
 const LINKS_RANGE = 'Upload_Links!A1:K';
 
@@ -503,6 +505,61 @@ describe('enqueueStagedBatch', () => {
     expect(first).toMatchObject({ copied: 1, skippedDuplicates: 0 });
     expect(second).toMatchObject({ copied: 0, skippedDuplicates: 1 });
     expect(driveUploads).toHaveLength(1);
+  });
+
+  it('KEEPS the staged bytes when the skip is an unconfirmed claim', async () => {
+    // THE 9-PHOTO BUG. A request killed mid-copy leaves a claim with no
+    // driveFileId (no catch block runs on a kill). The retry then read that
+    // corpse as "duplicate", skipped the file AND DELETED THE STAGED OBJECT —
+    // destroying the only copy of bytes that never reached Drive.
+    const link = await validateUploadLink('tok-good');
+    // A claim exists for these bytes but was never stamped: nothing in Drive.
+    dedupDocs.set(claimId('ev1', HEX_A), {
+      eventId: 'ev1',
+      dedupKey: HEX_A,
+      name: 'race-001.jpg',
+      batchId: 'killed-batch',
+      claimedAt: new Date(), // fresh, so the stale-reclaim does not apply
+    });
+    objects['vol/ev1/uc/u1.jpg'] = {
+      exists: true,
+      size: 100,
+      contentType: 'image/jpeg',
+      md5Hash: MD5_A,
+      metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
+    };
+
+    const res = await enqueueStagedBatch(link, 'uc', ['vol/ev1/uc/u1.jpg']);
+
+    expect(res).toMatchObject({ copied: 0, skippedDuplicates: 1 });
+    // Skipped, yes — but the bytes MUST still be there for recovery.
+    expect(deleted).toEqual([]);
+  });
+
+  it('deletes the staged bytes when the duplicate IS confirmed in Drive', async () => {
+    // The counterpart: a claim stamped with a driveFileId proves the bytes
+    // landed, so the staged copy is genuinely redundant.
+    const link = await validateUploadLink('tok-good');
+    dedupDocs.set(claimId('ev1', HEX_A), {
+      eventId: 'ev1',
+      dedupKey: HEX_A,
+      name: 'race-001.jpg',
+      batchId: 'done-batch',
+      claimedAt: new Date(),
+      driveFileId: 'drive-1',
+    });
+    objects['vol/ev1/cf/u1.jpg'] = {
+      exists: true,
+      size: 100,
+      contentType: 'image/jpeg',
+      md5Hash: MD5_A,
+      metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
+    };
+
+    const res = await enqueueStagedBatch(link, 'cf', ['vol/ev1/cf/u1.jpg']);
+
+    expect(res).toMatchObject({ copied: 0, skippedDuplicates: 1 });
+    expect(deleted).toEqual(['vol/ev1/cf/u1.jpg']);
   });
 
   it('lets exactly one of two genuinely concurrent batches copy the same photo', async () => {

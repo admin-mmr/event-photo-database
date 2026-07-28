@@ -88,14 +88,35 @@ function isAlreadyExists(err: unknown): boolean {
   return /already exists/i.test(String((err as { message?: unknown } | null)?.message ?? ''));
 }
 
+export interface ClaimResult {
+  /** True when this caller owns the key and should copy the file. */
+  won: boolean;
+  /**
+   * Only meaningful when `won` is false. TRUE means we positively know the bytes
+   * are already in Drive, so the staged copy is redundant and may be deleted.
+   * FALSE means "someone else appears to hold this" WITHOUT proof the bytes
+   * landed — the caller must NOT delete the staged object in that case.
+   *
+   * WHY THIS DISTINCTION EXISTS: the caller used to delete the staged object for
+   * every skip. A claim is written BEFORE the copy and stamped AFTER, so a
+   * request killed mid-copy leaves an unstamped claim; the retry then read that
+   * corpse as "duplicate", skipped the file AND DELETED THE ONLY COPY OF THE
+   * BYTES. That destroyed 9 volunteer photos across two incidents on
+   * 2026-07-27/28. Unproven duplicate = keep the bytes.
+   */
+  confirmedInDrive: boolean;
+}
+
 /**
- * Try to take ownership of (eventId, dedupKey). Returns true when this caller
- * won and should copy the file, false when another batch already has it.
+ * Try to take ownership of (eventId, dedupKey). `won` is true when this caller
+ * should copy the file, false when someone else holds the key — see
+ * `ClaimResult.confirmedInDrive` for whether that "someone else" actually
+ * produced a Drive file, which decides if the staged bytes may be deleted.
  *
- * Unexpected errors resolve to `true` (fail open) so a Firestore outage degrades
- * to the old snapshot-only behaviour instead of dropping uploads.
+ * Unexpected errors resolve to `won: true` (fail open) so a Firestore outage
+ * degrades to the old snapshot-only behaviour instead of dropping uploads.
  */
-export async function claimUploadedFile(input: ClaimInput): Promise<boolean> {
+export async function claimUploadedFile(input: ClaimInput): Promise<ClaimResult> {
   try {
     await firestore()
       .collection(UPLOAD_DEDUP_COLLECTION)
@@ -107,14 +128,14 @@ export async function claimUploadedFile(input: ClaimInput): Promise<boolean> {
         batchId: input.batchId,
         claimedAt: new Date(),
       });
-    return true;
+    return { won: true, confirmedInDrive: false };
   } catch (err) {
     if (isAlreadyExists(err)) return reclaimIfStale(input);
     logger.warn(
       { err, eventId: input.eventId, name: input.name },
       'upload dedup claim failed — allowing the copy (fail open)',
     );
-    return true;
+    return { won: true, confirmedInDrive: false };
   }
 }
 
@@ -122,43 +143,45 @@ export async function claimUploadedFile(input: ClaimInput): Promise<boolean> {
  * The claim already exists. Decide whether it is a genuine duplicate or the
  * wreckage of a worker that died before it could produce a Drive file.
  *
- *   - stamped with `driveFileId`  → the bytes really are in Drive. Duplicate.
- *   - unstamped and recent        → another worker is copying it right now.
+ *   - stamped with `driveFileId`  → the bytes really are in Drive. Duplicate,
+ *                                   and the staged copy is safe to delete.
+ *   - unstamped and recent        → another worker may be copying it right now.
+ *                                   Skip, but DO NOT delete: we have no proof
+ *                                   the bytes ever reached Drive.
  *   - unstamped and older than    → its holder is gone (a request cannot outlive
  *     STALE_CLAIM_MS                the Cloud Run timeout). Take it over.
  *
  * The read-and-take runs in a transaction so two workers racing on the same
  * stale claim cannot both win it.
  */
-async function reclaimIfStale(input: ClaimInput): Promise<boolean> {
+async function reclaimIfStale(input: ClaimInput): Promise<ClaimResult> {
   const ref = firestore().collection(UPLOAD_DEDUP_COLLECTION).doc(claimId(input.eventId, input.dedupKey));
   try {
-    return await firestore().runTransaction(async (tx) => {
+    const result = await firestore().runTransaction<ClaimResult>(async (tx) => {
       const snap = await tx.get(ref);
       // Vanished between create() and here — nothing owns the key now.
-      if (!snap.exists) return true;
+      if (!snap.exists) return { won: true, confirmedInDrive: false };
       const data = snap.data() ?? {};
-      if (data.driveFileId) return false;
+      if (data.driveFileId) return { won: false, confirmedInDrive: true };
 
       const age = ageMsOf(data.claimedAt);
-      if (age === null || age < STALE_CLAIM_MS) return false;
+      if (age === null || age < STALE_CLAIM_MS) return { won: false, confirmedInDrive: false };
 
       tx.update(ref, { claimedAt: new Date(), batchId: input.batchId, name: input.name, reclaimedFrom: data.batchId ?? '' });
-      return true;
-    }).then((won) => {
-      if (won) {
-        logger.warn(
-          { eventId: input.eventId, name: input.name, batchId: input.batchId },
-          'reclaimed a stale upload claim — its previous holder died before copying to Drive',
-        );
-      }
-      return won;
+      return { won: true, confirmedInDrive: false };
     });
+    if (result.won) {
+      logger.warn(
+        { eventId: input.eventId, name: input.name, batchId: input.batchId },
+        'reclaimed a stale upload claim — its previous holder died before copying to Drive',
+      );
+    }
+    return result;
   } catch (err) {
-    // Fail CLOSED here: we already know a claim exists, so the safe reading of an
-    // unreadable one is "someone owns it" rather than risking a second copy.
-    logger.warn({ err, eventId: input.eventId, name: input.name }, 'stale-claim check failed — treating as duplicate');
-    return false;
+    // Fail CLOSED on the claim (do not risk a second copy) but NOT on the bytes:
+    // an unreadable claim proves nothing about Drive, so the staged object stays.
+    logger.warn({ err, eventId: input.eventId, name: input.name }, 'stale-claim check failed — skipping, keeping the staged copy');
+    return { won: false, confirmedInDrive: false };
   }
 }
 
