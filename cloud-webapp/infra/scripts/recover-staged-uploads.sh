@@ -76,16 +76,40 @@ done
 RESP_FILE="$(mktemp -t recover-resp-XXXXXX)"
 trap 'rm -f "$RESP_FILE"' EXIT
 
-if [[ -z "${SYNC_TOKEN:-}" ]]; then
-  SYNC_TOKEN="$(gcloud run services describe "$API_SERVICE" --region="$REGION" --project="$PROJECT" --format=json 2>/dev/null \
-    | python3 -c 'import sys, json
+# Resolve the machine token (SYNC_TRIGGER_TOKEN) the api checks.
+#
+# It is deployed via `--set-secrets`, so the service spec carries a
+# `valueFrom.secretKeyRef` and NOT a literal `value` — reading `value` (as this
+# script originally did) can never succeed. Order: an explicit SYNC_TOKEN, then
+# a literal env value if one was ever set that way, then Secret Manager. Needs
+# roles/secretmanager.secretAccessor on the secret.
+resolve_sync_token() {
+  if [[ -n "${SYNC_TOKEN:-}" ]]; then printf '%s' "$SYNC_TOKEN"; return 0; fi
+
+  local spec literal secret
+  spec="$(gcloud run services describe "$API_SERVICE" --region="$REGION" --project="$PROJECT" --format=json 2>/dev/null || true)"
+  [[ -z "$spec" ]] && return 1
+
+  literal="$(printf '%s' "$spec" | python3 -c 'import sys, json
 d = json.load(sys.stdin)
 envs = d.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [{}])[0].get("env", [])
-print(next((e.get("value", "") for e in envs if e.get("name") == "SYNC_TRIGGER_TOKEN"), ""))' 2>/dev/null || true)"
-fi
+print(next((e.get("value", "") for e in envs if e.get("name") == "SYNC_TRIGGER_TOKEN" and e.get("value")), ""))' 2>/dev/null || true)"
+  if [[ -n "$literal" ]]; then printf '%s' "$literal"; return 0; fi
+
+  secret="$(printf '%s' "$spec" | python3 -c 'import sys, json
+d = json.load(sys.stdin)
+envs = d.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [{}])[0].get("env", [])
+ref = next((e.get("valueFrom", {}).get("secretKeyRef", {}) for e in envs if e.get("name") == "SYNC_TRIGGER_TOKEN"), {})
+print(ref.get("name", ""))' 2>/dev/null || true)"
+  [[ -z "$secret" ]] && secret="SYNC_TRIGGER_TOKEN"
+
+  gcloud secrets versions access latest --secret="$secret" --project="$PROJECT" 2>/dev/null | tr -d '\n'
+}
+
+SYNC_TOKEN="$(resolve_sync_token || true)"
 if [[ -z "${SYNC_TOKEN:-}" ]]; then
-  echo "ERROR: couldn't read SYNC_TRIGGER_TOKEN from '$API_SERVICE'." >&2
-  echo "       It may be a Secret Manager ref. Provide it explicitly:" >&2
+  echo "ERROR: couldn't resolve SYNC_TRIGGER_TOKEN for '$API_SERVICE'." >&2
+  echo "       It is stored in Secret Manager; you need secretAccessor on it, or pass it:" >&2
   echo "         SYNC_TOKEN=... $0 ${*:-}" >&2
   exit 1
 fi
