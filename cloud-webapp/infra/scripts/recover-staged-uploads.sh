@@ -183,7 +183,7 @@ for id in "${EVENTS[@]}"; do
 
   if [[ "$APPLY" == "1" ]]; then
     echo "  dispatched ${objects:-0} photo(s) across ${tasks:-0} task(s), ${batches:-0} batch(es)"
-    # Chunks are scheduled apart on purpose — see STAGGER_MS_PER_OBJECT.
+    # Chunks are scheduled apart on purpose, costed by object count AND bytes.
     echo "  they are spread over ~${eta:-?} minute(s) so they don't all hit one instance"
   else
     echo "  would copy ${objects:-0} photo(s) across ${tasks:-0} task(s), ${batches:-0} batch(es)"

@@ -49,19 +49,67 @@ const DEFAULT_CHUNK = 400;
 const MAX_DISPATCH = 5000;
 
 /**
- * Spacing between dispatched chunks, per object in the preceding chunk.
+ * Cost model for one chunk, used BOTH to space dispatches apart and to tell the
+ * operator how long the run will take.
  *
- * WHY: Cloud Run packs concurrent requests onto ONE instance (`--concurrency`),
- * and every in-flight copy buffers a whole photo (~4 MB). The first live
- * recovery dispatched all 10 chunks at once, they landed together, and the
+ * WHY SPACING EXISTS: Cloud Run packs concurrent requests onto ONE instance
+ * (`--concurrency`), and every in-flight copy buffers a whole file. The first
+ * live recovery dispatched all 10 chunks at once, they landed together, and the
  * container was OOM-killed — 503s, and the tasks had to be forced through by
- * hand one at a time. Spreading them means roughly one chunk is in flight at a
- * time, which is what the copy path is sized for. ~1.2s per photo is a
- * deliberately conservative estimate of copy throughput; finishing early just
- * leaves the instance idle until the next chunk is due, which costs nothing on a
- * scale-to-zero service.
+ * hand one at a time. Spacing keeps roughly one chunk in flight, which is what
+ * the copy path is sized for. Finishing early just leaves the instance idle
+ * until the next chunk is due, which costs nothing on a scale-to-zero service.
+ *
+ * WHY IT COUNTS BYTES, NOT JUST OBJECTS: the first version charged a flat
+ * ~1.2s per object. That is about right for a 4 MB photo and wildly wrong for
+ * video — a real run of 5 MP4s totalling 8.8 GB was estimated at "~1 minute"
+ * and took 21.6. Under-estimating is not cosmetic: it also under-spaces the
+ * dispatches, which is exactly what caused the OOM.
+ *
+ * The constants come from that run: 8.8 GB moved in 1,295s ≈ 6.8 MB/s through
+ * GCS → worker → Drive, so 6 MB/s is a slightly conservative throughput, and
+ * 1.2s covers the per-object overhead (metadata read, md5 claim, Drive create,
+ * the shared Drive pacing gate).
  */
-const STAGGER_MS_PER_OBJECT = 1_200;
+const PER_OBJECT_MS = 1_200;
+const THROUGHPUT_BYTES_PER_SEC = 6 * 1024 * 1024;
+
+/**
+ * Byte ceiling for one chunk, so a chunk cannot outlive the 1800s request
+ * timeout however few objects it holds. At the throughput above, 6 GiB is ~1,000s
+ * — comfortable headroom. Without this, `DEFAULT_CHUNK` (400) objects of video
+ * would be a single task needing hours, and the worker would be killed mid-batch:
+ * the original bug, reintroduced by the recovery tool.
+ */
+const MAX_CHUNK_BYTES = 6 * 1024 * 1024 * 1024;
+
+/** Wall-clock a chunk should take: fixed per-object cost + transfer time. */
+function chunkCostMs(objs: ReadonlyArray<StagedObject>): number {
+  const bytes = objs.reduce((n, o) => n + o.size, 0);
+  return objs.length * PER_OBJECT_MS + (bytes / THROUGHPUT_BYTES_PER_SEC) * 1000;
+}
+
+/**
+ * Split a batch into chunks bounded by BOTH object count and total bytes, so a
+ * chunk of large videos is smaller than a chunk of photos.
+ */
+function buildChunks(objs: ReadonlyArray<StagedObject>, maxCount: number): StagedObject[][] {
+  const out: StagedObject[][] = [];
+  let cur: StagedObject[] = [];
+  let bytes = 0;
+  for (const o of objs) {
+    // A single object over the byte cap still gets its own chunk — never dropped.
+    if (cur.length > 0 && (cur.length >= maxCount || bytes + o.size > MAX_CHUNK_BYTES)) {
+      out.push(cur);
+      cur = [];
+      bytes = 0;
+    }
+    cur.push(o);
+    bytes += o.size;
+  }
+  if (cur.length > 0) out.push(cur);
+  return out;
+}
 
 export interface StrandedBatch {
   batchId: string;
@@ -251,9 +299,10 @@ export async function dispatchStagedRecovery(
   }
 
   let budget = MAX_DISPATCH;
-  // Grows as chunks are queued, so each is scheduled after the previous should
-  // have finished rather than all firing at once.
-  let staggerMs = 0;
+  // Grows as chunks are planned, so each is scheduled after the previous should
+  // have finished rather than all firing at once. Also the run's duration
+  // estimate, which is why it accrues on a dry run too.
+  let plannedMs = 0;
   for (const [batchId, objs] of byBatch) {
     const linkId = objs.find((o) => o.linkId)?.linkId ?? '';
     if (!linkId) {
@@ -264,23 +313,31 @@ export async function dispatchStagedRecovery(
     }
     result.batches += 1;
 
-    for (let i = 0; i < objs.length; i += chunk) {
-      const slice = objs.slice(i, i + chunk);
+    const chunks = buildChunks(objs, chunk);
+    let done = 0;
+    for (const [n, slice] of chunks.entries()) {
       if (slice.length > budget) {
-        result.notDispatched += objs.length - i;
+        result.notDispatched += objs.length - done;
         result.warnings.push(`Dispatch cap (${MAX_DISPATCH}) reached — re-run to continue`);
         budget = 0;
         break;
       }
       budget -= slice.length;
+      done += slice.length;
       result.objects += slice.length;
       result.tasks += 1;
-      if (!apply) continue;
+      // Accrued for BOTH modes so a dry run reports an honest duration.
+      const cost = chunkCostMs(slice);
+
+      if (!apply) {
+        plannedMs += cost;
+        continue;
+      }
 
       // A recovery-specific batchId keeps the volunteer's original status doc
       // intact AND gives the Cloud Tasks item a name that cannot collide with
       // the original dispatch (whose task may still be known to the queue).
-      const recoveryBatchId = `${batchId}-rec${Math.floor(i / chunk) + 1}`;
+      const recoveryBatchId = `${batchId}-rec${n + 1}`;
       try {
         await enqueueProcessBatchTask(
           {
@@ -289,20 +346,23 @@ export async function dispatchStagedRecovery(
             objectNames: slice.map((o) => o.name),
           },
           // Spread the chunks out so they do not all land on one instance.
-          { scheduleTime: new Date(Date.now() + staggerMs).toISOString() },
+          { scheduleTime: new Date(Date.now() + plannedMs).toISOString() },
         );
-        staggerMs += slice.length * STAGGER_MS_PER_OBJECT;
+        plannedMs += cost;
       } catch (err) {
         result.tasks -= 1;
         result.objects -= slice.length;
         result.notDispatched += slice.length;
-        result.warnings.push(`Batch ${batchId} chunk ${i / chunk + 1}: dispatch failed — ${String(err)}`);
+        result.warnings.push(`Batch ${batchId} chunk ${n + 1}: dispatch failed — ${String(err)}`);
       }
     }
     if (budget === 0) break;
   }
 
-  result.estimatedMinutes = Math.ceil((result.objects * STAGGER_MS_PER_OBJECT) / 60_000);
+  // Rounded, not ceilinged: ceil turned 2.0003 minutes into "3", and an estimate
+  // that rounds up on a rounding artefact reads as sloppy. Any non-empty run
+  // still reports at least 1 minute.
+  result.estimatedMinutes = result.objects === 0 ? 0 : Math.max(1, Math.round(plannedMs / 60_000));
 
   logger.info(
     {

@@ -184,11 +184,57 @@ describe('dispatchStagedRecovery', () => {
     expect(times[1]! - times[0]!).toBeGreaterThanOrEqual(2000);
   });
 
-  it('reports how long the staggered run will take', async () => {
+  it('reports how long the run will take, from objects AND bytes', async () => {
     getFiles.mockResolvedValue([[...Array.from({ length: 100 }, (_, i) => obj('b1', `f${i}`, { md5: `m${i}` }))]]);
     const out = await dispatchStagedRecovery(EV, { apply: true });
     expect(out.objects).toBe(100);
-    expect(out.estimatedMinutes).toBe(2); // 100 * 1.2s = 120s
+    expect(out.estimatedMinutes).toBe(2); // 100 tiny files x 1.2s = 120s
+  });
+
+  it('estimates VIDEO batches from their bytes, not their file count', async () => {
+    // The bug this fixes: 5 MP4s totalling 8.8 GB were estimated at "~1 minute"
+    // (5 x 1.2s) and actually took 21.6. The byte term dominates for video.
+    const GB = 1024 ** 3;
+    getFiles.mockResolvedValue([
+      [...Array.from({ length: 5 }, (_, i) => obj('vid', `v${i}`, { md5: `v${i}`, size: 1.76 * GB }))],
+    ]);
+    const out = await dispatchStagedRecovery(EV, { apply: true });
+    expect(out.objects).toBe(5);
+    // ~8.8 GB at 6 MB/s ~= 25 min, in the right ballpark of the real 21.6.
+    expect(out.estimatedMinutes).toBeGreaterThan(15);
+    expect(out.estimatedMinutes).toBeLessThan(35);
+  });
+
+  it('reports a duration on a DRY RUN too, so the operator can plan', async () => {
+    const GB = 1024 ** 3;
+    getFiles.mockResolvedValue([[obj('vid', 'v0', { md5: 'v0', size: 4 * GB })]]);
+    const out = await dispatchStagedRecovery(EV);
+    expect(out.apply).toBe(false);
+    expect(out.estimatedMinutes).toBeGreaterThan(5);
+  });
+
+  it('caps a chunk by BYTES so one task cannot outlive the request timeout', async () => {
+    // 4 x 4 GiB with chunkSize 400: the count cap would make ONE 16 GiB task,
+    // which no 1800s request could finish. The byte cap splits it instead.
+    const GB = 1024 ** 3;
+    getFiles.mockResolvedValue([
+      [...Array.from({ length: 4 }, (_, i) => obj('vid', `v${i}`, { md5: `v${i}`, size: 4 * GB }))],
+    ]);
+    const out = await dispatchStagedRecovery(EV, { apply: true, chunkSize: 400 });
+    expect(out.objects).toBe(4);
+    expect(out.tasks).toBeGreaterThan(1);
+    // Every dispatched chunk stays under the 6 GiB ceiling -> at most 1 per task here.
+    for (const c of enqueueProcessBatchTask.mock.calls) {
+      expect((c[0] as { objectNames: string[] }).objectNames.length).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it('never drops an object larger than the byte cap', async () => {
+    const GB = 1024 ** 3;
+    getFiles.mockResolvedValue([[obj('vid', 'huge', { md5: 'h', size: 9 * GB })]]);
+    const out = await dispatchStagedRecovery(EV, { apply: true });
+    expect(out.objects).toBe(1);
+    expect(out.tasks).toBe(1);
   });
 
   it('can target specific batches', async () => {
