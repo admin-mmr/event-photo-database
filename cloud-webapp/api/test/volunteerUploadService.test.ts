@@ -36,6 +36,7 @@ vi.mock('../src/lib/firestore.js', () => ({
       if (name === 'upload_dedup') {
         return {
           doc: (id: string) => ({
+            __id: id,
             create: async (data: Record<string, unknown>) => {
               if (dedupDocs.has(id)) {
                 throw Object.assign(new Error('6 ALREADY_EXISTS: entity already exists'), { code: 6 });
@@ -62,6 +63,19 @@ vi.mock('../src/lib/firestore.js', () => ({
         doc: (id: string) => ({ get: async () => ({ data: () => eventDocs[id] }) }),
       };
     },
+    // The stale-claim reclaim reads the existing claim in a transaction. Modelled
+    // here so an ALREADY_EXISTS in these tests resolves through the real code
+    // path (fresh claim → still a duplicate) rather than through its fail-closed
+    // catch, which would give the right answer for the wrong reason.
+    runTransaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> =>
+      fn({
+        get: async (ref: { __id: string }) => ({
+          exists: dedupDocs.has(ref.__id),
+          data: () => dedupDocs.get(ref.__id),
+        }),
+        update: (ref: { __id: string }, patch: Record<string, unknown>) =>
+          void dedupDocs.set(ref.__id, { ...dedupDocs.get(ref.__id), ...patch }),
+      }),
   }),
 }));
 
