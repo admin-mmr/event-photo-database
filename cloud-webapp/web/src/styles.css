@@ -1691,6 +1691,132 @@ pre.error {
   color: var(--danger);
 }
 
+/* ── Verdict batches (admin review of one search's verdicts) ───────────────── */
+
+.batch-list {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+/* Phone-first: selfie left, who/counts middle, action wraps to its own line. */
+.batch-card {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-sm);
+  padding: 12px;
+}
+
+.batch-card > .btn {
+  grid-column: 2;
+}
+
+.batch-selfie,
+.verdict-selfie-img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+/* A selfie we couldn't sign (expired / erased) — a quiet placeholder rather
+   than a broken image icon. */
+.selfie-missing {
+  display: block;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: 1;
+  border-radius: var(--r-sm);
+  background: repeating-linear-gradient(
+    45deg,
+    var(--surface-2),
+    var(--surface-2) 6px,
+    var(--border) 6px,
+    var(--border) 7px
+  );
+}
+
+.batch-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.batch-who,
+.batch-body .muted {
+  overflow-wrap: anywhere;
+}
+
+.verdict-batch {
+  display: grid;
+  gap: 16px;
+  margin: 16px 0;
+}
+
+.verdict-selfie {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.verdict-selfie figcaption {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.verdict-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 14px;
+}
+
+.verdict-facts dt {
+  color: var(--text-muted);
+}
+
+.verdict-facts dd {
+  margin: 0;
+}
+
+.verdict-tallies {
+  margin-bottom: 8px;
+}
+
+.verdict-grid {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 10px;
+}
+
+.verdict-cell {
+  display: grid;
+  gap: 6px;
+}
+
+.verdict-cell-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 /* ═════════════════════════════════════════════════════════════════════════
    ≥768px — tablet / desktop progressive enhancement
    ═════════════════════════════════════════════════════════════════════════ */
@@ -1886,6 +2012,21 @@ pre.error {
 
   .signin-card {
     padding: 36px 32px;
+  }
+
+  /* Verdict batches: the row fits on one line, and the selfie + facts of an
+     open batch sit side by side. */
+  .batch-card {
+    grid-template-columns: 72px 1fr auto;
+  }
+
+  .batch-card > .btn {
+    grid-column: auto;
+  }
+
+  .verdict-batch {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+    align-items: start;
   }
 }
 

@@ -89,6 +89,9 @@ interface RunSearchOpts {
   /** Store the reference (fresh uploads only). Persisted on ALL outcomes —
    *  including failed searches — so an admin can reproduce reported issues. */
   persistReference: boolean;
+  /** The stored selfie being reused, when this is a reuse search. Recorded on
+   *  the run so the admin verdict-batch review can show what was searched with. */
+  reuseUploadId?: string;
 }
 
 /**
@@ -187,6 +190,9 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
   // PRD D7/§6.1). Done on EVERY outcome (incl. no_usable_face / not-indexed) so
   // support can reproduce a reported failure from the exact selfie the user
   // sent. Only matched selfies are later offered back to the user for reuse.
+  // The selfie this run searched with, stamped on the run record below. A fresh
+  // upload fills it in when the persist succeeds; a reuse search already knows it.
+  let selfieUploadId: string | null = opts.reuseUploadId ?? null;
   if (opts.persistReference) {
     try {
       const uploadId = randomUUID();
@@ -209,6 +215,7 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
         createdAt: nowIso,
         expiresAt,
       });
+      selfieUploadId = uploadId;
     } catch (err) {
       logger.warn({ err, uid: user.uid }, 'reference persist failed (non-fatal)');
     }
@@ -286,6 +293,11 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
       mode: match.mode,
       modelVersion: match.modelVersion ?? null,
       algo,
+      // Link the run to the selfie it searched with, so an admin reviewing this
+      // batch's verdicts can see the query photo (routes/adminVerdicts.ts).
+      // Null when the persist failed or a reuse search's record has since gone.
+      uploadId: selfieUploadId,
+      searcherName: name,
       resultPhotoIds: match.results.map((r) => r.photoId),
       scores: Object.fromEntries(match.results.map((r) => [r.photoId, r.score])),
       createdAt: nowIso,
@@ -510,6 +522,7 @@ findmeRouter.post(
         subjectIsMinor: subjectIsMinor ?? rec.subjectIsMinor,
         guardianAttested: guardianAttested ?? false,
         persistReference: false,
+        reuseUploadId: rec.uploadId,
       });
     } catch (err) {
       next(err);

@@ -306,7 +306,42 @@ gcloud logging read \
   --format='value(jsonPayload.action, jsonPayload.adminEmail, jsonPayload.uploadId, jsonPayload.targetUid)'
 ```
 
-### 6.4 Guest-search alert email
+### 6.4 Review the verdicts a searcher marked (admin-only, audited)
+
+"Match feedback" (`/admin/feedback`) is a flat list of votes, which can't answer
+*was this search right?* — a lone "not me" means nothing without the face that
+was searched for and the other verdicts from the same search. **Verdict batches**
+(`/admin/verdicts`, super_admin in the nav; any admin at the api) groups them the
+way they were produced: one search run = one selfie + every me/not-me the
+searcher marked on its results, with each photo's rank and score from that run.
+Read-only — nothing here writes to `match_feedback` / `match_runs`, so the eval
+feedback loop is untouched — and, like §6.3, every load writes an `admin_audit`
+record (`verdict_batch_list` / `verdict_batch_view`).
+
+```bash
+BASE=https://mmr-data-pipeline.web.app
+TOKEN=...   # a Firebase ID token for an ADMIN_EMAILS account
+
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$BASE/api/admin/verdict-batches?eventId=<eventId>&limit=25"
+
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$BASE/api/admin/verdict-batches/<runId>"
+```
+
+Filters: `?eventId=`, `?uid=`, `?email=` (case-insensitive), `?limit=` (≤100).
+The list scans the 500 most recent votes and reports `capped: true` when that
+window is full, plus `unattributed` — votes with no `runId`, which belong to no
+batch and are only visible in the flat queue.
+
+`selfieUrl: null` is expected, not a bug, in three cases: the selfie passed its
+retention tier (§8.4), the user erased their data, or the search predates the
+run→selfie link. Runs written before that link are recovered by joining
+`find_me_uploads` on (uid, eventId, exact `createdAt`) — `runSearch` stamps both
+records from the same timestamp — which works for fresh-upload searches but not
+for older *reuse* searches, since those wrote no reference record.
+
+### 6.5 Guest-search alert email
 
 Each search emits a structured log line (`jsonPayload.alert="findme_search"`)
 carrying `guestName`, `isGuest`, `uid`, `email`, `eventId`, `outcome`,
@@ -398,4 +433,5 @@ limit so a busy event doesn't flood the inbox.
 | Enable pilot event (durable) | Set repo Variable `FINDME_EVENT_ALLOWLIST=<ID>` (already wired into `deploy-api.yml`), then re-run deploy. Transient: `gcloud run services update event-photo-api --region=us-central1 --update-env-vars=FINDME_EVENT_ALLOWLIST=<ID>` |
 | Kill switch | `--update-env-vars=FINDME_ENABLED=false` |
 | Metrics | `GET /api/admin/metrics?eventId=<ID>&sinceDays=90` (admin) |
+| Verdicts of one search | `GET /api/admin/verdict-batches[/<runId>]` (admin, audited — §6.4); UI `/admin/verdicts` |
 | Tail indexer logs | `gcloud beta logging tail 'resource.type="cloud_run_job" AND resource.labels.job_name="photo-indexer"' --project=mmr-data-pipeline --format='value(textPayload)'` |
