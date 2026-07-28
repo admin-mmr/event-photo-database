@@ -282,8 +282,14 @@
   concurrent requests onto one instance (`--concurrency=80`) and every in-flight
   copy buffers a whole photo, so the first live recovery — 10 chunks dispatched
   at once — OOM-killed the container at 512Mi and had to be forced through by
-  hand, one task at a time. `STAGGER_MS_PER_OBJECT` now schedules each chunk
-  after the previous should have finished; `estimatedMinutes` reports the spread.
+  hand, one task at a time. Each chunk is now scheduled after the previous should
+  have finished, costed by `chunkCostMs` = `PER_OBJECT_MS` (1.2s) +
+  bytes / `THROUGHPUT_BYTES_PER_SEC` (6 MB/s, measured); `estimatedMinutes`
+  reports the spread. **The cost must count BYTES, not just objects** — a
+  count-only estimate called 8.8 GB of video "~1 minute" when it took 21.6, and
+  under-spacing is what caused the OOM. Chunks are also capped at
+  `MAX_CHUNK_BYTES` (6 GiB ≈ 1,000s) so one task cannot outlive the 1800s
+  request timeout no matter how few objects it holds.
   The api runs at **1Gi** for the same reason (see deploy-api.sh).
 
 ## Monitoring the Cloud Run indexer job
