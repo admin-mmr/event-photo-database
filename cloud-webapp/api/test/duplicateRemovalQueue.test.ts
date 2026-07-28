@@ -11,6 +11,8 @@
  * queues are empty.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+// Type-only, so it is erased before vi.mock hoisting can care about it.
+import type * as ConfigModule from '../src/lib/config.js';
 
 const walkMediaFiles = vi.fn();
 const getDriveToken = vi.fn();
@@ -46,7 +48,7 @@ vi.mock('../src/services/publicFolderIndexService.js', () => ({
 // Partial mock: the rest of config (isProd, …) is still needed by the logger.
 const env = { MASTER_SPREADSHEET_ID: 'sheet1', MANAGED_FOLDERS_ENABLED: 'true' };
 vi.mock('../src/lib/config.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../src/lib/config.js')>()),
+  ...(await importOriginal<typeof ConfigModule>()),
   env,
 }));
 
