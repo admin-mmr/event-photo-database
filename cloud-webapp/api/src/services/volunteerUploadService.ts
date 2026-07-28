@@ -102,7 +102,8 @@ export function stagingExtForMime(mimeType: string | undefined): string {
 }
 
 let storage: Storage | null = null;
-function getStorage(): Storage {
+/** Shared lazily-built Storage client (also used by uploadRecoveryService). */
+export function getStorage(): Storage {
   if (storage === null) {
     storage = new Storage(env.GCP_PROJECT_ID ? { projectId: env.GCP_PROJECT_ID } : {});
   }
@@ -181,7 +182,12 @@ export async function validateUploadLink(token: string): Promise<ValidatedLink> 
     throw new UploadLinkError('revoked', 'This upload link has been revoked.');
   }
 
-  const eventId = cell(match, LINKS_COL.EVENT_ID);
+  return rowToLink(match);
+}
+
+/** Shared row → ValidatedLink mapping, including the event-name lookup. */
+async function rowToLink(row: string[]): Promise<ValidatedLink> {
+  const eventId = cell(row, LINKS_COL.EVENT_ID);
   let eventName = '';
   try {
     const snap = await firestore().collection('events').doc(eventId).get();
@@ -191,12 +197,35 @@ export async function validateUploadLink(token: string): Promise<ValidatedLink> 
   }
 
   return {
-    linkId: cell(match, LINKS_COL.LINK_ID),
+    linkId: cell(row, LINKS_COL.LINK_ID),
     eventId,
-    clubName: cell(match, LINKS_COL.CLUB_NAME),
-    tag: cell(match, LINKS_COL.TAG),
+    clubName: cell(row, LINKS_COL.CLUB_NAME),
+    tag: cell(row, LINKS_COL.TAG),
     eventName,
   };
+}
+
+/**
+ * Resolve a link by its LINK_ID rather than its public token — the admin
+ * recovery path, since a staged object's GCS metadata records `linkId`.
+ *
+ * Deliberately tolerates a REVOKED link: the bytes were accepted while the link
+ * was live, so refusing here would permanently strand photos whose link was
+ * later rotated. Recovery is admin-initiated and machine-token gated, so the
+ * authorisation the token check provides on the public path is already covered.
+ */
+export async function loadUploadLinkById(linkId: string): Promise<ValidatedLink> {
+  const spreadsheetId = env.MASTER_SPREADSHEET_ID;
+  if (!spreadsheetId) {
+    throw new UploadLinkError('not_configured', 'Upload links are not configured (no master Sheet).');
+  }
+  const values = await loadUploadLinks(spreadsheetId);
+  const match = values.find((row) => cell(row, LINKS_COL.LINK_ID) === linkId);
+  if (!match) throw new UploadLinkError('invalid_token', `No upload link with id "${linkId}".`);
+  if (cell(match, LINKS_COL.REVOKED_AT)) {
+    logger.warn({ linkId }, 'recovery: resolving a REVOKED upload link (bytes predate the revocation)');
+  }
+  return rowToLink(match);
 }
 
 /** Staging object key: `<prefix>/<eventId>/<batchId>/<uploadId>.<ext>`. */

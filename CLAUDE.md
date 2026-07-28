@@ -190,6 +190,39 @@
 - After a removal run the index still lists the trashed copies until the event is
   re-indexed (`reindexRecommended: true` in the response says so).
 
+## Recovering volunteer uploads stranded in staging
+
+- **"Photo missing from the gallery" is usually NOT a lost upload.** The path is
+  upload → GCS staging bucket → Cloud Tasks worker copies to Drive → indexer →
+  gallery. The gallery reads the Firestore `photos` cache, never live Drive, so a
+  photo sitting safely in staging is invisible. Diagnose by layer before acting.
+- **The tool:** `GET /api/admin/upload-recovery/:eventId` reports what is owed;
+  `POST /api/admin/upload-recovery/:eventId` is a dry run by default and, with
+  `apply: true`, dispatches the copies and returns `202`
+  (`api/src/services/uploadRecoveryService.ts`). Shell wrapper
+  `./cloud-webapp/infra/scripts/recover-staged-uploads.sh [--apply] <event-id …>`.
+- **It adds NO copy logic.** Every staged object carries the metadata the normal
+  path needs (`eventId`, `linkId`, `clubName`, `tag`, `originalName`,
+  `photographerName`, `batchId` — stamped by `createResumableSession`), so
+  recovery just re-dispatches the same Cloud Tasks work item a volunteer upload
+  would and `enqueueStagedBatch` does the rest. Keep it that way; a bespoke
+  copier is a second implementation to get wrong.
+  - Photographer credit therefore survives even when the `upload_batches` doc is
+    missing — credit lives on the OBJECT, not the batch doc. A blank
+    `photographerName` is legitimate (the field is optional) and falls back to
+    `volunteer` via `buildBatchFolderName`.
+  - The worker accepts `linkId` as well as the public `token`, because staged
+    objects record the link id, not the token. Recovery tolerates a REVOKED link
+    — the bytes were accepted while it was live.
+- **Safe to re-run:** objects whose md5 is already in the photo index are filtered
+  out before dispatch, and the worker's own md5 claim is the authoritative check,
+  so a double run cannot create duplicate Drive files. Each chunk gets a
+  `<batchId>-recN` id so the Cloud Tasks name never collides with the original
+  dispatch and the volunteer's status doc is left intact.
+- **Check the deployed timeout first.** At anything below ~600s the worker is
+  killed mid-batch and recovery reproduces the very bug it repairs; the shell
+  wrapper refuses to `--apply` in that case.
+
 ## Monitoring the Cloud Run indexer job
 
 - **Tail logs live** (closest to `tail -f`) with the Logging API:

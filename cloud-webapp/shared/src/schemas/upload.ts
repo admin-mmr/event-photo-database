@@ -96,11 +96,22 @@ export type CompleteUploadRequest = z.infer<typeof CompleteUploadRequestSchema>;
 /** Body of the internal worker endpoint (POST /api/internal/process-batch) that
  *  copies a staged batch to Drive. In step 3 this is the Cloud Tasks payload;
  *  for now it's the seam the worker shares with /complete. */
-export const ProcessBatchRequestSchema = z.object({
-  token: z.string().min(1),
-  batchId: z.string().min(1),
-  objectNames: z.array(z.string().min(1)).min(1),
-});
+/**
+ * Worker payload. Identifies the upload link by EITHER the public `token` (the
+ * normal volunteer path) OR `linkId` (the admin recovery path — staged objects
+ * carry linkId in their GCS metadata, not the token). Exactly one is required;
+ * the endpoint is machine-token gated either way.
+ */
+export const ProcessBatchRequestSchema = z
+  .object({
+    token: z.string().min(1).optional(),
+    linkId: z.string().min(1).optional(),
+    batchId: z.string().min(1),
+    objectNames: z.array(z.string().min(1)).min(1),
+  })
+  .refine((v) => Boolean(v.token) || Boolean(v.linkId), {
+    message: 'either token or linkId is required',
+  });
 export type ProcessBatchRequest = z.infer<typeof ProcessBatchRequestSchema>;
 
 export const CompleteUploadResponseSchema = z.object({
