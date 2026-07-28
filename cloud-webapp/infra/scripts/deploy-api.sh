@@ -119,7 +119,7 @@ gcloud run deploy "$SERVICE" \
   --platform=managed \
   --service-account="api-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
   --port=8080 \
-  --memory=512Mi \
+  --memory=1Gi \
   --cpu=1 \
   --max-instances=10 \
   --min-instances=0 \
@@ -127,6 +127,13 @@ gcloud run deploy "$SERVICE" \
   --timeout=1800 \
   --update-env-vars="$ENV_VARS" \
   --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_API_KEY=RECAPTCHA_KEY:latest"
+# Memory: 1Gi. 512Mi OOM-killed the container 9 times in 3 days (twice during a
+#   live volunteer upload window on 2026-07-27) — the upload worker buffers a
+#   whole photo (~4 MB) per in-flight copy and Cloud Run packs up to
+#   --concurrency requests onto one instance. A kill mid-batch strands claims and
+#   drops photos. 1Gi is ~2x the observed 515 MiB peak. Memory bills only while
+#   serving, so the zero-idle-cost policy is unaffected. Keep this in step with
+#   API_MEMORY in .github/workflows/deploy-api.yml, which asserts it after deploy.
 # Timeout: 1800s so the Cloud Tasks worker (/api/internal/process-batch) can
 #   copy a large staged video (up to 10 GiB) to Drive in one attempt; it must be
 #   >= the task dispatchDeadline in uploadDispatch.ts. Browser-facing requests

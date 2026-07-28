@@ -164,6 +164,33 @@ describe('dispatchStagedRecovery', () => {
     expect(ids).toEqual(['b1-rec1', 'b1-rec2', 'b1-rec3']);
   });
 
+  it('STAGGERS chunks so they cannot all land on one instance at once', async () => {
+    // The live run dispatched 10 chunks simultaneously, Cloud Run packed them
+    // onto one 512MiB instance and OOM-killed it. Each chunk must now be
+    // scheduled after the previous one should have finished.
+    getFiles.mockResolvedValue([[...Array.from({ length: 6 }, (_, i) => obj('b1', `f${i}`, { md5: `m${i}` }))]]);
+    const before = Date.now();
+    await dispatchStagedRecovery(EV, { apply: true, chunkSize: 2 });
+
+    const times = enqueueProcessBatchTask.mock.calls.map((c) =>
+      Date.parse((c[1] as { scheduleTime: string }).scheduleTime),
+    );
+    expect(times).toHaveLength(3);
+    // First goes out immediately; each later one is pushed further out.
+    expect(times[0]!).toBeLessThanOrEqual(before + 1000);
+    expect(times[1]!).toBeGreaterThan(times[0]!);
+    expect(times[2]!).toBeGreaterThan(times[1]!);
+    // Spacing reflects the size of the preceding chunk (2 objects).
+    expect(times[1]! - times[0]!).toBeGreaterThanOrEqual(2000);
+  });
+
+  it('reports how long the staggered run will take', async () => {
+    getFiles.mockResolvedValue([[...Array.from({ length: 100 }, (_, i) => obj('b1', `f${i}`, { md5: `m${i}` }))]]);
+    const out = await dispatchStagedRecovery(EV, { apply: true });
+    expect(out.objects).toBe(100);
+    expect(out.estimatedMinutes).toBe(2); // 100 * 1.2s = 120s
+  });
+
   it('can target specific batches', async () => {
     getFiles.mockResolvedValue([[obj('b1', 'a', { md5: 'aa' }), obj('b2', 'b', { md5: 'bb' })]]);
     const out = await dispatchStagedRecovery(EV, { apply: true, batchIds: ['b2'] });
