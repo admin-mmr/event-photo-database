@@ -33,8 +33,9 @@
 #   YES=1 ./infra/scripts/remove-duplicate-files.sh --apply       # no confirmation prompt
 #
 # Auth: needs `gcloud` logged in. Your gcloud token lists events from Firestore;
-# the api call uses the machine token (SYNC_TRIGGER_TOKEN) read from the deployed
-# service. If that token lives in Secret Manager, pass it directly:
+# the api call uses the machine token (SYNC_TRIGGER_TOKEN), which is deployed via
+# --set-secrets and so is read from Secret Manager automatically (you need
+# roles/secretmanager.secretAccessor). Override it directly if you prefer:
 #   SYNC_TOKEN=... ./infra/scripts/remove-duplicate-files.sh --apply ev123
 #
 # Tunables (env): PROJECT, REGION, API_BASE, API_SERVICE, BATCH_LIMIT, MAX_TICKS.
@@ -42,7 +43,8 @@
 # WHY --apply IS TWO STEPS: removing an event's duplicates is minutes of
 # rate-paced Drive work (~3.5 paced Drive calls per file once its managed
 # shortcuts are retired), and no single request can do it — Firebase Hosting caps
-# at 60s and Cloud Run is deployed with --timeout=60. An earlier version tried to
+# every browser-routed request at 60s regardless of the Cloud Run timeout (which
+# is now 1800s, but was 60s when this bit). An earlier version tried to
 # do it inline and died at 59.99s with a 502/504 on EVERY call: files really were
 # being trashed, but the caller never got a response. So --apply now QUEUES the
 # work and this script drives bounded drain ticks until the batch reports done.
@@ -85,16 +87,40 @@ gcloud_token() {
 
 TOKEN="$(gcloud_token)"
 
-if [[ -z "${SYNC_TOKEN:-}" ]]; then
-  SYNC_TOKEN="$(gcloud run services describe "$API_SERVICE" --region="$REGION" --project="$PROJECT" --format=json 2>/dev/null \
-    | python3 -c 'import sys, json
+# Resolve the machine token (SYNC_TRIGGER_TOKEN) the api checks.
+#
+# It is deployed via `--set-secrets`, so the service spec carries a
+# `valueFrom.secretKeyRef` and NOT a literal `value` — reading `value` (as this
+# script originally did) can never succeed. Order: an explicit SYNC_TOKEN, then
+# a literal env value if one was ever set that way, then Secret Manager. Needs
+# roles/secretmanager.secretAccessor on the secret.
+resolve_sync_token() {
+  if [[ -n "${SYNC_TOKEN:-}" ]]; then printf '%s' "$SYNC_TOKEN"; return 0; fi
+
+  local spec literal secret
+  spec="$(gcloud run services describe "$API_SERVICE" --region="$REGION" --project="$PROJECT" --format=json 2>/dev/null || true)"
+  [[ -z "$spec" ]] && return 1
+
+  literal="$(printf '%s' "$spec" | python3 -c 'import sys, json
 d = json.load(sys.stdin)
 envs = d.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [{}])[0].get("env", [])
-print(next((e.get("value", "") for e in envs if e.get("name") == "SYNC_TRIGGER_TOKEN"), ""))' 2>/dev/null || true)"
-fi
+print(next((e.get("value", "") for e in envs if e.get("name") == "SYNC_TRIGGER_TOKEN" and e.get("value")), ""))' 2>/dev/null || true)"
+  if [[ -n "$literal" ]]; then printf '%s' "$literal"; return 0; fi
+
+  secret="$(printf '%s' "$spec" | python3 -c 'import sys, json
+d = json.load(sys.stdin)
+envs = d.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [{}])[0].get("env", [])
+ref = next((e.get("valueFrom", {}).get("secretKeyRef", {}) for e in envs if e.get("name") == "SYNC_TRIGGER_TOKEN"), {})
+print(ref.get("name", ""))' 2>/dev/null || true)"
+  [[ -z "$secret" ]] && secret="SYNC_TRIGGER_TOKEN"
+
+  gcloud secrets versions access latest --secret="$secret" --project="$PROJECT" 2>/dev/null | tr -d '\n'
+}
+
+SYNC_TOKEN="$(resolve_sync_token || true)"
 if [[ -z "${SYNC_TOKEN:-}" ]]; then
-  echo "ERROR: couldn't read SYNC_TRIGGER_TOKEN from '$API_SERVICE'." >&2
-  echo "       It may be a Secret Manager ref. Provide it explicitly:" >&2
+  echo "ERROR: couldn't resolve SYNC_TRIGGER_TOKEN for '$API_SERVICE'." >&2
+  echo "       It is stored in Secret Manager; you need secretAccessor on it, or pass it:" >&2
   echo "         SYNC_TOKEN=... $0 ${*:-}" >&2
   exit 1
 fi
