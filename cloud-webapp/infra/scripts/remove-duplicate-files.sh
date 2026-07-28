@@ -200,6 +200,7 @@ post_drain() {
 
 total_removed=0
 total_planned=0
+total_candidates=0
 total_failed=0
 events_with_errors=0
 n=0
@@ -233,6 +234,10 @@ for r in rows[:20]:
 if len(rows) > 20:
     print(f"    … and {len(rows) - 20} more")' "$RESP_FILE" 2>/dev/null || true
     total_planned=$(( total_planned + ${planned:-0} ))
+    # Summarise on `candidates`, not `planned`: the preview list is capped by
+    # BATCH_LIMIT, but an --apply run queues every candidate — a footer built
+    # from `planned` understates what the real run would trash.
+    total_candidates=$(( total_candidates + ${candidates:-0} ))
     continue
   fi
 
@@ -311,7 +316,11 @@ if [[ "$APPLY" == "1" ]]; then
     echo "  ./infra/scripts/reindex-all.sh ${EVENTS[*]}"
   fi
 else
-  echo "Dry run: $total_planned duplicate file(s) would be trashed. Re-run with --apply to do it."
+  if (( total_candidates > total_planned )); then
+    echo "Dry run: $total_candidates duplicate file(s) would be trashed ($total_planned listed above). Re-run with --apply to do it."
+  else
+    echo "Dry run: $total_candidates duplicate file(s) would be trashed. Re-run with --apply to do it."
+  fi
 fi
 (( events_with_errors > 0 )) && echo "WARNING: $events_with_errors event(s) errored — see the HTTP lines above." >&2
 exit 0
