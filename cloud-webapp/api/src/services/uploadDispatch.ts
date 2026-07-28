@@ -43,7 +43,10 @@ export interface ProcessBatchTaskPayload {
  * (task name already exists) is treated as success — the batch is already
  * queued, and the copy is idempotent anyway.
  */
-export async function enqueueProcessBatchTask(payload: ProcessBatchTaskPayload): Promise<void> {
+export async function enqueueProcessBatchTask(
+  payload: ProcessBatchTaskPayload,
+  opts: { scheduleTime?: string } = {},
+): Promise<void> {
   const parent = `projects/${env.GCP_PROJECT_ID}/locations/${env.UPLOAD_TASKS_LOCATION}/queues/${env.UPLOAD_TASKS_QUEUE}`;
   const url = `https://cloudtasks.googleapis.com/v2/${parent}/tasks`;
 
@@ -58,6 +61,12 @@ export async function enqueueProcessBatchTask(payload: ProcessBatchTaskPayload):
       // over the old 600s. Must stay ≤ the api service's Cloud Run --timeout
       // (deploy-api.sh) or Cloud Run cuts the request before the deadline.
       dispatchDeadline: '1800s',
+      // Optional: hold the task until this time. Bulk callers use it to spread
+      // work out — Cloud Run packs concurrent requests onto ONE instance, and
+      // each in-flight copy buffers a whole photo, so dispatching many batches
+      // at once OOM-kills the container (observed on 2026-07-28). A volunteer
+      // upload omits it and dispatches immediately.
+      ...(opts.scheduleTime ? { scheduleTime: opts.scheduleTime } : {}),
       httpRequest: {
         httpMethod: 'POST',
         url: workerUrl,

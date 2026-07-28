@@ -48,6 +48,21 @@ const DEFAULT_CHUNK = 400;
 /** Hard cap on objects dispatched in one call, so a mis-aimed run stays bounded. */
 const MAX_DISPATCH = 5000;
 
+/**
+ * Spacing between dispatched chunks, per object in the preceding chunk.
+ *
+ * WHY: Cloud Run packs concurrent requests onto ONE instance (`--concurrency`),
+ * and every in-flight copy buffers a whole photo (~4 MB). The first live
+ * recovery dispatched all 10 chunks at once, they landed together, and the
+ * container was OOM-killed — 503s, and the tasks had to be forced through by
+ * hand one at a time. Spreading them means roughly one chunk is in flight at a
+ * time, which is what the copy path is sized for. ~1.2s per photo is a
+ * deliberately conservative estimate of copy throughput; finishing early just
+ * leaves the instance idle until the next chunk is due, which costs nothing on a
+ * scale-to-zero service.
+ */
+const STAGGER_MS_PER_OBJECT = 1_200;
+
 export interface StrandedBatch {
   batchId: string;
   linkId: string;
@@ -81,6 +96,8 @@ export interface RecoveryDispatch {
   tasks: number;
   batches: number;
   notDispatched: number;
+  /** Roughly how long the staggered run takes end to end. */
+  estimatedMinutes: number;
   warnings: string[];
 }
 
@@ -213,6 +230,7 @@ export async function dispatchStagedRecovery(
     tasks: 0,
     batches: 0,
     notDispatched: 0,
+    estimatedMinutes: 0,
     warnings: [],
   };
 
@@ -233,6 +251,9 @@ export async function dispatchStagedRecovery(
   }
 
   let budget = MAX_DISPATCH;
+  // Grows as chunks are queued, so each is scheduled after the previous should
+  // have finished rather than all firing at once.
+  let staggerMs = 0;
   for (const [batchId, objs] of byBatch) {
     const linkId = objs.find((o) => o.linkId)?.linkId ?? '';
     if (!linkId) {
@@ -261,11 +282,16 @@ export async function dispatchStagedRecovery(
       // the original dispatch (whose task may still be known to the queue).
       const recoveryBatchId = `${batchId}-rec${Math.floor(i / chunk) + 1}`;
       try {
-        await enqueueProcessBatchTask({
-          linkId,
-          batchId: recoveryBatchId,
-          objectNames: slice.map((o) => o.name),
-        });
+        await enqueueProcessBatchTask(
+          {
+            linkId,
+            batchId: recoveryBatchId,
+            objectNames: slice.map((o) => o.name),
+          },
+          // Spread the chunks out so they do not all land on one instance.
+          { scheduleTime: new Date(Date.now() + staggerMs).toISOString() },
+        );
+        staggerMs += slice.length * STAGGER_MS_PER_OBJECT;
       } catch (err) {
         result.tasks -= 1;
         result.objects -= slice.length;
@@ -276,8 +302,17 @@ export async function dispatchStagedRecovery(
     if (budget === 0) break;
   }
 
+  result.estimatedMinutes = Math.ceil((result.objects * STAGGER_MS_PER_OBJECT) / 60_000);
+
   logger.info(
-    { eventId, apply, objects: result.objects, tasks: result.tasks, batches: result.batches },
+    {
+      eventId,
+      apply,
+      objects: result.objects,
+      tasks: result.tasks,
+      batches: result.batches,
+      estimatedMinutes: result.estimatedMinutes,
+    },
     'staged upload recovery dispatch',
   );
   return result;

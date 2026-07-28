@@ -222,6 +222,13 @@
 - **Check the deployed timeout first.** At anything below ~600s the worker is
   killed mid-batch and recovery reproduces the very bug it repairs; the shell
   wrapper refuses to `--apply` in that case.
+- **Chunks are dispatched STAGGERED, and must stay that way.** Cloud Run packs
+  concurrent requests onto one instance (`--concurrency=80`) and every in-flight
+  copy buffers a whole photo, so the first live recovery — 10 chunks dispatched
+  at once — OOM-killed the container at 512Mi and had to be forced through by
+  hand, one task at a time. `STAGGER_MS_PER_OBJECT` now schedules each chunk
+  after the previous should have finished; `estimatedMinutes` reports the spread.
+  The api runs at **1Gi** for the same reason (see deploy-api.sh).
 
 ## Monitoring the Cloud Run indexer job
 

@@ -178,12 +178,16 @@ for id in "${EVENTS[@]}"; do
   tasks="$(field tasks)"
   batches="$(field batches)"
   notdisp="$(field notDispatched)"
+  eta="$(field estimatedMinutes)"
   total_objects=$(( total_objects + ${objects:-0} ))
 
   if [[ "$APPLY" == "1" ]]; then
     echo "  dispatched ${objects:-0} photo(s) across ${tasks:-0} task(s), ${batches:-0} batch(es)"
+    # Chunks are scheduled apart on purpose — see STAGGER_MS_PER_OBJECT.
+    echo "  they are spread over ~${eta:-?} minute(s) so they don't all hit one instance"
   else
     echo "  would copy ${objects:-0} photo(s) across ${tasks:-0} task(s), ${batches:-0} batch(es)"
+    echo "  would take ~${eta:-?} minute(s), spread to avoid overloading the worker"
   fi
   [[ "${notdisp:-0}" != "0" ]] && echo "  ${notdisp} not dispatched — see warnings below"
   python3 -c 'import sys, json

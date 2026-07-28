@@ -88,6 +88,16 @@ jobs:
           # this only widens the window for direct run.app callers (Cloud Tasks,
           # Cloud Scheduler), and costs nothing while idle.
           API_TIMEOUT_SECONDS: "1800"
+          # Memory. 512Mi OOM-killed the container 9 times in 3 days — including
+          # twice during a live volunteer upload window on 2026-07-27 — because
+          # the upload worker buffers a whole photo (~4 MB) per in-flight copy and
+          # Cloud Run packs up to `concurrency` requests onto one instance. A kill
+          # mid-batch is the expensive kind: it strands claims and drops photos.
+          # 1Gi is ~2x the observed 515 MiB peak. Memory bills only while serving
+          # (the service still scales to zero), so this does not affect idle cost.
+          # Raise it here, not with a manual `gcloud run services update`, which
+          # the next deploy would silently revert.
+          API_MEMORY: "1Gi"
         run: |
           UPLOAD_WORKER_URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)')"
           gcloud run deploy "$SERVICE" \
@@ -96,7 +106,7 @@ jobs:
             --project="$PROJECT_ID" \
             --platform=managed \
             --port=8080 \
-            --memory=512Mi \
+            --memory="${API_MEMORY}" \
             --cpu=1 \
             --max-instances=10 \
             --min-instances=0 \
@@ -121,7 +131,13 @@ jobs:
             echo "       in api/src/services/uploadDispatch.ts) or batches are killed mid-copy." >&2
             exit 1
           fi
-          echo "==> Verified request timeout: ${ACTUAL_TIMEOUT}s"
+          ACTUAL_MEMORY="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(spec.template.spec.containers[0].resources.limits.memory)')"
+          if [ "$ACTUAL_MEMORY" != "$API_MEMORY" ]; then
+            echo "ERROR: deployed memory=$ACTUAL_MEMORY, expected $API_MEMORY." >&2
+            echo "       Under-provisioned memory OOM-kills the upload worker mid-batch." >&2
+            exit 1
+          fi
+          echo "==> Verified request timeout: ${ACTUAL_TIMEOUT}s, memory: ${ACTUAL_MEMORY}"
 
       - name: Smoke test
         env:
