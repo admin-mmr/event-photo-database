@@ -322,28 +322,39 @@
     `infra/firestore.indexes.json`. It was missing at first cutover and the drain
     500'd every tick with `FAILED_PRECONDITION` (caught in Phase D). If you add a
     new indexed query here, add the index too.
-  - **The DEPLOYED api request timeout is 60s — verify before relying on more.**
-    `infra/scripts/deploy-api.sh` passes `--timeout=1800`, but
-    `.github/workflows/deploy-api.yml` hardcodes **`--timeout=60`**, and CI is what
-    actually deploys — so every recent revision reports `timeoutSeconds: 60`
-    (checked 00083–00087 on 2026-07-27). An earlier version of this note claimed
-    1800s as fact, which sent the duplicate-removal 502 investigation down the
-    wrong path: assume 60s unless you have checked.
+  - **The api request timeout is 1800s, and CI now ASSERTS it after deploying.**
+    It must stay >= the Cloud Tasks `dispatchDeadline` in `uploadDispatch.ts`
+    (1800s). Both `infra/scripts/deploy-api.sh` and
+    `.github/workflows/deploy-api.yml` (`API_TIMEOUT_SECONDS`) set it, and the
+    workflow fails the deploy if the live revision disagrees. Verify with:
 
     ```bash
     gcloud run services describe event-photo-api --region=us-central1 --project=mmr-data-pipeline --format='value(spec.template.spec.timeoutSeconds)'
     ```
 
-    The intent behind 1800s was real: a single large event's rebuild (esp.
-    `migrate-shortcuts`, which does a per-shortcut image-convert) can run past 60s,
-    and the Cloud Tasks worker `/api/internal/process-batch` needs the long window
-    to copy a staged video (up to 10 GiB) to Drive in one attempt. Both are
-    silently capped at 60s today. The rebuild survives it because the work is
-    idempotent-resumable (converted copies are detected and skipped, trashed
-    shortcuts stay trashed) and the ~40s budget only bounds *starting* new events;
-    the big-video copy may not. Hosting-routed user paths cap at 60s regardless
-    (Firebase Hosting max), so only direct run.app machine callers could ever get a
-    longer window.
+    **This drifted once and it cost photos.** The workflow hardcoded
+    `--timeout=60` while the script said 1800, and CI is what deploys — so
+    production ran at 60s. On 2026-07-27 that killed `/api/internal/process-batch`
+    on ~half its requests (exactly 60.000s, HTTP 504) and stranded **1,188
+    volunteer photos (~5.1 GB)** in the staging bucket: copied to Drive never,
+    therefore never indexed, therefore invisible in the gallery. One batch alone
+    lost 857 photos, stuck at `phase: saving`. CLAUDE.md had also asserted 1800s
+    as fact, which sent the duplicate-removal 502 investigation down the wrong
+    path first. Assume nothing here — the assertion is the source of truth now.
+    - The long window exists for two callers: a large event's rebuild (esp.
+      `migrate-shortcuts`, per-shortcut image-convert) and the upload worker
+      copying a staged video (up to 10 GiB) to Drive in one attempt. The rebuild
+      tolerated 60s because it is idempotent-resumable; the upload worker did not.
+    - Hosting-routed user paths cap at 60s regardless (Firebase Hosting max), so
+      only direct run.app machine callers get the longer window.
+    - **A killed request runs no `catch`.** Anything that takes a lock/claim
+      before doing work and releases it in a `catch` is silently broken by a
+      timeout kill. `upload_dedup` claims are written before the Drive copy and
+      stamped after, so a kill stranded them — and a stranded claim silently
+      rejected every re-upload of those bytes, which is why the loss did not
+      self-heal. They are now reclaimable once older than `STALE_CLAIM_MS`
+      (35 min > any possible request). Apply the same reasoning to any new
+      claim/lease you add.
 - **Keep all PAUSED until Phase B parity sign-off** (`CUTOVER_RUNBOOK.md`
   §A4). New jobs are `ENABLED` by default — pause right after creating. NOTE: a
   **paused** job CANNOT be triggered with `gcloud scheduler jobs run` — it fails

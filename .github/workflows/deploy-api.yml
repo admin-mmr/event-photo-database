@@ -74,6 +74,20 @@ jobs:
           UPLOAD_DISPATCH_TO_WORKER: "true"
           UPLOAD_TASKS_QUEUE: upload-process
           UPLOAD_TASKS_LOCATION: us-central1
+          # Request timeout. MUST stay >= the Cloud Tasks dispatchDeadline in
+          # api/src/services/uploadDispatch.ts (1800s) and match
+          # infra/scripts/deploy-api.sh, or the upload worker is killed mid-batch.
+          #
+          # This was hardcoded to 60 while deploy-api.sh said 1800, and CI is what
+          # deploys — so production ran at 60s. On 2026-07-27 that killed
+          # /api/internal/process-batch on ~half its requests (exactly 60.000s,
+          # HTTP 504) and stranded 1,188 volunteer photos (~5.1 GB) in the staging
+          # bucket, never copied to Drive and so never visible in the gallery.
+          # The assertion after the deploy exists so this can never drift silently
+          # again. Browser traffic is still capped at 60s by Firebase Hosting;
+          # this only widens the window for direct run.app callers (Cloud Tasks,
+          # Cloud Scheduler), and costs nothing while idle.
+          API_TIMEOUT_SECONDS: "1800"
         run: |
           UPLOAD_WORKER_URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)')"
           gcloud run deploy "$SERVICE" \
@@ -87,7 +101,7 @@ jobs:
             --max-instances=10 \
             --min-instances=0 \
             --concurrency=80 \
-            --timeout=60 \
+            --timeout="${API_TIMEOUT_SECONDS}" \
             --update-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=${GITHUB_SHA::7},MATCHER_URL=${MATCHER_URL},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID},FINDME_EVENT_ALLOWLIST=${FINDME_EVENT_ALLOWLIST},UPLOAD_DISPATCH_TO_WORKER=${UPLOAD_DISPATCH_TO_WORKER},UPLOAD_TASKS_QUEUE=${UPLOAD_TASKS_QUEUE},UPLOAD_TASKS_LOCATION=${UPLOAD_TASKS_LOCATION},UPLOAD_WORKER_URL=${UPLOAD_WORKER_URL}" \
             --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_KEY=RECAPTCHA_KEY:latest"
           # Auth: deliberately pass NEITHER --allow-unauthenticated nor
@@ -96,6 +110,18 @@ jobs:
           # tries to (re)add the allUsers binding, which the org DRS policy blocks
           # and which can itself fail the deploy; --no-allow-unauthenticated strips
           # the allUsers binding the Firebase Hosting rewrite depends on.
+
+          # Fail loudly if the request timeout is not what we asked for. A silent
+          # 60s here cost 1,188 volunteer photos (see the API_TIMEOUT_SECONDS note
+          # above); a deploy that quietly lowers it must never ship again.
+          ACTUAL_TIMEOUT="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(spec.template.spec.timeoutSeconds)')"
+          if [ "$ACTUAL_TIMEOUT" != "$API_TIMEOUT_SECONDS" ]; then
+            echo "ERROR: deployed timeoutSeconds=$ACTUAL_TIMEOUT, expected $API_TIMEOUT_SECONDS." >&2
+            echo "       The Cloud Tasks upload worker needs the full window (dispatchDeadline 1800s" >&2
+            echo "       in api/src/services/uploadDispatch.ts) or batches are killed mid-copy." >&2
+            exit 1
+          fi
+          echo "==> Verified request timeout: ${ACTUAL_TIMEOUT}s"
 
       - name: Smoke test
         env:
