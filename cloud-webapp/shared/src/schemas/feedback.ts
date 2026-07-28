@@ -107,11 +107,21 @@ export const VerdictBatchSchema = z.object({
   algo: SearchAlgoSchema.nullable(),
   /** Results the search returned, so unjudged results are visible as a gap. */
   resultCount: z.number().nullable(),
-  /** Short-lived signed URL for the selfie searched with. Null when the selfie
-   *  is unavailable — expired, erased by the user, or a run that predates the
-   *  run→selfie link (older reuse searches can't be joined back). */
+  /** Short-lived signed URL for the selfie searched with. Null only when there
+   *  is no selfie to show at all — expired, erased by the user, or the searcher
+   *  has no stored reference. */
   selfieUrl: z.string().nullable(),
   selfieUploadId: z.string().nullable(),
+  /**
+   * How confidently the selfie belongs to THIS search:
+   *   `linked`   — the run recorded its uploadId. Certain.
+   *   `joined`   — matched on the exact timestamp the run and the reference
+   *                share. Certain (older fresh-upload searches).
+   *   `inferred` — best guess: the searcher's most recent selfie from before
+   *                this search. Shown for older *reuse* searches, which
+   *                recorded no reference of their own. Treat as a hint.
+   */
+  selfieSource: z.enum(['linked', 'joined', 'inferred']).nullable(),
   counts: VerdictCountsSchema,
   /** Verdicts in this batch (`counts.not_me + counts.confirmed`). */
   total: z.number(),

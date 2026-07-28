@@ -115,38 +115,70 @@ async function loadRun(runId: string): Promise<RunInfo | null> {
 type ReferenceCache = Map<string, Promise<ReferenceRecord[]>>;
 
 /**
- * The selfie a run searched with.
+ * The selfie a run searched with, in three descending degrees of certainty
+ * (reported as `selfieSource` so the UI never passes a guess off as fact):
  *
- * Runs written since the verdict-batch feature carry `uploadId` directly. For
- * OLDER runs we fall back to joining `find_me_uploads` on
- * (uid, eventId, exact createdAt): `runSearch` stamps the reference record and
- * the run from the same `nowIso`, so the timestamps are identical, not merely
- * close — which makes the join exact for fresh-upload searches. Older *reuse*
- * searches wrote no reference record at all and simply have no selfie to show.
+ *  1. `linked`   — the run recorded `uploadId`. Certain.
+ *  2. `joined`   — `runSearch` stamps the reference record and the run from the
+ *                  same `nowIso`, so an (uid, eventId, exact createdAt) match is
+ *                  exact, not fuzzy. Covers older fresh-upload searches.
+ *  3. `inferred` — the searcher's most recent selfie from at-or-before the run,
+ *                  any event. Older *reuse* searches recorded no reference of
+ *                  their own, and a guest search that shows neither face nor
+ *                  name is useless to review, so we show the best candidate and
+ *                  label it a guess.
  */
 async function resolveSelfie(
   run: RunInfo | null,
   identity: { uid: string; eventId: string },
   cache: ReferenceCache,
-): Promise<{ selfieUrl: string | null; selfieUploadId: string | null; name: string | null }> {
+): Promise<{
+  selfieUrl: string | null;
+  selfieUploadId: string | null;
+  selfieSource: 'linked' | 'joined' | 'inferred' | null;
+  name: string | null;
+}> {
   let rec: ReferenceRecord | null = null;
+  let source: 'linked' | 'joined' | 'inferred' | null = null;
   try {
     if (run?.uploadId) {
       rec = await getReference(run.uploadId);
-    } else if (run?.createdAt) {
+      if (rec) source = 'linked';
+    }
+    if (!rec && identity.uid) {
       let pending = cache.get(identity.uid);
       if (!pending) {
         pending = listReferencesForUidRaw(identity.uid);
         cache.set(identity.uid, pending);
       }
-      rec =
-        (await pending).find((r) => r.eventId === identity.eventId && r.createdAt === run.createdAt) ??
-        null;
+      // Newest first, so the first candidate at-or-before the run is the closest.
+      const recs = await pending;
+      const at = run?.createdAt ?? null;
+      const exact = at
+        ? recs.find((r) => r.eventId === identity.eventId && r.createdAt === at)
+        : undefined;
+      if (exact) {
+        rec = exact;
+        source = 'joined';
+      } else {
+        const before = at ? recs.find((r) => r.createdAt <= at) : recs[0];
+        if (before) {
+          rec = before;
+          source = 'inferred';
+        }
+      }
     }
   } catch (err) {
     logger.warn({ err, uid: identity.uid }, 'verdict batch: selfie lookup failed (non-fatal)');
   }
-  if (!rec) return { selfieUrl: null, selfieUploadId: run?.uploadId ?? null, name: run?.searcherName ?? null };
+  if (!rec) {
+    return {
+      selfieUrl: null,
+      selfieUploadId: run?.uploadId ?? null,
+      selfieSource: null,
+      name: run?.searcherName ?? null,
+    };
+  }
 
   // Signing a deleted/expired object still succeeds (V4 signing never touches
   // the object), so a broken image is possible here; the UI degrades to a
@@ -160,6 +192,11 @@ async function resolveSelfie(
   return {
     selfieUrl,
     selfieUploadId: rec.uploadId,
+    selfieSource: source,
+    // Safe even for an inferred selfie: the record belongs to the same uid, so
+    // its name is this searcher's name whichever of their selfies we landed on.
+    // (What's uncertain is WHICH selfie, not WHO — and a batch labelled "Guest"
+    // with no face is exactly the one an admin can do nothing with.)
     name: rec.name ?? run?.searcherName ?? null,
   };
 }
@@ -208,6 +245,7 @@ async function buildHeader(
     resultCount: run?.resultCount ?? null,
     selfieUrl: selfie.selfieUrl,
     selfieUploadId: selfie.selfieUploadId,
+    selfieSource: selfie.selfieSource,
     counts,
     total: counts.not_me + counts.confirmed,
   };
