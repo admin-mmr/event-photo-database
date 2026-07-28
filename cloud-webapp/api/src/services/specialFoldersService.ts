@@ -997,6 +997,13 @@ export interface ShortcutSweepResult {
   shortcutsRemoved: number;
   foldersTouched: number;
   errors: string[];
+  /**
+   * False when `opts.deadlineMs` cut the sweep short, so some target may still
+   * have a managed entry pointing at it. The sweep is idempotent — re-running it
+   * with the same targets finishes the job — so a caller that cares just keeps
+   * the target list and calls again.
+   */
+  completed: boolean;
 }
 
 /**
@@ -1010,14 +1017,30 @@ export interface ShortcutSweepResult {
  * that can only ever find nothing, since a managed folder's shortcuts point at
  * photos of its own event. Callers deleting within a single event should pass
  * it; the default stays unscoped for callers that delete across events.
+ *
+ * `opts.deadlineMs` (absolute epoch ms) bounds the sweep. WHY it matters: every
+ * Drive call here goes through the shared pacing gate (~8/s) and a photo usually
+ * appears in both Photos_NNN and Album, so a sweep costs roughly 2–3 paced
+ * trashes per deleted file — 284 calls (~34s) for 110 files in the field. Left
+ * unbounded that alone overran the 60s request ceiling, which is what made the
+ * duplicate-removal tool 502 on every call. Deadline checks sit before each
+ * folder AND each trash, because a single call can block for tens of seconds
+ * when Drive rate-limits and the client backs off.
  */
 export async function removeShortcutsForTargets(
   targetFileIds: ReadonlyArray<string>,
-  opts: { eventId?: string | undefined } = {},
+  opts: { eventId?: string | undefined; deadlineMs?: number | undefined } = {},
 ): Promise<ShortcutSweepResult> {
-  const result: ShortcutSweepResult = { shortcutsRemoved: 0, foldersTouched: 0, errors: [] };
+  const result: ShortcutSweepResult = {
+    shortcutsRemoved: 0,
+    foldersTouched: 0,
+    errors: [],
+    completed: true,
+  };
   const targets = new Set(targetFileIds.filter((id) => id && id.trim()));
   if (targets.size === 0) return result;
+
+  const outOfTime = (): boolean => opts.deadlineMs !== undefined && Date.now() >= opts.deadlineMs;
 
   const spreadsheetId = sid();
   if (!spreadsheetId) {
@@ -1038,21 +1061,38 @@ export async function removeShortcutsForTargets(
   const now = new Date().toISOString();
   for (const record of records) {
     if (!record.folderId) continue;
+    if (outOfTime()) {
+      result.completed = false;
+      break;
+    }
     let removedHere = 0;
 
     for (const shortcut of await listShortcutsInFolder(record.folderId, { token: driveToken })) {
       if (!targets.has(shortcut.targetId)) continue;
+      if (outOfTime()) {
+        result.completed = false;
+        break;
+      }
       const trashed = await trashDriveFile(shortcut.id, { token: driveToken });
       if (trashed.ok) removedHere++;
       else result.errors.push(`Failed to trash shortcut ${shortcut.id} in ${record.folderName}: ${trashed.error}`);
     }
-    for (const copy of await listManagedCopiesInFolder(record.folderId, { token: driveToken })) {
-      if (!targets.has(copy.sourcePhotoId)) continue;
-      const trashed = await trashDriveFile(copy.id, { token: driveToken });
-      if (trashed.ok) removedHere++;
-      else result.errors.push(`Failed to trash copy ${copy.id} in ${record.folderName}: ${trashed.error}`);
+    if (result.completed) {
+      for (const copy of await listManagedCopiesInFolder(record.folderId, { token: driveToken })) {
+        if (!targets.has(copy.sourcePhotoId)) continue;
+        if (outOfTime()) {
+          result.completed = false;
+          break;
+        }
+        const trashed = await trashDriveFile(copy.id, { token: driveToken });
+        if (trashed.ok) removedHere++;
+        else result.errors.push(`Failed to trash copy ${copy.id} in ${record.folderName}: ${trashed.error}`);
+      }
     }
 
+    // Always reconcile the row for what this pass actually trashed, even when the
+    // deadline cut it short — the entries are gone from Drive either way, so a
+    // skipped decrement would leave fileCount permanently overstated.
     if (removedHere > 0) {
       result.shortcutsRemoved += removedHere;
       result.foldersTouched++;
@@ -1062,8 +1102,17 @@ export async function removeShortcutsForTargets(
         lastRefreshedAt: now,
       });
     }
+    if (!result.completed) break;
   }
-  logger.info({ targets: targets.size, removed: result.shortcutsRemoved, folders: result.foldersTouched }, 'removeShortcutsForTargets done');
+  logger.info(
+    {
+      targets: targets.size,
+      removed: result.shortcutsRemoved,
+      folders: result.foldersTouched,
+      completed: result.completed,
+    },
+    'removeShortcutsForTargets done',
+  );
   return result;
 }
 

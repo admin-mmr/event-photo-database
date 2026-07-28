@@ -109,9 +109,13 @@
   3. **Duplicate FILES still sitting in Drive** — the actual redundant uploads.
      Layers 1 and 2 only ignore them; the tool below is what removes them.
 - **The tool:** `GET /api/admin/duplicates/:eventId` scans the event's live Drive
-  tree and reports the groups; `POST /api/admin/duplicates/:eventId/remove`
-  trashes the redundant copies (`api/src/services/duplicateFilesService.ts`).
-  Admin UI at `/admin/duplicates`; shell wrapper
+  tree and reports the groups (`api/src/services/duplicateFilesService.ts`);
+  `POST /api/admin/duplicates/:eventId/remove` is a dry run by default and, with
+  `apply: true`, **QUEUES** the removal and returns `202` + a `batchId`.
+  `POST /api/admin/duplicates/drain` then does the work in bounded ticks
+  (`api/src/services/duplicateRemovalQueue.ts`) and
+  `GET /api/admin/duplicates/batch/status` reports progress. Admin UI at
+  `/admin/duplicates`; shell wrapper
   `./cloud-webapp/infra/scripts/remove-duplicate-files.sh [--apply] [event-id …]`
   (machine token, same `allowCronOrAdmin` gate as `resync-names`).
 - **Non-negotiables baked into the service** — keep them if you touch it:
@@ -128,30 +132,57 @@
   - **Managed folders are never walked** (`skipChildFolder: isManagedFolderName`)
     — their contents are deliberate copies/shortcuts, not duplicates.
   - **A file with no md5 is always kept.** Unknown ≠ duplicate.
-  - **Bounded per call** (file cap + a wall-clock budget) with `remaining` in the
-    response, because user-facing calls still die at the 60s Hosting cap; the UI
-    and script just call again.
-    - **The budget must be anchored to the START OF THE CALL and cover the scan
-      and the sweep, not just the trashing loop.** It originally clocked only the
-      loop, so a real event (2,053 files) spent ~15s scanning Drive, then a full
-      40s trashing, then swept — and *every* remove call died at 59.98s with a
-      **502**. Files were being trashed, but the caller never got a response, so
-      `remaining` never came back and each retry repeated the same doomed
-      request. `CALL_BUDGET_MS` (45s) now starts before the scan and holds back
-      `SWEEP_RESERVE_MS` (10s) for the shortcut sweep. The first chunk always
-      runs, so even a scan-dominated call makes forward progress.
-    - **Bulk work must batch its Sheet writes.** Per-file `recordSoftDelete` was
-      a lock + a Sheets round-trip each; `recordSoftDeletes` appends a whole
-      chunk in one call (files are trashed 10 at a time in parallel, then
-      ledgered together — still strictly after their trash succeeded).
-    - `removeShortcutsForTargets` takes an `eventId` — pass it. Unscoped it does
-      two Drive list calls for *every* managed folder in the system, which can
-      only ever find nothing, since a managed folder's shortcuts point at photos
-      of its own event.
-  - **The admin UI keeps calling until `remaining` is 0** (`MAX_REMOVE_ROUNDS`),
-    stopping early on a round that removes nothing — otherwise a few hundred
-    duplicates means a few hundred/150 button presses. `remove-duplicate-files.sh`
-    already looped this way.
+  - **REMOVAL CANNOT RUN INSIDE ONE REQUEST — do not try again.** Two attempts to
+    fit it in a single call failed identically. The work is rate-paced Drive
+    traffic: every Drive call goes through the shared pacing gate in
+    `driveRateLimit.ts` (~8/s, and a rate-limited call backs off up to 32s × 6),
+    trashing one duplicate costs ~1 paced PATCH, and retiring the managed
+    shortcuts/copies that pointed at it costs ~2–3 more (a photo is usually in
+    both Photos_NNN and Album). So ~100 files ≈ 400 paced calls and a real event's
+    639 duplicates ≈ 2,500 calls ≈ **5+ minutes** — against a hard 60s ceiling at
+    BOTH Firebase Hosting and Cloud Run.
+    - The symptom, for recognising a regression: one field call logged
+      `totalMs=325833` (**5.4 minutes**) against a 45s "budget", because the
+      budget was only checked *between* chunks and the post-loop shortcut sweep
+      was **unbudgeted** (284 paced trashes ≈ 34s on its own). Files really were
+      being trashed — `filesScanned` fell 2261 → 1746 across attempts — but Cloud
+      Run killed the connection at 60.000s every time, so the admin only ever saw
+      HTTP 502/504 and `remaining` never came back. Budget-tuning cannot fix this;
+      the work simply does not fit.
+    - **The fix: enqueue + drain**, mirroring `folderRebuildQueue.ts` (which hit
+      this identical wall). The apply POST runs ONE live scan, writes the work list
+      to a `duplicateRemovalBatches` doc and returns 202. Each drain tick trashes
+      at most `MAX_FILES_PER_TICK` (60) files inside `TICK_BUDGET_MS` (40s),
+      sweeps their managed entries under a deadline, and commits.
+    - Keep these properties: progress is committed **per chunk** (a tick that dies
+      loses at most one chunk's bookkeeping; re-trashing is harmless); **one lease
+      per batch** so the browser-driven and scheduler drains never double-process;
+      `pendingSweep` carries trashed IDs whose managed entries aren't retired yet,
+      so a sweep cut short is just re-run (it is idempotent); the batch is marked
+      `done` only when **both** queues are empty, and the public folder index is
+      refreshed exactly **once**, there.
+    - The work list lives inline in the batch doc, so it is capped
+      (`ENQUEUE_CAP` 1500) to stay under Firestore's 1 MiB limit — with compact
+      field names. Overflow comes back as `notEnqueued` and a re-run picks it up;
+      it is never silently dropped.
+  - **`removeShortcutsForTargets` takes an `eventId` AND a `deadlineMs` — pass
+    both.** Unscoped it does two Drive list calls for *every* managed folder in
+    the system, which can only ever find nothing (a managed folder's shortcuts
+    point at photos of its own event). Undeadlined it is what actually overran the
+    60s ceiling; it returns `completed: false` when cut short.
+  - **Bulk work must batch its Sheet writes.** Per-file `recordSoftDelete` was
+    a lock + a Sheets round-trip each; `recordSoftDeletes` appends a whole
+    chunk in one call (files are trashed 10 at a time in parallel, then
+    ledgered together — still strictly after their trash succeeded).
+  - **The admin UI drives the drain itself** while the page is open (POST `/drain`,
+    poll `/batch/status`) so progress is near-live; the
+    `findme-duplicates-drain` Cloud Scheduler job
+    (`provision-duplicates-drain-scheduler.sh`, every 2 min) is the backstop that
+    finishes a batch after the admin navigates away. A drain with nothing queued
+    is a one-query no-op, so the tick is ~free while idle.
+    - The drain query needs the composite index on `duplicateRemovalBatches`
+      (`status` ASC + `createdAt` ASC) in `infra/firestore.indexes.json` — without
+      it every tick 500s with `FAILED_PRECONDITION`.
   - A club_admin's scan/removal is filtered to their own club's subtree *before*
     grouping, so they never see or touch another club's files; a machine caller
     (X-Sync-Token, no Firebase user) runs unscoped — do NOT let it fall through
@@ -252,14 +283,17 @@
 
 ## Cloud Scheduler jobs (machine triggers)
 
-- Five scheduler jobs in `us-central1` POST to `event-photo-api`, all authorized
+- Six scheduler jobs in `us-central1` POST to `event-photo-api`, all authorized
   by the `allowCronOrAdmin` gate (`X-Sync-Token: $SYNC_TRIGGER_TOKEN`):
   `findme-drive-sync` (`/api/admin/sync`, daily reconcile — pre-existing, from
   `provision-sync-scheduler.sh`), `findme-index-scan` (`/api/admin/index-scan`,
   ~every 10 min — `provision-index-scan-scheduler.sh`), `findme-email-daily`
-  (`/api/admin/email/daily` — `provision-email-daily-scheduler.sh`) and
+  (`/api/admin/email/daily` — `provision-email-daily-scheduler.sh`),
   `findme-deleted-purge` (`/api/admin/deleted-files/purge` —
-  `provision-deleted-purge-scheduler.sh`).
+  `provision-deleted-purge-scheduler.sh`) and `findme-duplicates-drain`
+  (`/api/admin/duplicates/drain`, ~every 2 min —
+  `provision-duplicates-drain-scheduler.sh`; backstop for the duplicate-removal
+  queue, see the duplicate-file removal section above).
 - **Every job needs an OIDC token, not just the header.** Cloud Run IAM runs
   before the app's `X-Sync-Token` gate, so a job without
   `--oidc-service-account-email=api-runtime@mmr-data-pipeline.iam.gserviceaccount.com`
@@ -288,20 +322,28 @@
     `infra/firestore.indexes.json`. It was missing at first cutover and the drain
     500'd every tick with `FAILED_PRECONDITION` (caught in Phase D). If you add a
     new indexed query here, add the index too.
-  - **The api request timeout is 1800s, NOT 60s** (`deploy-api.sh --timeout=1800`).
-    The ~40s budget only bounds *starting* new events; a single large event's
-    rebuild (esp. `migrate-shortcuts`, which does a per-shortcut image-convert)
-    can run well past 60s, and at the old 60s timeout the request was killed
-    mid-event → HTTP 504 with zero committed progress, retried forever. The
-    migrate/rebuild work is idempotent-resumable (converted copies are detected
-    and skipped, trashed shortcuts stay trashed), so a killed run resumes; the
-    long window lets a big event finish in one claim. (The Phase-D fix first set
-    300s for this drain; the timeout was later raised to 1800s so the Cloud Tasks
-    worker `/api/internal/process-batch` can copy a large staged video — up to
-    10 GiB — to Drive in one attempt, which comfortably covers the rebuild case
-    too.) Hosting-routed user paths still cap at 60s (Firebase Hosting max), so
-    only the direct run.app machine calls get the longer window; scale-to-zero /
-    idle cost is unaffected.
+  - **The DEPLOYED api request timeout is 60s — verify before relying on more.**
+    `infra/scripts/deploy-api.sh` passes `--timeout=1800`, but
+    `.github/workflows/deploy-api.yml` hardcodes **`--timeout=60`**, and CI is what
+    actually deploys — so every recent revision reports `timeoutSeconds: 60`
+    (checked 00083–00087 on 2026-07-27). An earlier version of this note claimed
+    1800s as fact, which sent the duplicate-removal 502 investigation down the
+    wrong path: assume 60s unless you have checked.
+
+    ```bash
+    gcloud run services describe event-photo-api --region=us-central1 --project=mmr-data-pipeline --format='value(spec.template.spec.timeoutSeconds)'
+    ```
+
+    The intent behind 1800s was real: a single large event's rebuild (esp.
+    `migrate-shortcuts`, which does a per-shortcut image-convert) can run past 60s,
+    and the Cloud Tasks worker `/api/internal/process-batch` needs the long window
+    to copy a staged video (up to 10 GiB) to Drive in one attempt. Both are
+    silently capped at 60s today. The rebuild survives it because the work is
+    idempotent-resumable (converted copies are detected and skipped, trashed
+    shortcuts stay trashed) and the ~40s budget only bounds *starting* new events;
+    the big-video copy may not. Hosting-routed user paths cap at 60s regardless
+    (Firebase Hosting max), so only direct run.app machine callers could ever get a
+    longer window.
 - **Keep all PAUSED until Phase B parity sign-off** (`CUTOVER_RUNBOOK.md`
   §A4). New jobs are `ENABLED` by default — pause right after creating. NOTE: a
   **paused** job CANNOT be triggered with `gcloud scheduler jobs run` — it fails
