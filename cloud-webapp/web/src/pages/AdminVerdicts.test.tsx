@@ -29,6 +29,7 @@ const LIST = {
       resultCount: 5,
       selfieUrl: 'https://signed.example/selfie-1',
       selfieUploadId: 'up-1',
+      selfieSource: 'linked',
       counts: { not_me: 2, confirmed: 1 },
       total: 3,
     },
@@ -45,9 +46,10 @@ const LIST = {
       searchVersion: null,
       algo: null,
       resultCount: null,
-      // No selfie: expired, erased, or a run that predates selfie linking.
+      // No selfie: expired, erased, or the searcher has none saved.
       selfieUrl: null,
       selfieUploadId: null,
+      selfieSource: null,
       counts: { not_me: 1, confirmed: 0 },
       total: 1,
     },
@@ -149,6 +151,31 @@ describe('<AdminVerdicts />', () => {
     const grid = within(screen.getByRole('list'));
     expect(grid.getByText("That's me")).toBeTruthy();
     expect(grid.getByText('Wrong match')).toBeTruthy();
+  });
+
+  it('opens the selfie full-size when clicked', async () => {
+    mockRoutes([[/\/api\/admin\/verdict-batches$/, 200, LIST]]);
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Jamie Lee')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Selfie searched with' }));
+    // The lightbox shows the same signed URL at full size, with a close control.
+    const shown = screen
+      .getAllByAltText('Selfie searched with')
+      .filter((el) => el.getAttribute('src') === 'https://signed.example/selfie-1');
+    expect(shown.length).toBeGreaterThan(1);
+    expect(screen.getByRole('button', { name: /close/i })).toBeTruthy();
+  });
+
+  it('labels a selfie that could only be guessed at', async () => {
+    const guessed = {
+      ...LIST,
+      batches: [{ ...LIST.batches[1], selfieUrl: 'https://signed.example/older', selfieSource: 'inferred' }],
+      total: 1,
+    };
+    mockRoutes([[/\/api\/admin\/verdict-batches$/, 200, guessed]]);
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/selfie is a guess/i)).toBeTruthy());
   });
 
   it('shows an admin-only message on 403', async () => {

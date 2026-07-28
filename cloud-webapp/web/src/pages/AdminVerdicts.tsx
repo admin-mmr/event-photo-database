@@ -35,8 +35,12 @@ const STR = {
     back: '← All batches',
     guest: 'Guest',
     selfie: 'Selfie searched with',
+    selfieTapHint: 'Tap the selfie for a full-size look.',
+    selfieGuess: 'selfie is a guess',
+    selfieInferred:
+      "Closest match, not certain: this search reused a saved selfie without recording which one, so this is the searcher's most recent selfie from before it.",
     noSelfie: 'Selfie unavailable',
-    noSelfieWhy: 'It expired, the searcher erased their data, or this search predates selfie linking.',
+    noSelfieWhy: 'It expired, the searcher erased their data, or they have no saved selfie.',
     confirmed: (n: number) => `${n} that's me`,
     wrong: (n: number) => `${n} not me`,
     judged: (n: number, of: number) => `${n} of ${of} results judged`,
@@ -71,8 +75,12 @@ const STR = {
     back: '← 全部批次',
     guest: '访客',
     selfie: '搜索所用自拍',
+    selfieTapHint: '点击自拍可查看大图。',
+    selfieGuess: '自拍为推测',
+    selfieInferred:
+      '仅为最接近的推测：该次搜索复用了已保存的自拍但未记录具体是哪一张，此处显示的是该搜索者在此之前最近的一张自拍。',
     noSelfie: '自拍不可用',
-    noSelfieWhy: '可能已过期、被用户删除，或该次搜索早于自拍关联功能。',
+    noSelfieWhy: '可能已过期、被用户删除，或该用户没有保存的自拍。',
     confirmed: (n: number) => `${n} 是我`,
     wrong: (n: number) => `${n} 不是我`,
     judged: (n: number, of: number) => `已标记 ${n} / ${of} 条结果`,
@@ -105,10 +113,29 @@ function verdictClass(v: FeedbackVerdict): string {
   return v === 'confirmed' ? 'badge badge-ok' : 'badge badge-err';
 }
 
-/** Signed thumbnail, or a neutral placeholder when it couldn't be signed. */
-function Selfie({ url, alt, className }: { url: string | null; alt: string; className: string }): JSX.Element {
+/**
+ * The selfie, clickable for a full-size look — at thumbnail size you can't tell
+ * whether the searcher uploaded a usable face at all, which is half of what an
+ * admin is here to judge. Falls back to a neutral placeholder (not a broken
+ * image) when there is nothing to show.
+ */
+function Selfie({
+  url,
+  alt,
+  className,
+  onOpen,
+}: {
+  url: string | null;
+  alt: string;
+  className: string;
+  onOpen: (url: string) => void;
+}): JSX.Element {
   if (!url) return <div className={`${className} selfie-missing`} aria-hidden="true" />;
-  return <img className={className} src={url} alt={alt} loading="lazy" />;
+  return (
+    <button type="button" className="selfie-btn" onClick={() => onOpen(url)} aria-label={alt}>
+      <img className={className} src={url} alt={alt} loading="lazy" />
+    </button>
+  );
 }
 
 /**
@@ -142,6 +169,9 @@ export function AdminVerdicts(): JSX.Element {
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [webUrls, setWebUrls] = useState<Record<string, string>>({});
   const webFetching = useRef<Set<string>>(new Set());
+  // A selfie opened full-size. Separate from the photo lightbox: the selfie is
+  // the query, not one of the results, so it has no place in that sequence.
+  const [selfieOpen, setSelfieOpen] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -228,7 +258,12 @@ export function AdminVerdicts(): JSX.Element {
 
         <div className="verdict-batch">
           <figure className="verdict-selfie">
-            <Selfie url={batch.selfieUrl} alt={t.selfie} className="verdict-selfie-img" />
+            <Selfie
+              url={batch.selfieUrl}
+              alt={t.selfie}
+              className="verdict-selfie-img"
+              onOpen={setSelfieOpen}
+            />
             <figcaption>
               {/* Name and email on ONE line — figcaption is a grid, so separate
                   children would each take their own row. */}
@@ -242,6 +277,11 @@ export function AdminVerdicts(): JSX.Element {
                 </Link>
               </div>
               {!batch.selfieUrl && <div className="muted">{t.noSelfie} — {t.noSelfieWhy}</div>}
+              {batch.selfieUrl && (
+                <div className="muted">
+                  {batch.selfieSource === 'inferred' ? t.selfieInferred : t.selfieTapHint}
+                </div>
+              )}
             </figcaption>
           </figure>
 
@@ -322,6 +362,8 @@ export function AdminVerdicts(): JSX.Element {
             onNavigate={setLightboxIndex}
           />
         )}
+
+        {selfieOpen && <SelfieLightbox url={selfieOpen} alt={t.selfie} onClose={() => setSelfieOpen(null)} />}
       </div>
     );
   }
@@ -381,18 +423,26 @@ export function AdminVerdicts(): JSX.Element {
                   url={b.selfieUrl}
                   alt={t.selfie}
                   className="batch-selfie"
+                  onOpen={setSelfieOpen}
                 />
                 <div className="batch-body">
                   <div className="batch-who">
                     <strong>{b.name ?? b.email ?? t.guest}</strong>
                     {b.email && b.name && <span className="muted"> · {b.email}</span>}
+                    {b.selfieSource === 'inferred' && (
+                      <span className="badge badge-warn" title={t.selfieInferred}>
+                        {t.selfieGuess}
+                      </span>
+                    )}
                   </div>
-                  <div className="muted">
+                  {/* A wrapping flex row, not "id · time" text: the event id is a
+                      full uuid and the manual separator stranded itself on its
+                      own line on narrow screens. */}
+                  <div className="muted batch-meta">
                     <Link to={`/events/${b.eventId}`} className="inline-link">
                       {b.eventId}
                     </Link>
-                    {' · '}
-                    {fmtWhen(b.markedAt)}
+                    <span>{fmtWhen(b.markedAt)}</span>
                   </div>
                   <div className="batch-tallies">
                     <span className="badge badge-ok">{t.confirmed(b.counts.confirmed)}</span>
@@ -414,6 +464,28 @@ export function AdminVerdicts(): JSX.Element {
           </ul>
         </>
       )}
+
+      {selfieOpen && <SelfieLightbox url={selfieOpen} alt={t.selfie} onClose={() => setSelfieOpen(null)} />}
     </div>
+  );
+}
+
+/** The selfie at full size. One item, so the lightbox shows no prev/next. */
+function SelfieLightbox({
+  url,
+  alt,
+  onClose,
+}: {
+  url: string;
+  alt: string;
+  onClose: () => void;
+}): JSX.Element {
+  return (
+    <Lightbox
+      items={[{ key: 'selfie', src: url, alt }]}
+      index={0}
+      onClose={onClose}
+      onNavigate={() => undefined}
+    />
   );
 }

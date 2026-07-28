@@ -225,6 +225,7 @@ describe('admin verdict-batch review', () => {
         total: 3,
       });
       expect(run1.selfieUrl).toContain('refs%2Fu1%2Fup-1.jpg');
+      expect(run1.selfieSource).toBe('linked');
     });
 
     it('recovers the selfie for a run that predates the run→selfie link', async () => {
@@ -234,7 +235,36 @@ describe('admin verdict-batch review', () => {
       // user's other selfie (up-3) must not be picked.
       expect(run2.selfieUploadId).toBe('up-2');
       expect(run2.selfieUrl).toContain('refs%2Fu2%2Fup-2.jpg');
+      expect(run2.selfieSource).toBe('joined');
       expect(run2.name).toBe('Alex Roe');
+    });
+
+    it('falls back to the closest earlier selfie, labelled as a guess', async () => {
+      // A reuse search records no reference of its own: drop the exact-timestamp
+      // partner so only the searcher's older selfie (up-3) is left.
+      db.find_me_uploads = db.find_me_uploads!.filter((r) => r.id !== 'up-2');
+      const res = await request(app).get('/api/admin/verdict-batches').set('x-test-user', ADMIN);
+      const run2 = res.body.batches[0];
+      expect(run2).toMatchObject({ selfieUploadId: 'up-3', selfieSource: 'inferred' });
+      // The name IS safe to borrow — same uid, so it's this searcher's name
+      // whichever of their selfies we landed on. Only the image is a guess.
+      expect(run2.name).toBe('Alex Roe');
+    });
+
+    it('reports no selfie when the searcher has none at all', async () => {
+      db.find_me_uploads = [];
+      const res = await request(app).get('/api/admin/verdict-batches').set('x-test-user', ADMIN);
+      expect(res.body.batches[0]).toMatchObject({ selfieUrl: null, selfieSource: null });
+    });
+
+    it('never infers a selfie from AFTER the search', async () => {
+      db.find_me_uploads = db.find_me_uploads!.filter((r) => r.id !== 'up-2').map((r) =>
+        r.id === 'up-3'
+          ? { ...r, data: { ...r.data, createdAt: '2026-06-12T00:00:00.000Z' } }
+          : r,
+      );
+      const res = await request(app).get('/api/admin/verdict-batches').set('x-test-user', ADMIN);
+      expect(res.body.batches[0].selfieSource).toBeNull();
     });
 
     it('filters by event before grouping', async () => {
