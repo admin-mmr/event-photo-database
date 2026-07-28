@@ -427,7 +427,10 @@ export function App(): JSX.Element {
           />
           <Route path="/admin/users" element={isGuest ? <Navigate to="/" replace /> : <AdminUsers />} />
           <Route path="/admin/clubs" element={isGuest ? <Navigate to="/" replace /> : <AdminClubs />} />
-          <Route path="/admin/events" element={isGuest ? <Navigate to="/" replace /> : <AdminEvents />} />
+          <Route
+            path="/admin/events"
+            element={isGuest ? <Navigate to="/" replace /> : <AdminEvents isSuperAdmin={isSuperAdmin} />}
+          />
           <Route
             path="/admin/events/:eventId/links"
             element={isGuest ? <Navigate to="/" replace /> : <AdminLinks />}

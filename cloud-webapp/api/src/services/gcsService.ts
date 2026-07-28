@@ -133,6 +133,79 @@ export async function deletePhotoDerivatives(
   ]);
 }
 
+// ── Whole-event sweeps (event deletion) ──────────────────────────────────────
+
+/** Cap on a counting scan, so an inventory of a huge event stays cheap. */
+const COUNT_SCAN_CAP = 5000;
+
+/** Objects under a prefix, counted up to `cap`. `capped` means "at least this many". */
+async function countUnderPrefix(
+  bucketName: string,
+  prefix: string,
+  cap = COUNT_SCAN_CAP,
+): Promise<{ count: number; capped: boolean }> {
+  const [files] = await getStorage().bucket(bucketName).getFiles({ prefix, maxResults: cap + 1 });
+  return { count: Math.min(files.length, cap), capped: files.length > cap };
+}
+
+/** Objects under `<eventId>/` in the derivatives bucket (originals + web/thumb + vectors). */
+export function countEventDerivatives(eventId: string): Promise<{ count: number; capped: boolean }> {
+  return countUnderPrefix(env.DERIVATIVES_BUCKET, `${eventId}/`);
+}
+
+/**
+ * Staged volunteer uploads still sitting in the staging bucket for this event
+ * (`<prefix>/<eventId>/…`, written by createResumableSession).
+ *
+ * COUNTED, NEVER DELETED. A staged object can be the only copy of a photo that
+ * never made it to Drive — deleting one is the mistake that destroyed volunteer
+ * photos on 2026-07-27/28. The staging bucket's lifecycle rule reclaims them, and
+ * until it does `recover-staged-uploads.sh` can still rescue them.
+ */
+export function countStagedObjectsForEvent(eventId: string): Promise<{ count: number; capped: boolean }> {
+  return countUnderPrefix(env.VOLUNTEER_STAGING_BUCKET, `${env.VOLUNTEER_STAGING_PREFIX}/${eventId}/`);
+}
+
+/**
+ * Delete every object under `<eventId>/` in the derivatives bucket — the mirrored
+ * originals, the web/thumb derivatives and the embedding `.npy`s + manifest.
+ *
+ * Bounded by `deadlineMs` (an absolute epoch ms) and reports `remaining: true`
+ * when it stopped early, because a big event has thousands of objects and this
+ * runs inside a request that Firebase Hosting kills at 60s. Deleting is
+ * idempotent, so the caller just runs it again.
+ *
+ * These bytes are regenerable: a re-index rebuilds them from the Drive original.
+ */
+export async function deleteEventDerivatives(
+  eventId: string,
+  opts?: { deadlineMs?: number; pageSize?: number; concurrency?: number },
+): Promise<{ deleted: number; remaining: boolean }> {
+  const bucket = getStorage().bucket(env.DERIVATIVES_BUCKET);
+  const pageSize = opts?.pageSize ?? 500;
+  const concurrency = opts?.concurrency ?? 25;
+  const deadlineMs = opts?.deadlineMs ?? Number.POSITIVE_INFINITY;
+  let deleted = 0;
+
+  for (;;) {
+    if (Date.now() >= deadlineMs) return { deleted, remaining: true };
+    // Always re-query from the start of the prefix: the objects we just deleted
+    // are gone, so page tokens would only skip work we still have to do.
+    const [files] = await bucket.getFiles({ prefix: `${eventId}/`, maxResults: pageSize });
+    if (files.length === 0) return { deleted, remaining: false };
+
+    for (let i = 0; i < files.length; i += concurrency) {
+      const slice = files.slice(i, i + concurrency);
+      // eslint-disable-next-line no-await-in-loop
+      await Promise.all(slice.map((f) => f.delete({ ignoreNotFound: true })));
+      deleted += slice.length;
+      if (Date.now() >= deadlineMs) return { deleted, remaining: true };
+    }
+    // A short page means we saw the whole prefix and just emptied it.
+    if (files.length < pageSize) return { deleted, remaining: false };
+  }
+}
+
 // ── Reference selfies (uploads bucket; PRD §6.1, D7 reuse) ───────────────────
 
 /** MIME → extension for stored reference selfies (uploads bucket). */

@@ -337,6 +337,98 @@ export const RemoveDuplicatesResponseSchema = z.object({
 });
 export type RemoveDuplicatesResponse = z.infer<typeof RemoveDuplicatesResponseSchema>;
 
+// ── Event deletion ────────────────────────────────────────────────────────────
+
+/**
+ * Everything an event owns, counted before anything is touched. The dry run
+ * returns this so an admin sees exactly what a delete would take with it — the
+ * numbers that matter are `photos` (a real event, not a leftover test) and
+ * `stagedObjects` (bytes that never reached Drive; see `DeleteEventResponse`).
+ */
+export const EventInventorySchema = z.object({
+  /** Firestore `photos` docs — i.e. what the gallery/Find Me currently show. */
+  photos: z.number().int().nonnegative(),
+  /** Upload links in the Sheet, and how many are still usable. */
+  links: z.number().int().nonnegative(),
+  activeLinks: z.number().int().nonnegative(),
+  uploadBatches: z.number().int().nonnegative(),
+  dedupClaims: z.number().int().nonnegative(),
+  matchRuns: z.number().int().nonnegative(),
+  matchFeedback: z.number().int().nonnegative(),
+  /** Managed-folder rows (Photos_NNN / Videos / Album) in Special_Folders. */
+  specialFolderRows: z.number().int().nonnegative(),
+  /** Objects under `<eventId>/` in the derivatives bucket (capped count). */
+  derivativeObjects: z.number().int().nonnegative(),
+  /** True when the count above hit its scan cap — there are at least that many. */
+  derivativeObjectsCapped: z.boolean().default(false),
+  /** Staged uploads never copied to Drive. NOT deleted — see the response docs. */
+  stagedObjects: z.number().int().nonnegative(),
+  /** False when the Drive folder is already missing/trashed. */
+  driveFolderExists: z.boolean(),
+  /** True when the event still has a row in the Sheet's Events tab (the SSOT). */
+  sheetRowExists: z.boolean(),
+});
+export type EventInventory = z.infer<typeof EventInventorySchema>;
+
+/**
+ * POST body for a delete. DRY RUN unless `apply` is exactly `true` (the
+ * resync-names / duplicate-removal convention).
+ *
+ * `confirmName` is mandatory on an apply and must equal the event's name (or its
+ * id): the request that removes an event should have to name it.
+ */
+export const DeleteEventRequestSchema = z.object({
+  apply: z.boolean().optional(),
+  confirmName: z.string().optional(),
+  reason: z.string().max(500).optional(),
+});
+export type DeleteEventRequest = z.infer<typeof DeleteEventRequestSchema>;
+
+/** What an applied delete actually removed (all zero on a dry run). */
+export const DeleteEventRemovedSchema = z.object({
+  linksRevoked: z.number().int().nonnegative(),
+  sheetRowsRemoved: z.number().int().nonnegative(),
+  specialFolderRows: z.number().int().nonnegative(),
+  firestoreDocs: z.number().int().nonnegative(),
+  derivativeObjects: z.number().int().nonnegative(),
+});
+export type DeleteEventRemoved = z.infer<typeof DeleteEventRemovedSchema>;
+
+/**
+ * Result of GET (inventory) or POST (dry run / apply) on an event delete.
+ *
+ * Recoverability, deliberately: the Drive folder is TRASHED, not deleted, and
+ * ledgered in Deleted_Files, so the photos are restorable until the purge job
+ * passes retention. Derivatives are deleted but regenerable by re-indexing.
+ * Staged uploads are the one thing that could be unrecoverable, so they are
+ * NEVER touched — they expire with the staging bucket's lifecycle rule and
+ * upload-recovery can still rescue them in the meantime.
+ */
+export const DeleteEventResponseSchema = z.object({
+  ok: z.literal(true),
+  /** false = nothing was written; the inventory is what a run would remove. */
+  apply: z.boolean(),
+  eventId: z.string(),
+  eventName: z.string().default(''),
+  eventDate: z.string().default(''),
+  folderName: z.string().default(''),
+  driveFolderId: z.string().default(''),
+  message: z.string().default(''),
+  inventory: EventInventorySchema,
+  removed: DeleteEventRemovedSchema,
+  driveFolderTrashed: z.boolean().default(false),
+  /** Deleted_Files row id for the trashed folder (restore key), '' if none. */
+  deleteId: z.string().default(''),
+  /**
+   * True when the derivatives sweep hit its time budget. The event's Sheet row
+   * and Firestore docs are left in place in that case, so re-running the same
+   * call finishes the job (every step is idempotent).
+   */
+  derivativesRemaining: z.boolean().default(false),
+  warnings: z.array(z.string()),
+});
+export type DeleteEventResponse = z.infer<typeof DeleteEventResponseSchema>;
+
 // ── Reporting (dev plan G5.2) ─────────────────────────────────────────────────
 
 export const ClubSummarySchema = z.object({

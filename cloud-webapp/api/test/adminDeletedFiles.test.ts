@@ -29,6 +29,7 @@ vi.mock('../src/middleware/rbac.js', () => {
 });
 vi.mock('../src/middleware/cronAuth.js', () => ({
   allowCronOrAdmin: (_req: Request, _res: Response, next: NextFunction) => next(),
+  allowCronOrSuperAdmin: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
 
 const recordAudit = vi.fn(async (..._a: unknown[]) => undefined);
