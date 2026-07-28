@@ -401,10 +401,17 @@ export async function deleteEvent(
     warnings.push('Could not delete the derivatives objects — re-run to retry.');
   }
 
+  // Say what actually happened to Drive: claiming a trash that never ran (because
+  // the folder was already gone, or the PATCH failed) reads as a bigger delete
+  // than it was, and the warnings above are easy to skim past.
+  const drivePhrase = body.driveFolderTrashed
+    ? 'trashed the Drive folder'
+    : 'left Drive alone (no live folder to trash)';
+
   if (body.derivativesRemaining) {
     body.warnings = warnings;
     body.message =
-      `Partly done: trashed the Drive folder and removed ${body.removed.derivativeObjects} derivative object(s), ` +
+      `Partly done: ${drivePhrase} and removed ${body.removed.derivativeObjects} derivative object(s), ` +
       'but the bucket sweep ran out of time. The event is still listed — run the same delete again to finish it.';
     logger.info({ eventId, removed: body.removed }, 'event delete paused: derivatives remaining');
     return { ok: true, message: body.message, data: body };
@@ -456,7 +463,7 @@ export async function deleteEvent(
 
   body.warnings = warnings;
   body.message =
-    `Deleted "${label}": revoked ${body.removed.linksRevoked} link(s), trashed the Drive folder, removed ` +
+    `Deleted "${label}": revoked ${body.removed.linksRevoked} link(s), ${drivePhrase}, removed ` +
     `${body.removed.derivativeObjects} derivative object(s), ${body.removed.sheetRowsRemoved} Sheet row(s) and ` +
     `${body.removed.firestoreDocs} Firestore doc(s).` +
     (body.deleteId ? ' Restore the folder from the admin "Deleted files" page while it is still in trash.' : '');
