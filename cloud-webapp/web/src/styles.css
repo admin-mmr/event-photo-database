@@ -1693,6 +1693,19 @@ pre.error {
 
 /* ── Verdict batches (admin review of one search's verdicts) ───────────────── */
 
+/* A plain inline link. Deliberately NOT `.event-link`, which stretches an
+   invisible ::after across its whole positioned ancestor so a tap anywhere on an
+   event *card* navigates — inside a row that has its own button, that overlay
+   swallows the button's clicks. */
+.inline-link {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.inline-link:hover {
+  text-decoration: underline;
+}
+
 .batch-list {
   list-style: none;
   margin: 16px 0 0;
@@ -1790,6 +1803,17 @@ pre.error {
 
 .verdict-facts dd {
   margin: 0;
+}
+
+/* Tally rows. Deliberately NOT `.event-meta`, whose `margin-left: auto` is there
+   to shove event-card metadata to the right edge — inside these left-aligned
+   blocks it just strands the badges. */
+.batch-tallies,
+.verdict-tallies {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
 }
 
 .verdict-tallies {

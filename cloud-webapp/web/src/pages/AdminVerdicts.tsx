@@ -230,10 +230,14 @@ export function AdminVerdicts(): JSX.Element {
           <figure className="verdict-selfie">
             <Selfie url={batch.selfieUrl} alt={t.selfie} className="verdict-selfie-img" />
             <figcaption>
-              <strong>{searcher}</strong>
-              {batch.email && batch.name && <span className="muted"> · {batch.email}</span>}
+              {/* Name and email on ONE line — figcaption is a grid, so separate
+                  children would each take their own row. */}
+              <div>
+                <strong>{searcher}</strong>
+                {batch.email && batch.name && <span className="muted"> · {batch.email}</span>}
+              </div>
               <div className="muted">
-                <Link to={`/events/${batch.eventId}`} className="event-link">
+                <Link to={`/events/${batch.eventId}`} className="inline-link">
                   {batch.eventId}
                 </Link>
               </div>
@@ -258,7 +262,7 @@ export function AdminVerdicts(): JSX.Element {
           </dl>
         </div>
 
-        <div className="event-meta verdict-tallies">
+        <div className="verdict-tallies">
           <span className="badge badge-ok">{t.confirmed(batch.counts.confirmed)}</span>
           <span className="badge badge-err">{t.wrong(batch.counts.not_me)}</span>
           <span className="muted event-stat">
@@ -384,13 +388,13 @@ export function AdminVerdicts(): JSX.Element {
                     {b.email && b.name && <span className="muted"> · {b.email}</span>}
                   </div>
                   <div className="muted">
-                    <Link to={`/events/${b.eventId}`} className="event-link">
+                    <Link to={`/events/${b.eventId}`} className="inline-link">
                       {b.eventId}
                     </Link>
                     {' · '}
                     {fmtWhen(b.markedAt)}
                   </div>
-                  <div className="event-meta">
+                  <div className="batch-tallies">
                     <span className="badge badge-ok">{t.confirmed(b.counts.confirmed)}</span>
                     <span className="badge badge-err">{t.wrong(b.counts.not_me)}</span>
                     <span className="muted event-stat">
