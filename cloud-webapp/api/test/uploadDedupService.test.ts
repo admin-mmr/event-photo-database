@@ -73,7 +73,7 @@ beforeEach(() => {
 
 describe('claimUploadedFile', () => {
   it('wins an unclaimed key', async () => {
-    expect(await claimUploadedFile(INPUT)).toBe(true);
+    expect((await claimUploadedFile(INPUT)).won).toBe(true);
     expect(docs.get(ID)?.batchId).toBe('batch-new');
   });
 
@@ -84,23 +84,30 @@ describe('claimUploadedFile', () => {
     expect(UPLOAD_DEDUP_COLLECTION).toBe('upload_dedup');
   });
 
-  it('refuses a key already backed by a real Drive file', async () => {
+  it('refuses a key already backed by a real Drive file, and confirms it', async () => {
     docs.set(ID, { driveFileId: 'drive-1', claimedAt: minutesAgo(600), batchId: 'batch-old' });
-    expect(await claimUploadedFile(INPUT)).toBe(false);
+    const r = await claimUploadedFile(INPUT);
+    expect(r.won).toBe(false);
+    // Proven in Drive -> the caller may delete the staged copy.
+    expect(r.confirmedInDrive).toBe(true);
     // The winner's record is untouched.
     expect(docs.get(ID)?.batchId).toBe('batch-old');
   });
 
-  it('refuses a fresh unstamped claim — another worker is copying it right now', async () => {
+  it('refuses a fresh unstamped claim WITHOUT confirming it — the bytes must survive', async () => {
+    // THE 9-PHOTO BUG: an unstamped claim is not proof the bytes reached Drive.
+    // Reporting it as confirmed let the caller delete the only copy.
     docs.set(ID, { claimedAt: minutesAgo(2), batchId: 'batch-inflight' });
-    expect(await claimUploadedFile(INPUT)).toBe(false);
+    const r = await claimUploadedFile(INPUT);
+    expect(r.won).toBe(false);
+    expect(r.confirmedInDrive).toBe(false);
     expect(docs.get(ID)?.batchId).toBe('batch-inflight');
   });
 
   it('RECLAIMS an unstamped claim older than any possible request', async () => {
     // Exactly the wreckage a 60s kill left behind: claimed, never stamped.
     docs.set(ID, { claimedAt: minutesAgo(120), batchId: 'batch-killed' });
-    expect(await claimUploadedFile(INPUT)).toBe(true);
+    expect((await claimUploadedFile(INPUT)).won).toBe(true);
     const after = docs.get(ID)!;
     expect(after.batchId).toBe('batch-new');
     expect(after.reclaimedFrom).toBe('batch-killed');
@@ -110,36 +117,42 @@ describe('claimUploadedFile', () => {
   it('does not reclaim a stale claim that DID produce a Drive file', async () => {
     // Age alone must never win: if the bytes are in Drive it is a real duplicate.
     docs.set(ID, { driveFileId: 'drive-1', claimedAt: minutesAgo(10_000), batchId: 'batch-old' });
-    expect(await claimUploadedFile(INPUT)).toBe(false);
+    const r = await claimUploadedFile(INPUT);
+    expect(r.won).toBe(false);
+    expect(r.confirmedInDrive).toBe(true);
   });
 
-  it('treats a claim with no timestamp as owned rather than guessing', async () => {
+  it('treats a claim with no timestamp as owned but UNCONFIRMED', async () => {
     docs.set(ID, { batchId: 'batch-mystery' });
-    expect(await claimUploadedFile(INPUT)).toBe(false);
+    const r = await claimUploadedFile(INPUT);
+    expect(r.won).toBe(false);
+    expect(r.confirmedInDrive).toBe(false);
   });
 
   it('accepts a Firestore Timestamp, not just a Date', async () => {
     const d = minutesAgo(120);
     docs.set(ID, { claimedAt: { toDate: () => d }, batchId: 'batch-killed' });
-    expect(await claimUploadedFile(INPUT)).toBe(true);
+    expect((await claimUploadedFile(INPUT)).won).toBe(true);
   });
 
   it('wins the key if the claim vanished under it', async () => {
     // create() saw ALREADY_EXISTS but the doc is gone by the time we look.
     createError = Object.assign(new Error('6 ALREADY_EXISTS'), { code: 6 });
-    expect(await claimUploadedFile(INPUT)).toBe(true);
+    expect((await claimUploadedFile(INPUT)).won).toBe(true);
   });
 
-  it('fails CLOSED when the staleness check itself errors', async () => {
-    // We already know a claim exists; the safe reading of an unreadable one is
-    // "someone owns it" rather than risking a second copy into Drive.
+  it('fails CLOSED on the claim but never confirms, so the bytes are kept', async () => {
+    // A claim exists, so do not risk a second copy — but an unreadable claim
+    // proves nothing about Drive, so the staged object must survive.
     docs.set(ID, { claimedAt: minutesAgo(120), batchId: 'batch-killed' });
     txFails = true;
-    expect(await claimUploadedFile(INPUT)).toBe(false);
+    const r = await claimUploadedFile(INPUT);
+    expect(r.won).toBe(false);
+    expect(r.confirmedInDrive).toBe(false);
   });
 
   it('fails OPEN on an unexpected create error, so an outage cannot drop photos', async () => {
     createError = Object.assign(new Error('14 UNAVAILABLE'), { code: 14 });
-    expect(await claimUploadedFile(INPUT)).toBe(true);
+    expect((await claimUploadedFile(INPUT)).won).toBe(true);
   });
 });

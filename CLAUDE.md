@@ -395,6 +395,18 @@
       self-heal. They are now reclaimable once older than `STALE_CLAIM_MS`
       (35 min > any possible request). Apply the same reasoning to any new
       claim/lease you add.
+    - **NEVER delete the staged bytes on an UNPROVEN duplicate.** This is what
+      actually destroyed photos — 9 of them, across the 07-27 timeout incident
+      and the 07-28 recovery OOM. `enqueueStagedBatch` used to `file.delete()`
+      for every skip, but "skip" has two meanings: the md5 matched a real Drive
+      file (proven — delete is right), or a *claim* said someone else holds it
+      (unproven — and if that claim is a corpse from a killed request, the bytes
+      never reached Drive). `claimUploadedFile` now returns
+      `{ won, confirmedInDrive }` and the staged object is deleted only when the
+      duplicate is confirmed. Keeping an orphan costs nothing: the bucket
+      lifecycle reclaims it, and until then upload-recovery can still save it.
+      The stale-claim reclaim does NOT cover this — a claim younger than
+      `STALE_CLAIM_MS` is still unproven.
 - **Keep all PAUSED until Phase B parity sign-off** (`CUTOVER_RUNBOOK.md`
   §A4). New jobs are `ENABLED` by default — pause right after creating. NOTE: a
   **paused** job CANNOT be triggered with `gcloud scheduler jobs run` — it fails
