@@ -190,6 +190,39 @@
 - After a removal run the index still lists the trashed copies until the event is
   re-indexed (`reindexRecommended: true` in the response says so).
 
+## Why an upload retry must not re-copy (how the duplicates got made)
+
+- The 2,683-duplicate backlog was not careless volunteers: it was **the upload
+  retry path**. Fixing the removal tool only cleaned up after it; these are the
+  invariants that stop it happening again. If you touch
+  `volunteerUploadService.enqueueStagedBatch`, keep all three.
+- **Winning the dedup claim is NOT proof that nobody copied these bytes.** The
+  claim doc is written BEFORE the Drive copy and stamped with `driveFileId` only
+  after, so a worker killed in between leaves a copy in Drive that no record
+  points at. `ClaimResult.verifyBeforeCopy` marks exactly the cases where that is
+  possible (a stale claim taken over from a dead holder, or a fail-open past the
+  claim backend); in those cases the caller MUST look for an existing copy before
+  writing. A clean fresh claim skips the lookup — otherwise it is a per-file Drive
+  call on every upload for a case that cannot happen.
+- **Every copied file carries its claim id in `appProperties.uploadDedupKey`**
+  (`UPLOAD_DEDUP_PROPERTY`), stamped **in the same request as the bytes** so a
+  file can never exist untagged. `findFileByAppProperty` is how a later attempt
+  recognises its dead predecessor's work. Do not "simplify" this into a second
+  `files.update` call — the whole point is that the tag lands atomically.
+- **A throw does not prove the write didn't land.** Drive can commit the file and
+  still fail on the way back (timeout after the create, 5xx on a retried
+  multipart POST). Releasing the claim there invites the Cloud Tasks retry to copy
+  the same photo again, so the catch block checks for the tag first and only
+  releases when the file genuinely is not there.
+- **A retry resumes the batch folder; it must not mint a new one.**
+  `buildBatchFolderName()` stamps the CURRENT time, so a retry used to create a
+  second `YYYYMMDD-HHMMSS_uploader` folder beside the first and re-land the
+  session into it — that is the census's signature of runs ~70s apart. The name is
+  persisted to `upload_batches/{batchId}` **as soon as the folder exists** (not at
+  the end of the loop, which never runs on a killed pass) and reused on re-entry.
+  `initUploadBatch` therefore must NOT reset `batchFolderName` on a re-init;
+  blanking it there reintroduces duplicate folders by itself.
+
 ## Deleting an event (five stores, one order)
 
 - **An event lives in five places, and deleting it means touching all five in the

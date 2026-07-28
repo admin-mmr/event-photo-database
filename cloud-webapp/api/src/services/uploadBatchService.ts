@@ -40,8 +40,16 @@ export interface UploadBatchDoc {
   updatedAt: string;
 }
 
-/** Create the batch doc. Defaults to phase `saving` (inline path); the async
- *  dispatch path passes `received` (queued, not yet processed). Best-effort. */
+/**
+ * Create the batch doc. Defaults to phase `saving` (inline path); the async
+ * dispatch path passes `received` (queued, not yet processed). Best-effort.
+ *
+ * A RE-INIT (the Cloud Tasks retry of a batch that already ran) resets the
+ * per-attempt counters but MUST NOT touch `batchFolderName` or `createdAt`: the
+ * folder name is how a retry finds and resumes the folder its dead predecessor
+ * created instead of minting a second one beside it, and blanking it here was
+ * enough to reintroduce duplicate batch folders on its own.
+ */
 export async function initUploadBatch(
   batchId: string,
   eventId: string,
@@ -50,27 +58,25 @@ export async function initUploadBatch(
   phase: UploadBatchPhase = 'saving',
 ): Promise<void> {
   const now = new Date().toISOString();
+  const perAttempt = {
+    batchId,
+    eventId,
+    linkId,
+    phase,
+    total,
+    copied: 0,
+    skippedDuplicates: 0,
+    skippedDuplicateNames: [],
+    failed: 0,
+    updatedAt: now,
+  };
   try {
-    await firestore()
-      .collection(COLLECTION)
-      .doc(batchId)
-      .set(
-        {
-          batchId,
-          eventId,
-          linkId,
-          phase,
-          total,
-          copied: 0,
-          skippedDuplicates: 0,
-          skippedDuplicateNames: [],
-          failed: 0,
-          batchFolderName: '',
-          createdAt: now,
-          updatedAt: now,
-        },
-        { merge: true },
-      );
+    const ref = firestore().collection(COLLECTION).doc(batchId);
+    const existing = await ref.get();
+    await ref.set(
+      existing.exists ? perAttempt : { ...perAttempt, batchFolderName: '', createdAt: now },
+      { merge: true },
+    );
   } catch (err) {
     logger.warn({ err, batchId }, 'upload batch init failed (non-fatal)');
   }

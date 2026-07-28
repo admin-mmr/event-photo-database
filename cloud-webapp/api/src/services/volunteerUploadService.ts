@@ -30,18 +30,22 @@ import {
   uploadFileToDriveResumable,
   listEventImages,
   getOrCreateSubfolder,
+  findFileByAppProperty,
   DRIVE_SCOPE_READWRITE,
   type UploadedDriveFile,
 } from './driveService.js';
 import {
+  claimId,
   claimUploadedFile,
   recordClaimTarget,
   releaseUploadedFile,
+  UPLOAD_DEDUP_PROPERTY,
   type ClaimInput,
+  type ClaimResult,
 } from './uploadDedupService.js';
 import { triggerIndexJob } from './indexerJob.js';
 import { appendUploadLog } from './uploadLogService.js';
-import { initUploadBatch, updateUploadBatch } from './uploadBatchService.js';
+import { getUploadBatch, initUploadBatch, updateUploadBatch } from './uploadBatchService.js';
 import { buildCreditedFileName } from '../lib/creditedFileName.js';
 import { tryRebuildSpecialFoldersForBatch } from './specialFoldersService.js';
 import { tryRebuildPublicFolderIndex } from './publicFolderIndexService.js';
@@ -402,6 +406,16 @@ export async function enqueueStagedBatch(
 ): Promise<BatchResult> {
   if (objectNames.length === 0) return { copied: 0, skippedDuplicates: 0, skippedDuplicateNames: [] };
 
+  // Read what a previous attempt at THIS batch got done, before re-initialising.
+  // A Cloud Tasks retry reuses the batchId, so the folder it already created is
+  // recoverable — that is what stops a retry from minting a second one.
+  let priorBatchFolderName = '';
+  try {
+    priorBatchFolderName = (await getUploadBatch(batchId))?.batchFolderName ?? '';
+  } catch (err) {
+    logger.warn({ err, batchId }, 'could not read the prior batch doc (will name a fresh batch folder)');
+  }
+
   // Make the batch observable (UPLOAD_ASYNC_QUEUE_DESIGN.md step 1). Best-effort:
   // status writes must never fail an upload whose bytes are already staged.
   await initUploadBatch(batchId, link.eventId, link.linkId, objectNames.length);
@@ -438,10 +452,22 @@ export async function enqueueStagedBatch(
     if (link.clubName) parent = (await getOrCreateSubfolder(parent, link.clubName, { token: driveToken })).id;
     const tag = (link.tag || '').trim() || DEFAULT_TAG;
     parent = (await getOrCreateSubfolder(parent, tag, { token: driveToken })).id;
-    const batchName = buildBatchFolderName(photographerName);
+    // REUSE the name this batch already used, if it got that far before dying.
+    // buildBatchFolderName() stamps the CURRENT time, so a retry used to mint a
+    // second "20260727-173445_liyiguo" folder beside the first and re-land the
+    // session into it — the shape behind the 2,683-duplicate census, where one
+    // uploader's runs sat in folders ~70s apart. getOrCreateSubfolder is
+    // idempotent by name, so reusing the recorded name resumes the same folder.
+    const batchName = priorBatchFolderName || buildBatchFolderName(photographerName);
     batchFolderId = (await getOrCreateSubfolder(parent, batchName, { token: driveToken })).id;
     batchFolderName = batchName;
-    logger.info({ eventId: link.eventId, batchId, batchFolderId, batchName, tag }, 'volunteer batch folder ready');
+    // Persist the name AS SOON AS it exists, not at the end of the loop: a run
+    // killed mid-copy is exactly the run whose retry needs to find it.
+    if (batchName !== priorBatchFolderName) await updateUploadBatch(batchId, { batchFolderName: batchName });
+    logger.info(
+      { eventId: link.eventId, batchId, batchFolderId, batchName, tag, resumed: batchName === priorBatchFolderName },
+      'volunteer batch folder ready',
+    );
     return batchFolderId;
   };
 
@@ -499,8 +525,8 @@ export async function enqueueStagedBatch(
       // Only hold the claim when WE won it, so a later failure can never release
       // a claim that belongs to another batch. `seenAlready` means the snapshot
       // matched a file that is genuinely in Drive, so it counts as confirmed.
-      const claimRes = seenAlready
-        ? { won: false, confirmedInDrive: true }
+      const claimRes: ClaimResult = seenAlready
+        ? { won: false, confirmedInDrive: true, verifyBeforeCopy: false }
         : await claimUploadedFile(candidate);
       if (claimRes.won) claim = candidate;
       if (!claimRes.won) {
@@ -541,8 +567,38 @@ export async function enqueueStagedBatch(
         continue;
       }
 
+      // Tag that will travel with the file, so any later attempt can recognise
+      // this exact content as already copied (see UPLOAD_DEDUP_PROPERTY).
+      const dedupTag = claimId(candidate.eventId, candidate.dedupKey);
+
+      // WINNING THE CLAIM IS NOT PROOF NOBODY COPIED THESE BYTES. When we took
+      // the key over from a holder that died — or failed open past the claim
+      // backend — the copy may already be in Drive, written by a worker that was
+      // killed before it could stamp anything. Copying now would create exactly
+      // the duplicate this whole path exists to prevent, so look first.
+      if (claimRes.verifyBeforeCopy) {
+        const already = await findFileByAppProperty(UPLOAD_DEDUP_PROPERTY, dedupTag, { token: driveToken });
+        if (already) {
+          await recordClaimTarget(candidate, already.id);
+          claim = null;
+          skippedDuplicates += 1;
+          skippedDuplicateNames.push(name);
+          logger.warn(
+            { eventId: link.eventId, batchId, objectName, name, driveFileId: already.id },
+            'adopted a copy a dead attempt had already written — skipping instead of duplicating',
+          );
+          if (hash) seenHashes.add(hash);
+          seen.add(key);
+          await file
+            .delete({ ignoreNotFound: true })
+            .catch((err) => logger.warn({ err, objectName }, 'staged cleanup after adopt failed (non-fatal)'));
+          continue;
+        }
+      }
+
       const destFolderId = await ensureBatchFolder(custom.photographerName ?? '');
       let uploaded: UploadedDriveFile;
+      const appProperties = { [UPLOAD_DEDUP_PROPERTY]: dedupTag };
       if (size > INLINE_COPY_MAX_BYTES) {
         // Large videos: chunked GCS→Drive resumable copy, bounded memory.
         uploaded = await uploadFileToDriveResumable(
@@ -551,11 +607,11 @@ export async function enqueueStagedBatch(
           contentType,
           size,
           async (start, end) => (await file.download({ start, end }))[0],
-          { token: driveToken },
+          { token: driveToken, appProperties },
         );
       } else {
         const [bytes] = await file.download();
-        uploaded = await uploadFileToDrive(destFolderId, name, contentType, bytes, { token: driveToken });
+        uploaded = await uploadFileToDrive(destFolderId, name, contentType, bytes, { token: driveToken, appProperties });
       }
       // Point the claim at what it produced so an admin delete can release it.
       await recordClaimTarget(candidate, uploaded.id);
@@ -571,10 +627,30 @@ export async function enqueueStagedBatch(
         .delete({ ignoreNotFound: true })
         .catch((err) => logger.warn({ err, objectName }, 'staged object cleanup failed (non-fatal)'));
     } catch (err) {
+      // A THROW DOES NOT PROVE THE WRITE DIDN'T LAND. Drive can commit the file
+      // and still fail us on the way back (a timeout after the create, a 5xx on a
+      // retried multipart POST). Releasing the claim then invites the Cloud Tasks
+      // retry to copy the same photo a second time. Ask Drive whether our tag is
+      // there before deciding, and only hand the claim back if it truly is not.
+      if (claim) {
+        const landed = await findFileByAppProperty(UPLOAD_DEDUP_PROPERTY, claimId(claim.eventId, claim.dedupKey), {
+          token: driveToken,
+        }).catch(() => null);
+        if (landed) {
+          await recordClaimTarget(claim, landed.id);
+          copied += 1;
+          logger.warn(
+            { err, eventId: link.eventId, batchId, objectName, driveFileId: landed.id },
+            'copy reported an error but the file IS in Drive — keeping the claim so no retry duplicates it',
+          );
+          claim = null;
+          continue;
+        }
+        // Genuinely absent: hand the claim back so the retry (or a later
+        // re-upload) is not rejected as a duplicate of a file that never existed.
+        await releaseUploadedFile(claim);
+      }
       failed += 1;
-      // Hand back a claim we took but never turned into a Drive file, so the
-      // Cloud Tasks retry (or a later re-upload) isn't rejected as a duplicate.
-      if (claim) await releaseUploadedFile(claim);
       logger.error({ err, eventId: link.eventId, batchId, objectName }, 'staged object copy to Drive failed');
     }
   }
