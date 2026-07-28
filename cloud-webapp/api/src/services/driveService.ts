@@ -201,11 +201,17 @@ export async function uploadFileToDrive(
   name: string,
   mimeType: string,
   bytes: Uint8Array,
-  opts?: { token?: string },
+  opts?: { token?: string; appProperties?: Record<string, string> },
 ): Promise<UploadedDriveFile> {
   const token = opts?.token ?? (await getDriveToken(DRIVE_SCOPE_READWRITE));
   const boundary = `mmr_${randomUUID()}`;
-  const metadata = { name, parents: [folderId] };
+  // appProperties ride along in the SAME request as the bytes, so a file can
+  // never exist in Drive without its identifying tag — that atomicity is what
+  // lets a retry recognise its own earlier write instead of copying again.
+  const metadata: Record<string, unknown> = { name, parents: [folderId] };
+  if (opts?.appProperties && Object.keys(opts.appProperties).length > 0) {
+    metadata.appProperties = opts.appProperties;
+  }
   const head =
     `--${boundary}\r\n` +
     `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
@@ -232,6 +238,42 @@ export async function uploadFileToDrive(
   return (await res.json()) as UploadedDriveFile;
 }
 
+/**
+ * Find a non-trashed file carrying `appProperties[key] === value`, or null.
+ *
+ * This is how a retry answers "did my own earlier attempt already write this
+ * file?" — the question that decides between adopting a copy and creating a
+ * duplicate. It is exact (an id-derived tag, not a name or a size) and it works
+ * even when the earlier attempt was killed before it could record anything
+ * anywhere else.
+ *
+ * `appProperties` are private to the OAuth client that wrote them, and both the
+ * write and this read go through the same DWD client, so the tag is only ever
+ * visible to us. Unscoped by parent on purpose: a retry may not know which
+ * folder the dead attempt chose. Returns the first match; a second match would
+ * mean a duplicate already exists, which the caller cannot fix by copying more.
+ */
+export async function findFileByAppProperty(
+  key: string,
+  value: string,
+  opts?: { token?: string },
+): Promise<UploadedDriveFile | null> {
+  if (!key || !value) return null;
+  const token = opts?.token ?? (await getDriveToken());
+  const esc = (s: string): string => s.replace(/'/g, "\\'");
+  const params = new URLSearchParams({
+    q: `appProperties has { key='${esc(key)}' and value='${esc(value)}' } and trashed=false`,
+    fields: 'files(id,name)',
+    pageSize: '2',
+    supportsAllDrives: 'true',
+    includeItemsFromAllDrives: 'true',
+  });
+  const res = await driveFetch(`${DRIVE}?${params}`, { headers: { Authorization: `Bearer ${token}` } }, 'findFileByAppProperty');
+  if (!res.ok) throw new Error(`Drive appProperties search ${res.status}: ${await res.text()}`);
+  const page = (await res.json()) as { files?: UploadedDriveFile[] };
+  return page.files?.[0] ?? null;
+}
+
 /** Chunk size for resumable Drive uploads. Must be a multiple of 256 KiB
  *  (Drive protocol rule); also the copy loop's peak memory per file. */
 export const DRIVE_RESUMABLE_CHUNK_BYTES = 32 * 1024 * 1024;
@@ -255,7 +297,7 @@ export async function uploadFileToDriveResumable(
   mimeType: string,
   totalBytes: number,
   readChunk: (start: number, end: number) => Promise<Uint8Array>,
-  opts?: { token?: string },
+  opts?: { token?: string; appProperties?: Record<string, string> },
 ): Promise<UploadedDriveFile> {
   const token = opts?.token ?? (await getDriveToken(DRIVE_SCOPE_READWRITE));
 
@@ -264,6 +306,10 @@ export async function uploadFileToDriveResumable(
     supportsAllDrives: 'true',
     fields: 'id,name',
   });
+  const initBody: Record<string, unknown> = { name, parents: [folderId] };
+  if (opts?.appProperties && Object.keys(opts.appProperties).length > 0) {
+    initBody.appProperties = opts.appProperties;
+  }
   const initRes = await driveFetch(`${DRIVE_UPLOAD}?${params}`, {
     method: 'POST',
     headers: {
@@ -272,7 +318,7 @@ export async function uploadFileToDriveResumable(
       'X-Upload-Content-Type': mimeType || 'application/octet-stream',
       'X-Upload-Content-Length': String(totalBytes),
     },
-    body: JSON.stringify({ name, parents: [folderId] }),
+    body: JSON.stringify(initBody),
   }, 'uploadFileToDriveResumable:init');
   if (!initRes.ok) throw new Error(`Drive resumable init ${initRes.status}: ${await initRes.text()}`);
   const sessionUri = initRes.headers.get('location');

@@ -82,6 +82,16 @@ export function claimId(eventId: string, dedupKey: string): string {
   return createHash('sha256').update(`${eventId}|${dedupKey}`).digest('hex').slice(0, 40);
 }
 
+/**
+ * Drive `appProperties` key under which a copied file carries its claim id.
+ *
+ * The claim doc says "someone intends to copy these bytes"; this says "these
+ * bytes ARE this file". Stamped atomically with the file's creation, so the
+ * moment a copy exists it is attributable — which is what lets a retry find its
+ * dead predecessor's work instead of copying the same photo a second time.
+ */
+export const UPLOAD_DEDUP_PROPERTY = 'uploadDedupKey';
+
 function isAlreadyExists(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
   if (code === ALREADY_EXISTS || code === 'already-exists') return true;
@@ -105,6 +115,22 @@ export interface ClaimResult {
    * 2026-07-27/28. Unproven duplicate = keep the bytes.
    */
   confirmedInDrive: boolean;
+  /**
+   * Only meaningful when `won` is true. TRUE means we CANNOT RULE OUT that a copy
+   * of these bytes already exists in Drive, so the caller must look for the
+   * UPLOAD_DEDUP_PROPERTY tag before writing its own — otherwise winning the
+   * claim is itself a duplicate-maker. Two cases set it:
+   *
+   *   - the key was taken over from a holder that died mid-copy, which happens
+   *     precisely when it was killed AFTER the Drive write but before it could
+   *     stamp the claim;
+   *   - the claim backend errored and we failed open, so we never learned whether
+   *     a claim (and a copy) existed at all.
+   *
+   * A clean fresh claim leaves this false: nobody has ever held these bytes, so
+   * the extra Drive lookup would be pure cost on the normal path.
+   */
+  verifyBeforeCopy: boolean;
 }
 
 /**
@@ -128,14 +154,14 @@ export async function claimUploadedFile(input: ClaimInput): Promise<ClaimResult>
         batchId: input.batchId,
         claimedAt: new Date(),
       });
-    return { won: true, confirmedInDrive: false };
+    return { won: true, confirmedInDrive: false, verifyBeforeCopy: false };
   } catch (err) {
     if (isAlreadyExists(err)) return reclaimIfStale(input);
     logger.warn(
       { err, eventId: input.eventId, name: input.name },
       'upload dedup claim failed — allowing the copy (fail open)',
     );
-    return { won: true, confirmedInDrive: false };
+    return { won: true, confirmedInDrive: false, verifyBeforeCopy: true };
   }
 }
 
@@ -160,15 +186,15 @@ async function reclaimIfStale(input: ClaimInput): Promise<ClaimResult> {
     const result = await firestore().runTransaction<ClaimResult>(async (tx) => {
       const snap = await tx.get(ref);
       // Vanished between create() and here — nothing owns the key now.
-      if (!snap.exists) return { won: true, confirmedInDrive: false };
+      if (!snap.exists) return { won: true, confirmedInDrive: false, verifyBeforeCopy: true };
       const data = snap.data() ?? {};
-      if (data.driveFileId) return { won: false, confirmedInDrive: true };
+      if (data.driveFileId) return { won: false, confirmedInDrive: true, verifyBeforeCopy: false };
 
       const age = ageMsOf(data.claimedAt);
-      if (age === null || age < STALE_CLAIM_MS) return { won: false, confirmedInDrive: false };
+      if (age === null || age < STALE_CLAIM_MS) return { won: false, confirmedInDrive: false, verifyBeforeCopy: false };
 
       tx.update(ref, { claimedAt: new Date(), batchId: input.batchId, name: input.name, reclaimedFrom: data.batchId ?? '' });
-      return { won: true, confirmedInDrive: false };
+      return { won: true, confirmedInDrive: false, verifyBeforeCopy: true };
     });
     if (result.won) {
       logger.warn(
@@ -181,7 +207,7 @@ async function reclaimIfStale(input: ClaimInput): Promise<ClaimResult> {
     // Fail CLOSED on the claim (do not risk a second copy) but NOT on the bytes:
     // an unreadable claim proves nothing about Drive, so the staged object stays.
     logger.warn({ err, eventId: input.eventId, name: input.name }, 'stale-claim check failed — skipping, keeping the staged copy');
-    return { won: false, confirmedInDrive: false };
+    return { won: false, confirmedInDrive: false, verifyBeforeCopy: false };
   }
 }
 
