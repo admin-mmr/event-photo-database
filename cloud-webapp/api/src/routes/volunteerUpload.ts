@@ -33,6 +33,7 @@ import { requireRecaptcha } from '../middleware/recaptcha.js';
 import { validCronToken } from '../middleware/cronAuth.js';
 import {
   validateUploadLink,
+  loadUploadLinkById,
   createResumableSession,
   enqueueStagedBatch,
   UploadLinkError,
@@ -268,8 +269,10 @@ volunteerUploadRouter.post('/internal/process-batch', async (req, res, next) => 
       res.status(400).json({ ok: false, error: 'bad_request', message: parsed.error.message });
       return;
     }
-    const { token, batchId, objectNames } = parsed.data;
-    const link = await validateUploadLink(token);
+    const { token, linkId, batchId, objectNames } = parsed.data;
+    // `linkId` is the admin recovery path (staged objects carry linkId, not the
+    // token). Both are equally gated by the machine token checked above.
+    const link = token ? await validateUploadLink(token) : await loadUploadLinkById(String(linkId));
     const result = await enqueueStagedBatch(link, batchId, objectNames);
     logger.info(
       { eventId: link.eventId, batchId, copied: result.copied, skipped: result.skippedDuplicates },

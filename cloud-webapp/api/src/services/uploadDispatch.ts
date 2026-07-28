@@ -29,7 +29,10 @@ export function isUploadDispatchConfigured(): boolean {
 }
 
 export interface ProcessBatchTaskPayload {
-  token: string;
+  /** Public link token (volunteer path). Supply this OR `linkId`. */
+  token?: string;
+  /** Upload-link id (admin recovery path — staged objects record linkId). */
+  linkId?: string;
   batchId: string;
   objectNames: string[];
 }
