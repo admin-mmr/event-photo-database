@@ -1,7 +1,12 @@
 /**
  * <AdminDuplicates /> — the page trashes real Drive files, so what matters here
- * is that scanning alone never posts anything and that the removal is gated on
- * the confirm dialog.
+ * is that scanning alone never posts anything, that the removal is gated on the
+ * confirm dialog, and that one press drives the queued batch to completion.
+ *
+ * Removal is ASYNC by design: the apply POST returns 202 + a batchId, then the
+ * page drives drain ticks and polls progress. Inline removal used to die at the
+ * 60s request ceiling (HTTP 502) on every press while files were being trashed
+ * unseen, so "one press finishes the event" is the behaviour under test.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
@@ -44,41 +49,55 @@ const SCAN = {
 
 const EMPTY_SCAN = { ...SCAN, duplicateFiles: 0, reclaimableBytes: 0, groups: [] };
 
-const REMOVED = {
-  ok: true,
-  eventId: 'ev1',
-  apply: true,
-  message: 'ok',
-  candidates: 1,
-  removed: 1,
-  failed: 0,
-  remaining: 0,
-  bytesReclaimed: 1024 * 1024,
-  planned: [],
-  warnings: [],
-  reindexRecommended: true,
-};
+/** The 202 the apply POST answers with. */
+const QUEUED = { ok: true, mode: 'async', batchId: 'b1', total: 1, notEnqueued: 0, message: 'queued' };
 
-const json = (body: unknown): Response =>
-  new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+const batch = (over: Record<string, unknown> = {}) => ({
+  ok: true,
+  batch: {
+    id: 'b1',
+    eventId: 'ev1',
+    status: 'done',
+    total: 1,
+    removed: 1,
+    failed: 0,
+    remaining: 0,
+    sweepPending: 0,
+    bytesReclaimed: 1024 * 1024,
+    notEnqueued: 0,
+    warnings: [],
+    ...over,
+  },
+});
+
+const json = (body: unknown, status = 200): Response =>
+  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
 /**
- * Route each request by URL so the page's real call sequence works. Both `scans`
- * and `removes` are consumed in order (the last entry repeats), so the re-scan
- * after a removal can differ from the first, and the server can hand back the
- * bounded-batch responses the page is supposed to keep following.
+ * Route each request by URL so the page's real call sequence works. `scans` and
+ * `statuses` are consumed in order (the last entry repeats), so the re-scan after
+ * a removal can differ from the first and the batch can report progress across
+ * several drain ticks.
  */
-function mockApi(opts: { scans: unknown[]; remove?: unknown; removes?: unknown[] }): ReturnType<typeof vi.fn> {
+function mockApi(opts: {
+  scans: unknown[];
+  queued?: unknown;
+  queuedStatus?: number;
+  statuses?: unknown[];
+}): ReturnType<typeof vi.fn> {
   const calls = vi.fn();
   const scans = [...opts.scans];
-  const removes = opts.removes ? [...opts.removes] : [opts.remove];
+  const statuses = opts.statuses ? [...opts.statuses] : [batch()];
   const next = (queue: unknown[]): unknown => (queue.length > 1 ? queue.shift() : queue[0]);
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
       const u = String(url);
       calls(u, init?.method ?? 'GET');
-      if (u.endsWith('/remove')) return json(next(removes));
+      // Specific routes first — the scan matcher below is a catch-all.
+      if (u.endsWith('/remove')) return json(opts.queued ?? QUEUED, opts.queuedStatus ?? 202);
+      if (u.endsWith('/duplicates/drain')) return json({ ok: true, drained: true });
+      if (u.includes('/duplicates/batch/status')) return json(next(statuses));
       if (u.includes('/api/admin/duplicates/')) return json(next(scans));
       return json(EVENTS);
     }),
@@ -107,6 +126,9 @@ async function scanEvent(): Promise<void> {
 const posted = (calls: ReturnType<typeof vi.fn>): boolean =>
   calls.mock.calls.some(([, method]) => method === 'POST');
 
+const postsTo = (calls: ReturnType<typeof vi.fn>, needle: string): unknown[] =>
+  calls.mock.calls.filter(([u, method]) => method === 'POST' && String(u).includes(needle));
+
 beforeEach(() => {
   vi.restoreAllMocks();
 });
@@ -125,7 +147,7 @@ describe('<AdminDuplicates />', () => {
   });
 
   it('does not remove anything when the confirm dialog is dismissed', async () => {
-    const calls = mockApi({ scans: [SCAN], remove: REMOVED });
+    const calls = mockApi({ scans: [SCAN] });
     vi.stubGlobal('confirm', vi.fn(() => false));
     renderPage();
     await scanEvent();
@@ -137,9 +159,9 @@ describe('<AdminDuplicates />', () => {
     expect(posted(calls)).toBe(false);
   });
 
-  it('posts apply:true once confirmed, then reports the result', async () => {
+  it('queues on confirm, drives the drain, then reports the result', async () => {
     // First scan finds the duplicate; the re-scan after removal finds none.
-    const calls = mockApi({ scans: [SCAN, EMPTY_SCAN], remove: REMOVED });
+    const calls = mockApi({ scans: [SCAN, EMPTY_SCAN] });
     vi.stubGlobal('confirm', vi.fn(() => true));
     renderPage();
     await scanEvent();
@@ -147,23 +169,24 @@ describe('<AdminDuplicates />', () => {
     fireEvent.click(await screen.findByRole('button', { name: /move duplicates to trash/i }));
 
     await waitFor(() => expect(screen.getByText(/moved 1 duplicate file to trash/i)).toBeTruthy());
-    const post = calls.mock.calls.find(([, method]) => method === 'POST');
-    expect(post?.[0]).toBe('/api/admin/duplicates/ev1/remove');
+    // Enqueue, then at least one drain tick — never an inline removal.
+    expect(postsTo(calls, '/duplicates/ev1/remove')).toHaveLength(1);
+    expect(postsTo(calls, '/duplicates/drain').length).toBeGreaterThanOrEqual(1);
     // Re-index reminder, since the index still lists the removed copy.
     expect(screen.getByText(/re-indexed/i)).toBeTruthy();
     // The follow-up scan replaced the table with the "nothing left" state.
     await waitFor(() => expect(screen.getByText(/no byte-identical duplicates/i)).toBeTruthy());
   });
 
-  // The server can only trash a bounded batch per call — the whole request has
-  // to fit Firebase Hosting's 60s ceiling — so a big event needs several rounds.
-  // One press has to drain it, or an admin faces a dozen identical presses.
-  it('keeps going while the server reports files remaining, and totals them up', async () => {
+  // A tick removes a bounded slice, so a big event needs many ticks. One press
+  // has to drain it, or an admin faces a dozen identical presses.
+  it('keeps ticking while the batch is still running', async () => {
     const calls = mockApi({
       scans: [SCAN, EMPTY_SCAN],
-      removes: [
-        { ...REMOVED, removed: 150, remaining: 100, bytesReclaimed: 150 * 1024 * 1024 },
-        { ...REMOVED, removed: 100, remaining: 0, bytesReclaimed: 100 * 1024 * 1024 },
+      queued: { ...QUEUED, total: 250 },
+      statuses: [
+        batch({ status: 'running', total: 250, removed: 150, remaining: 100, bytesReclaimed: 150 * 1024 * 1024 }),
+        batch({ status: 'done', total: 250, removed: 250, remaining: 0, bytesReclaimed: 250 * 1024 * 1024 }),
       ],
     });
     vi.stubGlobal('confirm', vi.fn(() => true));
@@ -172,19 +195,22 @@ describe('<AdminDuplicates />', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /move duplicates to trash/i }));
 
-    await waitFor(() => expect(screen.getByText(/moved 250 duplicate files to trash/i)).toBeTruthy());
+    // Mid-run the page shows progress, not a finished summary.
+    await waitFor(() => expect(screen.getByText(/150 of 250 done/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/moved 250 duplicate files to trash/i)).toBeTruthy(), {
+      timeout: 5000,
+    });
     expect(screen.getByText(/250\.0 MB reclaimed/i)).toBeTruthy();
-    expect(calls.mock.calls.filter(([, method]) => method === 'POST')).toHaveLength(2);
+    expect(postsTo(calls, '/duplicates/drain').length).toBeGreaterThanOrEqual(2);
     // Nothing left over, so no "run it again" nag.
     expect(screen.queryByText(/still to go/i)).toBeNull();
   });
 
-  it('stops instead of looping when a round trashes nothing', async () => {
-    // Every file is failing to trash: `remaining` never falls, so following it
-    // blindly would retry the same doomed files forever.
-    const calls = mockApi({
-      scans: [SCAN],
-      remove: { ...REMOVED, removed: 0, failed: 5, remaining: 5, bytesReclaimed: 0, reindexRecommended: false },
+  it('surfaces files that could not be trashed', async () => {
+    mockApi({
+      scans: [SCAN, SCAN],
+      queued: { ...QUEUED, total: 5 },
+      statuses: [batch({ status: 'done', total: 5, removed: 0, failed: 5, bytesReclaimed: 0 })],
     });
     vi.stubGlobal('confirm', vi.fn(() => true));
     renderPage();
@@ -193,8 +219,39 @@ describe('<AdminDuplicates />', () => {
     fireEvent.click(await screen.findByRole('button', { name: /move duplicates to trash/i }));
 
     await waitFor(() => expect(screen.getByText(/5 files could not be trashed/i)).toBeTruthy());
-    expect(calls.mock.calls.filter(([, method]) => method === 'POST')).toHaveLength(1);
-    expect(screen.getByText(/5 still to go/i)).toBeTruthy();
+  });
+
+  it('nags to run again when the scan found more than one batch holds', async () => {
+    mockApi({
+      scans: [SCAN, SCAN],
+      queued: { ...QUEUED, total: 1500, notEnqueued: 100 },
+      statuses: [batch({ status: 'done', total: 1500, removed: 1500, notEnqueued: 100 })],
+    });
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    renderPage();
+    await scanEvent();
+
+    fireEvent.click(await screen.findByRole('button', { name: /move duplicates to trash/i }));
+
+    await waitFor(() => expect(screen.getByText(/100 still to go/i)).toBeTruthy());
+  });
+
+  it('does not claim a removal when the server had nothing to queue', async () => {
+    const calls = mockApi({
+      scans: [SCAN, EMPTY_SCAN],
+      queued: { ok: true, mode: 'none', batchId: null, total: 0, notEnqueued: 0, message: 'nothing to do' },
+      queuedStatus: 200,
+    });
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    renderPage();
+    await scanEvent();
+
+    fireEvent.click(await screen.findByRole('button', { name: /move duplicates to trash/i }));
+
+    await waitFor(() => expect(screen.getByText(/no byte-identical duplicates/i)).toBeTruthy());
+    expect(screen.queryByText(/moved \d+ duplicate/i)).toBeNull();
+    // No batch to drive, so no drain ticks were fired.
+    expect(postsTo(calls, '/duplicates/drain')).toHaveLength(0);
   });
 
   it('says so plainly when there are no duplicates', async () => {

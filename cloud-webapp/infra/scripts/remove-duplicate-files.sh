@@ -9,8 +9,9 @@
 # them, so they keep paying Drive storage and keep turning one filename into a
 # dozen hits in Drive search. This drives the api's duplicate tool:
 #
-#   GET  /api/admin/duplicates/<event>         — scan live Drive
-#   POST /api/admin/duplicates/<event>/remove  — trash the redundant copies
+#   GET  /api/admin/duplicates/<event>         — scan live Drive (read-only)
+#   POST /api/admin/duplicates/<event>/remove  — dry run, or QUEUE the removal
+#   POST /api/admin/duplicates/drain           — do one bounded slice of the work
 #
 # What survives: the first copy in path order — the same one the indexer keeps
 # when it collapses photos by md5 — so removal never trashes the file the current
@@ -36,12 +37,17 @@
 # service. If that token lives in Secret Manager, pass it directly:
 #   SYNC_TOKEN=... ./infra/scripts/remove-duplicate-files.sh --apply ev123
 #
-# Tunables (env): PROJECT, REGION, API_BASE, API_SERVICE, BATCH_LIMIT, MAX_ROUNDS.
+# Tunables (env): PROJECT, REGION, API_BASE, API_SERVICE, BATCH_LIMIT, MAX_TICKS.
 #
-# Each POST is bounded server-side (a file cap plus a wall-clock budget covering
-# the whole call — Drive scan included) so it fits the 60s Firebase Hosting
-# ceiling; this script just calls again while the response still reports files
-# remaining.
+# WHY --apply IS TWO STEPS: removing an event's duplicates is minutes of
+# rate-paced Drive work (~3.5 paced Drive calls per file once its managed
+# shortcuts are retired), and no single request can do it — Firebase Hosting caps
+# at 60s and Cloud Run is deployed with --timeout=60. An earlier version tried to
+# do it inline and died at 59.99s with a 502/504 on EVERY call: files really were
+# being trashed, but the caller never got a response. So --apply now QUEUES the
+# work and this script drives bounded drain ticks until the batch reports done.
+# If the script is interrupted, the `findme-duplicates-drain` Cloud Scheduler job
+# finishes the batch on its own.
 
 set -euo pipefail
 
@@ -50,14 +56,14 @@ REGION="${REGION:-us-central1}"
 API_BASE="${API_BASE:-https://mmr-data-pipeline.web.app}"
 API_SERVICE="${API_SERVICE:-event-photo-api}"
 BATCH_LIMIT="${BATCH_LIMIT:-150}"
-MAX_ROUNDS="${MAX_ROUNDS:-200}"
+MAX_TICKS="${MAX_TICKS:-400}"
 
 APPLY=0
 EVENTS=()
 for arg in "$@"; do
   case "$arg" in
     --apply) APPLY=1 ;;
-    -h|--help) sed -n '2,44p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
     -*) echo "ERROR: unknown flag '$arg'" >&2; exit 1 ;;
     *) EVENTS+=("$arg") ;;
   esac
@@ -140,9 +146,11 @@ fi
 field() {
   python3 -c 'import sys, json
 try:
-    print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
+    v = json.load(open(sys.argv[1])).get(sys.argv[2], "")
 except Exception:
-    print("")' "$RESP_FILE" "$1" 2>/dev/null || true
+    v = ""
+# Booleans print as 1/0 so the shell can test them without parsing "True".
+print(1 if v is True else 0 if v is False else v)' "$RESP_FILE" "$1" 2>/dev/null || true
 }
 
 post_remove() {
@@ -152,6 +160,16 @@ post_remove() {
     -H "X-Sync-Token: $SYNC_TOKEN" \
     -H "Content-Type: application/json" \
     -d "$body" || echo "000"
+}
+
+# One bounded slice of queued removal work. The drain always takes the OLDEST
+# running batch, so with one event queued at a time this drains that event.
+post_drain() {
+  curl -sS -o "$RESP_FILE" -w '%{http_code}' \
+    -X POST "$API_BASE/api/admin/duplicates/drain" \
+    -H "X-Sync-Token: $SYNC_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{}' || echo "000"
 }
 
 total_removed=0
@@ -165,45 +183,21 @@ for id in "${EVENTS[@]}"; do
   echo
   echo "[$n/${#EVENTS[@]}] $id"
 
-  round=0
-  while (( round < MAX_ROUNDS )); do
-    round=$(( round + 1 ))
-    if [[ "$APPLY" == "1" ]]; then
-      code="$(post_remove "$id" "{\"apply\":true,\"limit\":${BATCH_LIMIT}}")"
-    else
-      code="$(post_remove "$id" "{\"limit\":${BATCH_LIMIT}}")"
-    fi
-
+  if [[ "$APPLY" != "1" ]]; then
+    code="$(post_remove "$id" "{\"limit\":${BATCH_LIMIT}}")"
     if [[ "$code" != "200" ]]; then
       echo "  HTTP $code — $(field message)"
       events_with_errors=$(( events_with_errors + 1 ))
-      break
+      continue
     fi
-
     candidates="$(field candidates)"
-    removed="$(field removed)"
-    failed="$(field failed)"
-    remaining="$(field remaining)"
-
-    if [[ "$APPLY" == "1" ]]; then
-      echo "  round $round: removed ${removed:-0}, failed ${failed:-0}, remaining ${remaining:-0} (of ${candidates:-0})"
-      total_removed=$(( total_removed + ${removed:-0} ))
-      total_failed=$(( total_failed + ${failed:-0} ))
-      # No forward progress means every attempt in this round failed; stop
-      # instead of looping on the same files forever.
-      if [[ "${removed:-0}" == "0" ]]; then
-        [[ "${remaining:-0}" != "0" ]] && echo "  no progress this round — stopping this event"
-        break
-      fi
-      [[ "${remaining:-0}" == "0" ]] && break
-    else
-      planned="$(python3 -c 'import sys, json
+    planned="$(python3 -c 'import sys, json
 try:
     print(len(json.load(open(sys.argv[1])).get("planned", [])))
 except Exception:
     print(0)' "$RESP_FILE" 2>/dev/null || echo 0)"
-      echo "  would trash ${planned} of ${candidates:-0} duplicate file(s)"
-      python3 -c 'import sys, json
+    echo "  would trash ${planned} of ${candidates:-0} duplicate file(s)"
+    python3 -c 'import sys, json
 try:
     rows = json.load(open(sys.argv[1])).get("planned", [])
 except Exception:
@@ -212,10 +206,74 @@ for r in rows[:20]:
     print("    - " + r.get("relPath", r.get("driveFileId", "?")))
 if len(rows) > 20:
     print(f"    … and {len(rows) - 20} more")' "$RESP_FILE" 2>/dev/null || true
-      total_planned=$(( total_planned + ${planned:-0} ))
+    total_planned=$(( total_planned + ${planned:-0} ))
+    continue
+  fi
+
+  # Step 1: queue the event's duplicates. Answers 202 with a batch id; nothing is
+  # trashed yet. A 200 means there was simply nothing to do.
+  code="$(post_remove "$id" '{"apply":true}')"
+  if [[ "$code" != "202" && "$code" != "200" ]]; then
+    echo "  HTTP $code — $(field message)"
+    events_with_errors=$(( events_with_errors + 1 ))
+    continue
+  fi
+  queued="$(field total)"
+  batch_id="$(field batchId)"
+  over="$(field notEnqueued)"
+  if [[ -z "$batch_id" || "$batch_id" == "None" || "${queued:-0}" == "0" ]]; then
+    echo "  nothing to remove"
+    continue
+  fi
+  echo "  queued ${queued} duplicate file(s) (batch $batch_id)"
+  [[ "${over:-0}" != "0" ]] && echo "  note: ${over} beyond this batch — re-run after it finishes"
+
+  # Step 2: drive drain ticks until the batch reports done. Each tick is bounded
+  # server-side so it always answers well inside the 60s request ceiling.
+  tick=0
+  ev_removed=0
+  while (( tick < MAX_TICKS )); do
+    tick=$(( tick + 1 ))
+    code="$(post_drain)"
+    if [[ "$code" != "200" ]]; then
+      # A tick that fails leaves its lease to expire; the next one resumes.
+      echo "  tick $tick: HTTP $code — $(field message)"
+      events_with_errors=$(( events_with_errors + 1 ))
+      break
+    fi
+
+    drained="$(field drained)"
+    busy="$(field busy)"
+    processed="$(field processed)"
+    failed="$(field failed)"
+    remaining="$(field remaining)"
+    finished="$(field finished)"
+
+    if [[ "${drained:-0}" == "0" ]]; then
+      echo "  tick $tick: queue empty"
+      break
+    fi
+    if [[ "${busy:-0}" == "1" ]]; then
+      # Another drain (the scheduler, or the admin UI) holds the batch. Wait it out.
+      echo "  tick $tick: another drain holds the batch — waiting"
+      sleep 5
+      continue
+    fi
+
+    ev_removed=$(( ev_removed + ${processed:-0} ))
+    total_removed=$(( total_removed + ${processed:-0} ))
+    total_failed=$(( total_failed + ${failed:-0} ))
+    echo "  tick $tick: removed ${processed:-0}, failed ${failed:-0}, remaining ${remaining:-0}"
+
+    [[ "${finished:-0}" == "1" ]] && break
+    # No forward progress and nothing left to sweep means every remaining file is
+    # failing; stop instead of looping on the same files forever.
+    if [[ "${processed:-0}" == "0" && "${failed:-0}" != "0" ]]; then
+      echo "  no progress this tick — stopping this event"
       break
     fi
   done
+  echo "  event total: ${ev_removed} file(s) trashed"
 done
 
 echo

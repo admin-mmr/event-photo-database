@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   DuplicateFile,
   DuplicateScanResponse,
   EventSummary,
   ListEventsResponse,
-  RemoveDuplicatesResponse,
 } from '@cloud-webapp/shared';
 import { apiGet, apiPost, ApiError } from '../lib/api.js';
 import { eventLabel } from '../lib/eventLabel.js';
@@ -37,6 +36,10 @@ const STR = {
     removed: (n: number, size: string) =>
       `Moved ${n} duplicate file${n === 1 ? '' : 's'} to trash — ${size} reclaimed.`,
     working: (done: number, total: number) => `Moving files to trash — ${done} of ${total} done…`,
+    queueing: 'Queuing the cleanup…',
+    sweeping: 'Tidying up the managed folders…',
+    keepOpen:
+      'This runs in the background — keep the page open and it goes faster. If you navigate away, a scheduled job finishes the rest on its own.',
     partial: (n: number) => `${n} still to go — run it again to continue.`,
     failedSome: (n: number) => `${n} file${n === 1 ? '' : 's'} could not be trashed.`,
     reindexNote:
@@ -72,6 +75,9 @@ const STR = {
       `确定将 ${n} 个重复文件移入 Drive 回收站吗？每组保留的那份不受影响，已移入回收站的文件可在“已删除文件”页面恢复。`,
     removed: (n: number, size: string) => `已将 ${n} 个重复文件移入回收站——释放 ${size}。`,
     working: (done: number, total: number) => `正在移入回收站——已完成 ${done} / ${total}…`,
+    queueing: '正在加入清理队列…',
+    sweeping: '正在整理托管文件夹…',
+    keepOpen: '清理在后台进行——保持此页面打开会更快。若离开页面，计划任务会自动完成剩余部分。',
     partial: (n: number) => `仍有 ${n} 个待处理——再次运行即可继续。`,
     failedSome: (n: number) => `${n} 个文件无法移入回收站。`,
     reindexNote: '在重新索引该活动之前，搜索索引仍会包含已删除的副本（活动 → 建立索引）。',
@@ -97,20 +103,37 @@ function fmtBytes(bytes: number): string {
 const MAX_GROUPS_SHOWN = 25;
 
 /**
- * Safety stop for the removal loop below. Each round trashes a server-bounded
- * batch, so this is far more rounds than any real event needs — it exists only
- * so a server that kept reporting `remaining` could never spin forever.
+ * Safety stop for the drain loop below. Each tick removes a server-bounded slice,
+ * so this is far more ticks than any real event needs — it exists only so a
+ * server that never reported `done` could not spin forever.
  */
-const MAX_REMOVE_ROUNDS = 60;
+const MAX_DRAIN_TICKS = 400;
 
-/** Running totals across the rounds of one "Move duplicates to trash" press. */
-interface RemovalTotals {
+/** Pause between drain ticks, so a finished batch is noticed promptly without
+ *  hammering the endpoint when there is nothing left to do. */
+const TICK_PAUSE_MS = 1200;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Server-side progress of one queued removal (GET …/duplicates/batch/status).
+ * Mirrors the batch doc minus its work list, which is far too big to ship.
+ */
+interface RemovalBatch {
+  id: string;
+  eventId: string;
+  status: 'running' | 'done';
+  total: number;
   removed: number;
   failed: number;
+  /** Files still queued to trash. */
   remaining: number;
+  /** Trashed files whose managed shortcuts are not retired yet. */
+  sweepPending: number;
   bytesReclaimed: number;
+  /** Duplicates found beyond the batch cap — a second run clears them. */
+  notEnqueued: number;
   warnings: string[];
-  reindexRecommended: boolean;
 }
 
 function fileLine(f: DuplicateFile): string {
@@ -120,11 +143,16 @@ function fileLine(f: DuplicateFile): string {
 /**
  * Duplicate-file removal tool. Scans an event's live Drive tree for
  * byte-identical copies (GET /api/admin/duplicates/:eventId), previews them, and
- * trashes the redundant ones through the soft-delete lifecycle
- * (POST …/remove with apply:true) so every removal is restorable.
+ * trashes the redundant ones through the soft-delete lifecycle so every removal
+ * is restorable.
  *
- * Server-side the removal is capped per call and reports what is left, so the
- * button is pressed again for a big event rather than the request timing out.
+ * Removal is ASYNC: `POST …/remove {apply:true}` queues a batch and answers 202,
+ * then this page drives bounded drain ticks and polls progress. It cannot be one
+ * request — an event's duplicates are minutes of rate-paced Drive work, so the
+ * old inline call died at the 60s ceiling (HTTP 502) on every press while files
+ * were being trashed unseen. Closing the page is safe: a Cloud Scheduler drain
+ * finishes the batch.
+ *
  * Club-scoped server-side: a club_admin only ever sees their own club's files.
  */
 export function AdminDuplicates(): JSX.Element {
@@ -132,11 +160,14 @@ export function AdminDuplicates(): JSX.Element {
   const [events, setEvents] = useState<EventSummary[] | null>(null);
   const [eventId, setEventId] = useState('');
   const [scan, setScan] = useState<DuplicateScanResponse | null>(null);
-  const [result, setResult] = useState<RemovalTotals | null>(null);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [batch, setBatch] = useState<RemovalBatch | null>(null);
   const [busy, setBusy] = useState<'scan' | 'remove' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
+  // Bumped on unmount / new run so an in-flight drive loop knows to stop.
+  const runToken = useRef(0);
+
+  useEffect(() => () => void (runToken.current += 1), []);
 
   useEffect(() => {
     apiGet<ListEventsResponse>('/api/events')
@@ -147,9 +178,9 @@ export function AdminDuplicates(): JSX.Element {
       });
   }, []);
 
-  // NB: deliberately does not clear `result` — the re-scan that follows a
-  // removal must not wipe the "moved N files to trash" summary the admin just
-  // earned. Callers clear it when they mean to (event change, manual re-scan).
+  // NB: deliberately does not clear `batch` — the re-scan that follows a removal
+  // must not wipe the "moved N files to trash" summary the admin just earned.
+  // Callers clear it when they mean to (event change, manual re-scan).
   const runScan = useCallback(async (id: string) => {
     setBusy('scan');
     setError(null);
@@ -166,57 +197,80 @@ export function AdminDuplicates(): JSX.Element {
   }, [t.scanFailed]);
 
   /**
-   * Trash every duplicate in the event, one press.
+   * Drive a queued batch to completion: trigger a drain tick, read progress,
+   * repeat until the server says done.
    *
-   * The server trashes a bounded batch per call — it has to, since the whole
-   * request must fit Firebase Hosting's 60s ceiling — and reports what is left
-   * in `remaining`. So keep calling while it makes progress instead of asking
-   * the admin to press the button once per batch (an event with a few hundred
-   * duplicates needs several rounds). A round that removes nothing means every
-   * remaining file is failing, so stop rather than retry the same files forever.
+   * Drain errors are swallowed — a tick that dies leaves its lease to expire and
+   * the next tick (or the Cloud Scheduler backstop) resumes, so giving up on the
+   * whole run because one call hiccuped would be wrong.
+   */
+  const driveBatch = useCallback(async (batchId: string, token: number): Promise<void> => {
+    const statusUrl = `/api/admin/duplicates/batch/status?batchId=${encodeURIComponent(batchId)}`;
+    for (let tick = 0; tick < MAX_DRAIN_TICKS; tick += 1) {
+      if (runToken.current !== token) return;
+      try {
+        await apiPost('/api/admin/duplicates/drain', {});
+      } catch {
+        /* transient — the next tick (or the scheduler) picks it up */
+      }
+      if (runToken.current !== token) return;
+      try {
+        const r = await apiGet<{ ok: true; batch: RemovalBatch | null }>(statusUrl);
+        if (r.batch) setBatch(r.batch);
+        if (r.batch?.status === 'done') return;
+      } catch {
+        /* transient — keep going */
+      }
+      await sleep(TICK_PAUSE_MS);
+    }
+  }, []);
+
+  /**
+   * Queue the event's duplicates for removal, then drive the drain to the end.
+   * One press does the whole event; the admin just watches the progress line.
    */
   async function remove(): Promise<void> {
     if (!scan || scan.duplicateFiles === 0) return;
     if (!window.confirm(t.confirm(scan.duplicateFiles))) return;
     const eventId = scan.eventId;
-    const totals: RemovalTotals = {
-      removed: 0,
-      failed: 0,
-      remaining: 0,
-      bytesReclaimed: 0,
-      warnings: [],
-      reindexRecommended: false,
-    };
+    const token = (runToken.current += 1);
     setBusy('remove');
     setError(null);
-    setResult(null);
-    setProgress({ done: 0, total: scan.duplicateFiles });
+    setBatch(null);
     try {
-      for (let round = 0; round < MAX_REMOVE_ROUNDS; round += 1) {
-        const r = await apiPost<RemoveDuplicatesResponse>(
-          `/api/admin/duplicates/${encodeURIComponent(eventId)}/remove`,
-          { apply: true },
-        );
-        totals.removed += r.removed;
-        totals.failed += r.failed;
-        totals.bytesReclaimed += r.bytesReclaimed;
-        totals.remaining = r.remaining;
-        totals.reindexRecommended = totals.reindexRecommended || r.reindexRecommended;
-        for (const w of r.warnings) if (!totals.warnings.includes(w)) totals.warnings.push(w);
-        setProgress({ done: totals.removed, total: totals.removed + r.remaining });
-        if (r.remaining === 0 || r.removed === 0) break;
+      const queued = await apiPost<{
+        ok: true;
+        mode: 'async' | 'none';
+        batchId: string | null;
+        total: number;
+        notEnqueued: number;
+      }>(`/api/admin/duplicates/${encodeURIComponent(eventId)}/remove`, { apply: true });
+
+      if (queued.mode === 'async' && queued.batchId) {
+        setBatch({
+          id: queued.batchId,
+          eventId,
+          status: 'running',
+          total: queued.total,
+          removed: 0,
+          failed: 0,
+          remaining: queued.total,
+          sweepPending: 0,
+          bytesReclaimed: 0,
+          notEnqueued: queued.notEnqueued,
+          warnings: [],
+        });
+        await driveBatch(queued.batchId, token);
       }
-      setResult({ ...totals, warnings: [...totals.warnings] });
+      if (runToken.current !== token) return;
       // Re-scan so the table reflects Drive as it is now.
       await runScan(eventId);
     } catch (e) {
-      // Whatever earlier rounds trashed is real — show it alongside the error
-      // rather than losing it.
-      if (totals.removed > 0) setResult({ ...totals, warnings: [...totals.warnings] });
+      // Whatever the batch already trashed is real and still on screen — show the
+      // error alongside it rather than replacing it.
       setError(e instanceof Error ? e.message : t.removeFailed);
     } finally {
-      setProgress(null);
-      setBusy(null);
+      if (runToken.current === token) setBusy(null);
     }
   }
 
@@ -249,7 +303,7 @@ export function AdminDuplicates(): JSX.Element {
             onChange={(e) => {
               setEventId(e.target.value);
               setScan(null);
-              setResult(null);
+              setBatch(null);
               setError(null);
             }}
           >
@@ -265,7 +319,7 @@ export function AdminDuplicates(): JSX.Element {
           className="btn btn-light btn-sm"
           disabled={!eventId || busy !== null}
           onClick={() => {
-            setResult(null);
+            setBatch(null);
             void runScan(eventId);
           }}
         >
@@ -275,19 +329,30 @@ export function AdminDuplicates(): JSX.Element {
 
       {error && <p className="error-text">{error}</p>}
 
-      {progress && (
+      {busy === 'remove' && !batch && (
         <p className="muted" role="status" aria-live="polite">
-          {t.working(progress.done, progress.total)}
+          {t.queueing}
         </p>
       )}
 
-      {result && (
+      {batch && (
         <div className="rebuild-progress" role="status" aria-live="polite">
-          <p>{t.removed(result.removed, fmtBytes(result.bytesReclaimed))}</p>
-          {result.remaining > 0 && <p>{t.partial(result.remaining)}</p>}
-          {result.failed > 0 && <p className="error-text">{t.failedSome(result.failed)}</p>}
-          {result.reindexRecommended && <p className="muted">{t.reindexNote}</p>}
-          {result.warnings.map((w) => (
+          {batch.status === 'running' ? (
+            <>
+              <p>
+                {batch.remaining === 0 && batch.sweepPending > 0
+                  ? t.sweeping
+                  : t.working(batch.removed, batch.total)}
+              </p>
+              <p className="muted">{t.keepOpen}</p>
+            </>
+          ) : (
+            <p>{t.removed(batch.removed, fmtBytes(batch.bytesReclaimed))}</p>
+          )}
+          {batch.notEnqueued > 0 && <p>{t.partial(batch.notEnqueued)}</p>}
+          {batch.failed > 0 && <p className="error-text">{t.failedSome(batch.failed)}</p>}
+          {batch.status === 'done' && batch.removed > 0 && <p className="muted">{t.reindexNote}</p>}
+          {batch.warnings.map((w) => (
             <p key={w} className="muted">
               {w}
             </p>

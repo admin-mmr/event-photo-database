@@ -1,5 +1,7 @@
 /**
- * duplicateFilesService — grouping rules and the trash+ledger removal pass.
+ * duplicateFilesService — grouping rules, the dry-run preview and the one-chunk
+ * trash+ledger primitive. The loop that drives chunks to completion is tested in
+ * duplicateRemovalQueue.test.ts.
  *
  * The contract that matters most: the surviving copy is the FIRST in relPath
  * order, byte-for-byte the rule indexer/job.py uses when it collapses photos by
@@ -55,7 +57,9 @@ vi.mock('../src/lib/firestore.js', () => ({
 
 const {
   scanEventDuplicates,
-  removeEventDuplicates,
+  previewEventDuplicates,
+  planDuplicateRemoval,
+  trashDuplicateChunk,
   groupByContentHash,
   pathContext,
 } = await import('../src/services/duplicateFilesService.js');
@@ -190,37 +194,92 @@ describe('scanEventDuplicates', () => {
   });
 });
 
-describe('removeEventDuplicates', () => {
+describe('previewEventDuplicates (dry run)', () => {
   const threeDupes = [
     file('keep', 'Club/t/b/1.jpg', 'dup', '400'),
     file('dup1', 'Club/t/b/2.jpg', 'dup', '400'),
     file('dup2', 'Club/t/b/3.jpg', 'dup', '400'),
   ];
 
-  it('writes NOTHING on a dry run', async () => {
+  it('writes NOTHING and lists what a run would trash', async () => {
     walkMediaFiles.mockResolvedValue(threeDupes);
-    const out = await removeEventDuplicates('ev1', { actorEmail: 'a@x.org' });
+    const out = await previewEventDuplicates('ev1', {});
     expect(out.data!.apply).toBe(false);
     expect(out.data!.candidates).toBe(2);
-    expect(out.data!.planned.map((p) => p.driveFileId)).toEqual(['dup1', 'dup2']);
+    expect(out.data!.planned.map((p: { driveFileId: string }) => p.driveFileId)).toEqual(['dup1', 'dup2']);
     expect(out.data!.removed).toBe(0);
     expect(trashDriveFile).not.toHaveBeenCalled();
     expect(recordSoftDeletes).not.toHaveBeenCalled();
   });
 
-  it('trashes every duplicate but never the canonical', async () => {
+  it('honours the limit and reports what is left over', async () => {
     walkMediaFiles.mockResolvedValue(threeDupes);
-    const out = await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
-    expect(out.data!.removed).toBe(2);
-    expect(out.data!.bytesReclaimed).toBe(800);
+    const out = await previewEventDuplicates('ev1', { limit: 1 });
+    expect(out.data!.planned).toHaveLength(1);
+    expect(out.data!.remaining).toBe(1);
+  });
+
+  it('restricts the preview to the requested hashes', async () => {
+    walkMediaFiles.mockResolvedValue([
+      ...threeDupes,
+      file('otherKeep', 'Club/t/b/4.jpg', 'other'),
+      file('otherDup', 'Club/t/b/5.jpg', 'other'),
+    ]);
+    const out = await previewEventDuplicates('ev1', { hashes: ['OTHER'] });
+    expect(out.data!.candidates).toBe(1);
+    expect(out.data!.planned.map((p: { driveFileId: string }) => p.driveFileId)).toEqual(['otherDup']);
+  });
+
+  it('confines a club_admin to their own club', async () => {
+    walkMediaFiles.mockResolvedValue([
+      file('mine1', 'Blue/t/b/1.jpg', 'dup'),
+      file('mine2', 'Blue/t/b/2.jpg', 'dup'),
+      file('theirs1', 'Red/t/b/1.jpg', 'dup'),
+      file('theirs2', 'Red/t/b/2.jpg', 'dup'),
+    ]);
+    const out = await previewEventDuplicates('ev1', { clubScope: 'Blue' });
+    expect(out.data!.planned.map((p: { driveFileId: string }) => p.driveFileId)).toEqual(['mine2']);
+  });
+});
+
+describe('planDuplicateRemoval', () => {
+  it('flattens groups into duplicates only, never the canonical', () => {
+    const { groups } = groupByContentHash([
+      file('keep', 'Club/t/b/1.jpg', 'dup'),
+      file('dup1', 'Club/t/b/2.jpg', 'dup'),
+      file('dup2', 'Club/t/b/3.jpg', 'dup'),
+    ]);
+    const work = planDuplicateRemoval(groups);
+    expect(work.map((w) => w.dup.driveFileId)).toEqual(['dup1', 'dup2']);
+    expect(work.every((w) => w.keptRelPath === 'Club/t/b/1.jpg')).toBe(true);
+  });
+});
+
+describe('trashDuplicateChunk', () => {
+  const chunkOpts = { eventId: 'ev1', actorEmail: 'a@x.org', spreadsheetId: 'sheet1', token: 'tok' };
+
+  /** The two removable copies of one md5 group, as the queue would hand them over. */
+  async function work() {
+    walkMediaFiles.mockResolvedValue([
+      file('keep', 'Club/t/b/1.jpg', 'dup', '400'),
+      file('dup1', 'Club/t/b/2.jpg', 'dup', '400'),
+      file('dup2', 'Club/t/b/3.jpg', 'dup', '400'),
+    ]);
+    const scan = await scanEventDuplicates('ev1');
+    return planDuplicateRemoval(scan.data!.groups);
+  }
+
+  it('trashes every duplicate and never the canonical', async () => {
+    const out = await trashDuplicateChunk(await work(), chunkOpts);
+    expect(out.removed).toBe(2);
+    expect(out.bytesReclaimed).toBe(800);
     const trashed = trashDriveFile.mock.calls.map((c) => c[0]);
     expect(trashed).toEqual(['dup1', 'dup2']);
     expect(trashed).not.toContain('keep');
   });
 
   it('ledgers each removal with the club, batch and the copy that was kept', async () => {
-    walkMediaFiles.mockResolvedValue(threeDupes);
-    await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
+    await trashDuplicateChunk(await work(), chunkOpts);
     const [sheetId, , actorEmail] = recordSoftDeletes.mock.calls[0]! as [string, unknown, string];
     expect(sheetId).toBe('sheet1');
     expect(actorEmail).toBe('a@x.org');
@@ -235,134 +294,37 @@ describe('removeEventDuplicates', () => {
     expect(rec.reason).toContain('Club/t/b/1.jpg');
   });
 
-  it('ledgers a whole batch in one Sheets append, not one call per file', async () => {
-    walkMediaFiles.mockResolvedValue(threeDupes);
-    await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
+  it('ledgers the whole chunk in one Sheets append, not one call per file', async () => {
+    await trashDuplicateChunk(await work(), chunkOpts);
     expect(recordSoftDeletes).toHaveBeenCalledTimes(1);
     expect(ledgered().map((l) => l.driveFileId)).toEqual(['dup1', 'dup2']);
   });
 
   it('does not ledger a file whose trash call failed', async () => {
-    walkMediaFiles.mockResolvedValue(threeDupes);
+    const items = await work();
     trashDriveFile.mockResolvedValueOnce({ ok: false, error: 'HTTP 403', status: 403 });
-    const out = await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
-    expect(out.data!.failed).toBe(1);
-    expect(out.data!.removed).toBe(1);
+    const out = await trashDuplicateChunk(items, chunkOpts);
+    expect(out.failed).toBe(1);
+    expect(out.removed).toBe(1);
     expect(ledgered().map((l) => l.driveFileId)).toEqual(['dup2']);
-    expect(out.data!.warnings[0]).toContain('Club/t/b/2.jpg');
+    expect(out.warnings[0]).toContain('Club/t/b/2.jpg');
   });
 
-  it('ledgers nothing at all when every trash in the batch failed', async () => {
-    walkMediaFiles.mockResolvedValue(threeDupes);
+  it('ledgers nothing at all when every trash in the chunk failed', async () => {
+    const items = await work();
     trashDriveFile.mockResolvedValue({ ok: false, error: 'HTTP 403', status: 403 });
-    const out = await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
-    expect(out.data!.removed).toBe(0);
-    expect(out.data!.failed).toBe(2);
+    const out = await trashDuplicateChunk(items, chunkOpts);
+    expect(out.removed).toBe(0);
+    expect(out.failed).toBe(2);
+    expect(out.trashedIds).toEqual([]);
     expect(recordSoftDeletes).not.toHaveBeenCalled();
   });
 
   it('still counts a removal (and warns) when the ledger write fails', async () => {
-    walkMediaFiles.mockResolvedValue(threeDupes);
+    const items = await work();
     recordSoftDeletes.mockRejectedValueOnce(new Error('sheet down'));
-    const out = await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
-    expect(out.data!.removed).toBe(2);
-    expect(out.data!.warnings.join(' ')).toContain('ledger write failed');
-  });
-
-  it('honours the limit and reports what is left for the next call', async () => {
-    walkMediaFiles.mockResolvedValue(threeDupes);
-    const out = await removeEventDuplicates('ev1', { apply: true, limit: 1, actorEmail: 'a@x.org' });
-    expect(out.data!.removed).toBe(1);
-    expect(out.data!.remaining).toBe(1);
-    expect(trashDriveFile).toHaveBeenCalledTimes(1);
-  });
-
-  it('restricts the run to the requested hashes', async () => {
-    walkMediaFiles.mockResolvedValue([
-      ...threeDupes,
-      file('otherKeep', 'Club/t/b/4.jpg', 'other'),
-      file('otherDup', 'Club/t/b/5.jpg', 'other'),
-    ]);
-    const out = await removeEventDuplicates('ev1', { apply: true, hashes: ['OTHER'], actorEmail: 'a@x.org' });
-    expect(out.data!.candidates).toBe(1);
-    expect(trashDriveFile.mock.calls.map((c) => c[0])).toEqual(['otherDup']);
-  });
-
-  it('sweeps managed shortcuts for the trashed originals and refreshes the index', async () => {
-    walkMediaFiles.mockResolvedValue(threeDupes);
-    await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
-    // Scoped to this event: another event's managed folders cannot point at
-    // these files, and sweeping them all costs Drive calls per folder.
-    expect(removeShortcutsForTargets).toHaveBeenCalledWith(['dup1', 'dup2'], { eventId: 'ev1' });
-    expect(tryRebuildPublicFolderIndex).toHaveBeenCalledTimes(1);
-  });
-
-  it('skips the sweep entirely when nothing was trashed', async () => {
-    walkMediaFiles.mockResolvedValue([file('only', 'Club/t/b/1.jpg', 'h')]);
-    const out = await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
-    expect(out.data!.removed).toBe(0);
-    expect(removeShortcutsForTargets).not.toHaveBeenCalled();
-    expect(tryRebuildPublicFolderIndex).not.toHaveBeenCalled();
-  });
-
-  // The 502 this tool shipped with: the wall-clock budget clocked only the
-  // trashing loop, so a real event spent ~15s scanning Drive, then a full 40s
-  // trashing, then swept — and Firebase Hosting killed the request at 60s. The
-  // caller got no result at all, so `remaining` never came back and every retry
-  // repeated the same doomed request.
-  describe('call budget', () => {
-    /** 40 duplicates: enough that the loop must stop on time, not on `limit`. */
-    const manyDupes = [
-      file('keep', 'Club/t/b/000.jpg', 'dup'),
-      ...Array.from({ length: 40 }, (_, i) => file(`dup${i}`, `Club/t/b/${String(i + 1).padStart(3, '0')}.jpg`, 'dup')),
-    ];
-
-    it('charges the Drive scan against the budget, not just the trashing loop', async () => {
-      // A scan slower than the whole budget must leave (almost) no trashing
-      // time — previously the loop started a fresh 40s of work regardless.
-      walkMediaFiles.mockImplementation(async () => {
-        await new Promise((r) => setTimeout(r, 60));
-        return manyDupes;
-      });
-      const out = await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org', budgetMs: 50 });
-      // One chunk still runs, so a caller looping on `remaining` makes progress.
-      expect(out.data!.removed).toBe(10);
-      expect(out.data!.remaining).toBe(30);
-    });
-
-    it('returns a usable partial result instead of running to the Hosting cap', async () => {
-      walkMediaFiles.mockResolvedValue(manyDupes);
-      trashDriveFile.mockImplementation(async () => {
-        await new Promise((r) => setTimeout(r, 15));
-        return { ok: true, status: 200 };
-      });
-      const started = Date.now();
-      const out = await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org', budgetMs: 60 });
-      expect(Date.now() - started).toBeLessThan(400);
-      expect(out.ok).toBe(true);
-      expect(out.data!.removed).toBeGreaterThan(0);
-      expect(out.data!.removed).toBeLessThan(40);
-      // Everything not done is reported back so the next call resumes.
-      expect(out.data!.removed + out.data!.remaining).toBe(40);
-      expect(out.message).toContain('run again to continue');
-    });
-
-    it('drains the whole event when the budget is ample', async () => {
-      walkMediaFiles.mockResolvedValue(manyDupes);
-      const out = await removeEventDuplicates('ev1', { apply: true, actorEmail: 'a@x.org' });
-      expect(out.data!.removed).toBe(40);
-      expect(out.data!.remaining).toBe(0);
-    });
-  });
-
-  it('only touches the scoped club when a club_admin applies', async () => {
-    walkMediaFiles.mockResolvedValue([
-      file('mine1', 'Blue/t/b/1.jpg', 'dup'),
-      file('mine2', 'Blue/t/b/2.jpg', 'dup'),
-      file('theirs1', 'Red/t/b/1.jpg', 'dup'),
-      file('theirs2', 'Red/t/b/2.jpg', 'dup'),
-    ]);
-    await removeEventDuplicates('ev1', { apply: true, clubScope: 'Blue', actorEmail: 'a@x.org' });
-    expect(trashDriveFile.mock.calls.map((c) => c[0])).toEqual(['mine2']);
+    const out = await trashDuplicateChunk(items, chunkOpts);
+    expect(out.removed).toBe(2);
+    expect(out.warnings.join(' ')).toContain('ledger write failed');
   });
 });
