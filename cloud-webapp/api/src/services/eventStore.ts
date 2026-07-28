@@ -4,12 +4,15 @@
  * are orchestrated by the adminEvents route (folder creation needs driveService;
  * the reconciler also keeps the Firestore `events` cache in sync). Column layout
  * mirrors gas-app COLUMNS.EVENTS.
+ *
+ * `deleteEventRow` is the one destructive write here — see its doc comment for
+ * why an event deletion has to start with the Sheet.
  */
 
 import { randomUUID } from 'node:crypto';
 
-import { appendSheetValues } from './sheetsService.js';
-import { cell, readTab, withTabLock } from './sheetTable.js';
+import { appendSheetValues, clearSheetValues, getSheetValues, updateSheetValues } from './sheetsService.js';
+import { cell, isHeaderRow, readTab, withTabLock } from './sheetTable.js';
 
 const TAB = 'Events';
 const LAST_COL = 'G';
@@ -57,20 +60,71 @@ export function folderNameFor(date: string, name: string): string {
   return `${date}_${normalized}`;
 }
 
+function rowToEvent(cells: string[]): EventRow {
+  return {
+    eventId: cell(cells, COL.EVENT_ID),
+    name: cell(cells, COL.EVENT_NAME),
+    date: cell(cells, COL.EVENT_DATE),
+    folderName: cell(cells, COL.FOLDER_NAME),
+    driveFolderId: cell(cells, COL.DRIVE_FOLDER_ID),
+    createdBy: cell(cells, COL.CREATED_BY),
+    createdAt: cell(cells, COL.CREATED_AT),
+  };
+}
+
 /** True if an event row already uses this folderName (dup guard). */
 export async function findByFolderName(spreadsheetId: string, folderName: string): Promise<EventRow | null> {
   const rows = await readTab(spreadsheetId, TAB, LAST_COL, COL.EVENT_ID, 'eventid');
   const hit = rows.find((r) => cell(r.cells, COL.FOLDER_NAME) === folderName);
-  if (!hit) return null;
-  return {
-    eventId: cell(hit.cells, COL.EVENT_ID),
-    name: cell(hit.cells, COL.EVENT_NAME),
-    date: cell(hit.cells, COL.EVENT_DATE),
-    folderName: cell(hit.cells, COL.FOLDER_NAME),
-    driveFolderId: cell(hit.cells, COL.DRIVE_FOLDER_ID),
-    createdBy: cell(hit.cells, COL.CREATED_BY),
-    createdAt: cell(hit.cells, COL.CREATED_AT),
-  };
+  return hit ? rowToEvent(hit.cells) : null;
+}
+
+/** The event's row in the Sheet (the SSOT record), or null. */
+export async function findById(spreadsheetId: string, eventId: string): Promise<EventRow | null> {
+  const rows = await readTab(spreadsheetId, TAB, LAST_COL, COL.EVENT_ID, 'eventid');
+  const hit = rows.find((r) => cell(r.cells, COL.EVENT_ID) === eventId);
+  return hit ? rowToEvent(hit.cells) : null;
+}
+
+/**
+ * Remove an event's row from the Events tab. Returns how many rows went (0 when
+ * the event wasn't there — deleting twice is a no-op, not an error).
+ *
+ * WHY THE SHEET GOES FIRST when deleting an event: the Sheet is SSOT and
+ * `reconcileService` is additive — it upserts every Sheet row into Firestore and
+ * only *reports* Firestore docs with no Sheet row (`orphans`), never deletes
+ * them. Drop the Firestore doc while the row survives and the next
+ * `findme-drive-sync` tick recreates the event.
+ *
+ * Deletion is a clear-then-rewrite of the data range under the tab lock (the
+ * same shape `deleteSpecialFolderRowsByFolderId` uses), so surviving rows keep
+ * their order and row numbers stay contiguous. The data range starts below the
+ * header when there is one — anchoring it at row 1 on a header-less tab would
+ * leave the first row uncleared and then duplicate it.
+ */
+export async function deleteEventRow(spreadsheetId: string, eventId: string): Promise<number> {
+  if (!eventId.trim()) throw new EventStoreError('invalid', 'eventId is required');
+  return withTabLock(TAB, async () => {
+    const values = await getSheetValues(spreadsheetId, `${TAB}!A1:${LAST_COL}`);
+    const headerRows = isHeaderRow(values[0], COL.EVENT_ID, 'eventid') ? 1 : 0;
+    const dataRows = values.slice(headerRows);
+    const survivors = dataRows.filter((cells) => cell(cells, COL.EVENT_ID) !== eventId);
+    const removed = dataRows.length - survivors.length;
+    if (removed === 0) return 0;
+
+    const firstDataRow = headerRows + 1;
+    await clearSheetValues(spreadsheetId, `${TAB}!A${firstDataRow}:${LAST_COL}`);
+    if (survivors.length > 0) {
+      const padded = survivors.map((cells) => {
+        const row = new Array<unknown>(WIDTH).fill('');
+        for (let i = 0; i < WIDTH; i++) row[i] = cells[i] ?? '';
+        return row;
+      });
+      const lastRow = firstDataRow + survivors.length - 1;
+      await updateSheetValues(spreadsheetId, `${TAB}!A${firstDataRow}:${LAST_COL}${lastRow}`, padded);
+    }
+    return removed;
+  });
 }
 
 /**

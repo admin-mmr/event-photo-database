@@ -190,6 +190,62 @@
 - After a removal run the index still lists the trashed copies until the event is
   re-indexed (`reindexRecommended: true` in the response says so).
 
+## Deleting an event (five stores, one order)
+
+- **An event lives in five places, and deleting it means touching all five in the
+  right order.** `api/src/services/eventDeletionService.ts` is the only thing that
+  should do it; there was no delete at all until it existed, so any older advice
+  to "just remove the row" is wrong.
+  1. **Upload links** (Sheet `Upload_Links`) → **REVOKED**, rows kept. A link that
+     outlives its event still accepts volunteer uploads, so revoking is FIRST.
+  2. **Drive folder** → **TRASHED** + a `Deleted_Files` row, reusing the G5.1
+     lifecycle. Never `files.delete` — the purge job owns permanent deletion, and
+     restoring that one folder brings the whole file tree back. The managed folders
+     (Photos_NNN / Videos / Album) live *inside* the event folder, so they go with
+     it; only their `Special_Folders` rows need clearing.
+  3. **Derivatives bucket** `<eventId>/` → deleted (regenerable by a re-index).
+  4. **Sheet `Events` row** → deleted. **This is not optional**: the Sheet is SSOT
+     and `reconcileService` is additive (Firestore docs with no Sheet row come back
+     as `orphans`, never deleted), so dropping the Firestore doc while the row
+     survives just means the next `findme-drive-sync` tick recreates the event.
+  5. **Firestore** → `events`, `photos`, `uploadLinks`, `upload_batches`,
+     `upload_dedup`, `match_runs`, `match_feedback`, `specialFolders`.
+- **The tool:** `GET /api/admin/events/:eventId/delete-preview` reports the
+  inventory; `POST /api/admin/events/:eventId/delete` is a dry run by default and,
+  with `apply: true`, does the work. Admin UI: the Delete column on
+  `/admin/events` (super_admins only) previews first and needs the event's name
+  typed in. Shell wrapper `./cloud-webapp/infra/scripts/delete-event.sh [--apply]
+  <event-id …>`.
+- Non-negotiables baked in — keep them if you touch it:
+  - **DRY RUN unless the body says `apply: true`**, and an apply must carry
+    `confirmName` matching the event's name (or its id). The route rejects a
+    mismatch with 400 `confirm_mismatch` before anything is touched.
+  - **`allowCronOrSuperAdmin`, not `allowCronOrAdmin`.** Deleting an event is
+    cross-club by nature (it holds every club's photos), so a club_admin must not
+    be able to do it. The machine token still passes, for the shell script.
+  - **STAGED UPLOADS ARE NEVER DELETED** — only counted and warned about. A staged
+    object can be the only copy of a photo that never reached Drive; deleting those
+    is what destroyed volunteer photos on 2026-07-27/28. The staging bucket's
+    lifecycle rule reclaims them and `recover-staged-uploads.sh` can still rescue
+    them in the meantime.
+  - **The slow step runs BEFORE the identity records.** The derivatives sweep is
+    the only unbounded work (a 1,600-photo event is ~5,000 objects, well past the
+    60s Hosting ceiling), so it is deadline-bounded and, when it runs out of
+    budget, the delete STOPS with `derivativesRemaining: true` and leaves the Sheet
+    row + Firestore docs in place. Re-running the same call finishes the job. Do
+    not "optimise" this by deleting the row first: the leftover objects would then
+    have no owner and nothing would ever sweep them.
+  - **A Firestore-only orphan is still deletable.** `resolveEvent` merges the Sheet
+    row and the cache doc (Sheet wins per field), so a half-deleted event or one
+    the reconciler reported as an orphan can be cleaned up.
+  - **Every step is idempotent**, and a failing step degrades to a warning in a
+    200 response rather than aborting the rest — an already-trashed Drive folder is
+    skipped, a missing row deletes 0 rows.
+  - `deleteEventRow` deletes by **clear-then-rewrite of the data range** (same
+    shape as `deleteSpecialFolderRowsByFolderId`) and anchors below the header —
+    on a header-less tab it anchors at row 1, or the first row would be left
+    uncleared and then duplicated.
+
 ## Recovering volunteer uploads stranded in staging
 
 - **"Photo missing from the gallery" is usually NOT a lost upload.** The path is

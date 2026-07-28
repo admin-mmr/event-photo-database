@@ -1,29 +1,43 @@
 /**
- * adminEvents.ts — create an event from cloud-webapp (dev plan G3.1).
+ * adminEvents.ts — create and delete events from cloud-webapp (dev plan G3.1).
  *
- * Flow: provision the layer-1 Drive folder (driveService, DWD write scope) →
- * append the Events row (Sheet SSOT, eventStore) → upsert the Firestore `events`
+ * Create flow: provision the layer-1 Drive folder (driveService, DWD write scope)
+ * → append the Events row (Sheet SSOT, eventStore) → upsert the Firestore `events`
  * cache so the gallery sees it immediately → kick the indexer (best-effort).
  * Audited (EVENT_CREATED). Listing/reading events stays in routes/events.ts.
  *
+ * Delete flow: `GET …/delete-preview` (inventory) and `POST …/delete` (dry run
+ * unless `apply: true`), both super-admin-only — see eventDeletionService.ts for
+ * what happens to each of the five stores an event lives in. Audited
+ * (EVENT_DELETED).
+ *
  * RBAC: any admin may create an event (a club_admin needs one before generating
- * their club's upload links). The Sheet is SSOT; the reconciler keeps the cache
- * in sync on its normal schedule regardless of the direct upsert here.
+ * their club's upload links). DELETING is super_admin only: it is cross-club by
+ * nature (an event holds every club's photos) and it is the one control-plane
+ * action that removes rather than appends. The Sheet is SSOT; the reconciler keeps
+ * the cache in sync on its normal schedule regardless of the direct upsert here.
  */
 
 import { Router } from 'express';
-import { CreateEventRequestSchema, type CreateEventResponse } from '@cloud-webapp/shared';
+import {
+  CreateEventRequestSchema,
+  DeleteEventRequestSchema,
+  type CreateEventResponse,
+  type DeleteEventResponse,
+} from '@cloud-webapp/shared';
 
 import { env } from '../lib/config.js';
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
-import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
+import { allowCronOrSuperAdmin } from '../middleware/cronAuth.js';
+import { attachRole, requireAnyAdmin, requireSuperAdmin } from '../middleware/rbac.js';
 import { recordAudit } from '../services/auditStore.js';
 import { DRIVE_SCOPE_READWRITE, getDriveToken, getOrCreateSubfolder } from '../services/driveService.js';
 import { optedInAmong } from '../services/emailPrefsStore.js';
 import { sendToMany } from '../services/emailService.js';
 import { eventCreated } from '../services/emailTemplates.js';
+import { deleteEvent, previewEventDeletion, resolveEvent } from '../services/eventDeletionService.js';
 import { createEvent, findByFolderName, folderNameFor } from '../services/eventStore.js';
 import { triggerIndexJob } from '../services/indexerJob.js';
 import { listUsers } from '../services/userStore.js';
@@ -116,6 +130,139 @@ adminEventsRouter.post('/admin/events', requireAuth, attachRole, requireAnyAdmin
 
     const body: CreateEventResponse = { ok: true, event };
     res.status(201).json(body);
+  } catch (err) {
+    if (handleStoreError(err, res)) return;
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/events/:eventId/delete-preview — what a delete would remove.
+ * Read-only, so the admin UI can show the inventory (and its warnings) before
+ * anyone types a confirmation. Identical to a dry-run POST.
+ */
+adminEventsRouter.get(
+  '/admin/events/:eventId/delete-preview',
+  requireAuth,
+  attachRole,
+  requireSuperAdmin,
+  async (req, res, next) => {
+    try {
+      const sid = masterSheetId(res);
+      if (!sid) return;
+      const eventId = String(req.params.eventId ?? '').trim();
+      if (!eventId) {
+        res.status(400).json({ ok: false, error: 'invalid', message: 'eventId is required' });
+        return;
+      }
+      const out = await previewEventDeletion(sid, eventId);
+      if (!out.ok || !out.data) {
+        res.status(404).json({ ok: false, error: 'not_found', message: out.message });
+        return;
+      }
+      const body: DeleteEventResponse = out.data;
+      res.json(body);
+    } catch (err) {
+      if (handleStoreError(err, res)) return;
+      next(err);
+    }
+  },
+);
+
+/**
+ * POST /api/admin/events/:eventId/delete — Body: { apply?, confirmName?, reason? }.
+ *
+ * DRY RUN unless `apply` is exactly `true`. An apply must also carry
+ * `confirmName` matching the event's name (or its id): the request that retires
+ * an event has to name it, which is what stops a mis-clicked row from taking a
+ * live event's gallery down. Everything the delete does is described in
+ * eventDeletionService.ts; the Drive folder is trashed, not destroyed.
+ *
+ * Answers 200 even when parts failed — `warnings` and `derivativesRemaining` say
+ * what is left, and re-running is safe (every step is idempotent).
+ *
+ * Auth: `allowCronOrSuperAdmin`, so infra/scripts/delete-event.sh can run it with
+ * the machine token while human callers must be super_admins.
+ */
+adminEventsRouter.post('/admin/events/:eventId/delete', allowCronOrSuperAdmin, async (req, res, next) => {
+  try {
+    const sid = masterSheetId(res);
+    if (!sid) return;
+    const eventId = String(req.params.eventId ?? '').trim();
+    if (!eventId) {
+      res.status(400).json({ ok: false, error: 'invalid', message: 'eventId is required' });
+      return;
+    }
+    const input = DeleteEventRequestSchema.parse(req.body ?? {});
+    const apply = input.apply === true;
+
+    if (!apply) {
+      const preview = await previewEventDeletion(sid, eventId);
+      if (!preview.ok || !preview.data) {
+        res.status(404).json({ ok: false, error: 'not_found', message: preview.message });
+        return;
+      }
+      res.json(preview.data satisfies DeleteEventResponse);
+      return;
+    }
+
+    // Name the event you are deleting. Resolved from the same merged Sheet +
+    // cache view the delete uses (so a Firestore-only orphan is confirmable too),
+    // but WITHOUT the inventory — that scan is Drive + GCS work and `deleteEvent`
+    // does it anyway; running it twice per apply would just eat request budget.
+    const identity = await resolveEvent(sid, eventId);
+    if (!identity) {
+      res.status(404).json({
+        ok: false,
+        error: 'not_found',
+        message: `Event "${eventId}" not found in the Sheet or the events cache`,
+      });
+      return;
+    }
+    const supplied = (input.confirmName ?? '').trim();
+    const expected = identity.name.trim();
+    const matches =
+      supplied.length > 0 &&
+      (supplied.toLowerCase() === expected.toLowerCase() || supplied === eventId);
+    if (!matches) {
+      res.status(400).json({
+        ok: false,
+        error: 'confirm_mismatch',
+        message: expected
+          ? `confirmName must be "${expected}" (or the event id) to delete this event`
+          : `confirmName must be "${eventId}" to delete this event`,
+      });
+      return;
+    }
+
+    const out = await deleteEvent(sid, eventId, {
+      actorEmail: actor(req),
+      reason: input.reason,
+    });
+    if (!out.ok || !out.data) {
+      res.status(404).json({ ok: false, error: 'not_found', message: out.message });
+      return;
+    }
+
+    await recordAudit(sid, {
+      actorEmail: actor(req),
+      action: 'EVENT_DELETED',
+      resourceType: 'event',
+      resourceId: eventId,
+      details: {
+        eventName: out.data.eventName,
+        folderName: out.data.folderName,
+        driveFolderId: out.data.driveFolderId,
+        deleteId: out.data.deleteId,
+        removed: out.data.removed,
+        derivativesRemaining: out.data.derivativesRemaining,
+        warnings: out.data.warnings,
+      },
+      reason: input.reason?.trim() || 'event deleted',
+      ip: req.ip ?? '',
+    });
+
+    res.json(out.data satisfies DeleteEventResponse);
   } catch (err) {
     if (handleStoreError(err, res)) return;
     next(err);

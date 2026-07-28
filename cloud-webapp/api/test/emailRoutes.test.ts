@@ -30,6 +30,7 @@ vi.mock('../src/middleware/rbac.js', () => {
 // Machine/admin gate for the digest: passthrough.
 vi.mock('../src/middleware/cronAuth.js', () => ({
   allowCronOrAdmin: (_req: Request, _res: Response, next: NextFunction) => next(),
+  allowCronOrSuperAdmin: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
 
 const prefs = { email: 'ca@x.org', userCreated: true, userRoleChanged: true, userDeactivated: true, securityEvent: true, eventCreated: true, dailyReport: false, weeklyReport: false, updatedAt: 't' };
