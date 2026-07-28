@@ -43,7 +43,7 @@ const STR = {
       'Your files are safely uploaded — we’re filing them into Google Drive and queuing them for indexing.',
     finalizingBodyZh: '文件已安全上传，正在保存到 Google Drive 并排队建立索引…',
     nameLabel: 'Your name',
-    nameHint: '(for photo credit — optional)',
+    nameHint: '(for photo credit — optional, remembered next time)',
     namePlaceholder: 'e.g. Jane Doe',
     dropzoneTitleTouch: 'Tap to add photos or videos',
     dropzoneTitleDesktop: 'Drag & drop photos and videos here',
@@ -79,7 +79,7 @@ const STR = {
     finalizingBody: '您的文件已安全上传——我们正在将它们归档到 Google Drive 并排队建立索引。',
     finalizingBodyZh: '文件已安全上传，正在保存到 Google Drive 并排队建立索引…',
     nameLabel: '您的姓名',
-    nameHint: '（用于照片署名——可选）',
+    nameHint: '（用于照片署名——可选，下次会自动填写）',
     namePlaceholder: '例如 张三',
     dropzoneTitleTouch: '点按添加照片或视频',
     dropzoneTitleDesktop: '拖放照片和视频到此处',
@@ -147,11 +147,45 @@ const IS_TOUCH =
     window.matchMedia('(hover: none) and (pointer: coarse)').matches) ||
     (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));
 
+/**
+ * Where the last-typed photographer name is remembered, so a volunteer uploading
+ * in several sessions is credited every time instead of only the first.
+ *
+ * localStorage, not a cookie: it never leaves the device, and the name is not
+ * sensitive — it is printed into the credited filename either way. Every access
+ * is wrapped, because Safari private mode throws on localStorage rather than
+ * returning null, and losing the prefill must never break the upload page.
+ */
+const NAME_KEY = 'findme.photographerName';
+
+function readRememberedName(): string {
+  try {
+    return (window.localStorage.getItem(NAME_KEY) ?? '').slice(0, 120);
+  } catch {
+    return '';
+  }
+}
+
+function rememberName(name: string): void {
+  try {
+    const trimmed = name.trim();
+    if (trimmed) window.localStorage.setItem(NAME_KEY, trimmed);
+    else window.localStorage.removeItem(NAME_KEY);
+  } catch {
+    /* private mode / storage disabled — the prefill is a convenience, not a requirement */
+  }
+}
+
 export function VolunteerUpload(): JSX.Element {
   const t = useStrings(STR);
   const { token = '' } = useParams();
   const [items, setItems] = useState<Item[]>([]);
-  const [photographerName, setPhotographerName] = useState('');
+  // Prefilled from the last upload on this device. The field resetting to blank
+  // every session cost real credit: on one event 408 photos landed in
+  // `..._volunteer` folders instead of the photographer's name, because they
+  // uploaded in several sessions and only typed it the first time. Still fully
+  // editable — a shared device just corrects it.
+  const [photographerName, setPhotographerName] = useState(readRememberedName);
   const [phase, setPhase] = useState<Phase>('idle');
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<string | null>(null);
@@ -383,7 +417,10 @@ export function VolunteerUpload(): JSX.Element {
             id="photographer-name"
             type="text"
             value={photographerName}
-            onChange={(e) => setPhotographerName(e.target.value)}
+            onChange={(e) => {
+              setPhotographerName(e.target.value);
+              rememberName(e.target.value);
+            }}
             placeholder={t.namePlaceholder}
             disabled={phase === 'uploading'}
             maxLength={120}
