@@ -265,6 +265,9 @@ describe('deleteEvent', () => {
     expect(out.data?.driveFolderTrashed).toBe(false);
     expect(out.data?.removed.sheetRowsRemoved).toBe(1);
     expect(out.data?.warnings.join(' ')).toContain('already missing');
+    // Don't claim a trash that never ran — the message is what an admin reads.
+    expect(out.data?.message).toContain('left Drive alone');
+    expect(out.data?.message).not.toContain('trashed the Drive folder');
   });
 
   it('keeps going when the Drive trash fails, and does not ledger a delete that did not happen', async () => {
