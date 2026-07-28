@@ -116,6 +116,7 @@ const STR = {
       users: 'Users',
       clubs: 'Clubs',
       feedback: 'Match feedback',
+      verdicts: 'Verdict batches',
       metrics: 'Metrics',
       report: 'Report',
       trash: 'Trash',
@@ -149,6 +150,7 @@ const STR = {
       users: '用户',
       clubs: '俱乐部',
       feedback: '匹配反馈',
+      verdicts: '结论批次',
       metrics: '指标',
       report: '报告',
       trash: '回收站',
@@ -176,6 +178,7 @@ import { Events } from './pages/Events.js';
 import { Gallery } from './pages/Gallery.js';
 import { FindMe } from './pages/FindMe.js';
 import { FeedbackAdmin } from './pages/FeedbackAdmin.js';
+import { AdminVerdicts } from './pages/AdminVerdicts.js';
 import { AdminUsers } from './pages/AdminUsers.js';
 import { AdminClubs } from './pages/AdminClubs.js';
 import { AdminEvents } from './pages/AdminEvents.js';
@@ -327,6 +330,9 @@ export function App(): JSX.Element {
                       <Link to="/admin/feedback" className="nav-link" onClick={closeMenu}>
                         {t.nav.feedback}
                       </Link>
+                      <Link to="/admin/verdicts" className="nav-link" onClick={closeMenu}>
+                        {t.nav.verdicts}
+                      </Link>
                       <Link to="/admin/audit" className="nav-link" onClick={closeMenu}>
                         {t.nav.audit}
                       </Link>
@@ -424,6 +430,10 @@ export function App(): JSX.Element {
           <Route
             path="/admin/feedback"
             element={isGuest ? <Navigate to="/" replace /> : <FeedbackAdmin />}
+          />
+          <Route
+            path="/admin/verdicts"
+            element={isGuest ? <Navigate to="/" replace /> : <AdminVerdicts />}
           />
           <Route path="/admin/users" element={isGuest ? <Navigate to="/" replace /> : <AdminUsers />} />
           <Route path="/admin/clubs" element={isGuest ? <Navigate to="/" replace /> : <AdminClubs />} />

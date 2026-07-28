@@ -83,6 +83,22 @@ export async function listReferencesForUser(
     .slice(0, limit);
 }
 
+/**
+ * Every stored reference for a uid — no expiry/outcome filtering, newest first.
+ *
+ * Unlike `listReferencesForUser` (which offers selfies back to their owner and
+ * so hides failed/expired ones), this is the raw set an admin join needs: the
+ * verdict-batch review has to resolve the selfie for a run whose search failed,
+ * or whose record is past `expiresAt` but not yet swept. Admin-gated + audited
+ * at the route, same as `listAllReferences`.
+ */
+export async function listReferencesForUidRaw(uid: string): Promise<ReferenceRecord[]> {
+  const snap = await firestore().collection(COLLECTION).where('uid', '==', uid).get();
+  return snap.docs
+    .map((d) => d.data() as ReferenceRecord)
+    .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+}
+
 /** Hard cap on the window an admin scan reads, to bound cost/latency. */
 const ADMIN_SCAN_LIMIT = 500;
 

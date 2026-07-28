@@ -15,7 +15,10 @@ import { logger } from '../lib/logger.js';
 export type AdminAuditAction =
   | 'findme_list'
   | 'findme_view_selfie'
-  | 'findme_reproduce';
+  | 'findme_reproduce'
+  /** Verdict-batch review (routes/adminVerdicts.ts) — also exposes selfies. */
+  | 'verdict_batch_list'
+  | 'verdict_batch_view';
 
 export interface AdminAuditEntry {
   adminUid: string;
