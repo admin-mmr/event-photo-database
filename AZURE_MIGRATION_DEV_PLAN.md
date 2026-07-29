@@ -198,12 +198,8 @@ which is the empirical case for D1 restated: **do not re-sync the fork.**
    `deleteEventDerivatives`). `gcsService.ts` has grown to 20 exports including
    two deadline-bounded sweeps (`countEventDerivatives`,
    `deleteEventDerivatives`) whose budget behaviour the Blob port must keep.
-4. **`infra/firestore.indexes.json` now has 12 composite indexes**, three of
-   which postdate the fork (`folderRebuildBatches`, and two on
-   `duplicateRemovalBatches`). `azure-webapp/infra/cosmos-indexes.json` is the
-   pre-drift copy. Both drain queries 500'd with `FAILED_PRECONDITION` on GCP
-   when their index was missing — regenerate the Cosmos policy from the current
-   Firestore file, don't hand-maintain it.
+4. ~~**`infra/firestore.indexes.json` now has 12 composite indexes**, three of
+   which postdate the fork.~~ **RESOLVED 2026-07-28** — see §1.7.6.
 5. **§1.5 defect 2 is now 4 of 6 schedulers missing, not 3 of 5** —
    `findme-duplicates-drain` (`*/2 * * * *`) is also absent from the Azure tree.
 6. §1.6 items still open: `gcsService.origFile()` remains exported-and-unused,
@@ -232,6 +228,42 @@ throws *outside* the try's fall-through intent. Fix by ordering
 `VITE_FIREBASE_CONFIG` first when `CLOUD_PROVIDER`/build target is Azure, or by
 adding `/__/*` to `navigationFallback.exclude`. Do not assume the fallback works
 untested.
+
+### 1.7.6 Cosmos index policy — regenerated, and now generated (2026-07-28)
+
+`azure-webapp/infra/cosmos-indexes.json` is derived from
+`cloud-webapp/infra/firestore.indexes.json` by
+`azure-webapp/infra/scripts/generate-cosmos-indexes.mjs`, and CI fails on drift
+(`--check`, wired into `ci.yml`; the workflow's path filter now includes
+`azure-webapp/infra/**`). Hand-maintaining it is what produced the 3-vs-12 gap.
+
+It went from **3 composite indexes on one container → 12 across seven**
+(`photos`, `users`, `clubs`, `uploadLinks`, `auditLog`, `folderRebuildBatches`,
+`duplicateRemovalBatches`).
+
+**Two things a verbatim translation would have gotten wrong**, both now handled
+by the generator:
+
+1. **The `/id` tiebreak was missing entirely.** Firestore appends `__name__` to
+   every composite index *implicitly*; Cosmos requires it spelled out. Our paged
+   queries order by `(<field>, DOC_ID)` — that total order is what D8's keyset
+   paging rests on — so every `photos` composite now ends in `/id`, matching the
+   direction of the sort field it breaks ties for. The old file's
+   `(eventId, takenAt)` would not have served a single gallery page.
+2. **Cosmos indexes every path by default, including payload arrays.** The queue
+   batch documents inline their work list (up to `ENQUEUE_CAP` = 1500 items) and
+   a drain tick rewrites the doc *per chunk*, so indexing `pending` /
+   `pendingSweep` / `inProgress` would burn write RU on precisely the containers
+   that write most often. Those paths are excluded.
+
+Direction variants needed no special handling: Firestore already enumerates
+ascending and descending separately (same reverse-scan constraint), so the
+declared set maps 1:1 onto the ORDER BY directions the app issues.
+
+**Shape change for AZ3:** Cosmos indexing policies are **per container**, so the
+file is now a `containers` map rather than one policy. `bootstrap-azure.sh` must
+apply each container's policy separately (`jq .containers.<name>`), not pass the
+file wholesale to `--idx`.
 
 ---
 
@@ -426,9 +458,7 @@ downstream needs them:
     cross-partition `ORDER BY`. `fakeCosmos.ts` is a model of Cosmos, not Cosmos.
     Run the contract suite against the emulator or a dev account in AZ4 —
     treat that as the gate, not these tests.
-  - `cosmos-indexes.json` still needs regenerating from the current 12-entry
-    `firestore.indexes.json` (§1.7.3 item 4); the keyset paging in D8 depends on
-    those composite indexes existing.
+  - ✅ `cosmos-indexes.json` is regenerated and drift-guarded — §1.7.6.
   - **Test-fidelity finding:** `gallery.test.ts` hand-rolls ~60 lines
     reimplementing Firestore paging and orders with `localeCompare`, where
     Firestore orders by UTF-8 code point. With Chinese filenames in play that

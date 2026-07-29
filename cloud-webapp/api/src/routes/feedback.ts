@@ -21,7 +21,7 @@ import {
   type AdminFeedbackResponse,
   type SearchAlgo,
 } from '@cloud-webapp/shared';
-import type { Query, DocData } from '../lib/db/types.js';
+import type { Query } from '../lib/db/types.js';
 
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
