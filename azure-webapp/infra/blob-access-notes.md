@@ -18,10 +18,54 @@ is publicly readable; every fetch is SAS-gated. Runtime identities get
 `Storage Blob Data Contributor` (api, indexer) or `Storage Blob Data Reader`
 (matcher) at the account scope — see `provision-runtime-identities.sh`.
 
-Port any per-path conditions from the original `storage.rules` (see git history
-of `cloud-webapp/infra/storage.rules`) into the api's SAS-minting logic — e.g.
-"only admins may write to `events/{id}/...`" becomes an `requireAdmin` check
-before the api issues a write SAS for that prefix.
+## Original storage.rules — verbatim (AZ2, checked 2026-07-29)
+
+```
+rules_version = '2';
+
+// All object reads/writes go through the Cloud Run api, which issues
+// signed URLs for short-lived client access. Block direct client access.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
+```
+
+**There are no per-path conditions to port. The spec is one condition: `if
+false`** — the same finding as `cosmos-access-notes.md`, and for the same reason.
+An earlier draft of this file said to port conditions like "only admins may write
+to `events/{id}/...`"; no such rule ever existed. What enforces access is the api:
+
+- **Reads** are only ever short-lived SAS/signed URLs minted by a route that has
+  already run its guard, so the authorization decision happens *before* the URL
+  exists. There is no browser-reachable path to an unsigned object.
+- **Writes** from a browser happen exactly once in the app: the per-blob upload
+  SAS for a volunteer upload, scoped to a single api-chosen object key. No other
+  write credential is ever handed out.
+- Every other write is server-side under the api's own identity.
+
+The guard inventory that backs those statements — all 80 routes and what each one
+proves about its caller — is in `cosmos-access-notes.md`, and is asserted by
+`api/test/routeGuards.test.ts`. **On GCP a mis-guarded route is still backstopped
+by `if false`; on Azure it is not**, so that test is the control that replaces the
+rules file.
+
+Two Blob-specific notes that have no Firestore analogue:
+
+- **Container-level public access must stay off.** `--allow-blob-public-access
+  false` is the closest thing to `if false` that Blob Storage has, and unlike a
+  rules file it is *account/container configuration*, not code in the repo — so it
+  can be changed outside a code review. Assert it in the provisioner and re-check
+  it during AZ4 rather than trusting it.
+- **A SAS is a bearer credential with no revocation.** A leaked read SAS stays
+  valid until it expires, where a Firebase-authenticated request could be refused
+  the moment a user was deactivated. This is why the TTL cap
+  (`SIGNED_URL_TTL_MINUTES`, ≤60) is an authorization control and not a
+  performance knob. The one long-lived exception is the 7-day volunteer upload
+  SAS, which is scoped to a single not-yet-existing blob key.
 
 ## What the code now does (AZ2, landed 2026-07-29)
 
