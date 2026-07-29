@@ -17,7 +17,7 @@
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
-import type { Firestore } from '@google-cloud/firestore';
+import type { DocumentStore } from '../lib/db/types.js';
 
 import { firestore } from '../lib/firestore.js';
 import { env, isTest } from '../lib/config.js';
@@ -51,7 +51,7 @@ export function humanizeRetry(sec: number): string {
  * — backend errors fail open.
  */
 export async function consumeRateLimit(
-  db: Firestore,
+  db: DocumentStore,
   bucket: string,
   key: string,
   limit: number,

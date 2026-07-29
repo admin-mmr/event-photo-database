@@ -12,7 +12,7 @@
  * deletes are scoped to the caller's uid — there is no cross-user path.
  */
 
-import type { Firestore, Query, QueryDocumentSnapshot } from '@google-cloud/firestore';
+import type { DocumentStore, Query, QueryDocSnapshot } from '../lib/db/types.js';
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { env } from '../lib/config.js';
@@ -28,13 +28,20 @@ export interface DeletionCounts {
   feedback: number;
 }
 
-async function docsForUser(db: Firestore, collection: string, uid: string): Promise<QueryDocumentSnapshot[]> {
+async function docsForUser(
+  db: DocumentStore,
+  collection: string,
+  uid: string,
+): Promise<readonly QueryDocSnapshot[]> {
   const q: Query = db.collection(collection).where('uid', '==', uid);
   const snap = await q.get();
   return snap.docs;
 }
 
-async function deleteInBatches(db: Firestore, docs: QueryDocumentSnapshot[]): Promise<number> {
+async function deleteInBatches(
+  db: DocumentStore,
+  docs: readonly QueryDocSnapshot[],
+): Promise<number> {
   for (let i = 0; i < docs.length; i += BATCH_LIMIT) {
     const batch = db.batch();
     for (const d of docs.slice(i, i + BATCH_LIMIT)) batch.delete(d.ref);

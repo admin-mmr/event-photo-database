@@ -11,7 +11,7 @@
  */
 
 import { Router } from 'express';
-import { FieldPath, type Query } from '@google-cloud/firestore';
+import { DOC_ID, type Query } from '../lib/db/types.js';
 import {
   DeletePhotosRequestSchema,
   type ListPhotosResponse,
@@ -143,7 +143,7 @@ galleryRouter.get('/events/:id/photos', requireAuth, async (req, res, next) => {
     const base = (): Query => firestore().collection('photos').where('eventId', '==', eventId);
 
     const buildQuery = (spec: SortSpec): Query => {
-      let q = base().orderBy(spec.field, spec.dir).orderBy(FieldPath.documentId(), spec.dir);
+      let q = base().orderBy(spec.field, spec.dir).orderBy(DOC_ID, spec.dir);
       if (cursor) {
         const startVal =
           spec.cursorKey === 'n'

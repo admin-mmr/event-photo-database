@@ -13,7 +13,7 @@
  */
 
 import { Router } from 'express';
-import type { Query, DocumentData } from '@google-cloud/firestore';
+import type { Query, DocData } from '../lib/db/types.js';
 import type { AdminMetricsResponse } from '@cloud-webapp/shared';
 
 import { firestore } from '../lib/firestore.js';
@@ -75,8 +75,8 @@ async function platformCounts(): Promise<{
   return { events, photos, users, activeUsers, clubs };
 }
 
-async function recentDocs(collection: string, since: string): Promise<DocumentData[]> {
-  const query: Query<DocumentData> = firestore()
+async function recentDocs(collection: string, since: string): Promise<DocData[]> {
+  const query: Query = firestore()
     .collection(collection)
     .orderBy('createdAt', 'desc')
     .limit(SCAN_LIMIT);
@@ -101,7 +101,7 @@ metricsRouter.get('/admin/metrics', requireAuth, attachRole, requireAnyAdmin, as
       recentDocs('match_feedback', since),
     ]);
 
-    const byEvent = (d: DocumentData): boolean => !eventId || String(d.eventId ?? '') === eventId;
+    const byEvent = (d: DocData): boolean => !eventId || String(d.eventId ?? '') === eventId;
 
     const runsScoped = runs.filter(byEvent);
     const searches = runsScoped.length;

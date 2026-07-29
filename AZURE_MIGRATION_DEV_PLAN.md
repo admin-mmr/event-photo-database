@@ -1,6 +1,6 @@
 # Azure Migration Dev Plan — audit findings & phased plan
 
-**Date:** 2026-07-18
+**Date:** 2026-07-18 · **re-audited 2026-07-28** (see §1.7 — corrects §1.3–1.5 counts)
 **Companion docs:** `azure-webapp/AZURE.md` (service mapping), `azure-webapp/AZURE_MIGRATION_PROGRESS.md` (pilot checklist), `Azure_vs_GCP_Cost_Model.xlsx` (cost rationale), `CUTOVER_RUNBOOK.md` (GAS cutover, in flight).
 **Why Azure:** the org's Microsoft nonprofit grant ($2,000/yr, recurring) covers the projected workload ~80× over; existing Azure spend is ~$65/mo with a <$100/mo total ceiling. The GCP stack currently rides temporary credits. Azure egress is also cheaper (first 100 GB/mo free).
 
@@ -137,6 +137,104 @@ From static review of `azure-webapp/infra/scripts/` (never yet run):
 
 ---
 
+## 1.7 Re-audit 2026-07-28 (10 days on) — what changed
+
+A full re-read of both trees. **§1.3–1.5 counts below are corrected; where this
+section and §1.3–1.4 disagree, this section wins.**
+
+### 1.7.1 Milestone status, verified against the code
+
+- **AZ1 credential module: really done.** `api/src/lib/googleCredentials.ts`
+  (188 LOC) exists, `CLOUD_PROVIDER` is a real `z.enum(['gcp','azure'])` with the
+  `superRefine` that makes `GCP_PROJECT_ID` + `GOOGLE_SA_KEY_JSON` required on
+  Azure, `middleware/auth.ts` picks `cert(serviceAccountKey())` over
+  `applicationDefault()`, and no stray `new GoogleAuth(...)` survives outside the
+  module. `api/test/googleCredentials.test.ts` is present.
+- **AZ1 remainder untouched:** `indexer/drive.py` still signs DWD JWTs via
+  `iamcredentials.googleapis.com` with ADC (`drive.py:11,89`);
+  `indexerJob.ts:35` still POSTs `run.googleapis.com/v2`;
+  `uploadDispatch.ts:51` still POSTs `cloudtasks.googleapis.com/v2`; the logger
+  still emits GCP `severity` only.
+- **AZ2 not started.** `lib/firestore.ts` is still the bare 22-line
+  `new Firestore(...)` factory — no adapter seam. `gcsService.ts` is still raw
+  `@google-cloud/storage`.
+- **AZ3 not started.** All eight §1.5 defects re-confirmed verbatim, including
+  `deploy-web.sh:33` `--sku Free` + `:47` `backends link`,
+  `backfill-capture-time.sh:40` `az cosmosdb sql query`, and
+  `provision-volunteer-uploads.sh:35` `cors clear`.
+
+### 1.7.2 The fork rotted further — 118 commits, not ~90
+
+| Subtree | Files (cloud-webapp) | New (missing from azure-webapp) | Modified |
+|---|---|---|---|
+| `api/src` | 84 | **46** (was 36) | 22 |
+| `web/src` | 73 | **33** (was 26) | 26 |
+| `shared/src` | 11 | 1 | 6 |
+| `matcher` | 57 | **14** (was 3) | 10 |
+| `indexer` | 11 | 0 | **4** (was 0 — no longer byte-identical) |
+| `api/test` | 60 | **34** | — |
+
+Still zero azure-only *source* files. Drift roughly doubled in five weeks,
+which is the empirical case for D1 restated: **do not re-sync the fork.**
+
+### 1.7.3 New GCP coupling landed since the audit — AZ2 is bigger than scoped
+
+1. **Transactions: 7 → 12, across 2 → 4 files.** AZ2 names only
+   `folderRebuildQueue.ts` (6) and `rateLimit.ts` (1). Add
+   `duplicateRemovalQueue.ts` (4 — lease/claim/chunk-commit) and
+   `uploadDedupService.ts:160` (1). **`uploadDedupService` is the highest-risk
+   port in the whole migration**: its transaction returns
+   `{ won, confirmedInDrive }` and honours `STALE_CLAIM_MS`, and those two
+   properties are the fix for the 2026-07-27 photo loss. An ETag retry-loop that
+   gets the unproven-duplicate case subtly wrong re-opens that path — port it
+   with its existing tests, not by re-derivation.
+2. **`db.batch()`: 1 → 2 files, and the new one can't be a TransactionalBatch.**
+   `eventDeletionService.ts:166` batch-deletes across eight collections;
+   Cosmos TransactionalBatch is single-partition, so this must become
+   best-effort per-partition deletes — which is fine (every step is already
+   documented idempotent) but is a behaviour note, not a mechanical swap.
+3. **Storage-touching files: 2 → 4.** Add `uploadRecoveryService.ts:175`
+   (`getFiles` over the staging prefix) and `eventDeletionService.ts` (via
+   `deleteEventDerivatives`). `gcsService.ts` has grown to 20 exports including
+   two deadline-bounded sweeps (`countEventDerivatives`,
+   `deleteEventDerivatives`) whose budget behaviour the Blob port must keep.
+4. **`infra/firestore.indexes.json` now has 12 composite indexes**, three of
+   which postdate the fork (`folderRebuildBatches`, and two on
+   `duplicateRemovalBatches`). `azure-webapp/infra/cosmos-indexes.json` is the
+   pre-drift copy. Both drain queries 500'd with `FAILED_PRECONDITION` on GCP
+   when their index was missing — regenerate the Cosmos policy from the current
+   Firestore file, don't hand-maintain it.
+5. **§1.5 defect 2 is now 4 of 6 schedulers missing, not 3 of 5** —
+   `findme-duplicates-drain` (`*/2 * * * *`) is also absent from the Azure tree.
+6. §1.6 items still open: `gcsService.origFile()` remains exported-and-unused,
+   and `api/test/download.test.ts:46` still mocks it (a stale fake that will
+   outlive the function).
+
+### 1.7.4 Two things are *smaller* than scoped
+
+- **D6's web-side change is one file.** All 69 `/api/...` call sites in
+  `web/src` (23 files) go through the seven helpers in `web/src/lib/api.ts` —
+  zero raw `fetch('/api…')` bypasses. A `VITE_API_BASE` prefix applied there
+  covers the whole SPA.
+- **The api already has CORS plumbing** (`server.ts:67-82`, `CORS_ORIGINS`) —
+  but it is gated `if (!isProd && env.CORS_ORIGINS)` and deliberately ships no
+  headers in prod. D6 needs that gate widened for the Azure origin, not new
+  middleware.
+
+### 1.7.5 One correction to D3
+
+`web/src/lib/firebase.ts:25-37` tries `/__/firebase/init.json` **first** and
+falls back to `VITE_FIREBASE_CONFIG` only inside `if (res.ok)` / `catch`. On SWA,
+`staticwebapp.config.json`'s `navigationFallback` rewrites unknown paths to
+`/index.html` and `responseOverrides.404` does the same — so that fetch is
+likely to return **HTTP 200 with HTML**, `res.ok` is true, and `res.json()`
+throws *outside* the try's fall-through intent. Fix by ordering
+`VITE_FIREBASE_CONFIG` first when `CLOUD_PROVIDER`/build target is Azure, or by
+adding `/__/*` to `navigationFallback.exclude`. Do not assume the fallback works
+untested.
+
+---
+
 ## 2. Strategy decisions
 
 **D1 — One codebase, not a fork.** Retire `azure-webapp/`'s copied source
@@ -161,7 +259,9 @@ moves — that's the whole point of keeping it.
 later workstream.** `firebase-admin` verification needs only Google's public
 keys — no GCP runtime dependency — and the free tier is unaffected. Fix the
 web bootstrap to use `VITE_FIREBASE_CONFIG` instead of
-`/__/firebase/init.json`. Re-issuing ~50 admin identities mid-migration adds
+`/__/firebase/init.json` — **and note §1.7.5: the existing fallback is not
+safe on SWA, because the navigation fallback answers that path with HTML/200.**
+Re-issuing ~50 admin identities mid-migration adds
 risk for zero cost benefit.
 
 **D4 — Google credentials on Azure: prefer Workload Identity Federation,
@@ -184,10 +284,23 @@ provision serverless — parameterize it).
 **D6 — Keep SWA Free; the SPA calls the api's Container App FQDN directly
 with CORS.** Don't buy SWA Standard just for the linked backend. Direct calls
 also avoid re-creating the GCP lesson where every api byte proxied through the
-hosting layer bills twice. Work: CORS middleware on the api (allow the SWA
-origin, `Authorization` header), a `VITE_API_BASE` in the web build,
-and drop the linked-backend step from `deploy-web.sh`. (If a single origin is
+hosting layer bills twice. Work: widen the api's existing but prod-disabled CORS
+gate (`server.ts:67`, `CORS_ORIGINS`) to allow the SWA origin in production, a
+`VITE_API_BASE` in the web build — **one file, `web/src/lib/api.ts`, per
+§1.7.4** — and drop the linked-backend step from `deploy-web.sh`. (If a single origin is
 ever required — e.g. cookie needs — upgrade to Standard then; it's ~$9/mo.)
+
+**D8 — Paginate by keyset, not by Cosmos continuation tokens** (added
+2026-07-28, during AZ2). The `Query` adapter keeps Firestore's
+`startAfter(...values)` and the Cosmos impl renders it as a keyset predicate
+(`field > @v OR (field = @v AND c.id > @id)`), served by the same composite
+index. Rationale: continuation tokens are single-use, forward-only and opaque,
+whereas the gallery's existing base64url `{field, id}` cursor is value-based,
+stable across deploys and page-size independent. Keyset keeps the HTTP cursor
+contract byte-identical on both clouds, needs no rewrite of `gallery.ts`, and
+**retires risk #2** (“continuation tokens behave differently from `startAfter`”)
+rather than mitigating it. The cost is that every paged query needs its
+composite index present on Cosmos — which `cosmos-indexes.json` owes anyway.
 
 **D7 — Regenerate derived data; copy only what's primary.** Most of Firestore
 is a derived cache: control-plane collections mirror the Sheet (reconcile
@@ -250,15 +363,99 @@ downstream needs them:
 
 ### AZ2 — Data-layer adapters (L, code, ships on GCP)
 
+**Landed 2026-07-28 — the db seam and its test harness:**
+
+- ✅ `api/src/lib/db/types.ts` — the provider-neutral `DocumentStore` interface,
+  scoped to the *measured* surface (only `==` filters; `orderBy` with a `DOC_ID`
+  sentinel; `limit`/`startAfter`/`select`/`count`; `set|create|update|delete|add`;
+  single-doc transactions; `delete`-only batches). What nothing uses is listed as
+  deliberately absent so it does not creep back in.
+- ✅ `api/src/lib/db/firestoreDb.ts` — the Firestore impl as pure delegation, and
+  now the **only** file in the api allowed to import `@google-cloud/firestore`
+  (verified: `grep -rn '@google-cloud/firestore' api/src` hits that file only).
+- ✅ `lib/firestore.ts` re-points `firestore()` at the adapter, selected by
+  `CLOUD_PROVIDER`, and throws a clear error on `azure` until the Cosmos impl
+  lands. The name is unchanged, so all 31 consuming modules were untouched.
+- ✅ The 6 direct SDK imports are gone (`rateLimit`, `gallery`, `feedback`,
+  `metrics`, `userData`, `lib/firestore`).
+- ✅ `api/test/helpers/fakeDb.ts` — ONE in-memory `DocumentStore`, pinned by 18
+  contract tests in `api/test/fakeDb.test.ts`. Those tests are the Cosmos
+  adapter's acceptance criteria. `rateLimit.test.ts` is migrated onto it.
+- ✅ **`api/src/lib/db/cosmosDb.ts` + `cosmosSql.ts` — the Cosmos adapter.**
+  SQL translation is split out and pure. Four Cosmos-specific hazards are handled
+  explicitly, each with tests:
+  - **`IS_DEFINED` on every `orderBy` field.** Firestore silently excludes
+    documents missing the sort field; Cosmos sorts them as `undefined`. Without
+    the guard, `gallery.ts`'s `addedAt`→`takenAt` fallback (which triggers on an
+    empty first page) would never fire and the gallery would mis-order instead.
+  - **Point reads without the partition key.** `photos` is partitioned by
+    `/eventId`, but `collection('photos').doc(id).get()` has no event in hand, so
+    a read falls back to a cross-partition `WHERE c.id = @id`. A wrong entry in
+    `PARTITION_KEYS` therefore costs RU, never correctness.
+  - **`id` is a reserved document property on Cosmos and outside the body on
+    Firestore**, so `data()` strips it. Safe because no collection stores its own
+    `id` — the queue services build it as `{ id: snap.id, ...snap.data() }`.
+  - **Ids are percent-encoded** for the four characters Cosmos forbids (`/ \ ? #`)
+    and decoded on read, so `snap.id` round-trips. No current id needs it; this
+    exists so a future one cannot produce a baffling HTTP 400.
+  - Transactions are ETag if-match retry loops. A read that found nothing commits
+    via `create`, so a 409 re-runs the body — that is what preserves the claim
+    semantics behind the 2026-07-27 upload-loss fix. A transaction writing two
+    documents throws rather than silently losing atomicity.
+- ✅ **One contract, both adapters.** `test/helpers/documentStoreContract.ts`
+  holds 24 cases; `fakeDb.test.ts` and `cosmosDb.test.ts` each run all of them.
+  The Cosmos side runs over `test/helpers/fakeCosmos.ts`, which **executes** the
+  generated SQL in memory rather than stubbing results — so the keyset predicate
+  and `IS_DEFINED` guards are actually exercised. Plus 13 golden-SQL cases in
+  `cosmosSql.test.ts`.
+  - This caught a real adapter bug: `data()` was a shallow spread, so a caller
+    mutating a nested array corrupted the cached row. Firestore materializes a
+    fresh object graph per `data()`; the adapter now deep-clones to match.
+- ✅ Wiring: `COSMOS_ENDPOINT` / `COSMOS_DATABASE` / `COSMOS_KEY` config (endpoint
+  required when `CLOUD_PROVIDER=azure`), and `initDb()` awaited in `index.ts`
+  before listen. The Azure SDKs load only through `await import()`, so the GCP
+  image never pulls them in.
+  - Auth is the api's **managed identity** (Cosmos DB Built-in Data Contributor);
+    `COSMOS_KEY` exists only for the local emulator, which has no Entra identity.
+    Keyless on both clouds, matching the GCP posture.
+- Verified: `tsc` clean (both `tsconfig.json` and `tsconfig.build.json`),
+  **63 test files / 589 tests green**, GCP behaviour unchanged.
+- ⬜ Remaining: the storage adapter; the Python backends; the rules-spec port;
+  migrating the other ~39 bespoke test fakes.
+  - **Not yet proven, and cannot be here:** RU cost, index requirements, and real
+    cross-partition `ORDER BY`. `fakeCosmos.ts` is a model of Cosmos, not Cosmos.
+    Run the contract suite against the emulator or a dev account in AZ4 —
+    treat that as the gate, not these tests.
+  - `cosmos-indexes.json` still needs regenerating from the current 12-entry
+    `firestore.indexes.json` (§1.7.3 item 4); the keyset paging in D8 depends on
+    those composite indexes existing.
+  - **Test-fidelity finding:** `gallery.test.ts` hand-rolls ~60 lines
+    reimplementing Firestore paging and orders with `localeCompare`, where
+    Firestore orders by UTF-8 code point. With Chinese filenames in play that
+    fake can pass while production pages differently — the same
+    code-point-vs-locale trap CLAUDE.md documents for duplicate removal. Migrate
+    it onto the shared fake (needs a fault-injection hook for the
+    missing-composite-index case) before trusting its paging assertions.
+
 - **Db adapter** behind `lib/firestore.ts`: minimal document-store interface
   covering the used subset (doc get/set/merge/delete; where/orderBy/limit +
   cursor; single-doc transaction). Firestore impl = today's behavior; Cosmos
-  impl per `cosmos-access-notes.md` partition keys. The 4 non-mechanical files
-  get targeted rewrites: `gallery.ts` paging → continuation tokens + composite
-  index policy (apply `cosmos-indexes.json`), `folderRebuildQueue.ts` +
-  `rateLimit.ts` transactions → ETag if-match retry loops, `userData.ts`
-  batch → per-partition TransactionalBatch.
-- **Storage adapter** behind `gcsService.ts` + `volunteerUploadService.ts`:
+  impl per `cosmos-access-notes.md` partition keys. The non-mechanical files get
+  targeted rewrites — **6 of them, per §1.7.3, not 4**: `gallery.ts` paging →
+  continuation tokens + composite index policy (regenerate
+  `cosmos-indexes.json` from the current 12-entry `firestore.indexes.json`),
+  `folderRebuildQueue.ts` (6) + `rateLimit.ts` (1) + `duplicateRemovalQueue.ts`
+  (4) + `uploadDedupService.ts` (1) transactions → ETag if-match retry loops,
+  `userData.ts` batch → per-partition TransactionalBatch, and
+  `eventDeletionService.ts`'s cross-collection batch → best-effort
+  per-partition deletes (it is already idempotent by design).
+  **Port `uploadDedupService.ts` against its existing tests** — its
+  `{ won, confirmedInDrive }` + `STALE_CLAIM_MS` semantics are the 2026-07-27
+  photo-loss fix and must not be re-derived.
+- **Storage adapter** behind `gcsService.ts` + `volunteerUploadService.ts`
+  (+ `uploadRecoveryService.ts` and `eventDeletionService.ts` — see §1.7.3;
+  keep the deadline-bounded sweep behaviour of `countEventDerivatives` /
+  `deleteEventDerivatives`):
   signed URL ↔ user-delegation SAS (keep TTL cap + content-disposition);
   volunteer resumable session → block-blob SAS upload (browser client change
   in `web/src` upload path). Delete dead `origFile()`.
@@ -280,9 +477,10 @@ Work down §1.5 in order:
 
 - `deploy-web.sh`: drop the backend link; build with `VITE_API_BASE`; add api
   CORS env. Restore `X-Robots-Tag` in `staticwebapp.config.json`.
-- Write the 3 missing scheduler scripts (email-daily `0 7 * * *`,
-  deleted-purge `30 3 * * *`, folder-rebuild `*/2 * * * *`) as Container Apps
-  scheduled Jobs, fixing the `--command/--args` quoting pattern in all 5; keep
+- Write the **4** missing scheduler scripts (email-daily `0 7 * * *`,
+  deleted-purge `30 3 * * *`, folder-rebuild `*/2 * * * *`, duplicates-drain
+  `*/2 * * * *` — §1.7.3 item 5) as Container Apps
+  scheduled Jobs, fixing the `--command/--args` quoting pattern in all 6; keep
   them create-or-update idempotent (the folder-rebuild GCP script is the model).
 - One `provision-blob-cors.sh` that owns the account-wide ruleset (SWA origin +
   staging-upload origin in a single merged rule set — never `cors clear` from

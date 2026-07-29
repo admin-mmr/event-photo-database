@@ -21,7 +21,7 @@ import {
   type AdminFeedbackResponse,
   type SearchAlgo,
 } from '@cloud-webapp/shared';
-import type { Query, DocumentData } from '@google-cloud/firestore';
+import type { Query, DocData } from '../lib/db/types.js';
 
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
@@ -113,7 +113,7 @@ feedbackRouter.get('/admin/feedback', requireAuth, attachRole, requireAnyAdmin, 
     const limitRaw = Number.parseInt(String(req.query.limit ?? ADMIN_FEEDBACK_DEFAULT), 10);
     const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : ADMIN_FEEDBACK_DEFAULT, 1), ADMIN_FEEDBACK_MAX);
 
-    const query: Query<DocumentData> = firestore()
+    const query: Query = firestore()
       .collection('match_feedback')
       .orderBy('createdAt', 'desc')
       .limit(limit);
