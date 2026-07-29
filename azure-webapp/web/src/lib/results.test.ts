@@ -118,16 +118,16 @@ describe('faceAlertFor (selfie warnings)', () => {
   it('dedupes warnings across selfies', () => {
     const alert = faceAlertFor(
       [
-        ref(1, { selectedWarnings: ['small_face'] }),
-        ref(1, { selectedWarnings: ['small_face', 'not_frontal'] }),
+        ref(1, { selectedWarnings: ['face_small_in_frame'] }),
+        ref(1, { selectedWarnings: ['face_small_in_frame', 'not_frontal'] }),
       ],
       'blob:a',
     );
-    expect(alert?.warnings).toEqual(['small_face', 'not_frontal']);
+    expect(alert?.warnings).toEqual(['face_small_in_frame', 'not_frontal']);
   });
 
   it('outlines nothing when only a LATER selfie has the weak face', () => {
-    const alert = faceAlertFor([ref(1), ref(1, { selectedWarnings: ['small_face'] })], 'blob:a');
+    const alert = faceAlertFor([ref(1), ref(1, { selectedWarnings: ['face_small_in_frame'] })], 'blob:a');
     expect(alert?.selectedFace).toBeNull();
   });
 });

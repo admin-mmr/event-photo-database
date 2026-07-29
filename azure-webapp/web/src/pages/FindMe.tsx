@@ -42,10 +42,11 @@ const NO_FACE_REASON_TEXT: Record<SelfieFaceReason, string> = {
 };
 
 const FACE_WARNING_TEXT: Record<SelfieFaceWarning, string> = {
-  small_face:
+  face_small_in_frame:
     'The face is small in the photo — hold the camera closer, or crop in so your face fills more of the frame.',
   not_frontal:
     'The face is turned away from the camera — look straight at the lens for the best match.',
+  slightly_soft: 'The photo is a little soft — a sharper one matches more reliably.',
 };
 
 /**
