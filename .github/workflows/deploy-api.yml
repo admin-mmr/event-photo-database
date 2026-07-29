@@ -113,7 +113,7 @@ jobs:
             --concurrency=80 \
             --timeout="${API_TIMEOUT_SECONDS}" \
             --update-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=${GITHUB_SHA::7},MATCHER_URL=${MATCHER_URL},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID},FINDME_EVENT_ALLOWLIST=${FINDME_EVENT_ALLOWLIST},UPLOAD_DISPATCH_TO_WORKER=${UPLOAD_DISPATCH_TO_WORKER},UPLOAD_TASKS_QUEUE=${UPLOAD_TASKS_QUEUE},UPLOAD_TASKS_LOCATION=${UPLOAD_TASKS_LOCATION},UPLOAD_WORKER_URL=${UPLOAD_WORKER_URL}" \
-            --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_KEY=RECAPTCHA_KEY:latest"
+            --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_API_KEY=RECAPTCHA_KEY:latest"
           # Auth: deliberately pass NEITHER --allow-unauthenticated nor
           # --no-allow-unauthenticated, so the deploy leaves the service's IAM
           # policy untouched (matches deploy-api.sh + CLAUDE.md). --allow-unauthenticated
