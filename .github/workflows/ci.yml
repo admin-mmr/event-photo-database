@@ -3,9 +3,9 @@ name: cloud-webapp CI
 on:
   push:
     branches: [main]
-    paths: ['cloud-webapp/**', '.github/workflows/ci.yml']
+    paths: ['cloud-webapp/**', 'azure-webapp/infra/**', '.github/workflows/ci.yml']
   pull_request:
-    paths: ['cloud-webapp/**', '.github/workflows/ci.yml']
+    paths: ['cloud-webapp/**', 'azure-webapp/infra/**', '.github/workflows/ci.yml']
 
 defaults:
   run:
@@ -27,6 +27,21 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+
+  # The Azure Cosmos indexing policy is derived from firestore.indexes.json.
+  # A missing composite index is not a slow query, it is a FAILED_PRECONDITION
+  # that 500s every drain tick — so drift between the two fails the build.
+  cosmos-indexes:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: cloud-webapp/.nvmrc
+      - run: node azure-webapp/infra/scripts/generate-cosmos-indexes.mjs --check
 
   matcher:
     runs-on: ubuntu-latest
