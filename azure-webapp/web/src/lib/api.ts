@@ -12,6 +12,9 @@ export class ApiError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /** The whole parsed error body, so a caller can read route-specific fields
+     *  (e.g. Find Me's `reasons`) that `code`/`message` don't carry. */
+    public readonly body: Record<string, unknown> = {},
   ) {
     super(message);
   }
@@ -27,8 +30,11 @@ async function authHeader(): Promise<Record<string, string>> {
 }
 
 async function parseError(res: Response, fallback: string): Promise<ApiError> {
-  const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
-  return new ApiError(res.status, body.error ?? 'http_error', body.message ?? fallback);
+  const body = (await res.json().catch(() => ({}))) as {
+    error?: string;
+    message?: string;
+  } & Record<string, unknown>;
+  return new ApiError(res.status, body.error ?? 'http_error', body.message ?? fallback, body);
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
