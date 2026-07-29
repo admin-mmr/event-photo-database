@@ -13,6 +13,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@azure/cosmos": "^4.10.0",
+    "@azure/identity": "^4.13.1",
     "@cloud-webapp/shared": "*",
     "@google-cloud/firestore": "^7.10.0",
     "@google-cloud/storage": "^7.21.0",

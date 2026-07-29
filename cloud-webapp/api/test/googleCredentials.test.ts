@@ -39,8 +39,15 @@ const FAKE_KEY = { type: 'service_account', client_email: 'indexer-runtime@x.iam
 /** (Re)load config + googleCredentials fresh with the given env. */
 async function load(overrides: Record<string, string | undefined>) {
   vi.resetModules();
-  for (const k of ['CLOUD_PROVIDER', 'GOOGLE_SA_KEY_JSON', 'GCP_PROJECT_ID']) delete process.env[k];
+  for (const k of ['CLOUD_PROVIDER', 'GOOGLE_SA_KEY_JSON', 'GCP_PROJECT_ID', 'COSMOS_ENDPOINT'])
+    delete process.env[k];
   process.env.NODE_ENV = 'test';
+  // CLOUD_PROVIDER=azure also requires a Cosmos endpoint (AZ2). These cases are
+  // about the Google credential path, so satisfy that requirement by default;
+  // an override can still clear it.
+  if (overrides.CLOUD_PROVIDER === 'azure' && !('COSMOS_ENDPOINT' in overrides)) {
+    process.env.COSMOS_ENDPOINT = 'https://acct.documents.azure.com:443/';
+  }
   for (const [k, v] of Object.entries(overrides)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -184,6 +191,18 @@ describe('azure provider', () => {
     delete process.env.GCP_PROJECT_ID;
     delete process.env.GOOGLE_SA_KEY_JSON;
     await expect(import('../src/lib/config.js')).rejects.toThrow(/GCP_PROJECT_ID|GOOGLE_SA_KEY_JSON/);
+  });
+
+  it('config rejects azure without COSMOS_ENDPOINT', async () => {
+    // There is no Firestore off GCP, so booting without a database endpoint
+    // would only fail later, on the first request.
+    vi.resetModules();
+    process.env.NODE_ENV = 'test';
+    process.env.CLOUD_PROVIDER = 'azure';
+    process.env.GCP_PROJECT_ID = 'proj-x';
+    process.env.GOOGLE_SA_KEY_JSON = JSON.stringify(FAKE_KEY);
+    delete process.env.COSMOS_ENDPOINT;
+    await expect(import('../src/lib/config.js')).rejects.toThrow(/COSMOS_ENDPOINT/);
   });
 });
 

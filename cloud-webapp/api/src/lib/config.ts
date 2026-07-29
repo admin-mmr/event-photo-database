@@ -25,6 +25,17 @@ const EnvSchema = z.object({
   // this on GCP — keep the runtime keyless.
   GOOGLE_SA_KEY_JSON: z.string().optional(),
 
+  // Cosmos DB (the Firestore replacement) — required when CLOUD_PROVIDER=azure,
+  // ignored on GCP. See lib/db/cosmosDb.ts and AZURE_MIGRATION_DEV_PLAN.md AZ2.
+  // Endpoint looks like https://<account>.documents.azure.com:443/
+  COSMOS_ENDPOINT: z.string().optional(),
+  COSMOS_DATABASE: z.string().default('eventphotos'),
+  // Account key. Leave UNSET in deployed environments: the api authenticates
+  // with its managed identity (Cosmos DB Built-in Data Contributor), keeping
+  // the runtime keyless the same way the GCP side is. Set it only for local dev
+  // against the Cosmos emulator, which has no Entra identity.
+  COSMOS_KEY: z.string().optional(),
+
   // GCP project this Cloud Run service runs in. Used to construct
   // Firestore/Storage client config. On Cloud Run this is auto-detected
   // from the metadata server, so it's optional in production. Off GCP
@@ -286,6 +297,13 @@ const EnvSchema = z.object({
         code: z.ZodIssueCode.custom,
         path: ['GOOGLE_SA_KEY_JSON'],
         message: 'GOOGLE_SA_KEY_JSON is required when CLOUD_PROVIDER=azure (no metadata server / ADC off GCP)',
+      });
+    }
+    if (!cfg.COSMOS_ENDPOINT) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['COSMOS_ENDPOINT'],
+        message: 'COSMOS_ENDPOINT is required when CLOUD_PROVIDER=azure (there is no Firestore off GCP)',
       });
     }
   });

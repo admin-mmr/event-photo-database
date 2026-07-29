@@ -1,12 +1,20 @@
 import './lib/gaxiosNativeFetch.js'; // must run before any google-auth-library / @google-cloud/storage use
 import { buildServer } from './server.js';
 import { env } from './lib/config.js';
+import { initDb } from './lib/firestore.js';
 import { logger } from './lib/logger.js';
 
 const app = buildServer();
 
+// Connect the document store before accepting traffic. No-op on GCP; on Azure
+// this is what loads the Cosmos client (see lib/firestore.ts initDb).
+await initDb();
+
 const server = app.listen(env.PORT, () => {
-  logger.info({ port: env.PORT, env: env.NODE_ENV }, 'api listening');
+  logger.info(
+    { port: env.PORT, env: env.NODE_ENV, cloud: env.CLOUD_PROVIDER },
+    'api listening',
+  );
 });
 
 // Cloud Run sends SIGTERM ~10s before killing the container on a new
