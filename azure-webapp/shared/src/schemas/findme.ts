@@ -94,6 +94,64 @@ export const MatchResultSchema = z.object({
 });
 export type MatchResult = z.infer<typeof MatchResultSchema>;
 
+/**
+ * Why the matcher refused every face in a reference selfie
+ * (matcher/quality.py `reasons`), plus `no_face_detected` for the case where it
+ * found none at all. Drives the specific "here's what's wrong with your photo"
+ * message instead of a generic "no clear face".
+ */
+export const SelfieFaceReasonSchema = z.enum([
+  'no_face_detected',
+  'too_small',
+  'too_blurry',
+  'low_confidence',
+]);
+export type SelfieFaceReason = z.infer<typeof SelfieFaceReasonSchema>;
+
+/** Advisory (non-blocking) problems with the face a search actually used. */
+export const SelfieFaceWarningSchema = z.enum(['small_face', 'not_frontal']);
+export type SelfieFaceWarning = z.infer<typeof SelfieFaceWarningSchema>;
+
+/**
+ * An array of known codes, silently dropping any the client doesn't recognize.
+ *
+ * These lists are diagnostics, not payload: a matcher deployed ahead of the api
+ * may add a code, and rejecting the whole response over a string we have no
+ * wording for would lose the searcher their results. Unknown → ignored.
+ */
+function knownCodes<T extends string>(
+  item: z.ZodType<T>,
+): z.ZodType<T[], z.ZodTypeDef, unknown[]> {
+  return z
+    .array(z.unknown())
+    .transform((xs) => xs.filter((x): x is T => item.safeParse(x).success));
+}
+
+/**
+ * Face census for ONE uploaded reference selfie, in upload order.
+ *
+ * A reference photo may contain bystanders — a friend in frame, a face on a
+ * poster — and the matcher silently queries with only the most confident usable
+ * face. That is the right default, but it can pick the wrong person, so the
+ * count comes back to the client: more than one face means the searcher is
+ * warned that we chose for them, and `selectedFace` lets the UI show which one.
+ */
+export const ReferenceFacesSchema = z.object({
+  /** Faces the detector found in this selfie (usable or not). */
+  faces: z.number(),
+  /** How many of them passed the quality gate (size / sharpness / confidence). */
+  usableFaces: z.number(),
+  /** Box of the face this query actually used, as fractions of the image
+   *  ([x1, y1, x2, y2], 0–1), or null when no face was usable. */
+  selectedFace: z.tuple([z.number(), z.number(), z.number(), z.number()]).nullable(),
+  /** Advisory problems with the face we queried with — it still worked, but the
+   *  searcher should know their reference is weak (matcher/quality.py). */
+  selectedWarnings: knownCodes(SelfieFaceWarningSchema).optional(),
+  /** Why every face was rejected, when none was usable. Empty otherwise. */
+  blockingReasons: knownCodes(SelfieFaceReasonSchema).optional(),
+});
+export type ReferenceFaces = z.infer<typeof ReferenceFacesSchema>;
+
 export const SearchResponseSchema = z.object({
   ok: z.literal(true),
   eventId: z.string(),
@@ -101,6 +159,9 @@ export const SearchResponseSchema = z.object({
   modelVersion: z.string().optional(),
   /** ID of the persisted match_runs doc (feeds the M4 feedback loop). */
   runId: z.string().optional(),
+  /** Per-selfie face census, so the UI can warn about a group-shot reference.
+   *  Optional: an older matcher revision simply doesn't report it. */
+  referenceFaces: z.array(ReferenceFacesSchema).optional(),
   results: z.array(MatchResultSchema),
 });
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
@@ -110,6 +171,9 @@ export const NoUsableFaceResponseSchema = z.object({
   ok: z.literal(false),
   error: z.literal('no_usable_face'),
   message: z.string(),
+  /** Specifically what was wrong (too small / blurry / none found), so the UI
+   *  can tell the searcher what to fix instead of "no clear face". */
+  reasons: knownCodes(SelfieFaceReasonSchema).optional(),
 });
 export type NoUsableFaceResponse = z.infer<typeof NoUsableFaceResponseSchema>;
 

@@ -148,6 +148,13 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
       : 'fused'
     : null;
   const resultCount = match.ok ? match.results.length : 0;
+  // Most faces the matcher saw in the uploaded selfie. >1 means the reference is
+  // a group shot and we picked a face on the searcher's behalf — relayed to the
+  // client so it can warn, and logged so support can explain a "these aren't my
+  // photos" report without re-running the search.
+  const maxFacesInReference = match.ok
+    ? Math.max(0, ...(match.referenceFaces ?? []).map((r) => r.faces))
+    : 0;
 
   // Persist the reference for reuse + admin repro (best-effort, non-fatal —
   // PRD D7/§6.1). Done on EVERY outcome (incl. no_usable_face / not-indexed) so
@@ -196,16 +203,21 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
       outcome,
       mode: storedMode,
       resultCount,
+      maxFacesInReference,
     },
     `Find Me search by ${name}${isGuest ? ' (guest)' : ''} on ${eventId} — ${outcome}`,
   );
 
   if (!match.ok) {
     if (match.error === 'no_usable_face') {
+      // `reasons` lets the client say what specifically was wrong (too small,
+      // blurry, none found) rather than the generic message, which stays as the
+      // fallback for an older matcher that reports no diagnostics.
       res.status(422).json({
         ok: false,
         error: 'no_usable_face',
         message: 'No clear face found in the photo — try a sharper, front-facing picture',
+        ...(match.faceReasons ? { reasons: match.faceReasons } : {}),
       });
       return;
     }
@@ -262,6 +274,7 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
     mode: match.mode,
     ...(match.modelVersion !== undefined ? { modelVersion: match.modelVersion } : {}),
     ...(runId !== undefined ? { runId } : {}),
+    ...(match.referenceFaces ? { referenceFaces: match.referenceFaces } : {}),
     results,
   };
   res.json(body);
