@@ -372,8 +372,23 @@ export interface DuplicateDrainSummary {
   /** Files trashed by THIS tick. */
   processed: number;
   failed: number;
-  /** Files still queued (plus sweep work) after this tick. */
+  /**
+   * Files still queued to trash after this tick — `pending` ONLY.
+   *
+   * This deliberately EXCLUDES the sweep queue. It used to be
+   * `pending.length + pendingSweep.length`, and because trashing a file moves it
+   * from one list to the other, the number sat dead still (a flat 1239 for the
+   * first four ticks of a real 1,239-file batch) while files were being removed
+   * the whole time — every reader, human or script, reads that as a hang. Sweep
+   * backlog is reported separately as `sweepRemaining`.
+   */
   remaining: number;
+  /** Managed shortcuts/copies still to retire (`pendingSweep`). */
+  sweepRemaining: number;
+  /** Cumulative files trashed for the whole batch, across every tick and drainer. */
+  removed: number;
+  /** Files the batch started with, so `removed`/`total` is a real progress figure. */
+  total: number;
   finished: boolean;
   /** True when another tick held the lease, so this one did nothing. */
   busy?: boolean;
@@ -388,11 +403,34 @@ export async function drainDuplicateRemovalQueue(
   budgetMs = TICK_BUDGET_MS,
 ): Promise<DuplicateDrainSummary> {
   const found = await oldestRunningBatch();
-  if (!found) return { drained: false, processed: 0, failed: 0, remaining: 0, finished: false };
+  if (!found) {
+    return {
+      drained: false,
+      processed: 0,
+      failed: 0,
+      remaining: 0,
+      sweepRemaining: 0,
+      removed: 0,
+      total: 0,
+      finished: false,
+    };
+  }
 
   const batch = await takeLease(found.id);
   if (!batch) {
-    return { drained: true, batchId: found.id, processed: 0, failed: 0, remaining: -1, finished: false, busy: true };
+    return {
+      drained: true,
+      batchId: found.id,
+      processed: 0,
+      failed: 0,
+      // -1 = "unknown, another drainer holds it", not "none left".
+      remaining: -1,
+      sweepRemaining: -1,
+      removed: found.removed ?? 0,
+      total: found.total ?? 0,
+      finished: false,
+      busy: true,
+    };
   }
 
   const start = Date.now();
@@ -412,7 +450,17 @@ export async function drainDuplicateRemovalQueue(
         trashedIds: [],
         warnings: ['MASTER_SPREADSHEET_ID is not set — cannot ledger removals, so nothing was trashed'],
       }, sweepEnabled);
-      return { drained: true, batchId: batch.id, processed: 0, failed: 0, remaining: batch.pending.length, finished: false };
+      return {
+        drained: true,
+        batchId: batch.id,
+        processed: 0,
+        failed: 0,
+        remaining: batch.pending.length,
+        sweepRemaining: batch.pendingSweep.length,
+        removed: batch.removed ?? 0,
+        total: batch.total ?? 0,
+        finished: false,
+      };
     }
 
     const token = await getDriveToken(DRIVE_SCOPE_READWRITE);
@@ -489,9 +537,13 @@ export async function drainDuplicateRemovalQueue(
   }
 
   const after = await batchRef(batch.id).get();
-  const remaining =
-    ((after.get('pending') as StoredItem[] | undefined) ?? []).length +
-    ((after.get('pendingSweep') as string[] | undefined) ?? []).length;
+  // Report the two queues SEPARATELY. Summing them hides all progress, because
+  // trashing a file just moves it from `pending` to `pendingSweep` — see the
+  // note on DuplicateDrainSummary.remaining.
+  const remaining = ((after.get('pending') as StoredItem[] | undefined) ?? []).length;
+  const sweepRemaining = ((after.get('pendingSweep') as string[] | undefined) ?? []).length;
+  const removed = (after.get('removed') as number | undefined) ?? 0;
+  const total = (after.get('total') as number | undefined) ?? 0;
   logger.info(
     {
       batchId: batch.id,
@@ -499,12 +551,25 @@ export async function drainDuplicateRemovalQueue(
       processed,
       failed,
       remaining,
+      sweepRemaining,
+      removed,
+      total,
       finished: justFinished,
       tickMs: Date.now() - start,
     },
     'duplicate removal drain tick',
   );
-  return { drained: true, batchId: batch.id, processed, failed, remaining, finished: justFinished };
+  return {
+    drained: true,
+    batchId: batch.id,
+    processed,
+    failed,
+    remaining,
+    sweepRemaining,
+    removed,
+    total,
+    finished: justFinished,
+  };
 }
 
 /** Read one batch (for UI polling). */

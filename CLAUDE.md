@@ -183,6 +183,20 @@
     - The drain query needs the composite index on `duplicateRemovalBatches`
       (`status` ASC + `createdAt` ASC) in `infra/firestore.indexes.json` — without
       it every tick 500s with `FAILED_PRECONDITION`.
+  - **Progress must never be reported as one summed number.** The drain's
+    `remaining` is `pending` ONLY (files still to trash) and the sweep backlog is
+    a separate `sweepRemaining`; cumulative `removed`/`total` come back on every
+    tick. It used to return `pending.length + pendingSweep.length`, and since
+    trashing a file just MOVES it between those two lists, the figure sat dead
+    still — a flat `1239` through the first four ticks of a real 1,239-file batch
+    while files were being removed the whole time. A working run was
+    indistinguishable from a hang, which sent a live investigation looking for a
+    stall that did not exist. Same reason `remove-duplicate-files.sh` takes each
+    event's tally from the batch's cumulative `removed` instead of summing its own
+    ticks (the scheduler drains the same batch, and those files are invisible to
+    the script — it reported "1434" for a run that removed 1,444), and why its
+    dry-run footer sums `candidates` and not the `BATCH_LIMIT`-capped `planned`
+    (which under-reported 2,683 duplicates as 697).
   - A club_admin's scan/removal is filtered to their own club's subtree *before*
     grouping, so they never see or touch another club's files; a machine caller
     (X-Sync-Token, no Firebase user) runs unscoped — do NOT let it fall through

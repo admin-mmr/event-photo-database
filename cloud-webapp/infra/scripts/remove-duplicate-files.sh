@@ -291,10 +291,24 @@ if len(rows) > 20:
       continue
     fi
 
-    ev_removed=$(( ev_removed + ${processed:-0} ))
-    total_removed=$(( total_removed + ${processed:-0} ))
+    # Take the event's tally from the batch's CUMULATIVE `removed`, not by summing
+    # our own ticks: the findme-duplicates-drain scheduler drains the same batch
+    # every 2 minutes, and files it trashed are invisible to this loop. Summing
+    # ticks reported "1434 trashed" for a run that really removed 1,444.
+    # Guard on batchId so a drain that picked up a DIFFERENT batch (the drain
+    # always takes the oldest running one) can never be counted as this event's.
+    # Both fields are absent on an api older than this script, so fall back to
+    # summing our own ticks rather than printing blanks.
+    tick_batch="$(field batchId)"
+    cum_removed="$(field removed)"
+    sweep_left="$(field sweepRemaining)"
+    if [[ "$tick_batch" == "$batch_id" && -n "${cum_removed:-}" ]]; then
+      ev_removed=${cum_removed}
+    else
+      ev_removed=$(( ev_removed + ${processed:-0} ))
+    fi
     total_failed=$(( total_failed + ${failed:-0} ))
-    echo "  tick $tick: removed ${processed:-0}, failed ${failed:-0}, remaining ${remaining:-0}"
+    echo "  tick $tick: removed ${processed:-0} (batch ${ev_removed}/${queued}), failed ${failed:-0}, queued ${remaining:-0}, sweep ${sweep_left:-n/a}"
 
     [[ "${finished:-0}" == "1" ]] && break
     # No forward progress and nothing left to sweep means every remaining file is
@@ -304,7 +318,8 @@ if len(rows) > 20:
       break
     fi
   done
-  echo "  event total: ${ev_removed} file(s) trashed"
+  total_removed=$(( total_removed + ev_removed ))
+  echo "  event total: ${ev_removed} of ${queued} file(s) trashed"
 done
 
 echo
