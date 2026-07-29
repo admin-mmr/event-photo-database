@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+import { FakeObjectStore } from './helpers/fakeObjectStore.js';
+
 // Config reads these at import — set before the service (and its config) load.
 process.env.MASTER_SPREADSHEET_ID = 'sheet-1';
-process.env.VOLUNTEER_STAGING_BUCKET = 'test-staging';
+const STAGING_BUCKET = 'test-staging';
+process.env.VOLUNTEER_STAGING_BUCKET = STAGING_BUCKET;
 process.env.VOLUNTEER_STAGING_PREFIX = 'vol';
 
 // ── mocks (must precede the service import) ─────────────────────────────────
@@ -177,49 +180,39 @@ vi.mock('../src/services/indexerJob.js', () => ({
   },
 }));
 
-// Staging bucket object fixtures keyed by object name.
-interface FakeObj {
-  exists: boolean;
-  size: number;
-  contentType?: string;
-  metadata?: Record<string, string>;
-  /** GCS reports MD5 base64-encoded; the service converts it to Drive's hex. */
-  md5Hash?: string;
+// The staging bucket, backed by the shared in-memory ObjectStore (AZ2) rather
+// than a bespoke `@google-cloud/storage` literal. These cases are the retry-
+// safety tests behind the 2,683-duplicate census, and the properties they turn
+// on — an absent object reading as null, an absent md5 meaning *unknown*, a
+// delete of a missing object being a no-op — are exactly what the shared fake
+// and its contract suite pin down for both providers.
+const storage = new FakeObjectStore();
+vi.mock('../src/lib/storage.js', () => ({ objectStore: () => storage }));
+
+/** Objects deleted from staging, in order (the fake records only real hits). */
+const deleted = storage.removed;
+
+/**
+ * Seed one staged object. Keeps the GCS-flavoured `md5Hash` (base64) that the
+ * cases are written in, and converts it to the hex the interface reports — the
+ * conversion the adapter now owns. An omitted hash means the provider reports
+ * NONE, which is the name+size fallback path.
+ */
+function stageObj(
+  objectName: string,
+  opts: { size: number; contentType?: string; metadata?: Record<string, string>; md5Hash?: string },
+): void {
+  storage.seed(STAGING_BUCKET, objectName, {
+    size: opts.size,
+    ...(opts.contentType === undefined ? {} : { contentType: opts.contentType }),
+    md5Hex: opts.md5Hash === undefined ? '' : Buffer.from(opts.md5Hash, 'base64').toString('hex'),
+    custom: opts.metadata ?? {},
+  });
 }
-const objects: Record<string, FakeObj> = {};
-const deleted: string[] = [];
-vi.mock('@google-cloud/storage', () => ({
-  Storage: class {
-    bucket(): unknown {
-      return {
-        file: (objectName: string) => ({
-          exists: async () => [objects[objectName]?.exists ?? false],
-          getMetadata: async () => [
-            {
-              size: objects[objectName]?.size,
-              contentType: objects[objectName]?.contentType,
-              metadata: objects[objectName]?.metadata,
-              md5Hash: objects[objectName]?.md5Hash,
-            },
-          ],
-          download: async (opts?: { start?: number; end?: number }) => {
-            const size = objects[objectName]?.size ?? 0;
-            const start = opts?.start ?? 0;
-            const end = Math.min(opts?.end ?? size - 1, size - 1);
-            return [Buffer.alloc(Math.max(0, end - start + 1))];
-          },
-          delete: async () => {
-            deleted.push(objectName);
-            return [undefined];
-          },
-        }),
-      };
-    }
-  },
-}));
 
 const {
   validateUploadLink,
+  createResumableSession,
   enqueueStagedBatch,
   stagingExtForMime,
   stagingObjectName,
@@ -247,13 +240,12 @@ beforeEach(() => {
   for (const k of Object.keys(sheetData)) delete sheetData[k];
   for (const k of Object.keys(sheetReads)) delete sheetReads[k];
   for (const k of Object.keys(eventDocs)) delete eventDocs[k];
-  for (const k of Object.keys(objects)) delete objects[k];
+  storage.reset();
   driveUploads.length = 0;
   resumableUploads.length = 0;
   folderCreates.length = 0;
   existingDriveFiles.length = 0;
   indexTriggers.length = 0;
-  deleted.length = 0;
   dedupDocs.clear();
   batchDocs.clear();
   batchWrites.length = 0;
@@ -291,6 +283,62 @@ describe('stagingExtForMime', () => {
 describe('stagingObjectName', () => {
   it('builds <prefix>/<eventId>/<batchId>/<uploadId>.<ext>', () => {
     expect(stagingObjectName('ev1', 'batchA', 'uuid-1', 'image/jpeg')).toBe('vol/ev1/batchA/uuid-1.jpg');
+  });
+});
+
+// ── createResumableSession ─────────────────────────────────────────────────
+
+describe('createResumableSession', () => {
+  it('stamps the link metadata + credit onto the object, in the staging bucket', async () => {
+    const link = await validateUploadLink('tok-good');
+    const s = await createResumableSession(link, 'b1', 'race-001.jpg', 'image/jpeg', '  Jane Doe  ');
+
+    expect(s.objectName).toBe(`vol/ev1/b1/${s.uploadId}.jpg`);
+    const call = storage.sessions.at(-1)!;
+    expect(call.bucket).toBe(STAGING_BUCKET);
+    expect(call.key).toBe(s.objectName);
+    expect(call.opts.metadata).toEqual({
+      eventId: 'ev1',
+      linkId: 'link1',
+      clubName: 'ClubA',
+      tag: 'tagX',
+      originalName: 'race-001.jpg',
+      photographerName: 'Jane Doe', // trimmed
+      batchId: 'b1',
+    });
+  });
+
+  it('outlives one signed-URL TTL, because a phone uploading video needs days', async () => {
+    // Re-minting mid-file would lose the committed offset. Both providers keep an
+    // unfinalized upload ~7 days, which is what the staging lifecycle matches.
+    const link = await validateUploadLink('tok-good');
+    await createResumableSession(link, 'b1', 'v.mp4', 'video/mp4');
+    expect(storage.sessions.at(-1)!.opts.ttlMs).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
+  it('tells the client NOT to stamp metadata on GCS, where the session pins it', async () => {
+    const link = await validateUploadLink('tok-good');
+    const s = await createResumableSession(link, 'b1', 'race-001.jpg', 'image/jpeg', 'Jane Doe');
+    expect(s.protocol).toBe('gcs-resumable');
+    // Empty: the browser is not trusted with it and does not need it.
+    expect(s.metadata).toEqual({});
+  });
+
+  it('hands the metadata to the client on Azure, where the commit overwrites it', async () => {
+    // Put Block List replaces the blob's metadata, so a server-side pre-stamp
+    // does not survive — the client has to send it or credit is lost.
+    storage.protocol = 'azure-block-blob';
+    const link = await validateUploadLink('tok-good');
+    const s = await createResumableSession(link, 'b1', 'race-001.jpg', 'image/jpeg', 'Jane Doe');
+    expect(s.protocol).toBe('azure-block-blob');
+    expect(s.metadata).toMatchObject({ originalName: 'race-001.jpg', photographerName: 'Jane Doe' });
+  });
+
+  it('gives every file its own object key, so two files never collide', async () => {
+    const link = await validateUploadLink('tok-good');
+    const a = await createResumableSession(link, 'b1', 'x.jpg', 'image/jpeg');
+    const b = await createResumableSession(link, 'b1', 'x.jpg', 'image/jpeg');
+    expect(a.objectName).not.toBe(b.objectName);
   });
 });
 
@@ -346,18 +394,16 @@ describe('validateUploadLink', () => {
 describe('enqueueStagedBatch', () => {
   it('copies into the Event/Club/tag/batch hierarchy with credited names, deletes staged, triggers once', async () => {
     const link = await validateUploadLink('tok-good'); // clubName ClubA, tag tagX
-    objects['vol/ev1/b1/u1.jpg'] = {
-      exists: true,
-      size: 100,
+    stageObj('vol/ev1/b1/u1.jpg', {
+size: 100,
       contentType: 'image/jpeg',
       metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
-    };
-    objects['vol/ev1/b1/u2.jpg'] = {
-      exists: true,
-      size: 200,
+    });
+    stageObj('vol/ev1/b1/u2.jpg', {
+size: 200,
       contentType: 'image/jpeg',
       metadata: { originalName: 'race-002.jpg', photographerName: 'Jane Doe' },
-    };
+    });
 
     const res = await enqueueStagedBatch(link, 'b1', ['vol/ev1/b1/u1.jpg', 'vol/ev1/b1/u2.jpg']);
 
@@ -396,12 +442,11 @@ describe('enqueueStagedBatch', () => {
   it('copies a large video via the chunked resumable path (never buffered whole)', async () => {
     const link = await validateUploadLink('tok-good');
     const size = 70 * 1024 * 1024; // > INLINE_COPY_MAX_BYTES (64 MiB) → 3 × 32 MiB chunks
-    objects['vol/ev1/bv/u1.mp4'] = {
-      exists: true,
-      size,
+    stageObj('vol/ev1/bv/u1.mp4', {
+size,
       contentType: 'video/mp4',
       metadata: { originalName: 'finish-line.mp4', photographerName: 'Jane Doe' },
-    };
+    });
 
     const res = await enqueueStagedBatch(link, 'bv', ['vol/ev1/bv/u1.mp4']);
 
@@ -420,7 +465,7 @@ describe('enqueueStagedBatch', () => {
 
   it('substitutes the DEFAULT_TAG (ALL) when the link has no tag', async () => {
     const link = await validateUploadLink('tok-notag'); // ClubD, empty tag
-    objects['vol/ev4/bt/u1.jpg'] = { exists: true, size: 10, contentType: 'image/jpeg', metadata: { originalName: 'x.jpg' } };
+    stageObj('vol/ev4/bt/u1.jpg', { size: 10, contentType: 'image/jpeg', metadata: { originalName: 'x.jpg' } });
     await enqueueStagedBatch(link, 'bt', ['vol/ev4/bt/u1.jpg']);
     expect(folderCreates[0]).toEqual({ parent: 'folder-ev4', name: 'ClubD' });
     expect(folderCreates[1]).toEqual({ parent: 'folder-ev4>ClubD', name: 'ALL' });
@@ -428,7 +473,7 @@ describe('enqueueStagedBatch', () => {
 
   it('names the batch folder "volunteer" when no photographer name was given', async () => {
     const link = await validateUploadLink('tok-good');
-    objects['vol/ev1/bv/u1.jpg'] = { exists: true, size: 10, contentType: 'image/jpeg', metadata: { originalName: 'x.jpg' } };
+    stageObj('vol/ev1/bv/u1.jpg', { size: 10, contentType: 'image/jpeg', metadata: { originalName: 'x.jpg' } });
     await enqueueStagedBatch(link, 'bv', ['vol/ev1/bv/u1.jpg']);
     expect(folderCreates[2]?.name).toMatch(/^\d{8}-\d{6}_volunteer$/);
   });
@@ -436,7 +481,7 @@ describe('enqueueStagedBatch', () => {
   it('creates no folders when every file is a duplicate (no empty batch folder)', async () => {
     const link = await validateUploadLink('tok-good');
     existingDriveFiles.push({ name: 'ClubA_dup.jpg', size: '5' });
-    objects['vol/ev1/bz/u1.jpg'] = { exists: true, size: 5, contentType: 'image/jpeg', metadata: { originalName: 'dup.jpg' } };
+    stageObj('vol/ev1/bz/u1.jpg', { size: 5, contentType: 'image/jpeg', metadata: { originalName: 'dup.jpg' } });
     const res = await enqueueStagedBatch(link, 'bz', ['vol/ev1/bz/u1.jpg']);
     expect(res).toMatchObject({ copied: 0, skippedDuplicates: 1 });
     expect(folderCreates).toHaveLength(0);
@@ -444,7 +489,7 @@ describe('enqueueStagedBatch', () => {
 
   it('credits with the club-only prefix when no photographer name was stamped', async () => {
     const link = await validateUploadLink('tok-good');
-    objects['vol/ev1/bc/u1.jpg'] = { exists: true, size: 10, contentType: 'image/jpeg', metadata: { originalName: 'shot.jpg' } };
+    stageObj('vol/ev1/bc/u1.jpg', { size: 10, contentType: 'image/jpeg', metadata: { originalName: 'shot.jpg' } });
     await enqueueStagedBatch(link, 'bc', ['vol/ev1/bc/u1.jpg']);
     expect(driveUploads[0]?.name).toBe('ClubA_shot.jpg');
   });
@@ -453,12 +498,11 @@ describe('enqueueStagedBatch', () => {
     const link = await validateUploadLink('tok-good');
     // The credited name of this upload already exists in Drive at the same size.
     existingDriveFiles.push({ name: 'ClubA_JaneDoe_race-001.jpg', size: '100' });
-    objects['vol/ev1/bd/u1.jpg'] = {
-      exists: true,
-      size: 100,
+    stageObj('vol/ev1/bd/u1.jpg', {
+size: 100,
       contentType: 'image/jpeg',
       metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
-    };
+    });
 
     const res = await enqueueStagedBatch(link, 'bd', ['vol/ev1/bd/u1.jpg']);
 
@@ -488,13 +532,12 @@ describe('enqueueStagedBatch', () => {
       size: '100',
       md5Checksum: HEX_A,
     });
-    objects['vol/ev1/bh1/u1.jpg'] = {
-      exists: true,
-      size: 100,
+    stageObj('vol/ev1/bh1/u1.jpg', {
+size: 100,
       contentType: 'image/jpeg',
       md5Hash: MD5_A,
       metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
-    };
+    });
 
     const res = await enqueueStagedBatch(link, 'bh1', ['vol/ev1/bh1/u1.jpg']);
 
@@ -505,13 +548,12 @@ describe('enqueueStagedBatch', () => {
   it('skips the same bytes credited to a DIFFERENT photographer', async () => {
     const link = await validateUploadLink('tok-good');
     existingDriveFiles.push({ name: 'ClubA_JaneDoe_race-001.jpg', size: '100', md5Checksum: HEX_A });
-    objects['vol/ev1/bh2/u1.jpg'] = {
-      exists: true,
-      size: 100,
+    stageObj('vol/ev1/bh2/u1.jpg', {
+size: 100,
       contentType: 'image/jpeg',
       md5Hash: MD5_A,
       metadata: { originalName: 'race-001.jpg', photographerName: 'Someone Else' },
-    };
+    });
 
     const res = await enqueueStagedBatch(link, 'bh2', ['vol/ev1/bh2/u1.jpg']);
     expect(res).toMatchObject({ copied: 0, skippedDuplicates: 1 });
@@ -520,13 +562,12 @@ describe('enqueueStagedBatch', () => {
   it('still copies genuinely different bytes that happen to share a name and size', async () => {
     const link = await validateUploadLink('tok-good');
     existingDriveFiles.push({ name: 'ClubA_JaneDoe_race-001.jpg', size: '100', md5Checksum: HEX_A });
-    objects['vol/ev1/bh3/u1.jpg'] = {
-      exists: true,
-      size: 100,
+    stageObj('vol/ev1/bh3/u1.jpg', {
+size: 100,
       contentType: 'image/jpeg',
       md5Hash: MD5_B, // different photo, same name+size
       metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
-    };
+    });
 
     const res = await enqueueStagedBatch(link, 'bh3', ['vol/ev1/bh3/u1.jpg']);
     expect(res).toMatchObject({ copied: 1, skippedDuplicates: 0 });
@@ -541,16 +582,15 @@ describe('enqueueStagedBatch', () => {
 
   it('skips a photo a concurrent batch already claimed, despite a stale snapshot', async () => {
     const link = await validateUploadLink('tok-good');
-    const staged = (batch: string) => ({
-      exists: true,
-      size: 100,
-      contentType: 'image/jpeg',
-      md5Hash: MD5_A,
-      metadata: { originalName: `race-001.jpg`, photographerName: 'Jane Doe' },
-      _batch: batch,
-    });
-    objects['vol/ev1/bc1/u1.jpg'] = staged('bc1');
-    objects['vol/ev1/bc2/u1.jpg'] = staged('bc2');
+    // Same content staged twice, once per racing batch.
+    for (const key of ['vol/ev1/bc1/u1.jpg', 'vol/ev1/bc2/u1.jpg']) {
+      stageObj(key, {
+        size: 100,
+        contentType: 'image/jpeg',
+        md5Hash: MD5_A,
+        metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
+      });
+    }
 
     const first = await enqueueStagedBatch(link, 'bc1', ['vol/ev1/bc1/u1.jpg']);
     // Deliberately do NOT add the copy to existingDriveFiles — the second batch
@@ -576,13 +616,12 @@ describe('enqueueStagedBatch', () => {
       batchId: 'killed-batch',
       claimedAt: new Date(), // fresh, so the stale-reclaim does not apply
     });
-    objects['vol/ev1/uc/u1.jpg'] = {
-      exists: true,
-      size: 100,
+    stageObj('vol/ev1/uc/u1.jpg', {
+size: 100,
       contentType: 'image/jpeg',
       md5Hash: MD5_A,
       metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
-    };
+    });
 
     const res = await enqueueStagedBatch(link, 'uc', ['vol/ev1/uc/u1.jpg']);
 
@@ -603,13 +642,12 @@ describe('enqueueStagedBatch', () => {
       claimedAt: new Date(),
       driveFileId: 'drive-1',
     });
-    objects['vol/ev1/cf/u1.jpg'] = {
-      exists: true,
-      size: 100,
+    stageObj('vol/ev1/cf/u1.jpg', {
+size: 100,
       contentType: 'image/jpeg',
       md5Hash: MD5_A,
       metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
-    };
+    });
 
     const res = await enqueueStagedBatch(link, 'cf', ['vol/ev1/cf/u1.jpg']);
 
@@ -620,13 +658,12 @@ describe('enqueueStagedBatch', () => {
   it('lets exactly one of two genuinely concurrent batches copy the same photo', async () => {
     const link = await validateUploadLink('tok-good');
     for (const b of ['cc1', 'cc2', 'cc3']) {
-      objects[`vol/ev1/${b}/u1.jpg`] = {
-        exists: true,
-        size: 100,
+      stageObj(`vol/ev1/${b}/u1.jpg`, {
+size: 100,
         contentType: 'image/jpeg',
         md5Hash: MD5_A,
         metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
-      };
+    });
     }
 
     const results = await Promise.all(
@@ -640,20 +677,18 @@ describe('enqueueStagedBatch', () => {
 
   it('dedupes by hash within one batch even when the names differ', async () => {
     const link = await validateUploadLink('tok-good');
-    objects['vol/ev1/bh4/u1.jpg'] = {
-      exists: true,
-      size: 42,
+    stageObj('vol/ev1/bh4/u1.jpg', {
+size: 42,
       contentType: 'image/jpeg',
       md5Hash: MD5_A,
       metadata: { originalName: 'first.jpg', photographerName: 'Jane Doe' },
-    };
-    objects['vol/ev1/bh4/u2.jpg'] = {
-      exists: true,
-      size: 42,
+    });
+    stageObj('vol/ev1/bh4/u2.jpg', {
+size: 42,
       contentType: 'image/jpeg',
       md5Hash: MD5_A,
       metadata: { originalName: 'second-name.jpg', photographerName: 'Jane Doe' },
-    };
+    });
 
     const res = await enqueueStagedBatch(link, 'bh4', ['vol/ev1/bh4/u1.jpg', 'vol/ev1/bh4/u2.jpg']);
     expect(res).toMatchObject({ copied: 1, skippedDuplicates: 1 });
@@ -662,12 +697,11 @@ describe('enqueueStagedBatch', () => {
   it('falls back to name+size when the staged object has no md5', async () => {
     const link = await validateUploadLink('tok-good');
     existingDriveFiles.push({ name: 'ClubA_JaneDoe_race-001.jpg', size: '100', md5Checksum: HEX_A });
-    objects['vol/ev1/bh5/u1.jpg'] = {
-      exists: true,
-      size: 100,
+    stageObj('vol/ev1/bh5/u1.jpg', {
+size: 100,
       contentType: 'image/jpeg',
       metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
-    };
+    });
 
     const res = await enqueueStagedBatch(link, 'bh5', ['vol/ev1/bh5/u1.jpg']);
     expect(res).toMatchObject({ copied: 0, skippedDuplicates: 1 });
@@ -676,8 +710,8 @@ describe('enqueueStagedBatch', () => {
   it('treats a second identical file within the same batch as a duplicate', async () => {
     const link = await validateUploadLink('tok-good');
     const meta = { originalName: 'dup.jpg', photographerName: 'Jane Doe' };
-    objects['vol/ev1/bw/u1.jpg'] = { exists: true, size: 42, contentType: 'image/jpeg', metadata: meta };
-    objects['vol/ev1/bw/u2.jpg'] = { exists: true, size: 42, contentType: 'image/jpeg', metadata: meta };
+    stageObj('vol/ev1/bw/u1.jpg', { size: 42, contentType: 'image/jpeg', metadata: meta });
+    stageObj('vol/ev1/bw/u2.jpg', { size: 42, contentType: 'image/jpeg', metadata: meta });
 
     const res = await enqueueStagedBatch(link, 'bw', ['vol/ev1/bw/u1.jpg', 'vol/ev1/bw/u2.jpg']);
 
@@ -691,20 +725,19 @@ describe('enqueueStagedBatch', () => {
   it('is not fooled by a same-name file of a different size', async () => {
     const link = await validateUploadLink('tok-good');
     existingDriveFiles.push({ name: 'ClubA_JaneDoe_race-001.jpg', size: '999' }); // different size
-    objects['vol/ev1/bs/u1.jpg'] = {
-      exists: true,
-      size: 100,
+    stageObj('vol/ev1/bs/u1.jpg', {
+size: 100,
       contentType: 'image/jpeg',
       metadata: { originalName: 'race-001.jpg', photographerName: 'Jane Doe' },
-    };
+    });
     const res = await enqueueStagedBatch(link, 'bs', ['vol/ev1/bs/u1.jpg']);
     expect(res).toMatchObject({ copied: 1, skippedDuplicates: 0 });
   });
 
   it('skips missing and empty objects without failing the batch', async () => {
     const link = await validateUploadLink('tok-good');
-    objects['vol/ev1/b2/good.jpg'] = { exists: true, size: 50, contentType: 'image/jpeg', metadata: { originalName: 'ok.jpg' } };
-    objects['vol/ev1/b2/empty.jpg'] = { exists: true, size: 0, contentType: 'image/jpeg' };
+    stageObj('vol/ev1/b2/good.jpg', { size: 50, contentType: 'image/jpeg', metadata: { originalName: 'ok.jpg' } });
+    stageObj('vol/ev1/b2/empty.jpg', { size: 0, contentType: 'image/jpeg' });
     // 'vol/ev1/b2/missing.jpg' is never registered → exists() false.
 
     const res = await enqueueStagedBatch(link, 'b2', [
@@ -721,7 +754,7 @@ describe('enqueueStagedBatch', () => {
 
   it('falls back to the object basename (credited) when originalName metadata is absent', async () => {
     const link = await validateUploadLink('tok-good');
-    objects['vol/ev1/b3/u9.png'] = { exists: true, size: 10, contentType: 'image/png' };
+    stageObj('vol/ev1/b3/u9.png', { size: 10, contentType: 'image/png' });
     await enqueueStagedBatch(link, 'b3', ['vol/ev1/b3/u9.png']);
     expect(driveUploads[0]?.name).toBe('ClubA_u9.png');
   });
@@ -763,13 +796,12 @@ describe('enqueueStagedBatch retry safety', () => {
 
   /** One staged photo with a known content hash. */
   function stageOne(objectName: string, md5Base64: string, originalName = 'race-001.jpg'): void {
-    objects[objectName] = {
-      exists: true,
+    stageObj(objectName, {
       size: 100,
       contentType: 'image/jpeg',
       md5Hash: md5Base64,
       metadata: { originalName, photographerName: 'Jane Doe' },
-    };
+    });
   }
 
   // 'AAECAwQFBgcICQoLDA0ODw==' → hex 000102...0f, the hash the service derives.

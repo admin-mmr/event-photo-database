@@ -1,15 +1,20 @@
 /**
- * resumableUpload.ts — browser-side GCS resumable upload with resume.
+ * resumableUpload.ts — browser-side resumable upload with resume.
  *
  * Per file:
- *   1. Reuse a persisted session URI (uploadDb) if the volunteer already started
+ *   1. Reuse a persisted session (uploadDb) if the volunteer already started
  *      this exact file; otherwise ask the api to mint one
  *      (POST /api/volunteer/upload/session) and persist it.
- *   2. Query GCS for how many bytes are already committed (handles a resumed
- *      tab or a half-finished previous attempt).
- *   3. PUT the remaining bytes in 8 MiB chunks, reporting progress. A network
- *      error or 5xx is retried with backoff after re-querying the offset, so a
+ *   2. Ask the bucket how much is already committed (handles a resumed tab or a
+ *      half-finished previous attempt).
+ *   3. Send the remaining bytes in 8 MiB chunks, reporting progress. A network
+ *      error or 5xx is retried with backoff after re-checking what landed, so a
  *      dropped connection never restarts the whole file.
+ *
+ * Steps 2–3 are provider-specific and the api says which to use via
+ * `protocol` (AZ2). GCS is implemented below; Azure block blobs live in
+ * `blockBlobUpload.ts`. Everything around them — the session cache, the
+ * fingerprint key, the retry schedule, the callbacks — is shared.
  *
  * GCS resumable protocol notes (must match the bucket CORS — see
  * UPLOAD_RESUMABLE_NOTES): chunk sizes must be a multiple of 256 KiB except the
@@ -19,6 +24,7 @@
  */
 
 import { apiPost } from './api.js';
+import { uploadBlockBlob } from './blockBlobUpload.js';
 import { getRecaptchaToken } from './recaptcha.js';
 import { getSession, putSession, deleteSession, sessionKey, type StoredSession } from './uploadDb.js';
 
@@ -46,6 +52,9 @@ interface SessionResponse {
   sessionUri: string;
   objectName: string;
   batchId: string;
+  /** Absent from an api that predates AZ2 — treated as the GCS path. */
+  protocol?: 'gcs-resumable' | 'azure-block-blob';
+  metadata?: Record<string, string>;
 }
 
 class AbortError extends Error {
@@ -94,6 +103,8 @@ async function ensureSession(
     batchId: res.batchId,
     total: file.size,
     createdAt: Date.now(),
+    protocol: res.protocol ?? 'gcs-resumable',
+    metadata: res.metadata ?? {},
   };
   await putSession(rec);
   return rec;
@@ -189,6 +200,26 @@ export async function uploadFileResumable(
 ): Promise<UploadResult> {
   const session = await ensureSession(token, batchId, file, mimeType, photographerName);
   const { sessionUri, total } = { sessionUri: session.sessionUri, total: session.total };
+
+  // Azure needs a different wire protocol (named blocks + an explicit commit),
+  // so hand the whole file off. A record with no `protocol` was written by a
+  // bundle that predates AZ2 and can only be a GCS session.
+  if (session.protocol === 'azure-block-blob') {
+    await uploadBlockBlob(
+      sessionUri,
+      file,
+      {
+        chunkSize: CHUNK_SIZE,
+        contentType: mimeType,
+        metadata: session.metadata ?? {},
+        maxRetries: MAX_RETRIES,
+        backoffMs,
+      },
+      cb,
+    );
+    await deleteSession(session.key);
+    return { uploadId: session.uploadId, objectName: session.objectName, bytes: total };
+  }
 
   // Where to resume from (handles a reopened tab / prior partial attempt).
   let offset = await queryOffset(sessionUri, total);

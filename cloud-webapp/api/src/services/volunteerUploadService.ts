@@ -1,26 +1,26 @@
 /**
- * volunteerUploadService.ts — GCS-first resumable uploads for volunteers.
+ * volunteerUploadService.ts — bucket-first resumable uploads for volunteers.
  *
- * Why GCS-first (UPLOAD_RESUMABLE_NOTES): the legacy gas-app flow uploads
+ * Why bucket-first (UPLOAD_RESUMABLE_NOTES): the legacy gas-app flow uploads
  * straight to Drive with `uploadType=multipart`, which is NOT resumable — a
  * dropped phone connection or a closed tab loses the whole batch (hence the
- * scary "DO NOT close this window" banner). GCS resumable uploads let the
+ * scary "DO NOT close this window" banner). A resumable bucket upload lets the
  * browser resume from the last committed byte, and the bytes land in a staging
  * bucket WITHOUT handing a broad Drive OAuth token to the browser. A later
  * server-side step copies the staged originals into Drive and triggers the
  * indexer (see `enqueueStagedBatch`, wired into the `/complete` and worker
  * paths in `routes/volunteerUpload.ts`).
  *
- * The browser never sees a credential here: we call `createResumableUpload()`
- * with ADC (the api-runtime@ SA) and return only the opaque, single-object
- * session URI.
+ * The browser never sees a broad credential here: the api mints a session
+ * scoped to ONE object key (`ObjectStore.createUploadSession` — a GCS resumable
+ * session URI, or a per-blob SAS on Azure) and returns only that.
  */
 
 import { randomUUID } from 'node:crypto';
 
-import { Storage, type CreateResumableUploadOptions } from '@google-cloud/storage';
-
 import { env } from '../lib/config.js';
+import { objectStore } from '../lib/storage.js';
+import type { UploadProtocol } from '../lib/storage/types.js';
 import { logger } from '../lib/logger.js';
 import { getSheetValues } from './sheetsService.js';
 import { firestore } from '../lib/firestore.js';
@@ -103,15 +103,6 @@ const EXT_BY_MIME: Record<string, string> = {
 
 export function stagingExtForMime(mimeType: string | undefined): string {
   return (mimeType && EXT_BY_MIME[mimeType.toLowerCase()]) || 'bin';
-}
-
-let storage: Storage | null = null;
-/** Shared lazily-built Storage client (also used by uploadRecoveryService). */
-export function getStorage(): Storage {
-  if (storage === null) {
-    storage = new Storage(env.GCP_PROJECT_ID ? { projectId: env.GCP_PROJECT_ID } : {});
-  }
-  return storage;
 }
 
 export interface ValidatedLink {
@@ -246,14 +237,24 @@ export interface CreatedSession {
   uploadId: string;
   objectName: string;
   sessionUri: string;
+  /** Wire protocol the browser must speak to `sessionUri` (`ObjectStore`). */
+  protocol: UploadProtocol;
+  /** Metadata the browser must stamp as it commits, when the provider requires
+   *  it (Azure). Empty on GCS, where the session already carries it. */
+  metadata: Record<string, string>;
 }
 
 /**
- * Initiate a GCS resumable upload session for one file and return its session
- * URI. `origin` MUST match the bucket CORS config or the browser's PUTs are
- * blocked. We stamp the original filename + link metadata onto the object so
- * the later Drive-copy step can reconstruct the credited name without a side
- * channel.
+ * Initiate a resumable upload session for one file and return its URL. On GCS
+ * `origin` MUST match the bucket CORS config or the browser's PUTs are blocked
+ * (on Azure, CORS is account-level config instead). We stamp the original
+ * filename + link metadata onto the object so the later Drive-copy step can
+ * reconstruct the credited name without a side channel.
+ *
+ * `protocol` + `metadata` travel to the client because the two providers commit
+ * differently: a GCS session pins the metadata server-side, while Azure's Put
+ * Block List overwrites it, so there the client has to send it. Nothing trusts
+ * the result for authorization — see `UploadSession.clientStampsMetadata`.
  */
 export async function createResumableSession(
   link: ValidatedLink,
@@ -265,32 +266,37 @@ export async function createResumableSession(
   const uploadId = randomUUID();
   const objectName = stagingObjectName(link.eventId, batchId, uploadId, mimeType);
 
-  // Only set `origin` when configured — under exactOptionalPropertyTypes an
-  // explicit `undefined` is rejected by the storage client's options type.
-  const options: CreateResumableUploadOptions = {
-    metadata: {
-      contentType: mimeType || 'application/octet-stream',
-      metadata: {
-        eventId: link.eventId,
-        linkId: link.linkId,
-        clubName: link.clubName,
-        tag: link.tag,
-        originalName: fileName,
-        // Stamped so the later Drive-copy step can reconstruct the credited
-        // filename without a side channel. Trimmed to keep object metadata tidy.
-        photographerName: photographerName.trim(),
-        batchId,
-      },
-    },
+  const metadata: Record<string, string> = {
+    eventId: link.eventId,
+    linkId: link.linkId,
+    clubName: link.clubName,
+    tag: link.tag,
+    originalName: fileName,
+    // Stamped so the later Drive-copy step can reconstruct the credited
+    // filename without a side channel. Trimmed to keep object metadata tidy.
+    photographerName: photographerName.trim(),
+    batchId,
   };
-  if (env.VOLUNTEER_UPLOAD_ORIGIN) options.origin = env.VOLUNTEER_UPLOAD_ORIGIN;
 
-  const [sessionUri] = await getStorage()
-    .bucket(env.VOLUNTEER_STAGING_BUCKET)
-    .file(objectName)
-    .createResumableUpload(options);
+  const session = await objectStore().createUploadSession(env.VOLUNTEER_STAGING_BUCKET, objectName, {
+    contentType: mimeType || 'application/octet-stream',
+    metadata,
+    origin: env.VOLUNTEER_UPLOAD_ORIGIN || undefined,
+    // The session outlives one signed-URL TTL on purpose: a volunteer on a slow
+    // phone connection uploads a multi-GB video across far longer than an hour,
+    // and re-minting mid-file would lose the committed offset. GCS keeps an
+    // unfinalized resumable upload ~7 days; the staging bucket's purge lifecycle
+    // is matched to that, so this is the same window on both providers.
+    ttlMs: 7 * 24 * 60 * 60 * 1000,
+  });
 
-  return { uploadId, objectName, sessionUri };
+  return {
+    uploadId,
+    objectName,
+    sessionUri: session.url,
+    protocol: session.protocol,
+    metadata: session.clientStampsMetadata ? metadata : {},
+  };
 }
 
 /**
@@ -322,46 +328,35 @@ export interface BatchResult {
 }
 
 /**
- * Dedup key for a candidate file: credited name (case-insensitive) + byte size.
+ * Fallback duplicate key for a file whose content hash is unknown: credited name
+ * (case-insensitive) + byte size.
+ *
  * Mirrors the gas-app DuplicateCheckService strategy — filename alone collides
  * across camera rolls and size alone collides across different photos, but the
  * pair is very unlikely to match by chance. We key on the CREDITED name (what we
  * actually write to Drive) so a re-upload through the same link — which produces
  * the same `<Club>_<Photographer>_<original>` name — is recognised as a dup.
- */
-/**
- * Fallback duplicate key for the rare file with no MD5. Content hash is the
- * primary key — see `gcsMd5ToHex`.
+ *
+ * The CONTENT HASH — not name+size — is the primary duplicate key
+ * (`ObjectMetadata.md5Hex`, normalized to Drive's lowercase hex by the storage
+ * adapter). name+size silently stopped catching anything once the capture-time
+ * rename shipped: stored files now carry a `YYYYMMDD-HHMMSS_` prefix, so an
+ * existing `20260726-075713_MMR_Jane_IMG_1.jpg` no longer matches a re-upload's
+ * freshly credited `MMR_Jane_IMG_1.jpg`. It also missed the same bytes credited
+ * to a different photographer, and raced across concurrent batches. MD5 is
+ * exactly what the indexer already uses downstream to collapse these into one
+ * photo (manifest `duplicates`), so matching on it here refuses the copy instead
+ * of cleaning up after it — a real event ended up with 982 redundant Drive
+ * files, each of which then multiplied into its own Photos_NNN and Album
+ * shortcut.
+ *
+ * An empty `md5Hex` means UNKNOWN, never "not a duplicate", and lands here. It
+ * is the normal case for a file Drive did not hash — and, per
+ * `lib/storage/blobStore.ts`, for every browser-committed blob on Azure, since
+ * Azure only stores a Content-MD5 the writer supplied.
  */
 export function dedupKey(name: string, size: number): string {
   return `${name.toLowerCase()}|${size}`;
-}
-
-/**
- * Normalize GCS's base64 MD5 to Drive's lowercase hex so the two are comparable.
- *
- * Content hash — not name+size — is the duplicate key. name+size silently
- * stopped catching anything once the capture-time rename shipped: stored files
- * now carry a `YYYYMMDD-HHMMSS_` prefix, so an existing
- * `20260726-075713_MMR_Jane_IMG_1.jpg` no longer matches a re-upload's freshly
- * credited `MMR_Jane_IMG_1.jpg`. It also missed the same bytes credited to a
- * different photographer, and raced across concurrent batches. MD5 is exactly
- * what the indexer already uses downstream to collapse these into one photo
- * (manifest `duplicates`), so matching on it here refuses the copy instead of
- * cleaning up after it — a real event ended up with 982 redundant Drive files,
- * each of which then multiplied into its own Photos_NNN and Album shortcut.
- *
- * Returns '' when the hash is absent/unparseable, which sends the caller to the
- * name+size fallback rather than treating "unknown" as "not a duplicate".
- */
-export function gcsMd5ToHex(md5Base64: string | null | undefined): string {
-  if (!md5Base64) return '';
-  try {
-    const hex = Buffer.from(md5Base64, 'base64').toString('hex').toLowerCase();
-    return /^[0-9a-f]{32}$/.test(hex) ? hex : '';
-  } catch {
-    return '';
-  }
 }
 
 /** Above this size, the staging→Drive copy switches from a single buffered
@@ -421,7 +416,8 @@ export async function enqueueStagedBatch(
   await initUploadBatch(batchId, link.eventId, link.linkId, objectNames.length);
 
   const folderId = await resolveEventFolderId(link.eventId);
-  const bucket = getStorage().bucket(env.VOLUNTEER_STAGING_BUCKET);
+  const store = objectStore();
+  const staging = env.VOLUNTEER_STAGING_BUCKET;
   const driveToken = await getDriveToken(DRIVE_SCOPE_READWRITE);
 
   // Snapshot existing Drive files for the duplicate check. Best-effort: if the
@@ -481,21 +477,21 @@ export async function enqueueStagedBatch(
     // than barring the file from ever being uploaded again.
     let claim: ClaimInput | null = null;
     try {
-      const file = bucket.file(objectName);
-      const [exists] = await file.exists();
-      if (!exists) {
+      // One round trip for existence AND metadata: a missing object reads back
+      // as null rather than throwing.
+      const meta = await store.head(staging, objectName);
+      if (!meta) {
         logger.warn({ eventId: link.eventId, batchId, objectName }, 'staged object missing, skipping');
         continue;
       }
-      const [meta] = await file.getMetadata();
-      const size = Number(meta.size ?? 0);
+      const size = meta.size;
       if (!size) {
         logger.warn({ eventId: link.eventId, batchId, objectName }, 'staged object is empty, skipping');
         continue;
       }
-      const custom = (meta.metadata ?? {}) as Record<string, string>;
+      const custom = meta.custom;
       const originalName = (custom.originalName || objectName.split('/').pop() || objectName).trim();
-      const contentType = meta.contentType || 'application/octet-stream';
+      const contentType = meta.contentType;
 
       // Photographer-credit rename (defence-in-depth: re-derived server-side, the
       // browser is never the only place this happens). Club comes from the link;
@@ -514,7 +510,7 @@ export async function enqueueStagedBatch(
       // its own snapshot before either had written anything. Skip + clean up
       // rather than writing a second copy.
       const key = dedupKey(name, size);
-      const hash = gcsMd5ToHex(meta.md5Hash);
+      const hash = meta.md5Hex;
       const seenAlready = hash ? seenHashes.has(hash) : seen.has(key);
       const candidate: ClaimInput = {
         eventId: link.eventId,
@@ -555,9 +551,9 @@ export async function enqueueStagedBatch(
         // Keeping them costs nothing — the bucket's lifecycle rule reclaims the
         // space, and until then upload-recovery can still put them in Drive.
         if (claimRes.confirmedInDrive) {
-          await file
-            .delete({ ignoreNotFound: true })
-            .catch((err) => logger.warn({ err, objectName }, 'duplicate cleanup failed (non-fatal)'));
+          await store.remove(staging, objectName).catch((err) =>
+            logger.warn({ err, objectName }, 'duplicate cleanup failed (non-fatal)'),
+          );
         } else {
           logger.warn(
             { eventId: link.eventId, batchId, objectName, name },
@@ -589,9 +585,9 @@ export async function enqueueStagedBatch(
           );
           if (hash) seenHashes.add(hash);
           seen.add(key);
-          await file
-            .delete({ ignoreNotFound: true })
-            .catch((err) => logger.warn({ err, objectName }, 'staged cleanup after adopt failed (non-fatal)'));
+          await store.remove(staging, objectName).catch((err) =>
+            logger.warn({ err, objectName }, 'staged cleanup after adopt failed (non-fatal)'),
+          );
           continue;
         }
       }
@@ -606,11 +602,11 @@ export async function enqueueStagedBatch(
           name,
           contentType,
           size,
-          async (start, end) => (await file.download({ start, end }))[0],
+          async (start, end) => store.read(staging, objectName, { start, end }),
           { token: driveToken, appProperties },
         );
       } else {
-        const [bytes] = await file.download();
+        const bytes = await store.read(staging, objectName);
         uploaded = await uploadFileToDrive(destFolderId, name, contentType, bytes, { token: driveToken, appProperties });
       }
       // Point the claim at what it produced so an admin delete can release it.
@@ -623,9 +619,9 @@ export async function enqueueStagedBatch(
       copiedBytes += size;
 
       // Best-effort cleanup; the bucket lifecycle rule is the backstop.
-      await file
-        .delete({ ignoreNotFound: true })
-        .catch((err) => logger.warn({ err, objectName }, 'staged object cleanup failed (non-fatal)'));
+      await store.remove(staging, objectName).catch((err) =>
+        logger.warn({ err, objectName }, 'staged object cleanup failed (non-fatal)'),
+      );
     } catch (err) {
       // A THROW DOES NOT PROVE THE WRITE DIDN'T LAND. Drive can commit the file
       // and still fail us on the way back (a timeout after the create, a 5xx on a

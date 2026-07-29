@@ -139,6 +139,38 @@ script prints the two steps it cannot do for you:
   reports `accepted` + `skippedDuplicates`. Dedup listing failure is non-fatal
   (proceeds without dedup; the indexer dedups by content hash downstream).
 
+## Two upload protocols (AZ2, 2026-07-29)
+
+The session is minted through the provider-neutral `ObjectStore`
+(`api/src/lib/storage/`), so `POST /session` now also returns **`protocol`** —
+`gcs-resumable` on GCP, `azure-block-blob` when `CLOUD_PROVIDER=azure`. The
+browser branches on it in `resumableUpload.ts`; the Azure path lives in
+`web/src/lib/blockBlobUpload.ts`. On GCP nothing about the flow changed.
+
+| | GCS resumable | Azure block blob |
+|---|---|---|
+| session | one opaque session URI | a blob SAS URL (`rcw`) |
+| a chunk | `PUT` + `Content-Range` | `PUT ?comp=block&blockid=…` |
+| commit | implicit on the last chunk | explicit `PUT ?comp=blocklist` |
+| resume | 308 + `Range` header | list uncommitted blocks |
+| CORS | baked into the session (`VOLUNTEER_UPLOAD_ORIGIN`) | account-level config |
+| metadata | pinned server-side | **sent by the client at commit** |
+
+Two consequences that matter more than the mechanics:
+
+- **On Azure the object's metadata is client-supplied**, because Put Block List
+  overwrites the blob's properties and metadata and a server-side pre-stamp does
+  not survive it. Nothing server-side trusts it for authorization: the copy path
+  takes event/club/tag from the api-validated link, and the object *key* (chosen
+  by the api, and all the SAS is scoped to) is what
+  `uploadRecoveryService` reads the batch id from. Only `originalName` and
+  `photographerName` come off the object, and the volunteer types both anyway.
+- **On Azure nothing exists until the block list is committed.** A volunteer who
+  closes the tab mid-file leaves uncommitted blocks, GC'd after a week — the same
+  window as an unfinalized GCS resumable upload and the same window `uploadDb`
+  expires local records on. So upload-recovery can only ever see files whose
+  commit succeeded, where on GCS it sees partially-written objects too.
+
 ## Deliberately NOT done
 
 - **EXIF/GPS scrub — intentionally skipped.** Per product decision, location

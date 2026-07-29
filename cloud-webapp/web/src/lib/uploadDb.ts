@@ -2,14 +2,16 @@
  * uploadDb.ts — tiny IndexedDB store for in-flight resumable upload sessions.
  *
  * This is what turns "closing the tab loses everything" into "we pick up where
- * you left off." For each file we persist its GCS resumable session URI keyed by
- * a stable fingerprint (token + name + size + lastModified). When the volunteer
+ * you left off." For each file we persist its upload session URL keyed by a
+ * stable fingerprint (token + name + size + lastModified). When the volunteer
  * reopens the page and re-selects the same files, resumableUpload looks the key
- * up, asks GCS how many bytes were committed, and continues from there instead
- * of restarting.
+ * up, asks the bucket how many bytes were committed, and continues from there
+ * instead of restarting.
  *
- * GCS keeps an unfinalized resumable session for ~7 days, so we expire local
- * records after 7 days to avoid resuming against a dead URI.
+ * A session is good for ~7 days on both providers (GCS keeps an unfinalized
+ * resumable upload that long; Azure garbage-collects uncommitted blocks after a
+ * week), so we expire local records after 7 days to avoid resuming against a
+ * dead URL.
  */
 
 const DB_NAME = 'volunteer-uploads';
@@ -25,6 +27,12 @@ export interface StoredSession {
   batchId: string;
   total: number;
   createdAt: number;
+  /** Wire protocol for `sessionUri`. Absent on records written by an older
+   *  bundle, which were all GCS — `resumableUpload` defaults accordingly. */
+  protocol?: 'gcs-resumable' | 'azure-block-blob';
+  /** Metadata the client must stamp at commit time (Azure only; see the api's
+   *  CreateUploadSessionResponse). Absent/empty means the session carries it. */
+  metadata?: Record<string, string>;
 }
 
 /** Stable per-file key. lastModified + size make accidental re-selection of a

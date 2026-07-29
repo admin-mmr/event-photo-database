@@ -39,14 +39,23 @@ const FAKE_KEY = { type: 'service_account', client_email: 'indexer-runtime@x.iam
 /** (Re)load config + googleCredentials fresh with the given env. */
 async function load(overrides: Record<string, string | undefined>) {
   vi.resetModules();
-  for (const k of ['CLOUD_PROVIDER', 'GOOGLE_SA_KEY_JSON', 'GCP_PROJECT_ID', 'COSMOS_ENDPOINT'])
+  for (const k of [
+    'CLOUD_PROVIDER',
+    'GOOGLE_SA_KEY_JSON',
+    'GCP_PROJECT_ID',
+    'COSMOS_ENDPOINT',
+    'AZURE_STORAGE_ACCOUNT_URL',
+  ])
     delete process.env[k];
   process.env.NODE_ENV = 'test';
-  // CLOUD_PROVIDER=azure also requires a Cosmos endpoint (AZ2). These cases are
-  // about the Google credential path, so satisfy that requirement by default;
-  // an override can still clear it.
+  // CLOUD_PROVIDER=azure also requires a Cosmos endpoint and a storage account
+  // (AZ2). These cases are about the Google credential path, so satisfy those
+  // requirements by default; an override can still clear either one.
   if (overrides.CLOUD_PROVIDER === 'azure' && !('COSMOS_ENDPOINT' in overrides)) {
     process.env.COSMOS_ENDPOINT = 'https://acct.documents.azure.com:443/';
+  }
+  if (overrides.CLOUD_PROVIDER === 'azure' && !('AZURE_STORAGE_ACCOUNT_URL' in overrides)) {
+    process.env.AZURE_STORAGE_ACCOUNT_URL = 'https://acct.blob.core.windows.net';
   }
   for (const [k, v] of Object.entries(overrides)) {
     if (v === undefined) delete process.env[k];
@@ -203,6 +212,34 @@ describe('azure provider', () => {
     process.env.GOOGLE_SA_KEY_JSON = JSON.stringify(FAKE_KEY);
     delete process.env.COSMOS_ENDPOINT;
     await expect(import('../src/lib/config.js')).rejects.toThrow(/COSMOS_ENDPOINT/);
+  });
+
+  it('config rejects azure without a storage account', async () => {
+    // Same reasoning as the Cosmos endpoint: there is no GCS off GCP, and the
+    // first thing that would notice is a volunteer's upload or a gallery thumb.
+    vi.resetModules();
+    process.env.NODE_ENV = 'test';
+    process.env.CLOUD_PROVIDER = 'azure';
+    process.env.GCP_PROJECT_ID = 'proj-x';
+    process.env.GOOGLE_SA_KEY_JSON = JSON.stringify(FAKE_KEY);
+    process.env.COSMOS_ENDPOINT = 'https://acct.documents.azure.com:443/';
+    delete process.env.AZURE_STORAGE_ACCOUNT_URL;
+    delete process.env.AZURE_STORAGE_CONNECTION_STRING;
+    await expect(import('../src/lib/config.js')).rejects.toThrow(/AZURE_STORAGE_ACCOUNT_URL/);
+  });
+
+  it('accepts a connection string instead of an account url (Azurite)', async () => {
+    vi.resetModules();
+    process.env.NODE_ENV = 'test';
+    process.env.CLOUD_PROVIDER = 'azure';
+    process.env.GCP_PROJECT_ID = 'proj-x';
+    process.env.GOOGLE_SA_KEY_JSON = JSON.stringify(FAKE_KEY);
+    process.env.COSMOS_ENDPOINT = 'https://acct.documents.azure.com:443/';
+    delete process.env.AZURE_STORAGE_ACCOUNT_URL;
+    process.env.AZURE_STORAGE_CONNECTION_STRING = 'AccountName=devstoreaccount1;AccountKey=k';
+    const { env } = await import('../src/lib/config.js');
+    expect(env.AZURE_STORAGE_CONNECTION_STRING).toContain('devstoreaccount1');
+    delete process.env.AZURE_STORAGE_CONNECTION_STRING;
   });
 });
 

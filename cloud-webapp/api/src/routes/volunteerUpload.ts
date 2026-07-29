@@ -122,6 +122,8 @@ volunteerUploadRouter.post(
       sessionUri: session.sessionUri,
       objectName: session.objectName,
       batchId,
+      protocol: session.protocol,
+      metadata: session.metadata,
     };
     res.json(body);
   } catch (err) {
