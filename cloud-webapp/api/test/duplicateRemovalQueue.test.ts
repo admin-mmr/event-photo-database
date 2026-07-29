@@ -352,6 +352,49 @@ describe('drainDuplicateRemovalQueue', () => {
     expect(tryRebuildPublicFolderIndex).toHaveBeenCalledTimes(1);
   });
 
+  it('reports the two queues separately so progress is never hidden', async () => {
+    // THE BUG THIS GUARDS: `remaining` used to be pending + pendingSweep, and
+    // trashing a file just moves it between those lists — so the number sat dead
+    // still (a flat 1239 for the first four ticks of a real 1,239-file batch)
+    // while files were being removed the whole time. A run that was working read
+    // as a hang. `remaining` is queued-to-trash ONLY; sweep backlog is its own
+    // field, and removed/total is the honest progress figure.
+    await queue(2);
+    removeShortcutsForTargets.mockResolvedValueOnce({ ...okSweep, shortcutsRemoved: 1, completed: false });
+    const cutShort = await drainDuplicateRemovalQueue();
+    expect(cutShort.remaining).toBe(0); // nothing left to trash …
+    expect(cutShort.sweepRemaining).toBe(2); // … but the sweep still owes work
+    expect(cutShort.finished).toBe(false);
+    // The summed version reported 2 here and was indistinguishable from
+    // "2 files still untrashed".
+    expect(cutShort.removed).toBe(2);
+    expect(cutShort.total).toBe(2);
+
+    const done = await drainDuplicateRemovalQueue();
+    expect(done.remaining).toBe(0);
+    expect(done.sweepRemaining).toBe(0);
+    expect(done.finished).toBe(true);
+  });
+
+  it('reports cumulative removed/total, counting files another drainer trashed', async () => {
+    // The scheduler drains the same batch every 2 minutes, so a caller that sums
+    // its OWN ticks undercounts — that is why a run which removed 1,444 files
+    // reported "1434 trashed". `removed` is the batch's cumulative tally.
+    const id = await queue(70);
+    const first = await drainDuplicateRemovalQueue();
+    expect(first.processed).toBe(60); // this tick
+    expect(first.removed).toBe(60); // batch so far
+    expect(first.total).toBe(70);
+    expect(first.remaining).toBe(10);
+
+    const second = await drainDuplicateRemovalQueue();
+    expect(second.processed).toBe(10); // only 10 in THIS tick …
+    expect(second.removed).toBe(70); // … but 70 for the batch
+    expect(second.total).toBe(70);
+    expect(second.finished).toBe(true);
+    expect((await getDuplicateBatch(id))!.removed).toBe(70);
+  });
+
   it('refuses to touch a batch another tick is already draining', async () => {
     // The browser drives ticks while the scheduler also fires them, so two can
     // overlap; without the lease they would trash the same files twice.

@@ -58,10 +58,19 @@ if [[ -z "$API_URL" ]]; then
 fi
 URI="${API_URL}/api/admin/duplicates/drain"
 
+# Borrow the OIDC service account from whichever existing job already has one.
+#
+# Do NOT key this off a single hard-coded job name: it used to read
+# findme-drive-sync, which is the ONE job of the five with no OIDC token at all
+# (it predates the convention and works only because the api is publicly
+# invokable). So the probe always came back empty and the script died with
+# "no OIDC service account found" even on a perfectly configured project.
+# Scanning every job in the region finds the first one that does carry an SA.
 if [[ -z "${OIDC_SA:-}" ]]; then
-  OIDC_SA="$(gcloud scheduler jobs describe findme-drive-sync \
+  OIDC_SA="$(gcloud scheduler jobs list \
     --location="$REGION" --project="$PROJECT_ID" \
-    --format='value(httpTarget.oidcToken.serviceAccountEmail)' 2>/dev/null || true)"
+    --format='value(httpTarget.oidcToken.serviceAccountEmail)' 2>/dev/null \
+    | awk 'NF { print; exit }' || true)"
 fi
 if [[ -z "$OIDC_SA" ]]; then
   echo "ERROR: no OIDC service account found." >&2
