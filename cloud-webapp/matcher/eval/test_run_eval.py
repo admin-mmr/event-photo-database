@@ -15,7 +15,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from run_eval import (  # noqa: E402
+    ANCHOR_SWEEP_CFG,
     _fused_candidates,
+    anchor_evaluate,
+    face_quality_sweep,
     _mean_unit,
     _time_weight_fn,
     fused_precision_at_k,
@@ -219,3 +222,112 @@ def test_time_conditional_sweep_structure_and_baseline():
         k=5, w_face=0.5, w_person=0.5, windows=[(45, 180, 0.0)],
     )
     assert tc_none["anchored_people"] == 0
+
+
+# ── anchor promotion ─────────────────────────────────────────────────────────
+
+def _anchor_event():
+    """Three photos of the same query face (basis(0)):
+
+      solo   — 1 frontal face, its own outfit basis(5); the ideal anchor.
+      crowd  — 6 faces, small and side-on; gated out.
+      other  — 1 frontal face, but the labels say it is NOT this person.
+    """
+    faces = np.stack([
+        unit(basis(0)),                               # solo
+        unit(basis(0) * 0.95 + basis(1) * 0.31),      # crowd (matched face)
+        *[unit(basis(8 + i)) for i in range(5)],      # crowd (bystanders)
+        unit(basis(0) * 0.9 + basis(2) * 0.44),       # other
+    ])
+    fmeta = [
+        {"photoId": "solo", "box": [0, 0, 400, 400], "score": 0.95,
+         "quality": {"usable": True, "frontality": 0.95, "face_frac": 0.22}},
+        {"photoId": "crowd", "box": [0, 0, 30, 30], "score": 0.7,
+         "quality": {"usable": False, "frontality": 0.2, "face_frac": 0.02}},
+        *[{"photoId": "crowd", "box": [0, 0, 30, 30], "score": 0.7,
+           "quality": {"usable": False, "frontality": 0.4, "face_frac": 0.02}} for _ in range(5)],
+        {"photoId": "other", "box": [0, 0, 400, 400], "score": 0.9,
+         "quality": {"usable": True, "frontality": 0.9, "face_frac": 0.2}},
+    ]
+    persons = np.stack([unit(basis(5)), unit(basis(6)), unit(basis(7))])
+    pmeta = [
+        {"photoId": "solo", "box": [0, 0, 500, 900], "score": 0.8},
+        {"photoId": "crowd", "box": [0, 0, 50, 400], "score": 0.8},
+        {"photoId": "other", "box": [0, 0, 500, 900], "score": 0.8},
+    ]
+    return EventEmbeddings(build_manifest("ev", "test@v0", fmeta, pmeta), faces, persons)
+
+
+def test_anchor_promotion_picks_the_solo_frontal_photo():
+    event = _anchor_event()
+    truth = {"alice": {"solo", "crowd"}}
+    queries = {"alice": {"face": unit(basis(0)), "person": unit(basis(3))}}
+    out = anchor_evaluate(event, truth, {}, queries, k=5, w_face=0.85, w_person=0.15,
+                          tnorm=False, cfg=ANCHOR_SWEEP_CFG)
+    assert out["per_person"]["alice"]["anchor"] == "solo"
+    assert out["suggested"]["correct"] == 1 and out["suggested"]["wrong"] == 0
+    assert out["suggested"]["precision"] == pytest.approx(1.0)
+
+
+def test_anchor_promotion_counts_a_wrong_suggestion_as_wrong():
+    """A suggestion the user marked 'not me' must be reported, not averaged away —
+    it is the failure mode that sends the follow-up search after a stranger."""
+    event = _anchor_event()
+    # 'solo' is now judged NOT this person, and nothing else qualifies.
+    truth = {"alice": {"crowd", "other"}}
+    negatives = {"alice": {"solo"}}
+    queries = {"alice": {"face": unit(basis(0)), "person": unit(basis(3))}}
+    out = anchor_evaluate(event, truth, negatives, queries, k=5, w_face=0.85, w_person=0.15,
+                          tnorm=False, cfg=ANCHOR_SWEEP_CFG)
+    assert out["per_person"]["alice"]["verdict"] == "wrong"
+    assert out["suggested"]["wrong"] == 1
+    assert out["suggested"]["precision"] == pytest.approx(0.0)
+
+
+def test_anchor_promotion_reports_no_precision_when_nothing_is_judged():
+    event = _anchor_event()
+    truth = {"alice": {"crowd", "other"}}  # 'solo' has no verdict either way
+    queries = {"alice": {"face": unit(basis(0)), "person": unit(basis(3))}}
+    out = anchor_evaluate(event, truth, {}, queries, k=5, w_face=0.85, w_person=0.15,
+                          tnorm=False, cfg=ANCHOR_SWEEP_CFG)
+    assert out["suggested"]["unjudged"] == 1
+    assert out["suggested"]["precision"] is None
+
+
+def test_anchor_promotion_gates_out_a_crowd_only_event():
+    """No eligible photo → no suggestion, and the person is not counted."""
+    faces = np.stack([unit(basis(0))] * 3)
+    fmeta = [{"photoId": "crowd", "box": [0, 0, 20, 20], "score": 0.7,
+              "quality": {"usable": False, "frontality": 0.1, "face_frac": 0.01}} for _ in range(3)]
+    event = EventEmbeddings(build_manifest("ev", "v", fmeta, []), faces, np.zeros((0, DIM), np.float32))
+    truth = {"alice": {"crowd", "crowd2"}}
+    queries = {"alice": {"face": unit(basis(0)), "person": None}}
+    out = anchor_evaluate(event, truth, {}, queries, k=5, w_face=1.0, w_person=0.0,
+                          tnorm=False, cfg=ANCHOR_SWEEP_CFG)
+    assert out["per_person"]["alice"] == {"anchor": None}
+    assert out["queries"] == 0 and out["suggested"]["correct"] == 0
+
+
+# ── face-quality weighting (Item 5) ──────────────────────────────────────────
+
+def test_face_quality_sweep_always_includes_the_baseline_row():
+    event = _anchor_event()
+    truth = {"alice": {"solo", "crowd"}}
+    queries = {"alice": {"face": unit(basis(0)), "person": unit(basis(3))}}
+    out = face_quality_sweep(event, truth, {}, queries, k=5, weights=[0.5],
+                             w_face=0.85, w_person=0.15, tnorm=False, judged=False)
+    assert [r["weight"] for r in out["rows"]] == [0.0, 0.5]
+    assert out["coverage"]["with_quality"] == len(event.meta["face"])
+
+
+def test_face_quality_sweep_flags_an_index_without_quality():
+    """A pre-quality manifest makes every weight identical — say so, so a flat
+    sweep isn't read as 'the feature does nothing'."""
+    event = make_event([("a", basis(0)), ("b", basis(0))])
+    truth = {"alice": {"a", "b"}}
+    queries = {"alice": {"face": unit(basis(0)), "person": None}}
+    out = face_quality_sweep(event, truth, {}, queries, k=5, weights=[1.0],
+                             w_face=1.0, w_person=0.0, tnorm=False, judged=False)
+    assert out["coverage"]["with_quality"] == 0
+    precisions = {r["precision"] for r in out["rows"]}
+    assert len(precisions) == 1  # identical by construction

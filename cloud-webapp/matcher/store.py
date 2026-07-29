@@ -22,6 +22,8 @@ import threading
 
 import numpy as np
 
+import quality as quality_mod
+
 EMB_SUBDIR = "embeddings"
 FILES = {"face": "faces.npy", "person": "persons.npy"}
 MANIFEST = "manifest.json"
@@ -85,6 +87,15 @@ class EventEmbeddings:
                 raise ValueError(
                     f"manifest/{kind} length mismatch: {n_meta} meta rows vs {n_vec} vectors"
                 )
+        # photoId → its row indices, per kind. Built once here because the
+        # anchor/PRF paths look rows up per photoId and a linear scan of every
+        # meta row per lookup is O(crops × lookups) on the hot search path.
+        self._rows_by_photo: dict[str, dict[str, list[int]]] = {"face": {}, "person": {}}
+        for kind in ("face", "person"):
+            for i, m in enumerate(self.meta[kind]):
+                self._rows_by_photo[kind].setdefault(str(m.get("photoId")), []).append(i)
+        # Lazily built per-row attenuation vectors, keyed by (kind, weight).
+        self._quality_cache: dict[tuple[str, float], np.ndarray] = {}
 
     def taken_at_ms(self, photo_id: str) -> int | None:
         """Capture time (epoch ms) for a photo from the manifest `photos` map,
@@ -93,6 +104,23 @@ class EventEmbeddings:
         so this needs no new manifest field and no re-index."""
         rec = self.photos.get(photo_id)
         return _iso_to_epoch_ms(rec.get("takenAt")) if rec else None
+
+    def rows_for_photo(self, kind: str, photo_id: str) -> list[int]:
+        """Row indices of `photo_id`'s `kind` crops (empty list if it has none).
+
+        Rows — not just vectors — because the anchor path needs each crop's
+        metadata (box, quality) alongside its embedding."""
+        return list(self._rows_by_photo[kind].get(str(photo_id), ()))
+
+    def face_count(self, photo_id: str) -> int:
+        """How many faces the indexer found in this photo. The cheap "is this a
+        solo shot or a crowd?" signal behind anchor suggestion — a solo photo's
+        matched crop cannot be somebody else's face."""
+        return len(self._rows_by_photo["face"].get(str(photo_id), ()))
+
+    def crop_meta(self, kind: str, row: int) -> dict:
+        """Manifest metadata for one crop row ({photoId, box, score, quality?})."""
+        return self.meta[kind][row]
 
     def embeddings_for_photo(self, kind: str, photo_id: str) -> np.ndarray:
         """Every `kind` ('face'|'person') crop vector belonging to `photo_id`.
@@ -103,14 +131,41 @@ class EventEmbeddings:
         the user confirmed is a clean in-domain reference, so its own embeddings
         are folded back into the query."""
         vecs = self.vectors[kind]
-        rows = [i for i, m in enumerate(self.meta[kind]) if m.get("photoId") == photo_id]
+        rows = self.rows_for_photo(kind, photo_id)
         if not rows:
             dim = vecs.shape[1] if vecs.ndim == 2 else 0
             return np.zeros((0, dim), dtype=np.float32)
         return vecs[rows]
 
+    def quality_factors(self, kind: str, weight: float) -> np.ndarray:
+        """Per-row score multipliers in [1 - weight, 1.0] from each crop's stored
+        quality (Item 5). `weight` 0.0 → all ones (feature off).
+
+        Cached per (kind, weight): the manifest is immutable for the instance
+        lifetime, so this is computed once per event rather than per search."""
+        key = (kind, float(weight))
+        cached = self._quality_cache.get(key)
+        if cached is not None:
+            return cached
+        n = len(self.meta[kind])
+        if weight <= 0:
+            factors = np.ones(n, dtype=np.float32)
+        else:
+            terms = np.empty(n, dtype=np.float32)
+            for i, m in enumerate(self.meta[kind]):
+                q = m.get("quality") or {}
+                terms[i] = quality_mod.quality_term(q.get("frontality"), q.get("face_frac"))
+            factors = (1.0 - weight * (1.0 - terms)).astype(np.float32)
+        self._quality_cache[key] = factors
+        return factors
+
     def top_k(
-        self, kind: str, query: np.ndarray, k: int | None = 50, tnorm: bool = False
+        self,
+        kind: str,
+        query: np.ndarray,
+        k: int | None = 50,
+        tnorm: bool = False,
+        quality_weight: float = 0.0,
     ) -> list[dict]:
         """Cosine top-k crops for `kind` ('face'|'person').
         Returns [{photoId, score, row, ...meta}], best first. Vectors are
@@ -124,7 +179,13 @@ class EventEmbeddings:
         against everyone, so a single threshold behaves the same for distinctive
         and generic queries. The transform is affine (monotonic), so it never
         changes single-query ordering — it only rescales the scores that the
-        fusion threshold and cross-modality blend compare."""
+        fusion threshold and cross-modality blend compare.
+
+        `quality_weight > 0` additionally attenuates each crop's score by its own
+        stored quality (Item 5) — a small, side-on face must score higher than a
+        clean frontal one to rank alongside it. Applied AFTER T-norm (the knob
+        belongs in z-space, where the threshold lives) and only to positive
+        scores: scaling a negative z toward zero would *promote* a bad crop."""
         vecs = self.vectors[kind]
         if vecs.size == 0:
             return []
@@ -135,6 +196,8 @@ class EventEmbeddings:
         sims = vecs @ q
         if tnorm:
             sims = (sims - float(sims.mean())) / max(float(sims.std()), 1e-6)
+        if quality_weight > 0:
+            sims = np.where(sims > 0, sims * self.quality_factors(kind, quality_weight), sims)
         n = len(sims)
         if k is None or k >= n:
             idx = np.argsort(-sims)
@@ -145,29 +208,41 @@ class EventEmbeddings:
         return [{**self.meta[kind][i], "row": int(i), "score": float(sims[i])} for i in idx]
 
     def top_photos(
-        self, kind: str, query: np.ndarray, k: int | None = 50, tnorm: bool = False
+        self,
+        kind: str,
+        query: np.ndarray,
+        k: int | None = 50,
+        tnorm: bool = False,
+        quality_weight: float = 0.0,
     ) -> list[dict]:
         """Per-photo results: max crop score per photo, best first. `k=None`
         returns every photo ranked (no cap) — the caller is expected to gate
-        the list some other way (e.g. the fused score threshold). `tnorm` is
-        forwarded to `top_k` (see there)."""
+        the list some other way (e.g. the fused score threshold). `tnorm` and
+        `quality_weight` are forwarded to `top_k` (see there); attenuation
+        happens before the per-photo max, so a group shot is still represented by
+        its best face rather than being penalized as a whole."""
         pool = None if k is None else max(k * 4, 200)
-        best = self._best_crop_per_photo(kind, query, pool, tnorm)
+        best = self._best_crop_per_photo(kind, query, pool, tnorm, quality_weight)
         # `pool` caps CROPS, not photos. A photo with many crops (a big group
         # shot) can fill the pool and crowd distinct photos out, returning fewer
         # than `k`. Only then — and only if the pool actually held anything back
         # — rescan uncapped, so the common case keeps the cheap partial sort.
         if k is not None and len(best) < k and pool is not None and pool < len(self.meta[kind]):
-            best = self._best_crop_per_photo(kind, query, None, tnorm)
+            best = self._best_crop_per_photo(kind, query, None, tnorm, quality_weight)
         ranked = sorted(best.values(), key=lambda h: -h["score"])
         return ranked if k is None else ranked[:k]
 
     def _best_crop_per_photo(
-        self, kind: str, query: np.ndarray, pool: int | None, tnorm: bool
+        self,
+        kind: str,
+        query: np.ndarray,
+        pool: int | None,
+        tnorm: bool,
+        quality_weight: float = 0.0,
     ) -> dict[str, dict]:
         """photoId → its highest-scoring crop, over the top `pool` crops."""
         best: dict[str, dict] = {}
-        for hit in self.top_k(kind, query, k=pool, tnorm=tnorm):
+        for hit in self.top_k(kind, query, k=pool, tnorm=tnorm, quality_weight=quality_weight):
             pid = hit["photoId"]
             if pid not in best or hit["score"] > best[pid]["score"]:
                 best[pid] = hit

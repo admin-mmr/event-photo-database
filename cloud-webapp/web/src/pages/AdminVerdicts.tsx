@@ -297,6 +297,8 @@ export function AdminVerdicts(): JSX.Element {
               {batch.searchVersion ?? '—'}
               {batch.algo?.tnorm ? ' +tnorm' : ''}
               {batch.algo?.prf ? ` +prf(${batch.algo.prfCount})` : ''}
+              {batch.algo?.anchorCount ? ` +anchor(${batch.algo.anchorCount})` : ''}
+              {batch.algo?.faceQualityWeight ? ` +fq(${batch.algo.faceQualityWeight})` : ''}
               {batch.algo && batch.algo.numReferences > 1 ? ` ×${batch.algo.numReferences}` : ''}
             </dd>
           </dl>

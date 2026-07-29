@@ -290,32 +290,13 @@ def _kps(left_eye, right_eye, nose):
     return np.array([left_eye, right_eye, nose, (0.0, 0.0), (0.0, 0.0)], dtype=np.float32)
 
 
-class TestFrontality:
-    """Nose offset from the eye midpoint, as a fraction of eye separation."""
-
-    def test_frontal_face_is_centred(self):
-        off = quality.frontal_offset(_kps((80, 100), (120, 100), (100, 120)))
-        assert off == pytest.approx(0.0, abs=1e-6)
-
-    def test_turned_head_offsets_the_nose(self):
-        # Eyes 40px apart, nose 18px toward one eye → 0.45, past FRONTAL_RATIO.
-        off = quality.frontal_offset(_kps((80, 100), (120, 100), (118, 120)))
-        assert off == pytest.approx(0.45, abs=1e-6)
-        assert off > quality.FRONTAL_RATIO
-
-    def test_a_rolled_head_is_not_mistaken_for_a_turned_one(self):
-        # Same geometry rotated 90°: measuring raw x would call this a profile.
-        off = quality.frontal_offset(_kps((100, 80), (100, 120), (80, 100)))
-        assert off == pytest.approx(0.0, abs=1e-6)
-
-    def test_missing_or_degenerate_landmarks_are_unknown(self):
-        assert quality.frontal_offset(None) is None
-        assert quality.frontal_offset(np.zeros((2, 2), dtype=np.float32)) is None
-        assert quality.frontal_offset(_kps((100, 100), (100, 100), (100, 120))) is None
-
-
 class TestAdvisoryWarnings:
-    """Usable faces that are still worth warning the searcher about."""
+    """`assess_face().warnings` — usable faces still worth flagging.
+
+    Advisory, never blocking: each case asserts `usable` stays True. The codes
+    and thresholds are the ones `selfie_advisories` uses, so the pick-time check
+    and the post-search census can never contradict each other.
+    """
 
     def test_good_face_has_no_warnings(self):
         img = rng.integers(0, 255, (400, 400, 3), dtype=np.uint8)
@@ -323,23 +304,37 @@ class TestAdvisoryWarnings:
         q = quality.assess_face(img, det)
         assert q["usable"] and q["warnings"] == []
 
-    def test_small_but_usable_face_warns(self):
-        img = rng.integers(0, 255, (200, 200, 3), dtype=np.uint8)
-        det = {"box": [20, 20, 80, 80], "score": 0.9}  # 60px: over MIN, under SMALL
+    def test_face_small_in_frame_warns(self):
+        # 60px face: comfortably over MIN_FACE_PX, but 60/800 = 0.075 of the
+        # short side, under SELFIE_ADVISE_FACE_FRAC.
+        img = rng.integers(0, 255, (800, 800, 3), dtype=np.uint8)
+        det = {"box": [100, 100, 160, 160], "score": 0.9, "kps": _kps((115, 120), (145, 120), (130, 135))}
         q = quality.assess_face(img, det)
-        assert q["usable"] and q["warnings"] == ["small_face"]
+        assert q["face_frac"] < quality.SELFIE_ADVISE_FACE_FRAC
+        assert q["usable"] and q["warnings"] == ["face_small_in_frame"]
 
     def test_turned_face_warns_but_is_still_usable(self):
+        # Nose 0.25 interocular widths off centre → frontality ≈ 0.29.
         img = rng.integers(0, 255, (400, 400, 3), dtype=np.uint8)
-        det = {"box": [100, 100, 300, 300], "score": 0.9, "kps": _kps((160, 180), (240, 180), (236, 220))}
+        det = {"box": [100, 100, 300, 300], "score": 0.9, "kps": _kps((160, 180), (240, 180), (220, 220))}
         q = quality.assess_face(img, det)
+        assert q["frontality"] < quality.SELFIE_ADVISE_FRONTALITY
         assert q["usable"] and q["warnings"] == ["not_frontal"]
 
     def test_no_landmarks_means_no_frontality_warning(self):
+        # Absent is "unmeasured", never "bad" — a pre-quality face isn't slandered.
         img = rng.integers(0, 255, (400, 400, 3), dtype=np.uint8)
         det = {"box": [100, 100, 300, 300], "score": 0.9}
         q = quality.assess_face(img, det)
         assert q["frontality"] is None and "not_frontal" not in q["warnings"]
+
+    def test_warnings_match_the_pick_time_advisories(self):
+        # The whole point of sharing face_advisories: /quality and /search agree.
+        img = rng.integers(0, 255, (400, 400, 3), dtype=np.uint8)
+        det = {"box": [100, 100, 300, 300], "score": 0.9, "kps": _kps((160, 180), (240, 180), (220, 220))}
+        q = quality.assess_face(img, det)
+        assert quality.selfie_advisories(q, 1) == q["warnings"]
+        assert quality.selfie_advisories(q, 2) == ["multiple_faces", *q["warnings"]]
 
 
 class TestFusion:
@@ -883,6 +878,469 @@ class TestCaptureTimeFusion:
         assert resp.status_code == 200
         by = {r["photoId"]: r for r in resp.get_json()["results"]}
         assert by["pX.jpg"]["score"] == pytest.approx(by["pY.jpg"]["score"])
+
+
+class TestFaceQualityMath:
+    """frontality / face_fraction / quality_term (quality.py)."""
+
+    @staticmethod
+    def _kps(nose_x, eye_y=100.0, left_x=80.0, right_x=120.0):
+        """5 landmarks with the nose shifted along the interocular axis."""
+        return np.array(
+            [[left_x, eye_y], [right_x, eye_y], [nose_x, eye_y + 15],
+             [92.0, eye_y + 35], [108.0, eye_y + 35]],
+            dtype=np.float32,
+        )
+
+    def test_nose_centred_is_frontal(self):
+        assert quality.frontality(self._kps(100.0)) == pytest.approx(1.0)
+
+    def test_turned_head_drops_toward_zero(self):
+        # Nose 0.35 interocular widths off centre = YAW_FULL_PROFILE → 0.0.
+        turned = quality.frontality(self._kps(100.0 + 0.35 * 40))
+        half = quality.frontality(self._kps(100.0 + 0.175 * 40))
+        assert turned == pytest.approx(0.0)
+        assert half == pytest.approx(0.5, abs=0.01)
+
+    def test_sign_of_turn_does_not_matter(self):
+        left = quality.frontality(self._kps(100.0 - 0.2 * 40))
+        right = quality.frontality(self._kps(100.0 + 0.2 * 40))
+        assert left == pytest.approx(right)
+
+    def test_a_rolled_head_is_not_mistaken_for_a_turned_one(self):
+        # A head-on face rotated 90° in-plane. Measuring the nose offset in raw
+        # x — rather than along the interocular axis — would call this a profile.
+        rolled = np.array([[100, 80], [100, 120], [80, 100], [70, 92], [70, 108]],
+                          dtype=np.float32)
+        assert quality.frontality(rolled) == pytest.approx(1.0)
+
+    def test_invariant_to_face_size(self):
+        small = quality.frontality(self._kps(102.0, left_x=80.0, right_x=120.0))
+        big = quality.frontality(
+            np.array([[800, 1000], [1200, 1000], [1020, 1150], [920, 1350], [1080, 1350]],
+                     dtype=np.float32)
+        )
+        assert small == pytest.approx(big, abs=0.01)
+
+    def test_unmeasurable_returns_none(self):
+        assert quality.frontality(None) is None                      # no landmarks at all
+        assert quality.frontality(np.zeros((2, 2), np.float32)) is None  # no nose point
+        eyes_coincident = np.array([[100, 100]] * 5, dtype=np.float32)
+        assert quality.frontality(eyes_coincident) is None
+
+    def test_face_fraction_uses_image_short_side(self):
+        assert quality.face_fraction([0, 0, 100, 100], (2000, 3000, 3)) == pytest.approx(0.05)
+        assert quality.face_fraction([0, 0, 100, 100], (0, 0, 3)) == 0.0
+
+    def test_quality_term_is_multiplicative(self):
+        # Small AND side-on is punished harder than either alone.
+        both = quality.quality_term(0.5, quality.FULL_FACE_FRAC / 2)
+        assert both == pytest.approx(0.25)
+        assert quality.quality_term(1.0, quality.FULL_FACE_FRAC) == pytest.approx(1.0)
+        assert quality.quality_term(1.0, 0.5) == pytest.approx(1.0)  # clamped, big face
+
+    def test_quality_term_unknown_is_neutral(self):
+        assert quality.quality_term(None, None) == pytest.approx(1.0)
+        assert quality.quality_term(None, quality.FULL_FACE_FRAC / 2) == pytest.approx(0.5)
+
+    def test_assess_face_reports_frac_and_frontality(self):
+        img = rng.integers(0, 255, (200, 200, 3), dtype=np.uint8)
+        det = {"box": [20, 20, 180, 180], "score": 0.9, "kps": self._kps(100.0)}
+        q = quality.assess_face(img, det)
+        assert q["face_frac"] == pytest.approx(160 / 200)
+        assert q["frontality"] == pytest.approx(1.0)
+        # A detector without landmarks (older callers) leaves frontality unset.
+        assert quality.assess_face(img, {"box": [20, 20, 180, 180], "score": 0.9})["frontality"] is None
+
+
+class TestSelfieGrading:
+    """selfie_score / selfie_advisories (quality.py)."""
+
+    def test_score_rewards_frontal_big_sharp(self):
+        good = quality.selfie_score(
+            {"frontality": 1.0, "face_frac": 0.30, "blur": 4 * quality.BLUR_THRESHOLD}
+        )
+        poor = quality.selfie_score(
+            {"frontality": 0.2, "face_frac": 0.05, "blur": quality.BLUR_THRESHOLD}
+        )
+        assert good == pytest.approx(1.0)
+        assert poor < 0.45
+
+    def test_unmeasured_frontality_scores_between(self):
+        unknown = quality.selfie_score({"frontality": None, "face_frac": 0.30, "blur": 999})
+        frontal = quality.selfie_score({"frontality": 1.0, "face_frac": 0.30, "blur": 999})
+        turned = quality.selfie_score({"frontality": 0.1, "face_frac": 0.30, "blur": 999})
+        assert turned < unknown < frontal
+
+    def test_advisories_flag_fixable_problems(self):
+        adv = quality.selfie_advisories(
+            {"frontality": 0.3, "face_frac": 0.04, "blur": 2 * quality.BLUR_THRESHOLD}, 2
+        )
+        assert adv == ["multiple_faces", "not_frontal", "face_small_in_frame", "slightly_soft"]
+
+    def test_clean_single_selfie_has_no_advisories(self):
+        assert quality.selfie_advisories(
+            {"frontality": 0.9, "face_frac": 0.3, "blur": 10 * quality.BLUR_THRESHOLD}, 1
+        ) == []
+
+    def test_unmeasured_fields_advise_nothing(self):
+        assert quality.selfie_advisories({}, 1) == []
+
+
+class TestQualityEndpoint:
+    """POST /quality — the pick-time check, before any search."""
+
+    def test_grades_each_picked_file(self, client):
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/quality",
+            data={"file": [(io.BytesIO(jpeg_bytes()), "a.jpg"), (io.BytesIO(jpeg_bytes()), "b.jpg")]},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert [f["index"] for f in body["files"]] == [0, 1]
+        assert body["anyUsable"] is True and body["bestIndex"] in (0, 1)
+        first = body["files"][0]
+        assert first["usable"] is True and first["reasons"] == []
+        assert first["faceCount"] == 1 and first["frontality"] == pytest.approx(1.0)
+        assert 0.0 <= first["selfieScore"] <= 1.0
+
+    def test_best_index_picks_the_higher_scoring_selfie(self, client, monkeypatch):
+        set_bundle(make_bundle(basis(0), basis(1)))
+        # FakeFaceDet reports a face at a fixed FRACTION of the image, so the
+        # smaller image yields the smaller face in absolute px but the same frac;
+        # stub the score so the ranking is unambiguous and still goes through the
+        # endpoint's own selection.
+        scores = iter([0.30, 0.95])
+        monkeypatch.setattr(quality, "selfie_score", lambda q, _s=scores: next(_s))
+        resp = client.post(
+            "/quality",
+            data={"file": [(io.BytesIO(jpeg_bytes()), "a.jpg"), (io.BytesIO(jpeg_bytes()), "b.jpg")]},
+        )
+        assert resp.get_json()["bestIndex"] == 1
+
+    def test_no_face_is_reported_not_an_error(self, client):
+        set_bundle(make_bundle(basis(0), basis(1), face_det=NoFaceDet()))
+        resp = client.post("/quality", data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg")})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["files"][0]["reasons"] == ["no_face"]
+        assert body["anyUsable"] is False and body["bestIndex"] is None
+
+    def test_blurry_selfie_is_unusable_with_a_reason(self, client):
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/quality", data={"file": (io.BytesIO(jpeg_bytes(sharp=False)), "x.jpg")}
+        )
+        body = resp.get_json()
+        assert body["files"][0]["usable"] is False
+        assert "too_blurry" in body["files"][0]["reasons"]
+        assert body["anyUsable"] is False
+
+    def test_undecodable_file_reported_per_file(self, client):
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/quality",
+            data={"file": [(io.BytesIO(b"not an image"), "a.jpg"), (io.BytesIO(jpeg_bytes()), "b.jpg")]},
+        )
+        assert resp.status_code == 200  # one bad pick must not fail the batch
+        body = resp.get_json()
+        assert body["files"][0]["reasons"] == ["bad_image"]
+        assert body["files"][1]["usable"] is True
+        assert body["bestIndex"] == 1
+
+    def test_missing_file_400(self, client):
+        assert client.post("/quality", data={}).status_code == 400
+
+    def test_computes_no_embeddings(self, client, monkeypatch):
+        """The pick-time check must stay detection-only (cost + no biometrics)."""
+        bundle = make_bundle(basis(0), basis(1))
+
+        def fail(*_a, **_kw):
+            raise AssertionError("embedder must not run for a quality check")
+
+        monkeypatch.setattr(bundle.face_emb, "embed", fail)
+        monkeypatch.setattr(bundle.person_emb, "embed", fail)
+        set_bundle(bundle)
+        assert client.post("/quality", data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg")}).status_code == 200
+
+
+class TestStoreQualityWeighting:
+    """Item 5 attenuation is opt-in and only ever demotes."""
+
+    @staticmethod
+    def _event():
+        faces = np.stack([basis(0), basis(0), basis(0)])
+        meta = [
+            {"photoId": "clean.jpg", "box": [0, 0, 400, 400], "score": 0.9,
+             "quality": {"frontality": 1.0, "face_frac": 0.25, "usable": True}},
+            {"photoId": "tiny_side.jpg", "box": [0, 0, 30, 30], "score": 0.6,
+             "quality": {"frontality": 0.4, "face_frac": 0.02, "usable": False}},
+            {"photoId": "legacy.jpg", "box": [0, 0, 200, 200], "score": 0.9},  # pre-quality manifest
+        ]
+        return EventEmbeddings(build_manifest("q", "v", meta, []), faces,
+                               np.zeros((0, DIM), np.float32))
+
+    def test_off_by_default_is_a_plain_tie(self):
+        hits = self._event().top_photos("face", basis(0), k=None)
+        assert {h["photoId"] for h in hits} == {"clean.jpg", "tiny_side.jpg", "legacy.jpg"}
+        assert all(h["score"] == pytest.approx(1.0) for h in hits)
+
+    def test_weight_demotes_small_side_on_face(self):
+        hits = self._event().top_photos("face", basis(0), k=None, quality_weight=1.0)
+        by = {h["photoId"]: h["score"] for h in hits}
+        assert by["clean.jpg"] == pytest.approx(1.0)          # frontal + big → untouched
+        assert by["tiny_side.jpg"] == pytest.approx(0.1)      # 0.4 × (0.02/0.08)
+        assert by["legacy.jpg"] == pytest.approx(1.0)         # no quality recorded → no penalty
+        assert hits[0]["photoId"] != "tiny_side.jpg"
+
+    def test_partial_weight_scales_the_penalty(self):
+        hits = self._event().top_photos("face", basis(0), k=None, quality_weight=0.5)
+        by = {h["photoId"]: h["score"] for h in hits}
+        assert by["tiny_side.jpg"] == pytest.approx(1.0 - 0.5 * (1.0 - 0.1))
+
+    def test_negative_scores_are_not_promoted(self):
+        # basis(7) is orthogonal-ish: attenuating a negative z would raise it.
+        ev = self._event()
+        plain = ev.top_k("face", -basis(0), k=None)
+        weighted = ev.top_k("face", -basis(0), k=None, quality_weight=1.0)
+        assert all(a["score"] == pytest.approx(b["score"]) for a, b in zip(plain, weighted))
+
+    def test_row_index_helpers(self):
+        ev = self._event()
+        assert ev.face_count("clean.jpg") == 1
+        assert ev.face_count("missing.jpg") == 0
+        assert ev.rows_for_photo("face", "tiny_side.jpg") == [1]
+        assert ev.crop_meta("face", 0)["photoId"] == "clean.jpg"
+
+
+@pytest.fixture
+def anchor_store(tmp_path):
+    """Event 'aev' with three shapes of result for the same face query basis(0):
+
+      pSolo  — one big frontal face; the ideal anchor. Outfit basis(2).
+      pSide  — one big face but turned away (frontality 0.30) → gated out.
+      pCrowd — six faces, one small and side-on; a crowd shot → gated out.
+
+    The query selfie's outfit is basis(1), which matches NOTHING in the event —
+    so any person score above zero proves the anchor's outfit reached the query.
+    """
+    faces = np.stack([
+        basis(0),                                    # pSolo
+        basis(0),                                    # pSide
+        unit(basis(0) * 0.9 + basis(5) * 0.45),      # pCrowd (matched face)
+        *[basis(10 + i) for i in range(5)],          # pCrowd (bystanders)
+    ])
+    faces_meta = [
+        {"photoId": "pSolo.jpg", "box": [100, 100, 500, 500], "score": 0.95,
+         "quality": {"frontality": 0.95, "face_frac": 0.22, "usable": True}},
+        {"photoId": "pSide.jpg", "box": [100, 100, 500, 500], "score": 0.9,
+         "quality": {"frontality": 0.30, "face_frac": 0.20, "usable": True}},
+        {"photoId": "pCrowd.jpg", "box": [10, 10, 50, 50], "score": 0.7,
+         "quality": {"frontality": 0.25, "face_frac": 0.02, "usable": False}},
+        *[{"photoId": "pCrowd.jpg", "box": [60 + 40 * i, 10, 100 + 40 * i, 50], "score": 0.7,
+           "quality": {"frontality": 0.5, "face_frac": 0.02, "usable": False}} for i in range(5)],
+    ]
+    persons = np.stack([basis(2), basis(3), basis(4)])
+    persons_meta = [
+        # Contains pSolo's face centre (300, 300).
+        {"photoId": "pSolo.jpg", "box": [80, 90, 560, 900], "score": 0.8, "source": "detector"},
+        {"photoId": "pSide.jpg", "box": [80, 90, 560, 900], "score": 0.8, "source": "detector"},
+        # Contains pCrowd's matched face centre (30, 30) but not the bystanders'.
+        {"photoId": "pCrowd.jpg", "box": [0, 0, 55, 400], "score": 0.8, "source": "detector"},
+    ]
+    manifest = build_manifest("aev", "test@v0", faces_meta, persons_meta)
+    write_local(str(tmp_path / "aev"), manifest, faces, persons)
+    return str(tmp_path)
+
+
+class TestAnchorSuggestion:
+    """`anchorSuggestion` nominates a clean, in-domain photo to re-query with."""
+
+    def test_prefers_the_solo_frontal_photo(self, client, monkeypatch, anchor_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", anchor_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "aev"},
+        )
+        assert resp.status_code == 200
+        sug = resp.get_json()["anchorSuggestion"]
+        assert sug["photoId"] == "pSolo.jpg"
+        assert sug["faceCount"] == 1 and sug["qualityKnown"] is True
+        assert sug["frontality"] == pytest.approx(0.95)
+
+    def test_turned_away_and_crowd_shots_are_never_suggested(self, client, monkeypatch, anchor_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", anchor_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        # Drop pSolo from contention by demanding a frontality it can't meet, so
+        # the only remaining candidates are the side-on and crowd photos.
+        monkeypatch.setattr(main_mod, "ANCHOR_MIN_FRONTALITY", 0.99)
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "aev"},
+        )
+        assert resp.get_json()["anchorSuggestion"] is None
+
+    def test_crowd_shot_rejected_on_face_count_alone(self, client, monkeypatch, anchor_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", anchor_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        # Neutralize the quality gates; the 6-face count must still exclude it.
+        monkeypatch.setattr(main_mod, "ANCHOR_MIN_FRONTALITY", 0.0)
+        monkeypatch.setattr(main_mod, "ANCHOR_MIN_FACE_FRAC", 0.0)
+        monkeypatch.setattr(main_mod, "ANCHOR_MAX_FACES", 2)
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "aev", "mode": "face"},
+        )
+        assert resp.get_json()["anchorSuggestion"]["photoId"] != "pCrowd.jpg"
+
+    def test_weak_match_is_not_offered_as_a_reference(self, client, monkeypatch, anchor_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", anchor_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        monkeypatch.setattr(main_mod, "ANCHOR_MIN_FACE_SCORE", 1.5)  # unreachable cosine
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "aev"},
+        )
+        assert resp.get_json()["anchorSuggestion"] is None
+
+    def test_can_be_switched_off(self, client, monkeypatch, anchor_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", anchor_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        monkeypatch.setattr(main_mod, "ANCHOR_SUGGEST", False)
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "aev"},
+        )
+        assert resp.get_json()["anchorSuggestion"] is None
+
+    def test_applied_anchor_is_not_suggested_again(self, client, monkeypatch, anchor_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", anchor_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={
+                "file": (io.BytesIO(jpeg_bytes()), "x.jpg"),
+                "event_id": "aev",
+                "anchor_photo_ids": "pSolo.jpg",
+            },
+        )
+        body = resp.get_json()
+        assert body["anchorPhotoIds"] == ["pSolo.jpg"]
+        assert body["anchorSuggestion"] is None  # only pSolo qualified
+
+
+class TestAnchorQuery:
+    """Applying an anchor re-queries from the index — no re-embedding."""
+
+    def test_anchor_outfit_replaces_the_selfie_outfit(self, client, monkeypatch, anchor_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", anchor_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        plain = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "aev"},
+        ).get_json()
+        # The selfie's outfit matches nothing: every person score is 0.
+        assert all((r["personScore"] or 0.0) == pytest.approx(0.0) for r in plain["results"])
+
+        anchored = client.post(
+            "/search",
+            data={
+                "file": (io.BytesIO(jpeg_bytes()), "x.jpg"),
+                "event_id": "aev",
+                "anchor_photo_ids": "pSolo.jpg",
+            },
+        ).get_json()
+        by = {r["photoId"]: r for r in anchored["results"]}
+        # pSolo's own outfit row is now the person query → it scores 1.0 and the
+        # photo overtakes pSide, which ties it on face alone.
+        assert by["pSolo.jpg"]["personScore"] == pytest.approx(1.0)
+        assert anchored["results"][0]["photoId"] == "pSolo.jpg"
+
+    def test_blend_mode_keeps_both_outfits(self, client, monkeypatch, anchor_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", anchor_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        monkeypatch.setattr(main_mod, "ANCHOR_PERSON_MODE", "blend")
+        body = client.post(
+            "/search",
+            data={
+                "file": (io.BytesIO(jpeg_bytes()), "x.jpg"),
+                "event_id": "aev",
+                "anchor_photo_ids": "pSolo.jpg",
+            },
+        ).get_json()
+        by = {r["photoId"]: r for r in body["results"]}
+        # Centroid of the selfie's basis(1) and the anchor's basis(2): cos = 1/√2.
+        assert by["pSolo.jpg"]["personScore"] == pytest.approx(0.7071, abs=1e-3)
+
+    def test_anchor_pairs_the_outfit_by_geometry_not_rank(self, client, monkeypatch, anchor_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", anchor_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        body = client.post(
+            "/search",
+            data={
+                "file": (io.BytesIO(jpeg_bytes()), "x.jpg"),
+                "event_id": "aev",
+                "anchor_photo_ids": "pCrowd.jpg",
+            },
+        ).get_json()
+        by = {r["photoId"]: r for r in body["results"]}
+        # pCrowd holds six faces but only one person box, the one containing the
+        # matched face — so the outfit folded in is basis(3), not a bystander's.
+        assert body["anchorPhotoIds"] == ["pCrowd.jpg"]
+        assert by["pCrowd.jpg"]["personScore"] == pytest.approx(1.0)
+
+    def test_unknown_anchor_is_ignored_not_fatal(self, client, monkeypatch, anchor_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", anchor_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={
+                "file": (io.BytesIO(jpeg_bytes()), "x.jpg"),
+                "event_id": "aev",
+                "anchor_photo_ids": "nope.jpg,pSolo.jpg",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["anchorPhotoIds"] == ["pSolo.jpg"]
+
+    def test_anchor_face_weight_shifts_the_centroid(self, client, monkeypatch, anchor_store):
+        monkeypatch.setenv("EMBEDDINGS_ROOT", anchor_store)
+        # Selfie face is basis(6) — nothing in the event matches it — so only a
+        # weighted anchor face can pull the query onto basis(0).
+        set_bundle(make_bundle(basis(6), basis(1)))
+        body = client.post(
+            "/search",
+            data={
+                "file": (io.BytesIO(jpeg_bytes()), "x.jpg"),
+                "event_id": "aev",
+                "mode": "face",
+                "anchor_photo_ids": "pSolo.jpg",
+            },
+        ).get_json()
+        by = {r["photoId"]: r["score"] for r in body["results"]}
+        # Centroid of basis(6) and basis(0) at equal weight → cos = 1/√2.
+        assert by["pSolo.jpg"] == pytest.approx(0.7071, abs=1e-3)
+
+
+class TestWeightedCentroid:
+    def test_weights_bias_the_mean(self):
+        heavy = main_mod._mean_unit([basis(0), basis(1)], [3.0, 1.0])
+        assert heavy is not None
+        assert float(heavy @ basis(0)) > float(heavy @ basis(1))
+
+    def test_uniform_weights_match_the_plain_mean(self):
+        plain = main_mod._mean_unit([basis(0), basis(1)])
+        weighted = main_mod._mean_unit([basis(0), basis(1)], [1.0, 1.0])
+        assert np.allclose(plain, weighted)
+
+    def test_length_mismatch_is_an_error(self):
+        with pytest.raises(ValueError):
+            main_mod._mean_unit([basis(0), basis(1)], [1.0])
+
+    def test_zero_total_weight_returns_none(self):
+        assert main_mod._mean_unit([basis(0)], [0.0]) is None
 
 
 # ──────────────────────────────────────────────────────────────────────────────

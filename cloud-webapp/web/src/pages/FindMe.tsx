@@ -7,6 +7,8 @@ import type {
   ListReferencesResponse,
   ReferenceUpload,
   SearchByUploadRequest,
+  AnchorSuggestion,
+  SelfieCheckResponse,
   SelfieFaceReason,
   SelfieFaceWarning,
 } from '@cloud-webapp/shared';
@@ -57,6 +59,13 @@ const STR = {
     searchFailed: 'Search failed',
     outfitLabel: 'Outfit',
     photoLabel: 'Photo',
+    anchoredLabel: 'Refined',
+    checkingPhotoLabel: 'Checking your photo…',
+    anchorTitle: 'Found a clearer photo of you',
+    anchorBody:
+      'This shot of you from the event is a better starting point than a selfie — it was taken by the same cameras, in the same light, in the clothes you wore. Searching again from it usually finds more.',
+    anchorCta: 'Find more using this photo',
+    anchorDismiss: 'No thanks',
     noUsableFace:
       'We couldn’t find a clear face in that photo. You can search by outfit and appearance instead, or try a sharper, front-facing picture.',
     eventNotIndexed:
@@ -105,6 +114,16 @@ const STR = {
     qBlurry: 'It looks blurry.',
     qDark: 'It looks quite dark.',
     qBright: 'It looks overexposed (too bright).',
+    // Server-side face check, run as soon as the photos are picked.
+    qNoFace: 'We couldn’t find a clear face in it.',
+    qBadImage: 'We couldn’t read that file.',
+    qFaceTooSmall: 'Your face is too small in it to match reliably.',
+    qLowConfidence: 'We’re not confident that’s a face.',
+    qMultipleFaces:
+      'There’s more than one face in it — we’d search for the most obvious one, which might not be you.',
+    qNotFrontal: 'Your face is turned away from the camera — a head-on photo matches better.',
+    qFaceSmallInFrame: 'Your face is small in the frame — hold the camera closer.',
+    qSlightlySoft: 'It’s a little soft — a sharper photo matches better.',
     searchAnyway: 'Search anyway',
     chooseAnother: 'Choose a different photo',
     multiFaceTitle: 'More than one face detected',
@@ -115,6 +134,7 @@ const STR = {
       'The face is small in the photo — hold the camera closer, or crop in so your face fills more of the frame.',
     wNotFrontal:
       'The face is turned away from the camera — look straight at the lens for the best match.',
+    wSlightlySoft: 'The photo is a little soft — a sharper one matches more reliably.',
     multiFaceBoxHint: 'The outlined face is the one we matched.',
     multiFaceCheck:
       'If the matches below aren’t you, upload a photo with only you in it.',
@@ -190,6 +210,13 @@ const STR = {
     searchFailed: '搜索失败',
     outfitLabel: '服装',
     photoLabel: '照片',
+    anchoredLabel: '优化',
+    checkingPhotoLabel: '正在检查您的照片…',
+    anchorTitle: '找到一张更清晰的您的照片',
+    anchorBody:
+      '这张活动现场的照片比自拍更适合作为参考——同样的相机、同样的光线、同样的衣着。用它再搜索一次通常能找到更多照片。',
+    anchorCta: '用这张照片查找更多',
+    anchorDismiss: '暂不需要',
     noUsableFace:
       '这张照片中没有找到清晰的人脸。您可以改用服装和外观搜索，或换一张更清晰的正面照片。',
     eventNotIndexed:
@@ -232,6 +259,14 @@ const STR = {
     qBlurry: '照片看起来有些模糊。',
     qDark: '照片看起来偏暗。',
     qBright: '照片看起来过曝（太亮）。',
+    qNoFace: '未能在照片中找到清晰的人脸。',
+    qBadImage: '无法读取该文件。',
+    qFaceTooSmall: '照片中的面部太小，难以可靠匹配。',
+    qLowConfidence: '不太确定这是一张人脸。',
+    qMultipleFaces: '照片中有多张人脸——我们会搜索最明显的那一张，可能不是您。',
+    qNotFrontal: '面部偏离镜头——正面照片匹配效果更好。',
+    qFaceSmallInFrame: '面部在画面中偏小——请把相机靠近一些。',
+    qSlightlySoft: '照片略欠清晰——更锐利的照片匹配效果更好。',
     searchAnyway: '仍然搜索',
     chooseAnother: '换一张照片',
     multiFaceTitle: '检测到多张人脸',
@@ -240,6 +275,7 @@ const STR = {
       `您的照片中有 ${count} 张人脸，我们选择了其中最清晰的一张进行搜索。`,
     wSmallFace: '照片中的人脸偏小——请靠近拍摄，或裁剪照片让面部占更大画面。',
     wNotFrontal: '照片中的人脸没有正对镜头——请直视镜头以获得最佳匹配效果。',
+    wSlightlySoft: '照片略微模糊——更清晰的照片匹配更可靠。',
     multiFaceBoxHint: '方框标出的即为我们所匹配的人脸。',
     multiFaceCheck: '如果下面的结果不是您，请上传一张只有您本人的照片。',
     weakFaceCheck: '更清晰的照片通常能找到更多您的照片。',
@@ -307,6 +343,12 @@ type Phase = 'consent' | 'pick' | 'searching' | 'results';
 const MAX_REFERENCE_IMAGES = 5;
 
 
+/** How a result set was queried, kept so an anchored re-search can repeat the
+ *  same query with an event photo added — without asking for the selfie again. */
+type Origin =
+  | { kind: 'files'; files: File[]; mode: 'fused' | 'person' }
+  | { kind: 'upload'; upload: ReferenceUpload };
+
 /** One reference selfie and the result set it produced. Result sets are kept
  *  separate per reference (B3) — they only merge in the explicit Combined view. */
 interface Reference {
@@ -317,9 +359,41 @@ interface Reference {
   mode: string;
   results: MatchResult[];
   hidden: Set<string>; // photoIds removed via "not me" (B7)
+  /** The matcher's nomination for a better reference than this selfie. */
+  anchorSuggestion: AnchorSuggestion | null;
+  /** Event photos this set was already anchored on (so we don't re-offer them). */
+  anchoredWith: string[];
+  /** Null for a set restored from the session cache: the picked `File`s can't be
+   *  serialized, so an anchored re-search isn't possible after a reload. */
+  origin: Origin | null;
 }
 
 const COMBINED = 'combined';
+
+/** One thing the server-side selfie check found, ready to render. */
+interface Finding {
+  code: string;
+  label: string;
+  /** Worth stopping the flow for, vs. just worth mentioning. */
+  blocking: boolean;
+}
+
+/**
+ * Advisories we interrupt on. `multiple_faces` is the important one: the matcher
+ * searches for the most confident face in the reference, so a friend in frame can
+ * silently send the whole search after the wrong person — and only the user, at
+ * pick time, can fix that. Softness and a slightly small face degrade matching
+ * without misdirecting it, so they are reported, not blocking.
+ */
+const BLOCKING_FINDINGS: ReadonlySet<string> = new Set([
+  'no_face',
+  'bad_image',
+  'too_small',
+  'too_blurry',
+  'low_confidence',
+  'multiple_faces',
+  'not_frontal',
+]);
 
 function withRemoved(set: ReadonlySet<string>, id: string): Set<string> {
   const next = new Set(set);
@@ -374,7 +448,13 @@ export function FindMe(): JSX.Element {
   // rather than silently running a search that can't match well.
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [photoQuality, setPhotoQuality] = useState<QualityResult | null>(null);
+  // What the server-side face check found about the current picks (empty when
+  // there is nothing to say, or when the check couldn't run).
+  const [selfieFindings, setSelfieFindings] = useState<Finding[]>([]);
   const [checkingPhoto, setCheckingPhoto] = useState(false);
+  // Reference-set ids whose anchor suggestion the user waved away, so it stays
+  // dismissed while they keep browsing that set.
+  const [dismissedAnchors, setDismissedAnchors] = useState<Set<string>>(new Set());
   const [references, setReferences] = useState<Reference[]>([]);
   // Raised when the last search's reference photo held more than one face.
   const [faceAlert, setFaceAlert] = useState<FaceAlert | null>(null);
@@ -543,7 +623,11 @@ export function FindMe(): JSX.Element {
   useEffect(() => {
     const cached = loadResults(eventId);
     if (cached && cached.references.length > 0) {
-      setReferences(cached.references);
+      // A restored set has no query to re-run (see Reference.origin), so it also
+      // carries no anchor suggestion — the button would have nothing to search with.
+      setReferences(
+        cached.references.map((r) => ({ ...r, anchorSuggestion: null, anchoredWith: [], origin: null })),
+      );
       setActiveId(cached.activeId);
       setConfirmed(cached.confirmed);
       setPhase('results');
@@ -625,7 +709,12 @@ export function FindMe(): JSX.Element {
   }, [canSavePhotos, selectedKey, selectedSettled]);
 
   /** Append a result set from a search response and make it the active tab. */
-  function pushReference(res: SearchResponse, previewUrl: string, labelPrefix: string): void {
+  function pushReference(
+    res: SearchResponse,
+    previewUrl: string,
+    labelPrefix: string,
+    origin: Origin,
+  ): void {
     const id = res.runId ?? crypto.randomUUID();
     // Warn if this selfie was a group shot. First one to trip it wins and is
     // never retracted here: reusing several stored selfies pushes one reference
@@ -643,6 +732,9 @@ export function FindMe(): JSX.Element {
         mode: res.mode,
         results: res.results,
         hidden: new Set(),
+        anchorSuggestion: res.anchorSuggestion ?? null,
+        anchoredWith: res.anchorPhotoIds ?? [],
+        origin,
       },
     ]);
     setActiveId(id);
@@ -668,13 +760,14 @@ export function FindMe(): JSX.Element {
     });
   }
 
-  async function searchByUpload(u: ReferenceUpload): Promise<void> {
+  async function searchByUpload(u: ReferenceUpload, anchorPhotoIds: string[] = []): Promise<void> {
     const body: SearchByUploadRequest = {
       eventId,
       name: name.trim(),
       ...(u.mode === 'person' ? { mode: 'person' as const } : {}),
       subjectIsMinor: isMinor,
       guardianAttested: guardianOk,
+      ...(anchorPhotoIds.length ? { anchorPhotoId: anchorPhotoIds.join(',') } : {}),
     };
     const recaptchaToken = await getRecaptchaToken('findme_search');
     const res = await apiPost<SearchResponse, SearchByUploadRequest>(
@@ -682,7 +775,10 @@ export function FindMe(): JSX.Element {
       body,
       recaptchaToken ? { headers: { 'X-Recaptcha-Token': recaptchaToken } } : undefined,
     );
-    pushReference(res, u.url, t.savedLabel);
+    pushReference(res, u.url, anchorPhotoIds.length ? t.anchoredLabel : t.savedLabel, {
+      kind: 'upload',
+      upload: u,
+    });
   }
 
   async function runSelectedPast(): Promise<void> {
@@ -724,10 +820,12 @@ export function FindMe(): JSX.Element {
   /** Localized advisory line for a face we DID use but that is weak. */
   function faceWarningLabel(warning: SelfieFaceWarning): string {
     switch (warning) {
-      case 'small_face':
+      case 'face_small_in_frame':
         return t.wSmallFace;
       case 'not_frontal':
         return t.wNotFrontal;
+      case 'slightly_soft':
+        return t.wSlightlySoft;
     }
   }
 
@@ -757,6 +855,7 @@ export function FindMe(): JSX.Element {
     setNoFaceReasons([]);
     setPendingFiles([]);
     setPhotoQuality(null);
+    setSelfieFindings([]);
     if (files.length === 0) return;
     setCheckingPhoto(true);
     // Multiple selfies are averaged into one centroid query (§1.1). We quality-
@@ -775,21 +874,141 @@ export function FindMe(): JSX.Element {
       if (!q || q.level !== 'poor') anyOk = true;
       if (q && q.level === 'poor') worst = q;
     }
-    setCheckingPhoto(false);
     if (!anyOk && worst) {
+      setCheckingPhoto(false);
       setPendingFiles(files);
       setPhotoQuality(worst);
       return;
     }
-    void search(files);
+
+    // Server-side face check, at PICK time. The local check above measures the
+    // whole image; only the detector can say "that's not a face", "you're turned
+    // away" or "there are two people in frame" — the last of which used to
+    // surface as a search that quietly found somebody else's photos.
+    const check = await runSelfieCheck(files);
+    setCheckingPhoto(false);
+    if (!check) {
+      void search(files); // check unavailable → never block the search
+      return;
+    }
+    // Lead with the best pick: the FIRST file is the one persisted for reuse, so
+    // the order decides which selfie the user gets offered again later.
+    const ordered = orderByBest(files, check.bestIndex);
+    const findings = selfieFindingLabels(check);
+    if (!check.anyUsable) {
+      setPendingFiles(ordered);
+      setSelfieFindings(findings);
+      // Every pick failed the face gate. A search would 422, but an outfit-only
+      // search can still work — offer it now rather than after a wasted round trip.
+      if (check.files.every((f) => f.reasons.includes('no_face'))) setNoFaceFiles(ordered);
+      return;
+    }
+    if (findings.some((f) => f.blocking)) {
+      setPendingFiles(ordered);
+      setSelfieFindings(findings);
+      return;
+    }
+    void search(ordered);
+  }
+
+  /** POST the picks to the server check. Null = no verdict available (offline,
+   *  matcher down, rate-limited): the caller proceeds to search regardless. */
+  async function runSelfieCheck(files: File[]): Promise<SelfieCheckResponse | null> {
+    const form = new FormData();
+    for (const file of files) form.append('file', file);
+    form.set('consent', 'true');
+    try {
+      return await apiUpload<SelfieCheckResponse>('/api/findme/selfie-check', form);
+    } catch {
+      return null;
+    }
+  }
+
+  /** `bestIndex` first, the rest in their original order. */
+  function orderByBest(files: File[], bestIndex: number | null): File[] {
+    if (bestIndex === null || bestIndex <= 0 || bestIndex >= files.length) return files;
+    const best = files[bestIndex]!;
+    return [best, ...files.filter((_, i) => i !== bestIndex)];
+  }
+
+  /**
+   * Turn a check into the lines we show. Hard `reasons` are collected across all
+   * picks (any of them may be the unusable one); advisories come from the pick we
+   * would actually lead with, since that is the one the search hinges on.
+   * `blocking` marks the ones worth interrupting for — a photo that is merely a
+   * bit soft is not worth a dialog, but a second face in frame is.
+   */
+  function selfieFindingLabels(check: SelfieCheckResponse): Finding[] {
+    const codes = new Set<string>();
+    for (const f of check.files) for (const r of f.reasons) codes.add(r);
+    const best = check.files.find((f) => f.index === check.bestIndex) ?? check.files[0];
+    for (const a of best?.advisories ?? []) codes.add(a);
+    return [...codes]
+      .map((code) => ({ code, label: selfieFindingLabel(code), blocking: BLOCKING_FINDINGS.has(code) }))
+      .filter((f) => f.label !== null) as Finding[];
+  }
+
+  function selfieFindingLabel(code: string): string | null {
+    switch (code) {
+      case 'no_face':
+        return t.qNoFace;
+      case 'bad_image':
+        return t.qBadImage;
+      case 'too_small':
+        return t.qFaceTooSmall;
+      case 'too_blurry':
+        return t.qBlurry;
+      case 'low_confidence':
+        return t.qLowConfidence;
+      case 'multiple_faces':
+        return t.qMultipleFaces;
+      case 'not_frontal':
+        return t.qNotFrontal;
+      case 'face_small_in_frame':
+        return t.qFaceSmallInFrame;
+      case 'slightly_soft':
+        return t.qSlightlySoft;
+      default:
+        return null; // a code this build doesn't know about — say nothing
+    }
   }
 
   function dismissQualityWarning(): void {
     setPendingFiles([]);
     setPhotoQuality(null);
+    setSelfieFindings([]);
   }
 
-  async function search(files: File[], mode: 'fused' | 'person' = 'fused'): Promise<void> {
+  /**
+   * Re-run the query that produced `ref`, with one of its own results folded in
+   * as an anchor. The photo is a stronger reference than the selfie on both
+   * halves of the query: an in-domain face (same camera, light and distance) and
+   * the outfit actually worn at the event.
+   */
+  async function searchWithAnchor(ref: Reference, photoId: string): Promise<void> {
+    if (!ref.origin) return;
+    if (ref.origin.kind === 'files') {
+      await search(ref.origin.files, ref.origin.mode, [photoId]);
+      return;
+    }
+    setPhase('searching');
+    setError(null);
+    try {
+      await searchByUpload(ref.origin.upload, [photoId]);
+      setPhase('results');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t.searchFailed);
+      // Back to the results we already have rather than to the picker: the
+      // failed call was a refinement, not the first search.
+      setPhase('results');
+    }
+  }
+
+  async function search(
+    files: File[],
+    mode: 'fused' | 'person' = 'fused',
+    anchorPhotoIds: string[] = [],
+  ): Promise<void> {
     if (files.length === 0) return;
     setPhase('searching');
     setError(null);
@@ -797,6 +1016,7 @@ export function FindMe(): JSX.Element {
     setNoFaceReasons([]);
     setPendingFiles([]);
     setPhotoQuality(null);
+    setSelfieFindings([]);
     setFaceAlert(null);
     const form = new FormData();
     for (const file of files) form.append('file', file);
@@ -806,6 +1026,7 @@ export function FindMe(): JSX.Element {
     form.set('subjectIsMinor', String(isMinor));
     form.set('guardianAttested', String(guardianOk));
     if (mode === 'person') form.set('mode', 'person');
+    if (anchorPhotoIds.length) form.set('anchorPhotoId', anchorPhotoIds.join(','));
     try {
       const recaptchaToken = await getRecaptchaToken('findme_search');
       const res = await apiUpload<SearchResponse>(
@@ -814,7 +1035,16 @@ export function FindMe(): JSX.Element {
         recaptchaToken ? { headers: { 'X-Recaptcha-Token': recaptchaToken } } : undefined,
       );
       // Preview the first selfie — it's the one persisted for reuse.
-      pushReference(res, URL.createObjectURL(files[0]!), mode === 'person' ? t.outfitLabel : t.photoLabel);
+      const labelPrefix = anchorPhotoIds.length
+        ? t.anchoredLabel
+        : mode === 'person'
+          ? t.outfitLabel
+          : t.photoLabel;
+      pushReference(res, URL.createObjectURL(files[0]!), labelPrefix, {
+        kind: 'files',
+        files,
+        mode,
+      });
       setPhase('results');
       // Refresh history so this just-uploaded photo appears in the reuse picker.
       void loadPastUploads(true);
@@ -1125,15 +1355,20 @@ export function FindMe(): JSX.Element {
               if (picked.length > 0) void handlePicked(picked);
             }}
           />
-          {photoQuality && pendingFiles.length > 0 ? (
+          {(photoQuality || selfieFindings.length > 0) && pendingFiles.length > 0 ? (
             <div className="photo-quality-warn" role="alert">
               <p>
                 <strong>{t.photoQualityTitle}</strong>
               </p>
               <p className="muted">{t.photoQualityIntro}</p>
               <ul>
-                {photoQuality.issues.map((i) => (
+                {/* Whole-image checks done in the browser, then what the face
+                    detector found — one list, since to the user it's one verdict. */}
+                {(photoQuality?.issues ?? []).map((i) => (
                   <li key={i}>{qualityIssueLabel(i)}</li>
+                ))}
+                {selfieFindings.map((f) => (
+                  <li key={f.code}>{f.label}</li>
                 ))}
               </ul>
               <div className="quality-actions">
@@ -1164,7 +1399,7 @@ export function FindMe(): JSX.Element {
               disabled={checkingPhoto}
               onClick={() => fileInput.current?.click()}
             >
-              {t.chooseTakePhoto}
+              {checkingPhoto ? t.checkingPhotoLabel : t.chooseTakePhoto}
             </button>
           )}
           {noFaceFiles.length > 0 && (
@@ -1335,6 +1570,45 @@ export function FindMe(): JSX.Element {
               )}
             </div>
           )}
+          {/* Anchor promotion: offer the clearest photo of this person from the
+              event as the reference for a follow-up search. Only on a single
+              reference set (the Combined view has no one query to re-run), and
+              only while its thumbnail is still on hand — the suggestion is always
+              one of this set's own results, so no extra URL needs signing. */}
+          {!isCombined && activeRef?.anchorSuggestion && !dismissedAnchors.has(activeRef.id)
+            ? (() => {
+                const s = activeRef.anchorSuggestion;
+                const hit = activeRef.results.find((r) => r.photoId === s.photoId);
+                if (!hit) return null;
+                return (
+                  <div className="anchor-suggest">
+                    <img src={hit.thumbUrl} alt="" />
+                    <div className="anchor-copy">
+                      <p>
+                        <strong>{t.anchorTitle}</strong>
+                      </p>
+                      <p className="muted">{t.anchorBody}</p>
+                      <div className="quality-actions">
+                        <button
+                          className="btn btn-primary"
+                          onClick={() => void searchWithAnchor(activeRef, s.photoId)}
+                        >
+                          {t.anchorCta}
+                        </button>
+                        <button
+                          className="btn btn-light"
+                          onClick={() =>
+                            setDismissedAnchors((prev) => new Set(prev).add(activeRef.id))
+                          }
+                        >
+                          {t.anchorDismiss}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()
+            : null}
 
           {visible.length === 0 ? (
             <p className="muted">

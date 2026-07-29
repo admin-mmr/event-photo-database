@@ -216,9 +216,42 @@ resolution is high) to protect the free-tier. Change: indexer detection stage. E
 ~3–5 days; watch GiB-s on tiled events.
 
 ## Item 5 — CR-FIQA quality weighting  **[precision][recall]**
+> **STATUS (2026-07-29): the plumbing landed WITHOUT CR-FIQA; the weight is 0 (off).** Two
+> things were missing before any quality weighting was possible, and both now exist:
+> 1. **Per-face quality reaches the index.** `quality.assess_face` always computed a verdict
+>    for every embedded face; the indexer threw it away. `faces_meta` rows now carry a compact
+>    `{usable, frontality, face_frac, blur}` (`indexer/job._face_quality_meta`).
+>    **`frontality` is new** — a landmark-based yaw proxy (nose offset from the eye midpoint,
+>    in interocular widths), free because SCRFD already returns the 5 keypoints, and
+>    scale/roll invariant. `face_frac` normalizes face size by the image's short side, since
+>    absolute `face_px` is not comparable across a mixed camera fleet.
+> 2. **The matcher can act on it.** `store.top_k(quality_weight=w)` attenuates each candidate
+>    crop's score by `frontality × min(1, face_frac/0.08)` — multiplicative, because a face
+>    that is BOTH small and side-on is the back-row crop whose embedding drifts onto whoever
+>    it vaguely resembles. Applied after T-norm (the knob lives in z-space, where the
+>    threshold is) and only to positive scores. `FACE_QUALITY_WEIGHT` defaults to **0.0**,
+>    i.e. bit-identical to today.
+>
+> **A missing field is "unmeasured", never "bad"** — an event indexed before this scores
+> exactly as before, so nothing regresses without a re-index. Populating an existing event
+> needs `FORCE_REINDEX=1` (an unchanged photo reuses its stored row verbatim).
+>
+> **Before turning the weight up, sweep it:**
+> `run_eval.py --face-quality-weight '0.25;0.5;1.0' --judged-only` reports P@K and
+> positives-in-top-K per weight, plus index `coverage` — on a pre-quality manifest every row
+> is identical by construction, and the sweep says so rather than reading as "no effect".
+> Take the largest weight that holds positives while precision improves. Recall remains
+> unmeasurable from one-sided feedback, so this is a precision-first trade: a legitimate
+> side-on photo of you ranks lower too.
+>
+> Still open (the actual Item 5): CR-FIQA itself, as a learned replacement for the
+> geometric frontality/size proxy.
+
 Add CR-FIQA (ONNX, cheap) and **weight** faces by quality in fusion instead of the current
 binary drop in `matcher/quality.py`; also use it to pick the best reference selfie. §3.3,
 §8. Modest indexer cost. Effort ~3–4 days.
+
+**"Pick the best reference selfie" shipped separately, at upload time** — see Item 12.
 
 ## Item 6 — Bib signal (roster-matched, co-primary)  **[no-face][precision]**
 Highest-value for "bibs not always worn" — rescues back-turned / no-face / motion-blurred
@@ -255,6 +288,72 @@ Enrich the appearance/ReID gallery with face features (GEFF, arXiv 2211.13807, �
 bridges identity across a clothing change while appearance covers face-not-visible shots.
 Natural follow-on to Items 1 + 9. Offline. Effort ~1 week.
 
+## Item 11 — Anchor promotion: re-query from an in-domain photo  **[recall][precision]**
+> **STATUS (2026-07-29): implemented, user-initiated, awaiting a judged sweep.**
+
+**Why this is not just PRF again.** PRF (Item 3) measured flat, and the reason is visible in
+how it builds the query: it appends a confirmed photo's crops to the *existing* centroid, so
+a single selfie plus one confirmed photo leaves the query half-made of the selfie — including
+its **outfit**. But `_select_reference` takes the person/outfit crop from the SELFIE, which
+for a photo taken at home is not what the searcher wore at the event. That makes the 0.15
+outfit weight actively misleading, and with T-normed z-scores a strong outfit score can lower
+the face bar a match has to clear by ~1.8 z (at `z_person ≈ 10`).
+
+**The change.** After a search, the matcher nominates the most suitable RESULT as an anchor
+(`anchorSuggestion`), and accepts it back as `anchor_photo_ids`:
+- the anchor's matched face joins the query centroid (weight `ANCHOR_FACE_WEIGHT`, default
+  1.0 — same as a selfie);
+- the anchor's **outfit REPLACES** the selfie's (`ANCHOR_PERSON_MODE=replace`), because the
+  anchor is a photo from *this* event. `blend` keeps the PRF behaviour for A/B.
+- Nothing is re-uploaded or re-embedded — the crops are already rows in the store.
+
+**Which photo, and why solo matters.** Gates: `ANCHOR_MAX_FACES` (2), `ANCHOR_MIN_FRONTALITY`
+(0.55), `ANCHOR_MIN_FACE_FRAC` (0.05) / `ANCHOR_MIN_FACE_PX` (110), and a confident match
+(`ANCHOR_MIN_FACE_Z` 6.0 under T-norm, else cosine 0.45). Ranking is deliberately NOT by match
+score — the top hit is the photo most like the selfie, which adds the least information;
+suitability is `0.40·frontality + 0.30·size + 0.20·solo + 0.10·confidence`. In a solo photo
+the matched crop cannot be a bystander, which is exactly why a near-solo shot is worth more
+than a better-scoring crowd shot. Pairing the anchor's face to its own outfit row is done by
+box geometry (`pipeline.face_in_person`), not by rank, so a crowd anchor can't fold in a
+stranger's shirt.
+
+**The risk to watch is not recall, it is a wrong anchor.** The user is invited to accept a
+suggestion with one tap, and a wrong one sends the follow-up search after someone else.
+`run_eval.py --anchor-promotion` therefore reports **anchor precision** (how often the
+suggestion is a judged positive; suggestions on unjudged photos counted separately, never as
+correct) *before* the recall lift, and warns loudly if any suggestion was a judged "not me".
+The lift itself excludes the anchor from both rankings and from the denominator, so an anchor
+cannot score by finding itself. What the sweep still cannot measure: the *new* true positives
+an anchored search surfaces are unjudged by construction — that needs one human review round.
+
+**Diagnostics that were missing.** `match_runs` recorded only the fused score, so a reviewed
+batch could not distinguish a face-driven wrong match from an outfit-driven one. It now stores
+`faceScores` / `personScores` / `anchorPhotoIds` / `anchorSuggestionPhotoId`, and
+`SearchAlgo` carries `anchorCount` + `faceQualityWeight` (both defaulted, so old stored docs
+still parse). `/admin/verdicts` shows `+anchor(n)` / `+fq(w)` in the algorithm line.
+
+## Item 12 — Selfie quality check at upload time  **[precision][UX]**
+> **STATUS (2026-07-29): implemented.**
+
+The pick-time check used to be browser-only (`web/src/lib/photoQuality.ts`): resolution,
+sharpness, brightness of the WHOLE image. It cannot say the three things that actually decide
+whether a reference will work, because they need a face detector:
+**no face at all**, **turned away**, and **more than one face in frame** — the last being a
+real cause of "it found someone else's photos", since the matcher searches for the most
+confident face in the reference.
+
+`POST /quality` on the matcher (→ `POST /api/findme/selfie-check`) answers all three the
+moment the photos are picked: `pipeline.assess_faces` runs **detection only** — no ArcFace, no
+person detector, no embedding — so it is a fraction of a search's cost, nothing biometric is
+computed for what is only a UI hint, and no consent row / reference record / run doc is
+written (the search that follows records those). Per pick it returns hard `reasons` (the same
+gate a search applies) and non-blocking `advisories`, plus `selfieScore` and `bestIndex`.
+
+Consequences in the UI: the best pick is moved FIRST (it is the one persisted for reuse), a
+`multiple_faces` / `not_frontal` verdict interrupts with "search anyway" rather than silently
+mis-searching, and an all-unusable set offers the outfit-only fallback immediately instead of
+after a wasted round trip. A check that fails for any reason never blocks the search.
+
 ---
 
 ## Suggested sequencing
@@ -267,4 +366,10 @@ Natural follow-on to Items 1 + 9. Offline. Effort ~1 week.
 5. **Structural recall / outfit-change:** Item 9 (clustering + HITL), Item 10 (GEFF).
 
 Constraint coverage: **bibs-not-always → 6** (+ face/burst fallback); **outfits-change →
-1, 10**; **recall → 3, 4, 9**; **precision/calibration → 2, 5, 8**.
+1, 10, 11**; **recall → 3, 4, 9, 11**; **precision/calibration → 2, 5, 8, 12**.
+
+**Next measurement (blocks turning either new knob up):** re-index one event with
+`FORCE_REINDEX=1` so per-face quality exists, then run
+`run_eval.py --judged-only --tnorm --anchor-promotion --face-quality-weight '0.25;0.5;1.0'`
+on `81a584f7` (91 users / 1516 pairs) and `34f3e38f`. Anchor precision gates Item 11's UI;
+the weight row that holds positives-in-top-K gates Item 5's `FACE_QUALITY_WEIGHT`.

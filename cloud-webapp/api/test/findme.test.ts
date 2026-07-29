@@ -45,8 +45,10 @@ vi.mock('../src/lib/firestore.js', () => ({
 }));
 
 const matcherSearch = vi.fn();
+const matcherQualityCheck = vi.fn();
 vi.mock('../src/services/matcherClient.js', () => ({
   matcherSearch: (...args: unknown[]) => matcherSearch(...(args as [])),
+  matcherQualityCheck: (...args: unknown[]) => matcherQualityCheck(...(args as [])),
 }));
 
 vi.mock('../src/services/gcsService.js', () => ({
@@ -197,6 +199,106 @@ describe('POST /api/findme/search', () => {
     });
     // The captured name is recorded on the consent doc too.
     expect(consents[0]?.data).toMatchObject({ name: 'Test Runner', isGuest: false });
+  });
+
+  it('persists per-modality scores so a reviewed batch can be diagnosed', async () => {
+    matcherSearch.mockResolvedValue({
+      ok: true,
+      eventId: 'ev1',
+      mode: 'fused',
+      anchorPhotoIds: [],
+      anchorSuggestion: null,
+      faceQualityWeight: 0,
+      results: [
+        { photoId: 'p1', score: 0.91, faceScore: 0.93, personScore: 0.7 },
+        { photoId: 'p2', score: 0.62, faceScore: 0.62, personScore: null },
+      ],
+    });
+
+    await search(app, { eventId: 'ev1', consent: 'true' });
+    const run = fakeDb.added.find((a) => a.collection === 'match_runs')?.data;
+    expect(run?.scores).toEqual({ p1: 0.91, p2: 0.62 });
+    expect(run?.faceScores).toEqual({ p1: 0.93, p2: 0.62 });
+    // p2 had no outfit score at all — recorded as absent, not as zero.
+    expect(run?.personScores).toEqual({ p1: 0.7 });
+  });
+
+  it('passes an anchor photo through and reports what the matcher applied', async () => {
+    matcherSearch.mockResolvedValue({
+      ok: true,
+      eventId: 'ev1',
+      mode: 'fused',
+      // The matcher dropped 'ghost' (not in the index) and kept 'p5'.
+      anchorPhotoIds: ['p5'],
+      anchorSuggestion: null,
+      faceQualityWeight: 0,
+      results: [{ photoId: 'p5', score: 0.9, faceScore: 0.9, personScore: 0.8 }],
+    });
+
+    const res = await search(app, {
+      eventId: 'ev1',
+      consent: 'true',
+      anchorPhotoId: 'p5, ghost , p5',
+    });
+    expect(res.status).toBe(200);
+    // De-duplicated and trimmed on the way in.
+    expect(matcherSearch.mock.calls[0]?.[0]).toMatchObject({ anchorPhotoIds: ['p5', 'ghost'] });
+    // Recorded from the matcher's report, not from the request.
+    expect(res.body.algo.anchorCount).toBe(1);
+    expect(res.body.anchorPhotoIds).toEqual(['p5']);
+    const run = fakeDb.added.find((a) => a.collection === 'match_runs')?.data;
+    expect(run?.anchorPhotoIds).toEqual(['p5']);
+  });
+
+  it('returns the suggested anchor and records its photoId on the run', async () => {
+    matcherSearch.mockResolvedValue({
+      ok: true,
+      eventId: 'ev1',
+      mode: 'fused',
+      anchorPhotoIds: [],
+      anchorSuggestion: {
+        photoId: 'p1',
+        suitability: 0.93,
+        faceScore: 8.2,
+        faceCount: 1,
+        facePx: 420,
+        frontality: 0.95,
+        faceFrac: 0.24,
+        qualityKnown: true,
+      },
+      faceQualityWeight: 0,
+      results: [{ photoId: 'p1', score: 0.9, faceScore: 0.9, personScore: null }],
+    });
+
+    const res = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(res.body.anchorSuggestion).toMatchObject({ photoId: 'p1', faceCount: 1 });
+    // The suggestion is always one of the returned results, so the client can
+    // reuse that entry's signed thumbnail.
+    expect(res.body.results.some((r: { photoId: string }) => r.photoId === 'p1')).toBe(true);
+    const run = fakeDb.added.find((a) => a.collection === 'match_runs')?.data;
+    expect(run?.anchorSuggestionPhotoId).toBe('p1');
+  });
+
+  it('omits anchorPhotoIds when none was requested', async () => {
+    matcherSearch.mockResolvedValue({ ok: true, eventId: 'ev1', mode: 'fused', results: [] });
+    await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(matcherSearch.mock.calls[0]?.[0].anchorPhotoIds).toBeUndefined();
+  });
+
+  it('survives a matcher that predates anchor support', async () => {
+    // The api and matcher deploy separately: an older matcher omits the anchor
+    // fields entirely and the search must still succeed.
+    matcherSearch.mockResolvedValue({
+      ok: true,
+      eventId: 'ev1',
+      mode: 'fused',
+      results: [{ photoId: 'p1', score: 0.9, faceScore: 0.9, personScore: null }],
+    });
+    const res = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(res.status).toBe(200);
+    expect(res.body.anchorSuggestion).toBeNull();
+    expect(res.body.anchorPhotoIds).toEqual([]);
+    expect(res.body.algo).toMatchObject({ anchorCount: 0, faceQualityWeight: 0 });
   });
 
   it('relays the reference face census so the client can warn about a group shot', async () => {
@@ -376,5 +478,115 @@ describe('POST /api/findme/search', () => {
     matcherSearch.mockResolvedValue({ ok: true, eventId: 'ev1', mode: 'fused', results: [] });
     await search(app, { eventId: 'ev1', consent: 'true', mode: 'bogus' });
     expect(matcherSearch.mock.calls[0]?.[0]).toMatchObject({ mode: 'fused' });
+  });
+});
+
+describe('POST /api/findme/selfie-check', () => {
+  const app = buildServer();
+
+  const GOOD = {
+    index: 0,
+    filename: 'a.jpg',
+    usable: true,
+    reasons: [],
+    advisories: [],
+    selfieScore: 0.92,
+    faceCount: 1,
+    faceScore: 0.96,
+    frontality: 0.94,
+    faceFrac: 0.28,
+    facePx: 480,
+    blur: 210.5,
+  };
+
+  beforeEach(() => {
+    fakeDb.added.length = 0;
+    matcherQualityCheck.mockReset();
+    matcherSearch.mockReset();  // shared with the search suite above
+    createReference.mockClear();
+  });
+
+  function check(fields: Record<string, string>, files = 1) {
+    let req = request(app).post('/api/findme/selfie-check').set('x-test-user', USER);
+    for (const [k, v] of Object.entries(fields)) req = req.field(k, v);
+    for (let i = 0; i < files; i++) {
+      req = req.attach('file', JPEG, { filename: `s${i}.jpg`, contentType: 'image/jpeg' });
+    }
+    return req;
+  }
+
+  it('requires auth', async () => {
+    expect((await request(app).post('/api/findme/selfie-check')).status).toBe(401);
+  });
+
+  it('rejects missing file', async () => {
+    const res = await check({ consent: 'true' }, 0);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('missing_file');
+  });
+
+  it('requires consent before running a detector over the photo', async () => {
+    const res = await check({});
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('consent_required');
+    expect(matcherQualityCheck).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported mime types', async () => {
+    const res = await request(app)
+      .post('/api/findme/selfie-check')
+      .set('x-test-user', USER)
+      .field('consent', 'true')
+      .attach('file', Buffer.from('gif'), { filename: 'x.gif', contentType: 'image/gif' });
+    expect(res.status).toBe(415);
+  });
+
+  it('grades the picks without an eventId and without a search', async () => {
+    matcherQualityCheck.mockResolvedValue({
+      ok: true,
+      files: [GOOD, { ...GOOD, index: 1, selfieScore: 0.41, advisories: ['not_frontal'] }],
+      bestIndex: 0,
+      anyUsable: true,
+    });
+
+    const res = await check({ consent: 'true' }, 2);
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.bestIndex).toBe(0);
+    expect(res.body.files[1].advisories).toEqual(['not_frontal']);
+    expect(matcherSearch).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing: no consent row, no run, no stored reference', async () => {
+    matcherQualityCheck.mockResolvedValue({ ok: true, files: [GOOD], bestIndex: 0, anyUsable: true });
+    await check({ consent: 'true' });
+    expect(fakeDb.added).toHaveLength(0);
+    expect(createReference).not.toHaveBeenCalled();
+  });
+
+  it('reports an unusable pick as a 200 verdict, not an error', async () => {
+    matcherQualityCheck.mockResolvedValue({
+      ok: true,
+      files: [{ ...GOOD, usable: false, reasons: ['no_face'], selfieScore: 0, faceCount: 0 }],
+      bestIndex: null,
+      anyUsable: false,
+    });
+    const res = await check({ consent: 'true' });
+    expect(res.status).toBe(200);
+    expect(res.body.anyUsable).toBe(false);
+    expect(res.body.bestIndex).toBeNull();
+    expect(res.body.files[0].reasons).toEqual(['no_face']);
+  });
+
+  it('surfaces a matcher failure as 502 so the client can skip the hint', async () => {
+    matcherQualityCheck.mockResolvedValue({
+      ok: false,
+      status: 502,
+      error: 'matcher_unreachable',
+      message: 'connect ECONNREFUSED',
+    });
+    const res = await check({ consent: 'true' });
+    expect(res.status).toBe(502);
+    expect(res.body.error).toBe('matcher_unreachable');
   });
 });

@@ -85,6 +85,9 @@ def fake_embed(data: bytes) -> dict:
     rng = np.random.default_rng(seed)
     return {
         "faces": [{"box": [0, 0, 10, 10], "score": 0.9,
+                   "quality": {"usable": True, "reasons": [], "det_score": 0.9,
+                               "face_px": 10, "face_frac": 0.2,
+                               "frontality": 0.912345, "blur": 123.456},
                    "embedding": rng.standard_normal(DIM).astype(np.float32)}],
         "persons": [{"box": [0, 0, 20, 40], "score": 0.8, "source": "detector",
                      "embedding": rng.standard_normal(DIM).astype(np.float32)}],
@@ -129,6 +132,36 @@ def test_fresh_index_writes_store_and_derivatives(env):
         assert blobs.exists(f"ev1/photos/thumb/{pid}.jpg")
     assert fs.photos["f1"]["eventId"] == "ev1"
     assert fs.states[-1]["status"] == "done"
+
+
+def test_face_rows_carry_compact_quality(env):
+    """Per-face quality reaches the manifest so the matcher can rank anchors and
+    (optionally) down-weight unreliable crops — rounded, and without duplicating
+    `score`."""
+    drive, fs, blobs = env
+    _run(drive, fs, blobs)
+
+    manifest = json.loads(blobs.read(f"ev1/{EMB_DIR}/{MANIFEST}"))
+    q = manifest["faces"][0]["quality"]
+    assert q == {"usable": True, "frontality": 0.912, "face_frac": 0.2, "blur": 123.5}
+
+
+def test_quality_absent_from_pipeline_is_tolerated(env):
+    """An embed result without a quality dict must still index (the field is
+    additive; a stale pipeline or a hand-built result must not crash a run)."""
+    drive, fs, blobs = env
+
+    def embed_without_quality(data: bytes) -> dict:
+        result = fake_embed(data)
+        for face in result["faces"]:
+            face.pop("quality")
+        return result
+
+    cfg = Config(event_id="ev1")
+    run(cfg, drive, blobs, fs, embed_without_quality, model_version=MODEL_V,
+        face_dim=DIM, person_dim=DIM)
+    manifest = json.loads(blobs.read(f"ev1/{EMB_DIR}/{MANIFEST}"))
+    assert manifest["faces"][0]["quality"] == {"usable": True}
 
 
 def test_rerun_is_idempotent_no_redownload(env):

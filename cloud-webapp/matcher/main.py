@@ -3,6 +3,7 @@ main.py — "Find Me" matcher service (Cloud Run, private).
 
 Endpoints:
   GET  /healthz  — liveness (no model load, so cold instances answer fast)
+  POST /quality  — multipart image(s) → per-selfie quality verdict (detect only)
   POST /embed    — multipart image → face + person embeddings + quality
   POST /search   — multipart image + event_id → fused per-photo ranking
 
@@ -23,7 +24,8 @@ import numpy as np
 from flask import Flask, jsonify, request
 
 import fusion as fusion_mod
-from pipeline import decode_image, embed_image, read_capture_time_ms
+import quality
+from pipeline import assess_faces, decode_image, embed_image, face_in_person, read_capture_time_ms
 from store import EmbeddingStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
@@ -63,6 +65,51 @@ PERSON_TIME_W_FULL_MS = float(os.environ.get("PERSON_TIME_W_FULL_MIN", "45")) * 
 PERSON_TIME_W_ZERO_MS = float(os.environ.get("PERSON_TIME_W_ZERO_MIN", "180")) * 60_000
 PERSON_TIME_FLOOR = float(os.environ.get("PERSON_TIME_FLOOR", "0.0"))
 
+# ── Anchor promotion (in-domain re-query) ────────────────────────────────────
+# A selfie is out of domain: different camera, lighting, distance, and — for the
+# outfit half of the query — often different clothes than the event. Once a
+# search has found the person, one of the event's OWN photos of them is a better
+# reference on both counts, so `/search` reports the most suitable result as
+# `anchorSuggestion` and accepts it back as `anchor_photo_ids` on the next call.
+# Nothing is re-embedded: the anchor's crops are already rows in the store.
+#
+# Suggestion is diagnostic-only (the caller decides whether to offer it), so it
+# is on by default; applying an anchor is always explicit.
+ANCHOR_SUGGEST = os.environ.get("ANCHOR_SUGGEST", "true").lower() == "true"
+# How far down the result list to look for an anchor. The suggestion must be a
+# photo the caller actually received, so this is an index into the response.
+ANCHOR_CANDIDATE_POOL = int(os.environ.get("ANCHOR_CANDIDATE_POOL", "40"))
+# Gates. A crowd shot's matched crop can be a bystander who merely scores well,
+# so an anchor must be a near-solo photo with a confident, front-facing, decently
+# sized face. Frontality/face_frac only exist on manifests written after the
+# indexer started persisting per-face quality; an older event skips those two
+# gates (and says so via `qualityKnown`) rather than suggesting nothing at all.
+ANCHOR_MAX_FACES = int(os.environ.get("ANCHOR_MAX_FACES", "2"))
+ANCHOR_MIN_FRONTALITY = float(os.environ.get("ANCHOR_MIN_FRONTALITY", "0.55"))
+ANCHOR_MIN_FACE_FRAC = float(os.environ.get("ANCHOR_MIN_FACE_FRAC", "0.05"))
+ANCHOR_MIN_FACE_PX = float(os.environ.get("ANCHOR_MIN_FACE_PX", "110"))
+ANCHOR_MIN_FACE_SCORE = float(os.environ.get("ANCHOR_MIN_FACE_SCORE", "0.45"))
+ANCHOR_MIN_FACE_Z = float(os.environ.get("ANCHOR_MIN_FACE_Z", "6.0"))
+# Size that counts as "full marks" when ranking candidates (fraction of the
+# image's short side, and the px fallback for quality-less manifests).
+ANCHOR_FULL_FACE_FRAC = float(os.environ.get("ANCHOR_FULL_FACE_FRAC", "0.20"))
+ANCHOR_FULL_FACE_PX = float(os.environ.get("ANCHOR_FULL_FACE_PX", "400"))
+# Weight of an anchor's face in the query centroid, relative to 1.0 per selfie.
+ANCHOR_FACE_WEIGHT = float(os.environ.get("ANCHOR_FACE_WEIGHT", "1.0"))
+# 'replace' (default) drops the selfie's outfit from the person query entirely:
+# the anchor is a photo from THIS event, so its clothing is the event-day
+# clothing, while the selfie's may be from another day — averaging the two
+# halves the signal that capture-time fusion (Item 1) exists to exploit.
+# 'blend' keeps both (the PRF behaviour) for A/B.
+ANCHOR_PERSON_MODE = os.environ.get("ANCHOR_PERSON_MODE", "replace")
+
+# Item 5 (candidate-side quality weighting): attenuate a candidate crop's score
+# by its own frontality × size when the indexer recorded them. 0.0 = off, which
+# is the default until the offline sweep on judged labels picks a value — it
+# trades recall (a legitimate side-on photo of you ranks lower) for precision
+# (a back-row face that drifts onto the wrong identity ranks lower too).
+FACE_QUALITY_WEIGHT = float(os.environ.get("FACE_QUALITY_WEIGHT", "0"))
+
 # EMBEDDINGS_ROOT: gs://<proj>-derivatives in prod; a local dir in dev/tests.
 _store: EmbeddingStore | None = None
 
@@ -90,18 +137,30 @@ def _read_upload():
     return img, None
 
 
-def _mean_unit(vectors: list[np.ndarray]) -> np.ndarray | None:
+def _mean_unit(vectors: list[np.ndarray], weights: list[float] | None = None) -> np.ndarray | None:
     """Centroid of L2-normalized vectors, itself L2-normalized (§1.1).
 
     Averaging unit embeddings and renormalizing is the standard multi-reference
     query: it cancels the pose/blur noise present in any single shot while
     keeping the result on the unit sphere so cosine == dot still holds. Returns
-    None for an empty input (or a degenerate centroid at the origin)."""
+    None for an empty input (or a degenerate centroid at the origin).
+
+    `weights` (same length as `vectors`) lets an anchor count for more than one
+    selfie; omitted means a plain mean, bit-identical to the unweighted path."""
     if not vectors:
         return None
     mat = np.stack([np.asarray(v, dtype=np.float32).reshape(-1) for v in vectors])
     mat = mat / np.maximum(np.linalg.norm(mat, axis=1, keepdims=True), 1e-12)
-    centroid = mat.mean(axis=0)
+    if weights is None:
+        centroid = mat.mean(axis=0)
+    else:
+        w = np.asarray(weights, dtype=np.float32).reshape(-1)
+        if w.shape[0] != mat.shape[0]:
+            raise ValueError(f"weights/vectors length mismatch: {w.shape[0]} vs {mat.shape[0]}")
+        total = float(w.sum())
+        if total <= 1e-12:
+            return None
+        centroid = (mat * w[:, None]).sum(axis=0) / total
     norm = float(np.linalg.norm(centroid))
     if norm < 1e-12:
         return None
@@ -176,9 +235,240 @@ def _fold_prf(event, kind: str, prf_ids: list[str], refs: list[np.ndarray], cent
     return _mean_unit(refs)
 
 
+def _person_row_for_face(event, photo_id: str, face_box, person_query) -> int | None:
+    """The outfit row belonging to the person whose face is `face_box`.
+
+    The manifest keeps face and person boxes but not the pairing the pipeline
+    computed, so recover it by geometry first (the face centre lies inside the
+    person box — `face_in_person`, the same rule the indexer used). Similarity to
+    the current person query is only a tie-break, and an ambiguous photo returns
+    None: no outfit reference is better than a bystander's shirt."""
+    rows = event.rows_for_photo("person", photo_id)
+    if not rows:
+        return None
+    if face_box is not None:
+        inside = [
+            r for r in rows
+            if event.crop_meta("person", r).get("box") is not None
+            and face_in_person(face_box, event.crop_meta("person", r)["box"])
+        ]
+        if len(inside) == 1:
+            return inside[0]
+        if inside:
+            rows = inside
+    if len(rows) == 1:
+        return rows[0]
+    if person_query is not None:
+        vecs = event.vectors["person"][rows]
+        return rows[int(np.argmax(vecs @ person_query))]
+    return None
+
+
+def _apply_anchors(
+    event,
+    anchor_ids: list[str],
+    face_refs: list[np.ndarray],
+    person_refs: list[np.ndarray],
+    face_query,
+    person_query,
+):
+    """Fold caller-chosen anchor photos into the query. Returns
+    (face_query, person_query, applied_ids).
+
+    Runs AFTER PRF so `ANCHOR_PERSON_MODE=replace` has the last word on the
+    outfit reference. Which crop in the anchor is "the person" is decided by
+    similarity to the current face centroid — the anchor came from this user's
+    own results, but a two-face photo still has to pick a side."""
+    applied: list[str] = []
+    face_weights = [1.0] * len(face_refs)
+    anchor_person_vecs: list[np.ndarray] = []
+    for pid in anchor_ids:
+        rows = event.rows_for_photo("face", pid)
+        if not rows:
+            continue  # not indexed / no face in it → nothing to anchor on
+        if face_query is not None:
+            row = rows[int(np.argmax(event.vectors["face"][rows] @ face_query))]
+        elif len(rows) == 1:
+            row = rows[0]
+        else:
+            continue  # no face query to disambiguate a multi-face anchor
+        face_refs.append(event.vectors["face"][row])
+        face_weights.append(ANCHOR_FACE_WEIGHT)
+        person_row = _person_row_for_face(
+            event, pid, event.crop_meta("face", row).get("box"), person_query
+        )
+        if person_row is not None:
+            anchor_person_vecs.append(event.vectors["person"][person_row])
+        applied.append(pid)
+
+    if not applied:
+        return face_query, person_query, applied
+
+    # Explicit None checks, not `or`: these are numpy arrays, whose truthiness
+    # raises. A degenerate centroid leaves the previous query in place.
+    face_centroid = _mean_unit(face_refs, face_weights)
+    if face_centroid is not None:
+        face_query = face_centroid
+    if anchor_person_vecs:
+        if ANCHOR_PERSON_MODE == "replace":
+            # Mutate person_refs in place: the caller's list is what any later
+            # fold would extend, so leaving the selfie's outfit in it would let
+            # the discarded clothing back into the query.
+            person_refs[:] = list(anchor_person_vecs)
+        else:
+            person_refs.extend(anchor_person_vecs)
+        person_centroid = _mean_unit(person_refs)
+        if person_centroid is not None:
+            person_query = person_centroid
+    return face_query, person_query, applied
+
+
+def _anchor_candidate(event, face_hit: dict, min_face_score: float) -> dict | None:
+    """Score one result as a potential anchor, or None if it fails a gate."""
+    pid = face_hit["photoId"]
+    if face_hit["score"] < min_face_score:
+        return None
+    faces = event.face_count(pid)
+    if faces > ANCHOR_MAX_FACES:
+        return None
+    q = face_hit.get("quality") or {}
+    if q.get("usable") is False:
+        return None
+    front = q.get("frontality")
+    frac = q.get("face_frac")
+    if front is not None and front < ANCHOR_MIN_FRONTALITY:
+        return None
+    if frac is not None and frac < ANCHOR_MIN_FACE_FRAC:
+        return None
+    box = face_hit.get("box") or [0.0, 0.0, 0.0, 0.0]
+    face_px = float(min(box[2] - box[0], box[3] - box[1]))
+    if frac is None and face_px < ANCHOR_MIN_FACE_PX:
+        return None
+
+    if frac is not None:
+        size_term = min(1.0, frac / max(ANCHOR_FULL_FACE_FRAC, 1e-9))
+    else:
+        size_term = min(1.0, face_px / max(ANCHOR_FULL_FACE_PX, 1e-9))
+    # An unmeasured frontality can't be assumed frontal, so it scores below a
+    # face we know is head-on but above one we know is turned away.
+    front_term = 0.6 if front is None else front
+    solo_term = 1.0 if faces <= 1 else 0.5
+    conf_term = min(1.0, max(0.0, (face_hit["score"] - min_face_score) / max(min_face_score, 1e-9)))
+    return {
+        "photoId": pid,
+        # Deliberately NOT ranked by match score: the top hit is the photo most
+        # like the selfie, which adds the least new information. What makes a
+        # good anchor is a clean, large, solo, front-facing face — score only
+        # breaks near-ties (and gates entry above).
+        "suitability": round(
+            0.40 * front_term + 0.30 * size_term + 0.20 * solo_term + 0.10 * conf_term, 4
+        ),
+        "faceScore": round(float(face_hit["score"]), 4),
+        "faceCount": faces,
+        "facePx": round(face_px, 1),
+        "frontality": None if front is None else round(float(front), 3),
+        "faceFrac": None if frac is None else round(float(frac), 4),
+        "qualityKnown": front is not None or frac is not None,
+    }
+
+
+def _suggest_anchor(event, ranked: list[dict], face_hits: list[dict], tnorm: bool, exclude: set[str]):
+    """Best anchor among the results we are about to return, or None.
+
+    Restricted to `ranked` (post-threshold, post-top_k) so the suggestion is
+    always a photo the caller can show the user, and to photos not already used
+    as a reference this run."""
+    if not ANCHOR_SUGGEST or not face_hits:
+        return None
+    min_face_score = ANCHOR_MIN_FACE_Z if tnorm else ANCHOR_MIN_FACE_SCORE
+    by_photo = {h["photoId"]: h for h in face_hits}
+    best = None
+    for hit in ranked[:ANCHOR_CANDIDATE_POOL]:
+        pid = hit["photoId"]
+        if pid in exclude:
+            continue
+        face_hit = by_photo.get(pid)
+        if face_hit is None:
+            continue
+        cand = _anchor_candidate(event, face_hit, min_face_score)
+        if cand is not None and (best is None or cand["suitability"] > best["suitability"]):
+            best = cand
+    return best
+
+
 @app.get("/healthz")
 def healthz():
     return jsonify({"ok": True, "service": "matcher"})
+
+
+@app.post("/quality")
+def check_quality():
+    """Grade reference selfies at PICK time, before any search.
+
+    Form fields: file (image; may repeat — one verdict per part). Detection only:
+    no embeddings are computed, so this is cheap enough to run on every file the
+    user picks, and it answers the question the old flow could only answer after
+    a full search came back ("no clear face found — try again").
+
+    Returns {modelVersion, files: [{index, filename, usable, faceCount,
+    selfieScore, advisories[], reasons[], faceScore, frontality, faceFrac,
+    facePx, blur}], bestIndex, anyUsable}. `reasons` are hard failures (the same
+    gate `/search` applies); `advisories` are non-blocking hints.
+    """
+    files = request.files.getlist("file")
+    if not files:
+        return jsonify({"error": "missing_file", "detail": "multipart field 'file' required"}), 400
+
+    reports = []
+    model_version = None
+    for i, file in enumerate(files):
+        entry: dict = {"index": i, "filename": file.filename or f"file{i}"}
+        try:
+            img = decode_image(file.read())
+        except Exception:
+            logger.exception("image decode failed")
+            reports.append({**entry, "usable": False, "faceCount": 0, "selfieScore": 0.0,
+                            "advisories": [], "reasons": ["bad_image"]})
+            continue
+        result = assess_faces(img)
+        model_version = result["model_version"]
+        faces = result["faces"]
+        # Same choice /search makes: the most confident usable face, falling back
+        # to the most confident face at all so a rejected selfie can still say
+        # WHY (too small / too blurry) instead of "no face".
+        usable = [f for f in faces if f["quality"]["usable"]]
+        best = max(usable or faces, key=lambda f: f["score"], default=None)
+        if best is None:
+            reports.append({**entry, "usable": False, "faceCount": 0, "selfieScore": 0.0,
+                            "advisories": [], "reasons": ["no_face"]})
+            continue
+        q = best["quality"]
+        reports.append({
+            **entry,
+            "usable": bool(q["usable"]),
+            "faceCount": len(faces),
+            "selfieScore": quality.selfie_score(q),
+            "advisories": quality.selfie_advisories(q, len(faces)),
+            "reasons": list(q["reasons"]),
+            "faceScore": round(float(best["score"]), 4),
+            "frontality": None if q["frontality"] is None else round(float(q["frontality"]), 3),
+            "faceFrac": round(float(q["face_frac"]), 4),
+            "facePx": q["face_px"],
+            "blur": round(float(q["blur"]), 1),
+        })
+
+    ranked = [r for r in reports if r["usable"]]
+    best_index = (
+        max(ranked, key=lambda r: r["selfieScore"])["index"] if ranked else None
+    )
+    return jsonify({
+        "modelVersion": model_version,
+        "files": reports,
+        # Which of the picked photos to lead with. None when none is usable —
+        # the caller should ask for a different photo rather than search.
+        "bestIndex": best_index,
+        "anyUsable": bool(ranked),
+    })
 
 
 @app.post("/embed")
@@ -218,8 +508,10 @@ def search():
     """Form fields: file (image; may repeat for multiple reference selfies —
     §1.1), event_id, top_k?, mode? (fused|face|person), w_face?, w_person?,
     prf_photo_ids? (comma-separated photoIds the user confirmed — §1.2),
-    normalize? (1/true to T-norm scores — §1.3). Returns the per-photo ranking
-    for the event."""
+    anchor_photo_ids? (comma-separated photoIds to re-query from, folded in from
+    the index — anchor promotion), normalize? (1/true to T-norm scores — §1.3).
+    Returns the per-photo ranking for the event, plus `anchorSuggestion`: the
+    most suitable result to anchor a follow-up search on."""
     event_id = request.form.get("event_id", "").strip()
     if not event_id:
         return jsonify({"error": "missing_event_id"}), 400
@@ -239,6 +531,7 @@ def search():
     retrieve_k = None if mode == "fused" else (top_k if top_k is not None else UNGATED_TOP_K)
     normalize = request.form.get("normalize", "").strip().lower() in ("1", "true", "yes")
     prf_ids = [p.strip() for p in request.form.get("prf_photo_ids", "").split(",") if p.strip()]
+    anchor_ids = [p.strip() for p in request.form.get("anchor_photo_ids", "").split(",") if p.strip()]
 
     files = request.files.getlist("file")
     if not files:
@@ -318,9 +611,17 @@ def search():
     if prf_ids:
         face_query = _fold_prf(event, "face", prf_ids, face_refs, face_query)
         person_query = _fold_prf(event, "person", prf_ids, person_refs, person_query)
+    anchors_applied: list[str] = []
+    if anchor_ids:
+        face_query, person_query, anchors_applied = _apply_anchors(
+            event, anchor_ids, face_refs, person_refs, face_query, person_query
+        )
 
     face_hits = (
-        event.top_photos("face", face_query, k=retrieve_k, tnorm=normalize)
+        event.top_photos(
+            "face", face_query, k=retrieve_k, tnorm=normalize,
+            quality_weight=FACE_QUALITY_WEIGHT,
+        )
         if face_query is not None and mode in ("fused", "face")
         else []
     )
@@ -366,6 +667,7 @@ def search():
             person_weight_fn=person_weight_fn,
         )
 
+    results = ranked if top_k is None else ranked[:top_k]
     return jsonify(
         {
             "eventId": event_id,
@@ -376,7 +678,15 @@ def search():
             "referenceFaces": reference_faces,
             "numReferences": len(files),
             "numPrfPhotos": len(prf_ids),
-            "results": ranked if top_k is None else ranked[:top_k],
+            "anchorPhotoIds": anchors_applied,
+            # Suggested anchor for a follow-up search. Excludes photos already
+            # folded in as a reference this run — re-anchoring on the same photo
+            # would change nothing.
+            "anchorSuggestion": _suggest_anchor(
+                event, results, face_hits, normalize, {*anchors_applied, *prf_ids}
+            ),
+            "faceQualityWeight": FACE_QUALITY_WEIGHT,
+            "results": results,
         }
     )
 
