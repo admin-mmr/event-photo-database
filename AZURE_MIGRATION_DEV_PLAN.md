@@ -155,9 +155,10 @@ section and §1.3–1.4 disagree, this section wins.**
   `indexerJob.ts:35` still POSTs `run.googleapis.com/v2`;
   `uploadDispatch.ts:51` still POSTs `cloudtasks.googleapis.com/v2`; the logger
   still emits GCP `severity` only.
-- **AZ2 not started.** `lib/firestore.ts` is still the bare 22-line
+- ~~**AZ2 not started.** `lib/firestore.ts` is still the bare 22-line
   `new Firestore(...)` factory — no adapter seam. `gcsService.ts` is still raw
-  `@google-cloud/storage`.
+  `@google-cloud/storage`.~~ **Both seams have since landed** (2026-07-28 db,
+  2026-07-29 storage) — see AZ2 below.
 - **AZ3 not started.** All eight §1.5 defects re-confirmed verbatim, including
   `deploy-web.sh:33` `--sku Free` + `:47` `backends link`,
   `backfill-capture-time.sh:40` `az cosmosdb sql query`, and
@@ -193,18 +194,21 @@ which is the empirical case for D1 restated: **do not re-sync the fork.**
    Cosmos TransactionalBatch is single-partition, so this must become
    best-effort per-partition deletes — which is fine (every step is already
    documented idempotent) but is a behaviour note, not a mechanical swap.
-3. **Storage-touching files: 2 → 4.** Add `uploadRecoveryService.ts:175`
+3. ~~**Storage-touching files: 2 → 4.** Add `uploadRecoveryService.ts:175`
    (`getFiles` over the staging prefix) and `eventDeletionService.ts` (via
    `deleteEventDerivatives`). `gcsService.ts` has grown to 20 exports including
    two deadline-bounded sweeps (`countEventDerivatives`,
-   `deleteEventDerivatives`) whose budget behaviour the Blob port must keep.
+   `deleteEventDerivatives`) whose budget behaviour the Blob port must keep.~~
+   **RESOLVED 2026-07-29** — all four ported onto `ObjectStore`; the sweeps'
+   budget behaviour is unchanged (they now page through `store.list`).
 4. ~~**`infra/firestore.indexes.json` now has 12 composite indexes**, three of
    which postdate the fork.~~ **RESOLVED 2026-07-28** — see §1.7.6.
 5. **§1.5 defect 2 is now 4 of 6 schedulers missing, not 3 of 5** —
    `findme-duplicates-drain` (`*/2 * * * *`) is also absent from the Azure tree.
-6. §1.6 items still open: `gcsService.origFile()` remains exported-and-unused,
+6. ~~§1.6 items still open: `gcsService.origFile()` remains exported-and-unused,
    and `api/test/download.test.ts:46` still mocks it (a stale fake that will
-   outlive the function).
+   outlive the function).~~ **RESOLVED 2026-07-29** — both deleted with the
+   storage port.
 
 ### 1.7.4 Two things are *smaller* than scoped
 
@@ -452,8 +456,87 @@ downstream needs them:
     Keyless on both clouds, matching the GCP posture.
 - Verified: `tsc` clean (both `tsconfig.json` and `tsconfig.build.json`),
   **63 test files / 589 tests green**, GCP behaviour unchanged.
-- ⬜ Remaining: the storage adapter; the Python backends; the rules-spec port;
-  migrating the other ~39 bespoke test fakes.
+**Landed 2026-07-29 — the storage seam, both impls:**
+
+- ✅ `api/src/lib/storage/types.ts` — the provider-neutral `ObjectStore`, scoped
+  to the *measured* surface (`signReadUrl` · `read` (whole or an inclusive byte
+  range) · `write` · `head` · `remove` · `list(prefix, limit)` ·
+  `createUploadSession`). What nothing uses is listed as deliberately absent.
+  Three normalizations the adapters own, because the providers really differ:
+  **md5 is lowercase hex** (`''` = *unknown*, never *no match*), **a delete of a
+  missing object is a no-op** (all 8 call sites passed `ignoreNotFound`), and
+  **`head` returns `null`** instead of the old `exists()`-then-`getMetadata()`
+  pair — one round trip per staged file instead of two.
+- ✅ `api/src/lib/storage/gcsStore.ts` — the GCS impl as pure delegation, and now
+  the **only** file in the api allowed to import `@google-cloud/storage`
+  (verified; `lib/gaxiosNativeFetch.ts` mentions it in prose only).
+  `lib/storage.ts` selects by `CLOUD_PROVIDER` with an `initStorage()` awaited in
+  `index.ts`, exactly mirroring `lib/firestore.ts` / `initDb()`.
+- ✅ `api/src/lib/storage/blobStore.ts` — the Blob impl, over a narrow `BlobOps`
+  port with `sdkOps()` as the only untested strip. Auth is the api's managed
+  identity (`Storage Blob Data Contributor` + **`Storage Blob Delegator`** for
+  user-delegation SAS, which is a second role AZ3 has to grant); the delegation
+  key is cached 6 of its 7 days because the gallery signs a URL per thumbnail.
+  Buckets map to containers 1:1 by name. Three hazards handled explicitly:
+  - **Azure stores no md5 for a browser-committed blob** — only a `Content-MD5`
+    the writer supplied. So `md5Hex` is `''` for every volunteer upload there and
+    the upload dedup falls back to its name+size key (the same fallback a file
+    Drive didn't hash already takes). Fail-safe in the right direction — a
+    surplus copy is recoverable, a skipped one is a lost photo — but it is
+    strictly weaker than GCS. **Verify against a real account in AZ4.**
+  - **`Put Block List` overwrites the blob's properties and metadata**, so the
+    api cannot pin metadata on a staged object. `UploadSession.clientStampsMetadata`
+    surfaces this rather than hiding it, and the client sends `x-ms-meta-*` at
+    commit. Nothing server-side trusts it for authorization: event/club/tag come
+    from the api-validated link, and the object *key* — api-chosen, and the only
+    thing the SAS is scoped to — is what the batch id is read from.
+  - **Deleting a missing blob is a 404**, where GCS takes `ignoreNotFound`;
+    `deleteIfExists` restores the no-op the whole app assumes.
+- ✅ **One contract, both adapters.** `test/helpers/objectStoreContract.ts` holds
+  24 cases naming the caller each protects; `fakeObjectStore.test.ts` and
+  `blobStore.test.ts` each run all of them, the latter over
+  `test/helpers/fakeBlobService.ts` — which models the service in *Azure's* own
+  vocabulary (`contentLength`, an md5 byte array, offset+count downloads, a 404
+  on a missing blob) so the normalization is exercised rather than assumed.
+  - The contract immediately caught the fake defaulting `contentType` where both
+    real adapters do, which is the class of divergence it exists to find.
+- ✅ **Services ported, GCS behaviour identical:** `gcsService.ts` (now the app's
+  *key layout and policy*, not a client), `volunteerUploadService.ts`,
+  `uploadRecoveryService.ts`, `eventDeletionService.ts` (via the two sweeps,
+  whose deadline-bounded behaviour is unchanged). Two hand-rolled base64→hex md5
+  helpers that had drifted apart (`gcsMd5ToHex`, `b64ToHex`) collapsed into the
+  adapters. `origFile()` is **deleted** along with the stale
+  `download.test.ts:46` fake that outlived it (§1.6).
+- ✅ **The `Content-Disposition` is built once**, in `storage/disposition.ts`, and
+  the routes pass a RAW filename. `routes/download.ts` used to
+  `encodeURIComponent` it itself; with the adapter also encoding, a Chinese
+  filename would have reached the volunteer as `%E6%B9%98…`. A test pins the raw
+  contract in both directions.
+- ✅ **The browser learns which protocol to speak.** `POST /session` returns
+  `protocol` (`gcs-resumable` | `azure-block-blob`, defaulted in the Zod schema
+  so a cached bundle mid-deploy keeps the path it implements) and
+  `web/src/lib/blockBlobUpload.ts` implements the Azure one — named blocks, an
+  explicit `comp=blocklist` commit, resume by listing uncommitted blocks. The
+  session cache, fingerprint key, retry schedule and callbacks stay shared.
+  See UPLOAD_RESUMABLE_NOTES.md for the protocol table.
+- ✅ Wiring: `AZURE_STORAGE_ACCOUNT_URL` / `AZURE_STORAGE_CONNECTION_STRING`
+  config (one of the two required when `CLOUD_PROVIDER=azure`, the connection
+  string for Azurite only), `@azure/storage-blob` added and loaded solely through
+  `await import()`.
+- ✅ **Three more bespoke fakes retired** onto the shared one:
+  `volunteerUploadService.test.ts` (the last `vi.mock('@google-cloud/storage')`
+  in the repo), `uploadRecoveryService.test.ts`, `download.test.ts`.
+- Verified: `tsc` clean (api + web + shared), `eslint` clean,
+  **67 api test files / 691 tests and 22 web files / 163 tests green** (from
+  65/627 and 21/143), GCP behaviour unchanged.
+
+- ⬜ Remaining: the Python backends; the rules-spec port; migrating the other ~36
+  bespoke test fakes.
+  - **Not yet proven, and cannot be here:** real SAS validation, account-level
+    CORS, per-transaction cost, and whether a browser's Put Block List behaves as
+    documented. `fakeBlobService.ts` is a model of Blob Storage, not Blob
+    Storage. Run the contract suite plus one real volunteer upload against
+    Azurite or a dev account in AZ4 — treat that as the gate, not these tests.
   - **Not yet proven, and cannot be here:** RU cost, index requirements, and real
     cross-partition `ORDER BY`. `fakeCosmos.ts` is a model of Cosmos, not Cosmos.
     Run the contract suite against the emulator or a dev account in AZ4 —
@@ -482,13 +565,14 @@ downstream needs them:
   **Port `uploadDedupService.ts` against its existing tests** — its
   `{ won, confirmedInDrive }` + `STALE_CLAIM_MS` semantics are the 2026-07-27
   photo-loss fix and must not be re-derived.
-- **Storage adapter** behind `gcsService.ts` + `volunteerUploadService.ts`
+- ~~**Storage adapter** behind `gcsService.ts` + `volunteerUploadService.ts`
   (+ `uploadRecoveryService.ts` and `eventDeletionService.ts` — see §1.7.3;
   keep the deadline-bounded sweep behaviour of `countEventDerivatives` /
   `deleteEventDerivatives`):
   signed URL ↔ user-delegation SAS (keep TTL cap + content-disposition);
   volunteer resumable session → block-blob SAS upload (browser client change
-  in `web/src` upload path). Delete dead `origFile()`.
+  in `web/src` upload path). Delete dead `origFile()`.~~ **DONE 2026-07-29** —
+  see the storage-seam entry above.
 - **Python:** Blob backend in `matcher/store.py` + `indexer/blobs.py`
   (`https://…blob.core.windows.net/...` or `az://` prefix beside `gs://` and
   local); Cosmos impl of `FirestoreMeta` in `indexer/job.py`.

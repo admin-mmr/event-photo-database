@@ -10,12 +10,15 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+import { FakeObjectStore, type SeedOptions } from './helpers/fakeObjectStore.js';
+
 process.env.VOLUNTEER_STAGING_BUCKET = 'staging-bucket';
 
-const getFiles = vi.fn();
-vi.mock('../src/services/volunteerUploadService.js', () => ({
-  getStorage: () => ({ bucket: () => ({ getFiles: (...a: unknown[]) => getFiles(...a) }) }),
-}));
+// The shared in-memory ObjectStore (AZ2), not a bespoke GCS-shaped literal: the
+// recovery path reads md5/size/custom straight off a listing, and those are
+// exactly the fields the two providers report differently.
+const storage = new FakeObjectStore();
+vi.mock('../src/lib/storage.js', () => ({ objectStore: () => storage }));
 
 const enqueueProcessBatchTask = vi.fn();
 const isUploadDispatchConfigured = vi.fn(() => true);
@@ -44,16 +47,20 @@ const { scanStagedRecovery, dispatchStagedRecovery } = await import('../src/serv
 
 const EV = 'ev1';
 const hex = (s: string): string => Buffer.from(s).toString('hex').padEnd(32, '0').slice(0, 32);
-const b64 = (s: string): string => Buffer.from(hex(s), 'hex').toString('base64');
 
-/** A staged object as the GCS client hands it back. */
-function obj(batch: string, id: string, opts: { md5?: string; who?: string; link?: string; size?: number } = {}) {
-  return {
-    name: `volunteer_uploads/${EV}/${batch}/${id}.jpg`,
-    metadata: {
-      ...(opts.md5 === undefined ? {} : { md5Hash: b64(opts.md5) }),
-      size: String(opts.size ?? 1000),
-      metadata: {
+/** One staged object, as the store reports it. `md5` omitted = NO hash, which
+ *  is what an unhashed object (and every Azure block-blob commit) looks like. */
+function obj(
+  batch: string,
+  id: string,
+  opts: { md5?: string; who?: string; link?: string; size?: number } = {},
+): [key: string, seed: SeedOptions] {
+  return [
+    `volunteer_uploads/${EV}/${batch}/${id}.jpg`,
+    {
+      md5Hex: opts.md5 === undefined ? '' : hex(opts.md5),
+      size: opts.size ?? 1000,
+      custom: {
         eventId: EV,
         linkId: opts.link ?? 'link-1',
         clubName: 'Misty_Mountain',
@@ -63,19 +70,25 @@ function obj(batch: string, id: string, opts: { md5?: string; who?: string; link
         batchId: batch,
       },
     },
-  };
+  ];
+}
+
+/** Replace the staging bucket's contents with these objects. */
+function stage(objs: Array<[key: string, seed: SeedOptions]>): void {
+  storage.reset();
+  for (const [key, seed] of objs) storage.seed('staging-bucket', key, seed);
 }
 
 beforeEach(() => {
   indexHashes = [];
-  getFiles.mockReset().mockResolvedValue([[]]);
+  storage.reset();
   enqueueProcessBatchTask.mockReset().mockResolvedValue(undefined);
   isUploadDispatchConfigured.mockReset().mockReturnValue(true);
 });
 
 describe('scanStagedRecovery', () => {
   it('counts only staged objects whose content is NOT already in Drive', async () => {
-    getFiles.mockResolvedValue([[obj('b1', 'a', { md5: 'aa' }), obj('b1', 'b', { md5: 'bb' })]]);
+    stage([obj('b1', 'a', { md5: 'aa' }), obj('b1', 'b', { md5: 'bb' })]);
     indexHashes = [hex('aa')]; // 'a' already copied; only 'b' is owed
 
     const scan = await scanStagedRecovery(EV);
@@ -85,7 +98,7 @@ describe('scanStagedRecovery', () => {
   });
 
   it('reports nothing to do once everything is in Drive', async () => {
-    getFiles.mockResolvedValue([[obj('b1', 'a', { md5: 'aa' })]]);
+    stage([obj('b1', 'a', { md5: 'aa' })]);
     indexHashes = [hex('aa')];
     const scan = await scanStagedRecovery(EV);
     expect(scan.strandedObjects).toBe(0);
@@ -93,15 +106,13 @@ describe('scanStagedRecovery', () => {
   });
 
   it('treats an object with no md5 as stranded — unknown is not "already done"', async () => {
-    getFiles.mockResolvedValue([[obj('b1', 'a')]]);
+    stage([obj('b1', 'a')]);
     indexHashes = [hex('aa')];
     expect((await scanStagedRecovery(EV)).strandedObjects).toBe(1);
   });
 
   it('surfaces credit, including the uncredited blank-name case', async () => {
-    getFiles.mockResolvedValue([
-      [obj('b1', 'a', { md5: 'aa', who: 'Rebecca Tan' }), obj('b2', 'b', { md5: 'bb', who: '' })],
-    ]);
+    stage([obj('b1', 'a', { md5: 'aa', who: 'Rebecca Tan' }), obj('b2', 'b', { md5: 'bb', who: '' })]);
     const scan = await scanStagedRecovery(EV);
     expect(scan.uncredited).toBe(1);
     const b1 = scan.batches.find((b) => b.batchId === 'b1')!;
@@ -111,9 +122,7 @@ describe('scanStagedRecovery', () => {
   });
 
   it('orders batches worst-first and totals the bytes owed', async () => {
-    getFiles.mockResolvedValue([
-      [obj('small', 'a', { md5: 'a1', size: 10 }), obj('big', 'b', { md5: 'b1', size: 100 }), obj('big', 'c', { md5: 'c1', size: 100 })],
-    ]);
+    stage([obj('small', 'a', { md5: 'a1', size: 10 }), obj('big', 'b', { md5: 'b1', size: 100 }), obj('big', 'c', { md5: 'c1', size: 100 })]);
     const scan = await scanStagedRecovery(EV);
     expect(scan.batches.map((b) => b.batchId)).toEqual(['big', 'small']);
     expect(scan.strandedBytes).toBe(210);
@@ -122,7 +131,7 @@ describe('scanStagedRecovery', () => {
 
 describe('dispatchStagedRecovery', () => {
   it('DRY RUN by default — plans the work but dispatches nothing', async () => {
-    getFiles.mockResolvedValue([[obj('b1', 'a', { md5: 'aa' })]]);
+    stage([obj('b1', 'a', { md5: 'aa' })]);
     const out = await dispatchStagedRecovery(EV);
     expect(out.apply).toBe(false);
     expect(out.objects).toBe(1);
@@ -131,13 +140,13 @@ describe('dispatchStagedRecovery', () => {
   });
 
   it('truthy-but-not-true must not dispatch', async () => {
-    getFiles.mockResolvedValue([[obj('b1', 'a', { md5: 'aa' })]]);
+    stage([obj('b1', 'a', { md5: 'aa' })]);
     await dispatchStagedRecovery(EV, { apply: 'yes' as unknown as boolean });
     expect(enqueueProcessBatchTask).not.toHaveBeenCalled();
   });
 
   it('dispatches by linkId, since staged objects never carry the public token', async () => {
-    getFiles.mockResolvedValue([[obj('b1', 'a', { md5: 'aa', link: 'link-7' })]]);
+    stage([obj('b1', 'a', { md5: 'aa', link: 'link-7' })]);
     await dispatchStagedRecovery(EV, { apply: true });
     const payload = enqueueProcessBatchTask.mock.calls[0]![0] as Record<string, unknown>;
     expect(payload.linkId).toBe('link-7');
@@ -146,7 +155,7 @@ describe('dispatchStagedRecovery', () => {
   });
 
   it('never re-dispatches content that is already in Drive', async () => {
-    getFiles.mockResolvedValue([[obj('b1', 'a', { md5: 'aa' }), obj('b1', 'b', { md5: 'bb' })]]);
+    stage([obj('b1', 'a', { md5: 'aa' }), obj('b1', 'b', { md5: 'bb' })]);
     indexHashes = [hex('aa')];
     await dispatchStagedRecovery(EV, { apply: true });
     const payload = enqueueProcessBatchTask.mock.calls[0]![0] as { objectNames: string[] };
@@ -156,7 +165,7 @@ describe('dispatchStagedRecovery', () => {
   it('chunks a big batch and gives each chunk its own recovery batchId', async () => {
     // 5 objects, chunk 2 → 3 tasks. The suffix keeps the Cloud Tasks name unique
     // and leaves the volunteer's original status doc untouched.
-    getFiles.mockResolvedValue([[...Array.from({ length: 5 }, (_, i) => obj('b1', `f${i}`, { md5: `m${i}` }))]]);
+    stage([...Array.from({ length: 5 }, (_, i) => obj('b1', `f${i}`, { md5: `m${i}` }))]);
     const out = await dispatchStagedRecovery(EV, { apply: true, chunkSize: 2 });
     expect(out.tasks).toBe(3);
     expect(out.objects).toBe(5);
@@ -168,7 +177,7 @@ describe('dispatchStagedRecovery', () => {
     // The live run dispatched 10 chunks simultaneously, Cloud Run packed them
     // onto one 512MiB instance and OOM-killed it. Each chunk must now be
     // scheduled after the previous one should have finished.
-    getFiles.mockResolvedValue([[...Array.from({ length: 6 }, (_, i) => obj('b1', `f${i}`, { md5: `m${i}` }))]]);
+    stage([...Array.from({ length: 6 }, (_, i) => obj('b1', `f${i}`, { md5: `m${i}` }))]);
     const before = Date.now();
     await dispatchStagedRecovery(EV, { apply: true, chunkSize: 2 });
 
@@ -185,7 +194,7 @@ describe('dispatchStagedRecovery', () => {
   });
 
   it('reports how long the run will take, from objects AND bytes', async () => {
-    getFiles.mockResolvedValue([[...Array.from({ length: 100 }, (_, i) => obj('b1', `f${i}`, { md5: `m${i}` }))]]);
+    stage([...Array.from({ length: 100 }, (_, i) => obj('b1', `f${i}`, { md5: `m${i}` }))]);
     const out = await dispatchStagedRecovery(EV, { apply: true });
     expect(out.objects).toBe(100);
     expect(out.estimatedMinutes).toBe(2); // 100 tiny files x 1.2s = 120s
@@ -195,9 +204,7 @@ describe('dispatchStagedRecovery', () => {
     // The bug this fixes: 5 MP4s totalling 8.8 GB were estimated at "~1 minute"
     // (5 x 1.2s) and actually took 21.6. The byte term dominates for video.
     const GB = 1024 ** 3;
-    getFiles.mockResolvedValue([
-      [...Array.from({ length: 5 }, (_, i) => obj('vid', `v${i}`, { md5: `v${i}`, size: 1.76 * GB }))],
-    ]);
+    stage([...Array.from({ length: 5 }, (_, i) => obj('vid', `v${i}`, { md5: `v${i}`, size: 1.76 * GB }))]);
     const out = await dispatchStagedRecovery(EV, { apply: true });
     expect(out.objects).toBe(5);
     // ~8.8 GB at 6 MB/s ~= 25 min, in the right ballpark of the real 21.6.
@@ -207,7 +214,7 @@ describe('dispatchStagedRecovery', () => {
 
   it('reports a duration on a DRY RUN too, so the operator can plan', async () => {
     const GB = 1024 ** 3;
-    getFiles.mockResolvedValue([[obj('vid', 'v0', { md5: 'v0', size: 4 * GB })]]);
+    stage([obj('vid', 'v0', { md5: 'v0', size: 4 * GB })]);
     const out = await dispatchStagedRecovery(EV);
     expect(out.apply).toBe(false);
     expect(out.estimatedMinutes).toBeGreaterThan(5);
@@ -217,9 +224,7 @@ describe('dispatchStagedRecovery', () => {
     // 4 x 4 GiB with chunkSize 400: the count cap would make ONE 16 GiB task,
     // which no 1800s request could finish. The byte cap splits it instead.
     const GB = 1024 ** 3;
-    getFiles.mockResolvedValue([
-      [...Array.from({ length: 4 }, (_, i) => obj('vid', `v${i}`, { md5: `v${i}`, size: 4 * GB }))],
-    ]);
+    stage([...Array.from({ length: 4 }, (_, i) => obj('vid', `v${i}`, { md5: `v${i}`, size: 4 * GB }))]);
     const out = await dispatchStagedRecovery(EV, { apply: true, chunkSize: 400 });
     expect(out.objects).toBe(4);
     expect(out.tasks).toBeGreaterThan(1);
@@ -231,14 +236,14 @@ describe('dispatchStagedRecovery', () => {
 
   it('never drops an object larger than the byte cap', async () => {
     const GB = 1024 ** 3;
-    getFiles.mockResolvedValue([[obj('vid', 'huge', { md5: 'h', size: 9 * GB })]]);
+    stage([obj('vid', 'huge', { md5: 'h', size: 9 * GB })]);
     const out = await dispatchStagedRecovery(EV, { apply: true });
     expect(out.objects).toBe(1);
     expect(out.tasks).toBe(1);
   });
 
   it('can target specific batches', async () => {
-    getFiles.mockResolvedValue([[obj('b1', 'a', { md5: 'aa' }), obj('b2', 'b', { md5: 'bb' })]]);
+    stage([obj('b1', 'a', { md5: 'aa' }), obj('b2', 'b', { md5: 'bb' })]);
     const out = await dispatchStagedRecovery(EV, { apply: true, batchIds: ['b2'] });
     expect(out.batches).toBe(1);
     const payload = enqueueProcessBatchTask.mock.calls[0]![0] as { objectNames: string[] };
@@ -246,7 +251,7 @@ describe('dispatchStagedRecovery', () => {
   });
 
   it('skips a batch with no linkId rather than guessing the club', async () => {
-    getFiles.mockResolvedValue([[obj('b1', 'a', { md5: 'aa', link: '' })]]);
+    stage([obj('b1', 'a', { md5: 'aa', link: '' })]);
     const out = await dispatchStagedRecovery(EV, { apply: true });
     expect(enqueueProcessBatchTask).not.toHaveBeenCalled();
     expect(out.notDispatched).toBe(1);
@@ -254,7 +259,7 @@ describe('dispatchStagedRecovery', () => {
   });
 
   it('refuses to apply when Cloud Tasks dispatch is not configured', async () => {
-    getFiles.mockResolvedValue([[obj('b1', 'a', { md5: 'aa' })]]);
+    stage([obj('b1', 'a', { md5: 'aa' })]);
     isUploadDispatchConfigured.mockReturnValue(false);
     const out = await dispatchStagedRecovery(EV, { apply: true });
     expect(out.objects).toBe(0);
@@ -263,7 +268,7 @@ describe('dispatchStagedRecovery', () => {
   });
 
   it('counts a failed dispatch as not-dispatched instead of claiming success', async () => {
-    getFiles.mockResolvedValue([[obj('b1', 'a', { md5: 'aa' })]]);
+    stage([obj('b1', 'a', { md5: 'aa' })]);
     enqueueProcessBatchTask.mockRejectedValue(new Error('queue down'));
     const out = await dispatchStagedRecovery(EV, { apply: true });
     expect(out.objects).toBe(0);

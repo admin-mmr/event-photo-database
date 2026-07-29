@@ -36,6 +36,21 @@ const EnvSchema = z.object({
   // against the Cosmos emulator, which has no Entra identity.
   COSMOS_KEY: z.string().optional(),
 
+  // Azure Blob Storage (the GCS replacement) — required when
+  // CLOUD_PROVIDER=azure, ignored on GCP. See lib/storage/blobStore.ts and
+  // AZURE_MIGRATION_DEV_PLAN.md AZ2. Looks like
+  // https://<account>.blob.core.windows.net. The three bucket names
+  // (DERIVATIVES_BUCKET / UPLOADS_BUCKET / VOLUNTEER_STAGING_BUCKET, below) are
+  // used verbatim as container names, so AZ3's provisioner must create
+  // containers under exactly those names.
+  AZURE_STORAGE_ACCOUNT_URL: z.string().optional(),
+  // Connection string. Leave UNSET in deployed environments: the api
+  // authenticates with its managed identity (Storage Blob Data Contributor for
+  // the data plane, Storage Blob Delegator to mint user-delegation SAS), keeping
+  // the runtime keyless the same way the GCP side is. Set it only for local dev
+  // against Azurite, which has no Entra identity.
+  AZURE_STORAGE_CONNECTION_STRING: z.string().optional(),
+
   // GCP project this Cloud Run service runs in. Used to construct
   // Firestore/Storage client config. On Cloud Run this is auto-detected
   // from the metadata server, so it's optional in production. Off GCP
@@ -304,6 +319,14 @@ const EnvSchema = z.object({
         code: z.ZodIssueCode.custom,
         path: ['COSMOS_ENDPOINT'],
         message: 'COSMOS_ENDPOINT is required when CLOUD_PROVIDER=azure (there is no Firestore off GCP)',
+      });
+    }
+    if (!cfg.AZURE_STORAGE_ACCOUNT_URL && !cfg.AZURE_STORAGE_CONNECTION_STRING) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AZURE_STORAGE_ACCOUNT_URL'],
+        message:
+          'AZURE_STORAGE_ACCOUNT_URL (or AZURE_STORAGE_CONNECTION_STRING for Azurite) is required when CLOUD_PROVIDER=azure (there is no GCS off GCP)',
       });
     }
   });

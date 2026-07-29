@@ -2,14 +2,16 @@ import './lib/gaxiosNativeFetch.js'; // must run before any google-auth-library 
 import { buildServer } from './server.js';
 import { env } from './lib/config.js';
 import { initDb } from './lib/firestore.js';
+import { initStorage } from './lib/storage.js';
 import { logger } from './lib/logger.js';
 import { recaptchaConfigStatus } from './services/recaptcha.js';
 
 const app = buildServer();
 
-// Connect the document store before accepting traffic. No-op on GCP; on Azure
-// this is what loads the Cosmos client (see lib/firestore.ts initDb).
-await initDb();
+// Connect the document store and the object store before accepting traffic.
+// Both are no-ops on GCP; on Azure they are what load the Cosmos and Blob
+// clients (see lib/firestore.ts initDb, lib/storage.ts initStorage).
+await Promise.all([initDb(), initStorage()]);
 
 const server = app.listen(env.PORT, () => {
   logger.info(

@@ -113,9 +113,7 @@ function signSelectionHandler(logLabel: string): RequestHandler {
           filename = `${stem}_${p.photoId.slice(0, 6)}${tail}`;
         }
         usedNames.add(filename);
-        const url = await signOrigUrl(eventId, p.photoId, p.mimeType, {
-          disposition: encodeURIComponent(filename),
-        });
+        const url = await signOrigUrl(eventId, p.photoId, p.mimeType, { filename });
         return { photoId: p.photoId, url, filename };
       }),
     );
@@ -214,9 +212,7 @@ downloadRouter.get(
       const name = String(doc.data()?.name ?? '');
       const filename = safeEntryName(name, photoId, origExtForMime(mimeType));
 
-      const url = await signOrigUrl(eventId, photoId, mimeType, {
-        disposition: encodeURIComponent(filename),
-      });
+      const url = await signOrigUrl(eventId, photoId, mimeType, { filename });
 
       // Don't cache past the signed URL's TTL — re-signing returns no photo
       // bytes, so it's cheap. The image bytes themselves are cached by the

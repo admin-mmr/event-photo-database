@@ -1,5 +1,6 @@
 /**
- * gcsService.ts — V4 signed URLs into the derivatives bucket (dev plan §4.2).
+ * gcsService.ts — short-lived read URLs and object lifecycle for the buckets
+ * (dev plan §4.2).
  *
  * Bucket layout (indexer/blobs.py):
  *   <eventId>/photos/orig/<photoId>.<ext>
@@ -8,27 +9,20 @@
  *
  * No public objects; everything is served via these short-lived URLs (≤60 min).
  *
- * IAM prerequisite (one-time, in the demo checklist): V4 signing with ADC on
- * Cloud Run uses the IAM signBlob API, so api-runtime@ needs
- * roles/iam.serviceAccountTokenCreator **on itself**:
- *
- *   gcloud iam service-accounts add-iam-policy-binding \
- *     api-runtime@mmr-data-pipeline.iam.gserviceaccount.com \
- *     --member="serviceAccount:api-runtime@mmr-data-pipeline.iam.gserviceaccount.com" \
- *     --role="roles/iam.serviceAccountTokenCreator"
+ * Every byte goes through `lib/storage.ts`'s provider-neutral `ObjectStore`
+ * (AZ2) — this module holds the app's *key layout and policy*, the adapter holds
+ * the provider. The name is kept as `gcsService` so the ~14 importing modules
+ * were untouched by the port; read it as "the object service", not "the GCS
+ * client". Signing prerequisites (IAM signBlob on GCP, Storage Blob Delegator on
+ * Azure) live in `lib/storage/gcsStore.ts` / `blobStore.ts`.
  */
 
-import type { File } from '@google-cloud/storage';
-import { Storage } from '@google-cloud/storage';
 import { env } from '../lib/config.js';
+import { objectStore } from '../lib/storage.js';
 
-let storage: Storage | null = null;
-
-function getStorage(): Storage {
-  if (storage === null) {
-    storage = new Storage(env.GCP_PROJECT_ID ? { projectId: env.GCP_PROJECT_ID } : {});
-  }
-  return storage;
+/** Signed-URL lifetime, capped at 60 minutes by the config schema (PRD §4.2). */
+function ttlMs(): number {
+  return env.SIGNED_URL_TTL_MINUTES * 60 * 1000;
 }
 
 export type DerivativeKind = 'thumb' | 'web' | 'orig';
@@ -54,7 +48,7 @@ export function origExtForMime(mimeType: string | undefined): string {
   return (mimeType && ORIG_EXT_BY_MIME[mimeType]) || 'bin';
 }
 
-/** GCS object key for a derivative/original of a photo. */
+/** Object key for a derivative/original of a photo. */
 export function objectPath(
   eventId: string,
   photoId: string,
@@ -64,28 +58,21 @@ export function objectPath(
   return `${eventId}/photos/${kind}/${photoId}.${ext}`;
 }
 
-/** Bucket file handle for an original — used to stream bytes into a ZIP. */
-export function origFile(eventId: string, photoId: string, mimeType: string | undefined): File {
-  return getStorage()
-    .bucket(env.DERIVATIVES_BUCKET)
-    .file(objectPath(eventId, photoId, 'orig', origExtForMime(mimeType)));
-}
-
 /**
  * Signed URL for a single original (e.g. "download this one" on Results, or the
- * gallery "Save to Photos" / full-res lightbox). Bytes flow GCS → browser
- * directly, so they bill as GCS egress instead of being proxied through Cloud
- * Run + the Firebase Hosting `/api/**` rewrite (which is what made a single
- * live event day spike the Hosting line). `disposition`, when set, attaches an
- * RFC-5987 `Content-Disposition` so a direct browser navigation saves with the
- * original filename; the blob-fetch path names the File itself, so it's
- * optional there.
+ * gallery "Save to Photos" / full-res lightbox). Bytes flow from the bucket to
+ * the browser directly, so they bill as storage egress instead of being proxied
+ * through Cloud Run + the Firebase Hosting `/api/**` rewrite (which is what made
+ * a single live event day spike the Hosting line). `filename`, when set,
+ * attaches a `Content-Disposition` so a direct browser navigation saves under
+ * the original name; the blob-fetch path names the File itself, so it's optional
+ * there. Pass the RAW filename — the adapter does the RFC-5987 encoding.
  */
 export async function signOrigUrl(
   eventId: string,
   photoId: string,
   mimeType: string | undefined,
-  opts?: { disposition?: string },
+  opts?: { filename?: string },
 ): Promise<string> {
   return signPhotoUrl(eventId, photoId, 'orig', origExtForMime(mimeType), opts);
 }
@@ -95,41 +82,31 @@ export async function signPhotoUrl(
   photoId: string,
   kind: DerivativeKind = 'thumb',
   ext = 'jpg',
-  opts?: { disposition?: string },
+  opts?: { filename?: string },
 ): Promise<string> {
-  const objectPath = `${eventId}/photos/${kind}/${photoId}.${ext}`;
-  const [url] = await getStorage()
-    .bucket(env.DERIVATIVES_BUCKET)
-    .file(objectPath)
-    .getSignedUrl({
-      version: 'v4',
-      action: 'read',
-      expires: Date.now() + env.SIGNED_URL_TTL_MINUTES * 60 * 1000,
-      ...(opts?.disposition
-        ? { responseDisposition: `attachment; filename*=UTF-8''${opts.disposition}` }
-        : {}),
-    });
-  return url;
+  return objectStore().signReadUrl(env.DERIVATIVES_BUCKET, objectPath(eventId, photoId, kind, ext), {
+    ttlMs: ttlMs(),
+    ...(opts?.filename ? { filename: opts.filename } : {}),
+  });
 }
 
 /**
  * Delete every stored byte for a photo (admin delete): the original plus the
- * `web` and `thumb` derivatives. `ignoreNotFound` makes a partially-indexed
- * photo or a re-delete a no-op. `mimeType` reconstructs the orig extension the
- * indexer wrote (`origExtForMime`); web/thumb are always `.jpg`.
+ * `web` and `thumb` derivatives. A partially-indexed photo or a re-delete is a
+ * no-op, because a missing object never errors. `mimeType` reconstructs the orig
+ * extension the indexer wrote (`origExtForMime`); web/thumb are always `.jpg`.
  */
 export async function deletePhotoDerivatives(
   eventId: string,
   photoId: string,
   mimeType: string | undefined,
 ): Promise<void> {
-  const bucket = getStorage().bucket(env.DERIVATIVES_BUCKET);
+  const store = objectStore();
+  const bucket = env.DERIVATIVES_BUCKET;
   await Promise.all([
-    bucket
-      .file(objectPath(eventId, photoId, 'orig', origExtForMime(mimeType)))
-      .delete({ ignoreNotFound: true }),
-    bucket.file(objectPath(eventId, photoId, 'web')).delete({ ignoreNotFound: true }),
-    bucket.file(objectPath(eventId, photoId, 'thumb')).delete({ ignoreNotFound: true }),
+    store.remove(bucket, objectPath(eventId, photoId, 'orig', origExtForMime(mimeType))),
+    store.remove(bucket, objectPath(eventId, photoId, 'web')),
+    store.remove(bucket, objectPath(eventId, photoId, 'thumb')),
   ]);
 }
 
@@ -144,8 +121,8 @@ async function countUnderPrefix(
   prefix: string,
   cap = COUNT_SCAN_CAP,
 ): Promise<{ count: number; capped: boolean }> {
-  const [files] = await getStorage().bucket(bucketName).getFiles({ prefix, maxResults: cap + 1 });
-  return { count: Math.min(files.length, cap), capped: files.length > cap };
+  const objects = await objectStore().list(bucketName, { prefix, limit: cap + 1 });
+  return { count: Math.min(objects.length, cap), capped: objects.length > cap };
 }
 
 /** Objects under `<eventId>/` in the derivatives bucket (originals + web/thumb + vectors). */
@@ -181,7 +158,8 @@ export async function deleteEventDerivatives(
   eventId: string,
   opts?: { deadlineMs?: number; pageSize?: number; concurrency?: number },
 ): Promise<{ deleted: number; remaining: boolean }> {
-  const bucket = getStorage().bucket(env.DERIVATIVES_BUCKET);
+  const store = objectStore();
+  const bucket = env.DERIVATIVES_BUCKET;
   const pageSize = opts?.pageSize ?? 500;
   const concurrency = opts?.concurrency ?? 25;
   const deadlineMs = opts?.deadlineMs ?? Number.POSITIVE_INFINITY;
@@ -191,18 +169,19 @@ export async function deleteEventDerivatives(
     if (Date.now() >= deadlineMs) return { deleted, remaining: true };
     // Always re-query from the start of the prefix: the objects we just deleted
     // are gone, so page tokens would only skip work we still have to do.
-    const [files] = await bucket.getFiles({ prefix: `${eventId}/`, maxResults: pageSize });
-    if (files.length === 0) return { deleted, remaining: false };
+    // eslint-disable-next-line no-await-in-loop
+    const objects = await store.list(bucket, { prefix: `${eventId}/`, limit: pageSize });
+    if (objects.length === 0) return { deleted, remaining: false };
 
-    for (let i = 0; i < files.length; i += concurrency) {
-      const slice = files.slice(i, i + concurrency);
+    for (let i = 0; i < objects.length; i += concurrency) {
+      const slice = objects.slice(i, i + concurrency);
       // eslint-disable-next-line no-await-in-loop
-      await Promise.all(slice.map((f) => f.delete({ ignoreNotFound: true })));
+      await Promise.all(slice.map((o) => store.remove(bucket, o.key)));
       deleted += slice.length;
       if (Date.now() >= deadlineMs) return { deleted, remaining: true };
     }
     // A short page means we saw the whole prefix and just emptied it.
-    if (files.length < pageSize) return { deleted, remaining: false };
+    if (objects.length < pageSize) return { deleted, remaining: false };
   }
 }
 
@@ -221,7 +200,7 @@ export function referenceExtForMime(mimeType: string | undefined): string {
   return (mimeType && REF_EXT_BY_MIME[mimeType]) || 'jpg';
 }
 
-/** GCS object key for a user's reference selfie. */
+/** Object key for a user's reference selfie. */
 export function referencePath(uid: string, uploadId: string, mimeType: string | undefined): string {
   return `find_me_references/${uid}/${uploadId}.${referenceExtForMime(mimeType)}`;
 }
@@ -234,36 +213,24 @@ export async function uploadReference(
   contentType: string,
 ): Promise<string> {
   const path = referencePath(uid, uploadId, contentType);
-  await getStorage()
-    .bucket(env.UPLOADS_BUCKET)
-    .file(path)
-    .save(buffer, { contentType, resumable: false });
+  await objectStore().write(env.UPLOADS_BUCKET, path, buffer, { contentType });
   return path;
 }
 
 /** Download a stored reference selfie's bytes (for re-running a search). */
 export async function readReference(gcsPath: string): Promise<Buffer> {
-  const [buf] = await getStorage().bucket(env.UPLOADS_BUCKET).file(gcsPath).download();
-  return buf;
+  return objectStore().read(env.UPLOADS_BUCKET, gcsPath);
 }
 
-/** Delete a stored reference selfie's object (My Data delete, M3.4). Uses
- *  `ignoreNotFound` so a re-delete or an already-expired object is a no-op. */
+/** Delete a stored reference selfie's object (My Data delete, M3.4). A re-delete
+ *  or an already-expired object is a no-op. */
 export async function deleteReferenceObject(gcsPath: string): Promise<void> {
-  await getStorage().bucket(env.UPLOADS_BUCKET).file(gcsPath).delete({ ignoreNotFound: true });
+  await objectStore().remove(env.UPLOADS_BUCKET, gcsPath);
 }
 
 /** Short-lived signed read URL for displaying a stored reference in the picker. */
 export async function signReferenceUrl(gcsPath: string): Promise<string> {
-  const [url] = await getStorage()
-    .bucket(env.UPLOADS_BUCKET)
-    .file(gcsPath)
-    .getSignedUrl({
-      version: 'v4',
-      action: 'read',
-      expires: Date.now() + env.SIGNED_URL_TTL_MINUTES * 60 * 1000,
-    });
-  return url;
+  return objectStore().signReadUrl(env.UPLOADS_BUCKET, gcsPath, { ttlMs: ttlMs() });
 }
 
 /** Sign thumb + web for a batch of photos. Order preserved. */
@@ -287,9 +254,9 @@ export async function signPhotoUrls(
  *
  * The gallery grid shows thumbnails; the full-size `web` derivative is only
  * needed when a photo is opened in the lightbox. Signing thumbs alone halves
- * the per-page IAM signBlob round-trips (V4 signing under ADC on Cloud Run is
- * one IAM call per signature), so the first page of photos paints noticeably
- * faster. The `web` URL is signed on demand via `signPhotoUrl(..., 'web')`.
+ * the per-page signing round-trips (V4 signing under ADC on Cloud Run is one IAM
+ * call per signature), so the first page of photos paints noticeably faster. The
+ * `web` URL is signed on demand via `signPhotoUrl(..., 'web')`.
  */
 export async function signThumbUrls(
   eventId: string,

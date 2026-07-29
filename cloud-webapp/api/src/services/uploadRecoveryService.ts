@@ -34,7 +34,7 @@
 import { env } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { firestore } from '../lib/firestore.js';
-import { getStorage } from './volunteerUploadService.js';
+import { objectStore } from '../lib/storage.js';
 import { enqueueProcessBatchTask, isUploadDispatchConfigured } from './uploadDispatch.js';
 
 /**
@@ -159,32 +159,25 @@ interface StagedObject {
   photographerName: string;
 }
 
-/** GCS reports md5 base64; Drive and the photo index use lowercase hex. */
-function b64ToHex(md5Base64: string | undefined): string {
-  if (!md5Base64) return '';
-  try {
-    return Buffer.from(md5Base64, 'base64').toString('hex').toLowerCase();
-  } catch {
-    return '';
-  }
-}
-
 /** Every staged object for an event, with the metadata the copy path needs. */
 async function listStaged(eventId: string): Promise<StagedObject[]> {
   const prefix = `volunteer_uploads/${eventId}/`;
-  const [files] = await getStorage().bucket(env.VOLUNTEER_STAGING_BUCKET).getFiles({ prefix });
+  const objects = await objectStore().list(env.VOLUNTEER_STAGING_BUCKET, { prefix });
   const out: StagedObject[] = [];
-  for (const f of files) {
-    const meta = (f.metadata ?? {}) as { md5Hash?: string; size?: string | number; metadata?: Record<string, string> };
-    const custom = meta.metadata ?? {};
+  for (const o of objects) {
+    const custom = o.metadata.custom;
     // The batch id is the third path segment; trust the path over metadata so a
-    // half-stamped object still groups with its siblings.
-    const batchId = String(f.name).split('/')[2] ?? '';
+    // half-stamped object still groups with its siblings. (On Azure the custom
+    // metadata is client-supplied — see `UploadSession.clientStampsMetadata` —
+    // which makes preferring the api-chosen key the right default there too.)
+    const batchId = o.key.split('/')[2] ?? '';
     if (!batchId) continue;
     out.push({
-      name: String(f.name),
-      md5Hex: b64ToHex(meta.md5Hash),
-      size: Number(meta.size ?? 0) || 0,
+      name: o.key,
+      // '' = the provider reports no hash. Treated as "still owed a copy" by
+      // strandedObjects, never as "already done".
+      md5Hex: o.metadata.md5Hex,
+      size: o.metadata.size,
       batchId,
       linkId: custom.linkId ?? '',
       clubName: custom.clubName ?? '',

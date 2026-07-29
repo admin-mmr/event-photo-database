@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
-import { Readable } from 'node:stream';
 import type { Request, Response, NextFunction } from 'express';
 
 // ── mocks (must precede the server import) ──────────────────────────────────
@@ -35,23 +34,22 @@ vi.mock('../src/lib/firestore.js', () => ({
   }),
 }));
 
-// origFile returns a handle whose createReadStream yields fixed bytes per id,
-// so we can assert the ZIP contains the *original* bytes (stored uncompressed).
-const ORIG_BYTES = {
-  p1: Buffer.from('ORIGINAL-BYTES-FOR-P1'),
-  p2: Buffer.from('ORIGINAL-BYTES-FOR-P2'),
-};
-
+// The download routes never touch photo bytes: both hand back signed URLs so the
+// bytes go storage → browser directly, off the Hosting egress line (CLAUDE.md).
+// `filename` is recorded so a test can assert the Save-As name is passed RAW —
+// the RFC-5987 encoding now happens once, inside the storage adapter.
+const signedFor: Array<{ photoId: string; filename?: string | undefined }> = [];
 vi.mock('../src/services/gcsService.js', () => ({
-  origFile: (_eventId: string, photoId: string) => ({
-    createReadStream: () =>
-      Readable.from([(ORIG_BYTES as Record<string, Buffer>)[photoId] ?? Buffer.from('')]),
-  }),
   origExtForMime: (m: string | undefined) => (m === 'image/png' ? 'png' : 'jpg'),
-  // The single-original route now 302s to a signed URL instead of streaming, so
-  // the bytes go GCS → browser directly (off the Hosting egress line).
-  signOrigUrl: async (eventId: string, photoId: string, _m: string | undefined) =>
-    `https://storage.example/signed/${eventId}/${photoId}?sig=abc`,
+  signOrigUrl: async (
+    eventId: string,
+    photoId: string,
+    _m: string | undefined,
+    opts?: { filename?: string },
+  ) => {
+    signedFor.push({ photoId, filename: opts?.filename });
+    return `https://storage.example/signed/${eventId}/${photoId}?sig=abc`;
+  },
 }));
 
 const { buildServer } = await import('../src/server.js');
@@ -119,6 +117,16 @@ describe('POST /api/events/:id/download (B1)', () => {
       expect(f.url).toMatch(/^https:\/\/storage\.example\/signed\//);
     }
     expect(files.find((f) => f.photoId === 'p1')?.filename).toBe('IMG_001.jpg');
+  });
+
+  it('passes the Save-As filename RAW, leaving the encoding to the adapter', async () => {
+    // This route used to call encodeURIComponent itself. Now that the storage
+    // adapter builds the RFC-5987 `filename*`, encoding here too would reach the
+    // volunteer as `%E6%B9%98…` — so the contract is "raw name in".
+    fakeDb.photos.set('pz', { eventId: 'ev1', name: '湘舍动.jpg', mimeType: 'image/jpeg' });
+    signedFor.length = 0;
+    await request(app).post('/api/events/ev1/download').set('x-test-user', USER).send({ photoIds: ['pz'] });
+    expect(signedFor).toEqual([{ photoId: 'pz', filename: '湘舍动.jpg' }]);
   });
 });
 

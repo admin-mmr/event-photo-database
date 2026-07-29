@@ -66,12 +66,37 @@ export const CreateUploadSessionResponseSchema = z.object({
   ok: z.literal(true),
   /** Stable id for this file within the batch (also the staging object stem). */
   uploadId: z.string(),
-  /** GCS resumable session URI. Opaque; the browser PUTs chunks here. */
+  /** Where the browser sends bytes. Opaque, single-object, carries its own
+   *  credential — read it per `protocol`, never assume the GCS shape. */
   sessionUri: z.string().url(),
   /** Staging object name the bytes land at (`<prefix>/<uploadId>.<ext>`). */
   objectName: z.string(),
   /** Echoed batch id so the client groups a session's files in one receipt. */
   batchId: z.string(),
+  /**
+   * Wire protocol for `sessionUri`. The two are NOT interchangeable:
+   *
+   *   `gcs-resumable`    PUT chunks with `Content-Range`; HTTP 308 + a `Range`
+   *                      header reports the committed offset.
+   *   `azure-block-blob` `PUT ?comp=block&blockid=…` per chunk, then
+   *                      `PUT ?comp=blocklist` to commit; resume by listing
+   *                      uncommitted blocks.
+   *
+   * Defaulted so an older client (or a cached bundle) mid-deploy keeps taking
+   * the GCS path it already implements, rather than failing schema validation.
+   */
+  protocol: z.enum(['gcs-resumable', 'azure-block-blob']).default('gcs-resumable'),
+  /**
+   * Metadata the client must stamp on the object as it commits, when the
+   * provider gives the server no way to pin it (Azure: Put Block List
+   * overwrites the blob's metadata). Empty on GCS, where the session already
+   * carries it.
+   *
+   * Nothing server-side trusts these for authorization — the copy path takes
+   * event/club/tag from the api-validated link and the object KEY, both of which
+   * the client cannot choose. See `UploadSession.clientStampsMetadata`.
+   */
+  metadata: z.record(z.string()).default({}),
 });
 export type CreateUploadSessionResponse = z.infer<typeof CreateUploadSessionResponseSchema>;
 
