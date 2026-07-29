@@ -108,8 +108,17 @@ export const SelfieFaceReasonSchema = z.enum([
 ]);
 export type SelfieFaceReason = z.infer<typeof SelfieFaceReasonSchema>;
 
-/** Advisory (non-blocking) problems with the face a search actually used. */
-export const SelfieFaceWarningSchema = z.enum(['small_face', 'not_frontal']);
+/**
+ * Advisory (non-blocking) problems with the face a search actually used.
+ *
+ * Codes come from one `face_advisories()` in matcher/quality.py, so any other
+ * surface that grades a selfie reports the same words for the same problem.
+ */
+export const SelfieFaceWarningSchema = z.enum([
+  'face_small_in_frame',
+  'not_frontal',
+  'slightly_soft',
+]);
 export type SelfieFaceWarning = z.infer<typeof SelfieFaceWarningSchema>;
 
 /**

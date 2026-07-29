@@ -244,32 +244,13 @@ def _kps(left_eye, right_eye, nose):
     return np.array([left_eye, right_eye, nose, (0.0, 0.0), (0.0, 0.0)], dtype=np.float32)
 
 
-class TestFrontality:
-    """Nose offset from the eye midpoint, as a fraction of eye separation."""
-
-    def test_frontal_face_is_centred(self):
-        off = quality.frontal_offset(_kps((80, 100), (120, 100), (100, 120)))
-        assert off == pytest.approx(0.0, abs=1e-6)
-
-    def test_turned_head_offsets_the_nose(self):
-        # Eyes 40px apart, nose 18px toward one eye → 0.45, past FRONTAL_RATIO.
-        off = quality.frontal_offset(_kps((80, 100), (120, 100), (118, 120)))
-        assert off == pytest.approx(0.45, abs=1e-6)
-        assert off > quality.FRONTAL_RATIO
-
-    def test_a_rolled_head_is_not_mistaken_for_a_turned_one(self):
-        # Same geometry rotated 90°: measuring raw x would call this a profile.
-        off = quality.frontal_offset(_kps((100, 80), (100, 120), (80, 100)))
-        assert off == pytest.approx(0.0, abs=1e-6)
-
-    def test_missing_or_degenerate_landmarks_are_unknown(self):
-        assert quality.frontal_offset(None) is None
-        assert quality.frontal_offset(np.zeros((2, 2), dtype=np.float32)) is None
-        assert quality.frontal_offset(_kps((100, 100), (100, 100), (100, 120))) is None
-
-
 class TestAdvisoryWarnings:
-    """Usable faces that are still worth warning the searcher about."""
+    """`assess_face().warnings` — usable faces still worth flagging.
+
+    Advisory, never blocking: each case asserts `usable` stays True. The codes
+    and thresholds are the ones `selfie_advisories` uses, so the pick-time check
+    and the post-search census can never contradict each other.
+    """
 
     def test_good_face_has_no_warnings(self):
         img = rng.integers(0, 255, (400, 400, 3), dtype=np.uint8)
@@ -277,23 +258,110 @@ class TestAdvisoryWarnings:
         q = quality.assess_face(img, det)
         assert q["usable"] and q["warnings"] == []
 
-    def test_small_but_usable_face_warns(self):
-        img = rng.integers(0, 255, (200, 200, 3), dtype=np.uint8)
-        det = {"box": [20, 20, 80, 80], "score": 0.9}  # 60px: over MIN, under SMALL
+    def test_face_small_in_frame_warns(self):
+        # 60px face: comfortably over MIN_FACE_PX, but 60/800 = 0.075 of the
+        # short side, under SELFIE_ADVISE_FACE_FRAC.
+        img = rng.integers(0, 255, (800, 800, 3), dtype=np.uint8)
+        det = {"box": [100, 100, 160, 160], "score": 0.9, "kps": _kps((115, 120), (145, 120), (130, 135))}
         q = quality.assess_face(img, det)
-        assert q["usable"] and q["warnings"] == ["small_face"]
+        assert q["face_frac"] < quality.SELFIE_ADVISE_FACE_FRAC
+        assert q["usable"] and q["warnings"] == ["face_small_in_frame"]
 
     def test_turned_face_warns_but_is_still_usable(self):
+        # Nose 0.25 interocular widths off centre → frontality ≈ 0.29.
         img = rng.integers(0, 255, (400, 400, 3), dtype=np.uint8)
-        det = {"box": [100, 100, 300, 300], "score": 0.9, "kps": _kps((160, 180), (240, 180), (236, 220))}
+        det = {"box": [100, 100, 300, 300], "score": 0.9, "kps": _kps((160, 180), (240, 180), (220, 220))}
         q = quality.assess_face(img, det)
+        assert q["frontality"] < quality.SELFIE_ADVISE_FRONTALITY
         assert q["usable"] and q["warnings"] == ["not_frontal"]
 
     def test_no_landmarks_means_no_frontality_warning(self):
+        # Absent is "unmeasured", never "bad" — a pre-quality face isn't slandered.
         img = rng.integers(0, 255, (400, 400, 3), dtype=np.uint8)
         det = {"box": [100, 100, 300, 300], "score": 0.9}
         q = quality.assess_face(img, det)
         assert q["frontality"] is None and "not_frontal" not in q["warnings"]
+
+    def test_warnings_match_the_pick_time_advisories(self):
+        # The whole point of sharing face_advisories: /quality and /search agree.
+        img = rng.integers(0, 255, (400, 400, 3), dtype=np.uint8)
+        det = {"box": [100, 100, 300, 300], "score": 0.9, "kps": _kps((160, 180), (240, 180), (220, 220))}
+        q = quality.assess_face(img, det)
+        assert quality.selfie_advisories(q, 1) == q["warnings"]
+        assert quality.selfie_advisories(q, 2) == ["multiple_faces", *q["warnings"]]
+
+
+class TestFaceQualityMath:
+    """frontality / face_fraction / quality_term (quality.py)."""
+
+    @staticmethod
+    def _kps(nose_x, eye_y=100.0, left_x=80.0, right_x=120.0):
+        """5 landmarks with the nose shifted along the interocular axis."""
+        return np.array(
+            [[left_x, eye_y], [right_x, eye_y], [nose_x, eye_y + 15],
+             [92.0, eye_y + 35], [108.0, eye_y + 35]],
+            dtype=np.float32,
+        )
+
+    def test_nose_centred_is_frontal(self):
+        assert quality.frontality(self._kps(100.0)) == pytest.approx(1.0)
+
+    def test_turned_head_drops_toward_zero(self):
+        # Nose 0.35 interocular widths off centre = YAW_FULL_PROFILE → 0.0.
+        turned = quality.frontality(self._kps(100.0 + 0.35 * 40))
+        half = quality.frontality(self._kps(100.0 + 0.175 * 40))
+        assert turned == pytest.approx(0.0)
+        assert half == pytest.approx(0.5, abs=0.01)
+
+    def test_sign_of_turn_does_not_matter(self):
+        left = quality.frontality(self._kps(100.0 - 0.2 * 40))
+        right = quality.frontality(self._kps(100.0 + 0.2 * 40))
+        assert left == pytest.approx(right)
+
+    def test_a_rolled_head_is_not_mistaken_for_a_turned_one(self):
+        # A head-on face rotated 90° in-plane. Measuring the nose offset in raw
+        # x — rather than along the interocular axis — would call this a profile.
+        rolled = np.array([[100, 80], [100, 120], [80, 100], [70, 92], [70, 108]],
+                          dtype=np.float32)
+        assert quality.frontality(rolled) == pytest.approx(1.0)
+
+    def test_invariant_to_face_size(self):
+        small = quality.frontality(self._kps(102.0, left_x=80.0, right_x=120.0))
+        big = quality.frontality(
+            np.array([[800, 1000], [1200, 1000], [1020, 1150], [920, 1350], [1080, 1350]],
+                     dtype=np.float32)
+        )
+        assert small == pytest.approx(big, abs=0.01)
+
+    def test_unmeasurable_returns_none(self):
+        assert quality.frontality(None) is None                      # no landmarks at all
+        assert quality.frontality(np.zeros((2, 2), np.float32)) is None  # no nose point
+        eyes_coincident = np.array([[100, 100]] * 5, dtype=np.float32)
+        assert quality.frontality(eyes_coincident) is None
+
+    def test_face_fraction_uses_image_short_side(self):
+        assert quality.face_fraction([0, 0, 100, 100], (2000, 3000, 3)) == pytest.approx(0.05)
+        assert quality.face_fraction([0, 0, 100, 100], (0, 0, 3)) == 0.0
+
+    def test_quality_term_is_multiplicative(self):
+        # Small AND side-on is punished harder than either alone.
+        both = quality.quality_term(0.5, quality.FULL_FACE_FRAC / 2)
+        assert both == pytest.approx(0.25)
+        assert quality.quality_term(1.0, quality.FULL_FACE_FRAC) == pytest.approx(1.0)
+        assert quality.quality_term(1.0, 0.5) == pytest.approx(1.0)  # clamped, big face
+
+    def test_quality_term_unknown_is_neutral(self):
+        assert quality.quality_term(None, None) == pytest.approx(1.0)
+        assert quality.quality_term(None, quality.FULL_FACE_FRAC / 2) == pytest.approx(0.5)
+
+    def test_assess_face_reports_frac_and_frontality(self):
+        img = rng.integers(0, 255, (200, 200, 3), dtype=np.uint8)
+        det = {"box": [20, 20, 180, 180], "score": 0.9, "kps": self._kps(100.0)}
+        q = quality.assess_face(img, det)
+        assert q["face_frac"] == pytest.approx(160 / 200)
+        assert q["frontality"] == pytest.approx(1.0)
+        # A detector without landmarks (older callers) leaves frontality unset.
+        assert quality.assess_face(img, {"box": [20, 20, 180, 180], "score": 0.9})["frontality"] is None
 
 
 class TestFusion:
