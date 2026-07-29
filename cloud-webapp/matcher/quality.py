@@ -137,16 +137,18 @@ def selfie_score(q: dict) -> float:
     return round(0.45 * front_term + 0.35 * size_term + 0.20 * sharp_term, 4)
 
 
-def selfie_advisories(q: dict, face_count: int) -> list[str]:
-    """Non-blocking hints for one selfie: what would make it a better reference.
+def face_advisories(q: dict) -> list[str]:
+    """Non-blocking hints derivable from ONE face's own quality verdict.
 
-    `multiple_faces` matters most: with a friend in frame the matcher searches
-    for whichever face it is most confident about, which is a real cause of
-    "it found someone else's photos" — and the user can only fix it at pick time.
+    Shared by the pick-time `/quality` check and by `/search`, which reports the
+    same codes for the face it actually queried with. One implementation on
+    purpose: a searcher warned "turned away" before searching and then told
+    nothing after (or vice versa) would rightly not trust either message.
+
+    An unmeasured component yields no advisory — absent is "unknown", never
+    "bad", so a face from a pre-quality manifest is not slandered.
     """
     out = []
-    if face_count > 1:
-        out.append("multiple_faces")
     front = q.get("frontality")
     if front is not None and front < SELFIE_ADVISE_FRONTALITY:
         out.append("not_frontal")
@@ -159,11 +161,30 @@ def selfie_advisories(q: dict, face_count: int) -> list[str]:
     return out
 
 
+def selfie_advisories(q: dict, face_count: int) -> list[str]:
+    """`face_advisories` plus the one hint that needs the whole frame.
+
+    `multiple_faces` matters most: with a friend in frame the matcher searches
+    for whichever face it is most confident about, which is a real cause of
+    "it found someone else's photos" — and the user can only fix it at pick time.
+    """
+    out = ["multiple_faces"] if face_count > 1 else []
+    out.extend(face_advisories(q))
+    return out
+
+
 def assess_face(img_rgb: np.ndarray, det: dict) -> dict:
     """Quality verdict for one detected face.
 
-    Returns {usable, reasons[], det_score, face_px, face_frac, frontality, blur}.
-    `frontality` is None when the detector supplied no landmarks.
+    Returns {usable, reasons[], warnings[], det_score, face_px, face_frac,
+    frontality, blur}. `frontality` is None when the detector supplied no
+    landmarks.
+
+    `reasons` REJECT the face — it cannot be used as a query. `warnings` are
+    advisory: the face works, but it is small or turned away and the searcher
+    should be told, since that quietly costs them matches. Keeping the two
+    apart is deliberate — a three-quarter view still matches, and promoting it
+    to a rejection would refuse searches that succeed today.
     """
     reasons = []
     if det["score"] < MIN_DET_SCORE:
@@ -173,7 +194,7 @@ def assess_face(img_rgb: np.ndarray, det: dict) -> dict:
     blur = blur_score(img_rgb, det["box"])
     if blur < BLUR_THRESHOLD:
         reasons.append("too_blurry")
-    return {
+    verdict = {
         "usable": not reasons,
         "reasons": reasons,
         "det_score": det["score"],
@@ -182,3 +203,5 @@ def assess_face(img_rgb: np.ndarray, det: dict) -> dict:
         "frontality": frontality(det.get("kps")),
         "blur": blur,
     }
+    verdict["warnings"] = face_advisories(verdict)
+    return verdict

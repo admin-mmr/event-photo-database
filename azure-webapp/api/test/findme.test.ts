@@ -183,6 +183,29 @@ describe('POST /api/findme/search', () => {
     expect(consents[0]?.data).toMatchObject({ name: 'Test Runner', isGuest: false });
   });
 
+  it('relays the reference face census so the client can warn about a group shot', async () => {
+    matcherSearch.mockResolvedValue({
+      ok: true,
+      eventId: 'ev1',
+      mode: 'fused',
+      referenceFaces: [{ faces: 3, usableFaces: 2, selectedFace: [0.1, 0.2, 0.3, 0.4] }],
+      results: [{ photoId: 'p1', score: 0.91, faceScore: 0.93, personScore: 0.7 }],
+    });
+
+    const res = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(res.status).toBe(200);
+    expect(res.body.referenceFaces).toEqual([
+      { faces: 3, usableFaces: 2, selectedFace: [0.1, 0.2, 0.3, 0.4] },
+    ]);
+  });
+
+  it('omits the face census when the matcher does not report one', async () => {
+    matcherSearch.mockResolvedValue({ ok: true, eventId: 'ev1', mode: 'fused', results: [] });
+    const res = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(res.status).toBe(200);
+    expect(res.body.referenceFaces).toBeUndefined();
+  });
+
   it('maps no_usable_face to a friendly 422', async () => {
     matcherSearch.mockResolvedValue({
       ok: false,
@@ -193,6 +216,22 @@ describe('POST /api/findme/search', () => {
     const res = await search(app, { eventId: 'ev1', consent: 'true' });
     expect(res.status).toBe(422);
     expect(res.body.error).toBe('no_usable_face');
+    // No diagnostics from the matcher → the generic message stands alone.
+    expect(res.body.reasons).toBeUndefined();
+    expect(res.body.message).toBeTruthy();
+  });
+
+  it('relays WHY the photo was rejected so the UI can say what to fix', async () => {
+    matcherSearch.mockResolvedValue({
+      ok: false,
+      status: 422,
+      error: 'no_usable_face',
+      message: 'no usable face',
+      faceReasons: ['too_small', 'too_blurry'],
+    });
+    const res = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(res.status).toBe(422);
+    expect(res.body.reasons).toEqual(['too_small', 'too_blurry']);
   });
 
   it('persists the selfie even on a failed search, so admins can reproduce it', async () => {

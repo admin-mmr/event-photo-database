@@ -59,6 +59,21 @@ def _read_upload():
     return img, None
 
 
+def _norm_box(box, width: int, height: int) -> list[float] | None:
+    """Pixel box → fractions of the image (0–1), clamped.
+
+    The api/browser never sees the reference image's pixel dimensions, so boxes
+    cross the wire normalized: the client can then outline the matched face over
+    its own <img> with plain percentage offsets. EXIF orientation is already
+    baked in by decode_image, and the browser orients the same way, so the two
+    coordinate spaces agree."""
+    if box is None or width <= 0 or height <= 0:
+        return None
+    x1, y1, x2, y2 = (float(v) for v in box)
+    clamp = lambda v: max(0.0, min(1.0, v))  # noqa: E731
+    return [clamp(x1 / width), clamp(y1 / height), clamp(x2 / width), clamp(y2 / height)]
+
+
 @app.get("/healthz")
 def healthz():
     return jsonify({"ok": True, "service": "matcher"})
@@ -114,19 +129,50 @@ def search():
 
     result = embed_image(img)
     usable_faces = [f for f in result["faces"] if f["quality"]["usable"]]
+
+    # Query = most confident usable face and its associated person crop.
+    query_face = max(usable_faces, key=lambda f: f["score"]) if usable_faces else None
+
+    # Face census for the reference selfie. More than one face means we chose a
+    # face on the searcher's behalf — which on a group shot may not be them — so
+    # the api relays this and the web app warns instead of letting them trust
+    # results that could belong to a bystander. A list of one keeps the shape
+    # forward-compatible with a multi-selfie query.
+    img_h, img_w = img.shape[:2]
+    reference_faces = [
+        {
+            "faces": len(result["faces"]),
+            "usableFaces": len(usable_faces),
+            "selectedFace": _norm_box(
+                query_face["box"] if query_face is not None else None, img_w, img_h
+            ),
+            # Advisory problems with the face we queried with (small / turned
+            # away), and — when nothing was usable — the reasons the faces were
+            # rejected. The api turns both into plain language so the searcher
+            # is told what is wrong right after uploading.
+            "selectedWarnings": (
+                list(query_face["quality"]["warnings"]) if query_face is not None else []
+            ),
+            "blockingReasons": (
+                []
+                if query_face is not None
+                else sorted({r for f in result["faces"] for r in f["quality"]["reasons"]})
+            ),
+        }
+    ]
+
     if not usable_faces and mode != "person":
         return (
             jsonify(
                 {
                     "error": "no_usable_face",
                     "faces": [{"box": f["box"], "quality": f["quality"]} for f in result["faces"]],
+                    "referenceFaces": reference_faces,
                 }
             ),
             422,
         )
 
-    # Query = most confident usable face and its associated person crop.
-    query_face = max(usable_faces, key=lambda f: f["score"]) if usable_faces else None
     query_person = None
     if result["persons"]:
         if query_face is not None:
@@ -172,6 +218,7 @@ def search():
             "mode": mode,
             "modelVersion": result["model_version"],
             "indexModelVersion": event.manifest.get("modelVersion"),
+            "referenceFaces": reference_faces,
             "results": ranked[:top_k],
         }
     )

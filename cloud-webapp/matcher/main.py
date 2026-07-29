@@ -167,14 +167,35 @@ def _mean_unit(vectors: list[np.ndarray], weights: list[float] | None = None) ->
     return (centroid / norm).astype(np.float32)
 
 
-def _select_reference(result: dict) -> tuple[np.ndarray | None, np.ndarray | None, list[dict]]:
+def _norm_box(box, width: int, height: int) -> list[float] | None:
+    """Pixel box → fractions of the image (0–1), clamped.
+
+    The api/browser never sees the reference image's pixel dimensions, so boxes
+    cross the wire normalized: the client can then outline the matched face over
+    its own <img> with plain percentage offsets. EXIF orientation is already
+    baked in by decode_image, and the browser orients the same way, so the two
+    coordinate spaces agree."""
+    if box is None or width <= 0 or height <= 0:
+        return None
+    x1, y1, x2, y2 = (float(v) for v in box)
+    clamp = lambda v: max(0.0, min(1.0, v))  # noqa: E731
+    return [clamp(x1 / width), clamp(y1 / height), clamp(x2 / width), clamp(y2 / height)]
+
+
+def _select_reference(
+    result: dict,
+) -> tuple[np.ndarray | None, np.ndarray | None, list[dict], dict | None]:
     """Pick one query face + its person crop from ONE reference image.
 
     A reference image may contain bystanders, so we take only the most confident
     *usable* face (not a centroid over the image — that would blend identities)
     and the person crop associated with it. Returns
-    (face_embedding | None, person_embedding | None, faces_diag) where
-    faces_diag is the per-face quality report used for the no_usable_face 422."""
+    (face_embedding | None, person_embedding | None, faces_diag, selected_face)
+    where faces_diag is the per-face quality report used for the no_usable_face
+    422 and selected_face is the face this query actually used (None when none
+    was usable) — the api surfaces its box and quality warnings so a searcher
+    who uploaded a group shot can see WHICH face we matched, and one who
+    uploaded a small or turned-away face is told so."""
     faces_diag = [{"box": f["box"], "quality": f["quality"]} for f in result["faces"]]
     usable = [f for f in result["faces"] if f["quality"]["usable"]]
     face = max(usable, key=lambda f: f["score"]) if usable else None
@@ -191,6 +212,7 @@ def _select_reference(result: dict) -> tuple[np.ndarray | None, np.ndarray | Non
         face["embedding"] if face is not None else None,
         person["embedding"] if person is not None else None,
         faces_diag,
+        face,
     )
 
 
@@ -520,6 +542,11 @@ def search():
     face_refs: list[np.ndarray] = []
     person_refs: list[np.ndarray] = []
     faces_diag: list[dict] = []
+    # Per-reference-image face census, in upload order. A selfie with more than
+    # one face means we silently chose one of them, so the api relays this and
+    # the web app warns the searcher instead of letting them trust results that
+    # may belong to a bystander.
+    reference_faces: list[dict] = []
     model_version = None
     anchor_ms: int | None = None
     for i, file in enumerate(files):
@@ -536,15 +563,40 @@ def search():
             return jsonify({"error": "bad_image", "detail": "could not decode image"}), 400
         result = embed_image(img)
         model_version = result["model_version"]
-        face_emb, person_emb, diag = _select_reference(result)
+        face_emb, person_emb, diag, selected = _select_reference(result)
         faces_diag.extend(diag)
+        img_h, img_w = img.shape[:2]
+        reference_faces.append(
+            {
+                "faces": len(result["faces"]),
+                "usableFaces": sum(1 for f in result["faces"] if f["quality"]["usable"]),
+                "selectedFace": _norm_box(
+                    selected["box"] if selected is not None else None, img_w, img_h
+                ),
+                # Advisory problems with the face we queried with (small /
+                # turned away), and — when nothing was usable — the reasons the
+                # faces were rejected. The api turns both into plain language so
+                # the searcher is told what is wrong right after uploading.
+                "selectedWarnings": list(selected["quality"]["warnings"]) if selected else [],
+                "blockingReasons": (
+                    []
+                    if selected is not None
+                    else sorted({r for f in result["faces"] for r in f["quality"]["reasons"]})
+                ),
+            }
+        )
         if face_emb is not None:
             face_refs.append(face_emb)
         if person_emb is not None:
             person_refs.append(person_emb)
 
     if not face_refs and mode != "person":
-        return jsonify({"error": "no_usable_face", "faces": faces_diag}), 422
+        return (
+            jsonify(
+                {"error": "no_usable_face", "faces": faces_diag, "referenceFaces": reference_faces}
+            ),
+            422,
+        )
 
     try:
         event = get_store().load_event(event_id)
@@ -623,6 +675,7 @@ def search():
             "modelVersion": model_version,
             "indexModelVersion": event.manifest.get("modelVersion"),
             "normalized": normalize,
+            "referenceFaces": reference_faces,
             "numReferences": len(files),
             "numPrfPhotos": len(prf_ids),
             "anchorPhotoIds": anchors_applied,

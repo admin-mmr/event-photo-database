@@ -28,11 +28,29 @@ export interface RecaptchaResult {
 
 /** True only when all three reCAPTCHA settings are present. */
 export function isRecaptchaConfigured(): boolean {
-  return (
-    env.RECAPTCHA_PROJECT_ID.length > 0 &&
-    env.RECAPTCHA_SITE_KEY.length > 0 &&
-    env.RECAPTCHA_API_KEY.length > 0
-  );
+  const s = recaptchaConfigStatus();
+  return s.configured;
+}
+
+/**
+ * Startup diagnostics: reports which of the three required settings are present.
+ * `partial` (some but not all set) is the dangerous state — verification is
+ * silently disabled — so callers log it loudly. This exists because a misnamed
+ * secret binding (the env var was `RECAPTCHA_KEY`, the code reads
+ * `RECAPTCHA_API_KEY`) once left production unprotected without any signal.
+ */
+export function recaptchaConfigStatus(): {
+  readonly configured: boolean;
+  readonly partial: boolean;
+  readonly present: { projectId: boolean; siteKey: boolean; apiKey: boolean };
+} {
+  const present = {
+    projectId: env.RECAPTCHA_PROJECT_ID.length > 0,
+    siteKey: env.RECAPTCHA_SITE_KEY.length > 0,
+    apiKey: env.RECAPTCHA_API_KEY.length > 0,
+  };
+  const count = Number(present.projectId) + Number(present.siteKey) + Number(present.apiKey);
+  return { configured: count === 3, partial: count > 0 && count < 3, present };
 }
 
 interface AssessmentResponse {

@@ -10,6 +10,13 @@
  * http://localhost:8081 — http URLs skip token minting).
  */
 
+import {
+  ReferenceFacesSchema,
+  SelfieFaceReasonSchema,
+  type ReferenceFaces,
+  type SelfieFaceReason,
+} from '@cloud-webapp/shared';
+
 import { env } from '../lib/config.js';
 import { getIdTokenHeaders } from '../lib/googleCredentials.js';
 
@@ -50,9 +57,58 @@ export type MatcherSearchResult =
       anchorSuggestion?: MatcherAnchorSuggestion | null;
       /** Candidate-side quality weighting the matcher applied (0 = off). */
       faceQualityWeight?: number;
+      /** Per-reference-selfie face census (see shared ReferenceFaces). Absent
+       *  when the deployed matcher predates the field. */
+      referenceFaces?: ReferenceFaces[];
       results: MatcherSearchHit[];
     }
-  | { ok: false; status: number; error: string; message: string };
+  | {
+      ok: false;
+      status: number;
+      error: string;
+      message: string;
+      /** On a `no_usable_face` 422: why the faces were rejected, so the api can
+       *  tell the searcher what to fix rather than "no clear face". */
+      faceReasons?: SelfieFaceReason[];
+    };
+
+/**
+ * Defensively coerce the matcher's `referenceFaces` array. It arrives as
+ * untyped JSON from another service, and a shape mismatch must degrade to
+ * "no census" rather than throwing mid-search — the ranking is the payload
+ * that matters, the census is only a UI warning.
+ */
+function parseReferenceFaces(raw: unknown): ReferenceFaces[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ReferenceFaces[] = [];
+  for (const item of raw) {
+    const parsed = ReferenceFacesSchema.safeParse(item);
+    if (!parsed.success) return undefined;
+    out.push(parsed.data);
+  }
+  return out;
+}
+
+/**
+ * Distinct rejection reasons behind a `no_usable_face` 422, read from the
+ * matcher's per-face diagnostics. An empty `faces` array means the detector
+ * found nothing at all, which is its own (and the most common) reason.
+ */
+function parseFaceReasons(body: Record<string, unknown>): SelfieFaceReason[] | undefined {
+  const faces = body.faces;
+  if (!Array.isArray(faces)) return undefined;
+  if (faces.length === 0) return ['no_face_detected'];
+  const reasons = new Set<SelfieFaceReason>();
+  for (const face of faces) {
+    const raw = (face as { quality?: { reasons?: unknown } })?.quality?.reasons;
+    if (!Array.isArray(raw)) continue;
+    for (const r of raw) {
+      const parsed = SelfieFaceReasonSchema.safeParse(r);
+      if (parsed.success) reasons.add(parsed.data);
+    }
+  }
+  return reasons.size > 0 ? [...reasons] : undefined;
+}
 
 /** One picked selfie's verdict from POST /quality (detection only). */
 export interface MatcherSelfieReport {
@@ -159,14 +215,17 @@ export async function matcherSearch(opts: {
 
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
+    const faceReasons = parseFaceReasons(body);
     return {
       ok: false,
       status: res.status,
       error: typeof body.error === 'string' ? body.error : 'matcher_error',
       message: typeof body.detail === 'string' ? body.detail : `matcher returned ${res.status}`,
+      ...(faceReasons ? { faceReasons } : {}),
     };
   }
 
+  const referenceFaces = parseReferenceFaces(body.referenceFaces);
   return {
     ok: true,
     eventId: String(body.eventId ?? opts.eventId),
@@ -176,6 +235,7 @@ export async function matcherSearch(opts: {
     anchorPhotoIds: Array.isArray(body.anchorPhotoIds) ? (body.anchorPhotoIds as string[]) : [],
     anchorSuggestion: (body.anchorSuggestion as MatcherAnchorSuggestion | null) ?? null,
     faceQualityWeight: typeof body.faceQualityWeight === 'number' ? body.faceQualityWeight : 0,
+    ...(referenceFaces ? { referenceFaces } : {}),
     results: (body.results as MatcherSearchHit[]) ?? [],
   };
 }

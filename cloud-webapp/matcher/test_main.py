@@ -76,6 +76,43 @@ class NoFaceDet:
         return []
 
 
+class TwoFaceDet:
+    """A group-shot selfie: a bystander the detector is MORE confident about
+    (0.97, left) plus the subject (0.90, right). The higher score wins in
+    _select_reference, which is exactly why the searcher has to be warned."""
+
+    def detect(self, img_rgb, **kw):
+        h, w = img_rgb.shape[:2]
+
+        def face(cx, half, score):
+            kps = np.array(
+                [[w * (cx - 0.05), h * 0.4], [w * (cx + 0.05), h * 0.4], [w * cx, h * 0.55],
+                 [w * (cx - 0.04), h * 0.68], [w * (cx + 0.04), h * 0.68]],
+                dtype=np.float32,
+            )
+            return {
+                "box": [w * (cx - half), h * 0.2, w * (cx + half), h * 0.8],
+                "kps": kps,
+                "score": score,
+            }
+
+        return [face(0.25, 0.12, 0.97), face(0.70, 0.15, 0.90)]
+
+
+class TurnedFaceDet:
+    """One large, sharp, confident face — but looking away from the camera: the
+    nose sits almost on top of one eye rather than between them."""
+
+    def detect(self, img_rgb, **kw):
+        h, w = img_rgb.shape[:2]
+        kps = np.array(
+            [[w * 0.4, h * 0.4], [w * 0.6, h * 0.4], [w * 0.59, h * 0.55],
+             [w * 0.56, h * 0.68], [w * 0.6, h * 0.68]],
+            dtype=np.float32,
+        )
+        return [{"box": [w * 0.3, h * 0.2, w * 0.7, h * 0.8], "kps": kps, "score": 0.93}]
+
+
 class FakeEmbedder:
     """Deterministic embedder: returns a fixed unit vector."""
 
@@ -246,6 +283,58 @@ class TestQuality:
         img = rng.integers(0, 255, (200, 200, 3), dtype=np.uint8)
         det = {"box": [20, 20, 180, 180], "score": 0.3}
         assert "low_confidence" in quality.assess_face(img, det)["reasons"]
+
+
+def _kps(left_eye, right_eye, nose):
+    """5-point landmark array; only the first three matter for frontality."""
+    return np.array([left_eye, right_eye, nose, (0.0, 0.0), (0.0, 0.0)], dtype=np.float32)
+
+
+class TestAdvisoryWarnings:
+    """`assess_face().warnings` — usable faces still worth flagging.
+
+    Advisory, never blocking: each case asserts `usable` stays True. The codes
+    and thresholds are the ones `selfie_advisories` uses, so the pick-time check
+    and the post-search census can never contradict each other.
+    """
+
+    def test_good_face_has_no_warnings(self):
+        img = rng.integers(0, 255, (400, 400, 3), dtype=np.uint8)
+        det = {"box": [100, 100, 300, 300], "score": 0.9, "kps": _kps((160, 180), (240, 180), (200, 220))}
+        q = quality.assess_face(img, det)
+        assert q["usable"] and q["warnings"] == []
+
+    def test_face_small_in_frame_warns(self):
+        # 60px face: comfortably over MIN_FACE_PX, but 60/800 = 0.075 of the
+        # short side, under SELFIE_ADVISE_FACE_FRAC.
+        img = rng.integers(0, 255, (800, 800, 3), dtype=np.uint8)
+        det = {"box": [100, 100, 160, 160], "score": 0.9, "kps": _kps((115, 120), (145, 120), (130, 135))}
+        q = quality.assess_face(img, det)
+        assert q["face_frac"] < quality.SELFIE_ADVISE_FACE_FRAC
+        assert q["usable"] and q["warnings"] == ["face_small_in_frame"]
+
+    def test_turned_face_warns_but_is_still_usable(self):
+        # Nose 0.25 interocular widths off centre → frontality ≈ 0.29.
+        img = rng.integers(0, 255, (400, 400, 3), dtype=np.uint8)
+        det = {"box": [100, 100, 300, 300], "score": 0.9, "kps": _kps((160, 180), (240, 180), (220, 220))}
+        q = quality.assess_face(img, det)
+        assert q["frontality"] < quality.SELFIE_ADVISE_FRONTALITY
+        assert q["usable"] and q["warnings"] == ["not_frontal"]
+
+    def test_no_landmarks_means_no_frontality_warning(self):
+        # Absent is "unmeasured", never "bad" — a pre-quality face isn't slandered.
+        img = rng.integers(0, 255, (400, 400, 3), dtype=np.uint8)
+        det = {"box": [100, 100, 300, 300], "score": 0.9}
+        q = quality.assess_face(img, det)
+        assert q["frontality"] is None and "not_frontal" not in q["warnings"]
+
+    def test_warnings_match_the_pick_time_advisories(self):
+        # The whole point of sharing face_advisories: /quality and /search agree.
+        img = rng.integers(0, 255, (400, 400, 3), dtype=np.uint8)
+        det = {"box": [100, 100, 300, 300], "score": 0.9, "kps": _kps((160, 180), (240, 180), (220, 220))}
+        q = quality.assess_face(img, det)
+        assert quality.selfie_advisories(q, 1) == q["warnings"]
+        assert quality.selfie_advisories(q, 2) == ["multiple_faces", *q["warnings"]]
 
 
 class TestFusion:
@@ -614,6 +703,82 @@ class TestSearch:
         assert body["numReferences"] == 2
         assert body["results"][0]["photoId"] == "pB.jpg"  # same ranking as single ref
 
+    def test_reference_faces_reported_for_a_lone_face(self, client, monkeypatch, seeded_store):
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "ev1"},
+        )
+        assert resp.status_code == 200
+        (ref,) = resp.get_json()["referenceFaces"]
+        assert ref["faces"] == 1 and ref["usableFaces"] == 1
+        # Normalized to fractions of the image, matching FakeFaceDet's box.
+        assert ref["selectedFace"] == pytest.approx([0.3, 0.2, 0.7, 0.8], abs=1e-6)
+
+    def test_reference_faces_flags_a_group_shot(self, client, monkeypatch, seeded_store):
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1), face_det=TwoFaceDet()))
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "ev1"},
+        )
+        assert resp.status_code == 200
+        (ref,) = resp.get_json()["referenceFaces"]
+        assert ref["faces"] == 2 and ref["usableFaces"] == 2
+        # The outlined face is the one the query actually used — the higher
+        # detector score (the left bystander), not simply the first or largest.
+        assert ref["selectedFace"] == pytest.approx([0.13, 0.2, 0.37, 0.8], abs=1e-6)
+
+    def test_reference_faces_are_per_uploaded_file(self, client, monkeypatch, seeded_store):
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1), face_det=TwoFaceDet()))
+        resp = client.post(
+            "/search",
+            data={
+                "file": [
+                    (io.BytesIO(jpeg_bytes()), "a.jpg"),
+                    (io.BytesIO(jpeg_bytes()), "b.jpg"),
+                ],
+                "event_id": "ev1",
+            },
+        )
+        assert resp.status_code == 200
+        refs = resp.get_json()["referenceFaces"]
+        assert [r["faces"] for r in refs] == [2, 2]
+
+    def test_reference_faces_reported_on_no_usable_face_422(
+        self, client, monkeypatch, seeded_store
+    ):
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1), face_det=TwoFaceDet()))
+        resp = client.post(  # flat image → both faces fail the blur gate
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes(sharp=False)), "x.jpg"), "event_id": "ev1"},
+        )
+        assert resp.status_code == 422
+        (ref,) = resp.get_json()["referenceFaces"]
+        assert ref["faces"] == 2 and ref["usableFaces"] == 0
+        assert ref["selectedFace"] is None
+        # Why, specifically — the api turns these into "the photo is too blurry"
+        # rather than a generic "no clear face".
+        assert ref["blockingReasons"] == ["too_blurry"]
+        assert ref["selectedWarnings"] == []
+
+    def test_reference_faces_reports_a_turned_away_face(self, client, monkeypatch, seeded_store):
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1), face_det=TurnedFaceDet()))
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "ev1"},
+        )
+        # Advisory only: the search still runs and returns matches.
+        assert resp.status_code == 200
+        (ref,) = resp.get_json()["referenceFaces"]
+        assert ref["usableFaces"] == 1
+        assert ref["selectedWarnings"] == ["not_frontal"]
+        assert ref["blockingReasons"] == []
+
     def test_missing_file_400(self, client, monkeypatch, seeded_store):
         self._env(monkeypatch, seeded_store)
         set_bundle(make_bundle(basis(0), basis(1)))
@@ -741,6 +906,13 @@ class TestFaceQualityMath:
         left = quality.frontality(self._kps(100.0 - 0.2 * 40))
         right = quality.frontality(self._kps(100.0 + 0.2 * 40))
         assert left == pytest.approx(right)
+
+    def test_a_rolled_head_is_not_mistaken_for_a_turned_one(self):
+        # A head-on face rotated 90° in-plane. Measuring the nose offset in raw
+        # x — rather than along the interocular axis — would call this a profile.
+        rolled = np.array([[100, 80], [100, 120], [80, 100], [70, 92], [70, 108]],
+                          dtype=np.float32)
+        assert quality.frontality(rolled) == pytest.approx(1.0)
 
     def test_invariant_to_face_size(self):
         small = quality.frontality(self._kps(102.0, left_x=80.0, right_x=120.0))

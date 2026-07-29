@@ -19,7 +19,45 @@ import {
 } from '../lib/api.js';
 import { getRecaptchaToken } from '../lib/recaptcha.js';
 import { useSelection } from '../lib/selection.js';
-import { combineReferences, visibleResults, scoreBand, bandLabel } from '../lib/results.js';
+import {
+  combineReferences,
+  visibleResults,
+  scoreBand,
+  bandLabel,
+  faceAlertFor,
+  type FaceAlert,
+} from '../lib/results.js';
+import { SelfieFaceReasonSchema } from '@cloud-webapp/shared';
+import type { SelfieFaceReason, SelfieFaceWarning } from '@cloud-webapp/shared';
+
+/** Localized-free English copy for the selfie-quality codes the matcher
+ *  reports. Blocking reasons (the 422) and advisory warnings are separate
+ *  vocabularies: one explains a refusal, the other a weak-but-usable photo. */
+const NO_FACE_REASON_TEXT: Record<SelfieFaceReason, string> = {
+  no_face_detected: 'We couldn’t find a face in it at all.',
+  too_small: 'The face is too small — get closer, or crop in so your face fills the frame.',
+  too_blurry: 'The photo is too blurry — hold still and try again in better light.',
+  low_confidence:
+    'We couldn’t make out a clear, front-facing face — look straight at the camera.',
+};
+
+const FACE_WARNING_TEXT: Record<SelfieFaceWarning, string> = {
+  small_face:
+    'The face is small in the photo — hold the camera closer, or crop in so your face fills more of the frame.',
+  not_frontal:
+    'The face is turned away from the camera — look straight at the lens for the best match.',
+};
+
+/**
+ * Rejection reasons off a `no_usable_face` 422. Unknown codes are dropped
+ * rather than rendered raw; an empty result means "no diagnostics", and the
+ * caller falls back to the generic advice.
+ */
+function parseNoFaceReasons(err: ApiError): SelfieFaceReason[] {
+  const raw = err.body.reasons;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((r): r is SelfieFaceReason => SelfieFaceReasonSchema.safeParse(r).success);
+}
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
 import { reportClientError } from '../lib/reportError.js';
 import { saveResults, loadResults, clearResults } from '../lib/findmeCache.js';
@@ -71,6 +109,13 @@ export function FindMe(): JSX.Element {
   // outfit-only retry (FR-7) without making the user re-pick the file.
   const [noFaceFile, setNoFaceFile] = useState<File | null>(null);
   const [references, setReferences] = useState<Reference[]>([]);
+  // Raised when the last search's reference photo held more than one face, or
+  // the face we matched was small / turned away.
+  const [faceAlert, setFaceAlert] = useState<FaceAlert | null>(null);
+  // Why the matcher rejected the photo (too small / blurry / none found), so we
+  // can say what to fix instead of a generic "no clear face". Empty when the api
+  // reports no diagnostics — the generic line is then the fallback.
+  const [noFaceReasons, setNoFaceReasons] = useState<SelfieFaceReason[]>([]);
   const [activeId, setActiveId] = useState<string>(COMBINED);
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
@@ -167,6 +212,12 @@ export function FindMe(): JSX.Element {
   /** Append a result set from a search response and make it the active tab. */
   function pushReference(res: SearchResponse, previewUrl: string, labelPrefix: string): void {
     const id = res.runId ?? crypto.randomUUID();
+    // Warn if this selfie was a group shot. First one to trip it wins and is
+    // never retracted here: reusing several stored selfies pushes one reference
+    // per photo, and a clean second photo must not silently withdraw the
+    // warning the first one earned. Callers clear it when a new search starts.
+    const alert = faceAlertFor(res.referenceFaces, previewUrl);
+    if (alert) setFaceAlert((prev) => prev ?? alert);
     setReferences((prev) => [
       ...prev,
       {
@@ -222,6 +273,7 @@ export function FindMe(): JSX.Element {
     if (chosen.length === 0) return;
     setPhase('searching');
     setError(null);
+    setFaceAlert(null);
     try {
       // Sequential: each stored photo produces its own result set (FR-9), and
       // serial calls keep us under the per-user search rate limit.
@@ -242,6 +294,8 @@ export function FindMe(): JSX.Element {
     setPhase('searching');
     setError(null);
     setNoFaceFile(null);
+    setNoFaceReasons([]);
+    setFaceAlert(null);
     const form = new FormData();
     form.set('file', file);
     form.set('eventId', eventId);
@@ -263,11 +317,11 @@ export function FindMe(): JSX.Element {
       void loadPastUploads(true);
     } catch (e) {
       if (e instanceof ApiError && e.code === 'no_usable_face') {
-        // FR-7: keep the file and offer an outfit/appearance-only retry.
+        // FR-7: keep the file and offer an outfit/appearance-only retry, and
+        // say exactly what was wrong with the photo (the reasons block renders
+        // in place of the generic error line).
         setNoFaceFile(file);
-        setError(
-          'We couldn’t find a clear face in that photo. You can search by outfit and appearance instead, or try a sharper, front-facing picture.',
-        );
+        setNoFaceReasons(parseNoFaceReasons(e));
         setPhase('pick');
       } else if (e instanceof ApiError && e.code === 'guardian_required') {
         setError(e.message);
@@ -488,6 +542,32 @@ export function FindMe(): JSX.Element {
           <h3>{references.length > 0 ? 'Add another photo' : 'Upload a photo of yourself'}</h3>
           <p className="muted">A clear, front-facing photo works best — a selfie is perfect.</p>
           {error && <p className="error-text">{error}</p>}
+          {/* The photo we just refused, and precisely why — a searcher told
+              "no clear face" can't tell whether to move closer, hold still, or
+              turn to face the camera. */}
+          {noFaceFile && (
+            <div className="multiface-warn" role="alert">
+              <div className="multiface-body">
+                <p>
+                  <strong>We couldn&rsquo;t use that photo</strong>
+                </p>
+                {noFaceReasons.length > 0 ? (
+                  <ul>
+                    {noFaceReasons.map((r) => (
+                      <li key={r}>{NO_FACE_REASON_TEXT[r]}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="muted">
+                    Try a sharper, front-facing photo where your face fills more of the frame.
+                  </p>
+                )}
+                <p className="muted">
+                  You can also search by outfit and appearance instead.
+                </p>
+              </div>
+            </div>
+          )}
           <input
             ref={fileInput}
             type="file"
@@ -595,6 +675,73 @@ export function FindMe(): JSX.Element {
             <p className="status-text" role="status" aria-live="polite">
               {status}
             </p>
+          )}
+
+          {faceAlert && (
+            <div className="multiface-warn" role="alert">
+              <div className="multiface-body">
+                <p>
+                  <strong>
+                    {faceAlert.count > 1
+                      ? 'More than one face detected'
+                      : 'This selfie may not match well'}
+                  </strong>
+                </p>
+                {faceAlert.count > 1 && (
+                  <p className="muted">
+                    Your photo has {faceAlert.count} faces in it, so we picked the clearest one and
+                    searched for that person.
+                    {faceAlert.selectedFace ? ' The outlined face is the one we matched.' : ''}
+                  </p>
+                )}
+                {faceAlert.warnings.length > 0 && (
+                  <ul>
+                    {faceAlert.warnings.map((w) => (
+                      <li key={w}>{FACE_WARNING_TEXT[w]}</li>
+                    ))}
+                  </ul>
+                )}
+                <p className="muted">
+                  {faceAlert.count > 1
+                    ? 'If the matches below aren’t you, upload a photo with only you in it.'
+                    : 'A clearer photo usually finds more of your pictures.'}
+                </p>
+                <div className="quality-actions">
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => {
+                      setFaceAlert(null);
+                      setPhase('pick');
+                    }}
+                  >
+                    {faceAlert.count > 1 ? 'Upload a photo of just me' : 'Try a better photo'}
+                  </button>
+                  <button className="btn btn-light" onClick={() => setFaceAlert(null)}>
+                    {faceAlert.count > 1 ? 'That’s me — carry on' : 'Carry on'}
+                  </button>
+                </div>
+              </div>
+              {faceAlert.selectedFace && (
+                // Percentage offsets over an unconstrained <img>, so the outline
+                // lands on the face regardless of the photo's aspect ratio. The
+                // box arrives normalized for exactly this reason.
+                <div className="multiface-preview">
+                  <img
+                    src={faceAlert.previewUrl}
+                    alt="The photo you uploaded, with the matched face outlined"
+                  />
+                  <span
+                    className="face-box"
+                    style={{
+                      left: `${faceAlert.selectedFace[0] * 100}%`,
+                      top: `${faceAlert.selectedFace[1] * 100}%`,
+                      width: `${(faceAlert.selectedFace[2] - faceAlert.selectedFace[0]) * 100}%`,
+                      height: `${(faceAlert.selectedFace[3] - faceAlert.selectedFace[1]) * 100}%`,
+                    }}
+                  />
+                </div>
+              )}
+            </div>
           )}
 
           {visible.length === 0 ? (

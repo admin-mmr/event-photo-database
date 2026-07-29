@@ -1,0 +1,15 @@
+metric,unit,2026-04,2026-05,2026-06,2026-07-partial,free_tier_per_month,source
+Cloud Run compute,vCPU-seconds,0,0,123220,216923,240000,monitoring:run.googleapis.com/container/cpu/allocation_time
+Cloud Run memory,GiB-seconds,0,0,2235052,185956,450000,monitoring:run.googleapis.com/container/memory/allocation_time
+Cloud Run requests,count,0,0,43288,146799,2000000,monitoring:run.googleapis.com/request_count
+Cloud Run egress,GiB,0,0,104.3,107.3,n/a,monitoring:run.googleapis.com/container/network/sent_bytes_count
+Firebase Hosting egress,GiB,0,0,25.1,0.6,10 GB,monitoring:firebasehosting.googleapis.com/network/sent_bytes_count
+Cloud Storage stored (avg),GiB,0,0,13.9,42.9,5 GB,monitoring:storage.googleapis.com/storage/total_bytes
+Cloud Storage egress,GiB,0,0,68.8,132.7,n/a,monitoring:storage.googleapis.com/network/sent_bytes_count
+Cloud Storage ingress,GiB,0,0,102.4,125.3,free,monitoring:storage.googleapis.com/network/received_bytes_count
+Cloud Storage operations,count,0,0,540205,460245,5000,monitoring:storage.googleapis.com/api/request_count
+Artifact Registry stored,GiB,0,0,~6,12.4,0.5 GB,gcloud artifacts repositories describe
+Cloud Logging ingested,GiB,0,0,1.0,1.3,50,monitoring:logging.googleapis.com/billing/bytes_ingested
+Firestore reads,count,0,0,617133,666900,50000/day,monitoring:firestore.googleapis.com/document/read_count
+Firestore writes,count,0,0,49236,67045,20000/day,monitoring:firestore.googleapis.com/document/write_count
+Indexer job executions,count,0,0,236,212,n/a,monitoring:run.googleapis.com/job/completed_execution_count
