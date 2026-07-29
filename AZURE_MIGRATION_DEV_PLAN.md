@@ -118,10 +118,11 @@ From static review of `azure-webapp/infra/scripts/` (never yet run):
    becomes crawlable); globally-unique resource names default off the RG name
    (collision-prone); `verify-drive-access.sh:24` KEY_VAULT default breaks
    without `NAME_SUFFIX`; parity harness (`parity-check.mjs`) and
-   `reindex-all.sh` not ported; `cosmos-access-notes.md`/`blob-access-notes.md`
+   `reindex-all.sh` not ported; ~~`cosmos-access-notes.md`/`blob-access-notes.md`
    defer the actual `firestore.rules`/`storage.rules` conditions to "git
    history" so the authorization spec to port isn't captured anywhere in the
-   Azure tree.
+   Azure tree.~~ **RESOLVED 2026-07-29** — both files now carry the rules
+   verbatim plus the real guard inventory; see the AZ2 rules-spec entry.
 
 ### 1.6 General code-health items found along the way
 
@@ -530,8 +531,53 @@ downstream needs them:
   **67 api test files / 691 tests and 22 web files / 163 tests green** (from
   65/627 and 21/143), GCP behaviour unchanged.
 
-- ⬜ Remaining: the Python backends; the rules-spec port; migrating the other ~36
-  bespoke test fakes.
+**Landed 2026-07-29 — the rules-spec port:**
+
+- ✅ **The premise was wrong, and that is the finding.** `firestore.rules` and
+  `storage.rules` were never deleted (they are still in `cloud-webapp/infra/`),
+  and both are **deny-all** — `allow read, write: if false`, no per-path
+  conditions. There is no condition-by-condition translation to do. Earlier
+  drafts of both `*-access-notes.md` said "each `allow read/write: if <cond>`
+  becomes a check in the corresponding route" and deferred the conditions to git
+  history, which implied a translation job that does not exist and hid the one
+  that does.
+- ✅ Both files now carry the rules **verbatim** (§1.5 defect 8 closed) plus the
+  correct reading: the rules were never the authorization model — **api
+  middleware always was** — so Cosmos/Blob having no rules engine costs nothing.
+  What the migration *does* remove is the backstop: on GCP a mis-guarded route is
+  still refused by `if false`; on Azure it is not.
+- ✅ **The spec is now executable, not prose.** `api/test/routeGuards.test.ts`
+  walks the LIVE Express route table (80 routes) and asserts:
+  every route has an authenticator; every `/api/admin/**` route has a role check
+  or a machine token; `attachRole` precedes every role check and `requireAuth`
+  precedes every `attachRole` (both fail-closed, so a gap shows up as an admin
+  page that mysteriously stopped working rather than as a breach); the six
+  cross-club routes are `requireSuperAdmin` **by function identity**, since
+  `requireAnyAdmin`/`requireSuperAdmin` are both `requireRole(...)` results and a
+  name check would pass on the club_admin-permitting one; and the web bundle
+  imports no client-side database SDK — the invariant that made deny-all
+  redundant in the first place, and the one thing Azure could not refuse if it
+  regressed. Verified by mutation: dropping `requireAnyAdmin` from
+  `GET /admin/clubs` fails the suite and names the route.
+- ✅ `requireRole`/`requireClubScope` now return **named** functions
+  (`requireRoleGuard`, `requireClubScopeGuard`) so the route table is
+  introspectable; also legible in stack traces. No behaviour change.
+- ✅ The guard inventory is written down in `cosmos-access-notes.md`: 18
+  member-only routes, 34 any-admin, 10 super_admin-only, 10 `allowCronOrAdmin`, 1
+  `allowCronOrSuperAdmin`, 2 partner-key, 4 gated inside the handler, 1
+  unauthenticated (`/health`). The four handler-gated routes are the ones a reader
+  grepping for middleware misreads as open — they check an upload-link token or
+  `X-Sync-Token` in the handler body — so they are enumerated with the credential
+  each checks, and the test refuses to let that list grow silently.
+- ✅ Recorded in the Blob notes, because they have no Firestore analogue:
+  container public-access is *account configuration* rather than code in the repo,
+  so it can change outside a code review and must be re-checked in AZ4; and a SAS
+  is a bearer credential with **no revocation**, which makes the ≤60 min TTL cap an
+  authorization control rather than a performance knob.
+- Verified: `tsc` clean, `eslint` clean, **68 api test files / 715 tests green**
+  (from 67/704). No production behaviour change beyond the two function names.
+
+- ⬜ Remaining: the Python backends; migrating the other ~36 bespoke test fakes.
   - **Not yet proven, and cannot be here:** real SAS validation, account-level
     CORS, per-transaction cost, and whether a browser's Put Block List behaves as
     documented. `fakeBlobService.ts` is a model of Blob Storage, not Blob
@@ -576,10 +622,11 @@ downstream needs them:
 - **Python:** Blob backend in `matcher/store.py` + `indexer/blobs.py`
   (`https://…blob.core.windows.net/...` or `az://` prefix beside `gs://` and
   local); Cosmos impl of `FirestoreMeta` in `indexer/job.py`.
-- **Port the rules spec:** recover `firestore.rules`/`storage.rules` from git
+- ~~**Port the rules spec:** recover `firestore.rules`/`storage.rules` from git
   history, embed the conditions verbatim in the two `infra/*-notes.md` files,
   and verify each condition exists as api middleware (most already do —
-  `requireAuth`/`requireAdmin`/`rbac.ts`); add tests for any gaps.
+  `requireAuth`/`requireAdmin`/`rbac.ts`); add tests for any gaps.~~
+  **DONE 2026-07-29** — see the rules-spec entry below.
 - **Tests:** build ONE shared in-memory fake of the adapter interface; migrate
   the ~40 bespoke Firestore fakes onto it as files get touched.
 - **Acceptance:** full vitest + pytest suites green against both impls

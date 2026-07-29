@@ -61,7 +61,10 @@ export async function attachRole(req: Request, _res: Response, next: NextFunctio
  * after attachRole. 403s otherwise.
  */
 export function requireRole(...roles: Role[]) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  // NAMED, not an arrow: `test/routeGuards.test.ts` walks the Express route
+  // table and identifies each route's guards by function name, so an unguarded
+  // route can never be added silently. Also makes stack traces legible.
+  return function requireRoleGuard(req: Request, res: Response, next: NextFunction): void {
     const role = req.user?.role;
     if (!req.user?.emailVerified || !role || !roles.includes(role)) {
       res.status(403).json({ ok: false, error: 'forbidden', message: 'Insufficient role' });
@@ -86,7 +89,8 @@ export const requireAnyAdmin = requireRole(UserRole.SUPER_ADMIN, UserRole.CLUB_A
  * target is rejected (fail closed).
  */
 export function requireClubScope(getClubId: (req: Request) => string | undefined) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  // Named for the same reason as requireRole's guard.
+  return function requireClubScopeGuard(req: Request, res: Response, next: NextFunction): void {
     const role = req.user?.role;
     if (role === UserRole.SUPER_ADMIN) {
       next();
