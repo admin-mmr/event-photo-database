@@ -7,7 +7,10 @@ import type {
   ListReferencesResponse,
   ReferenceUpload,
   SearchByUploadRequest,
+  SelfieFaceReason,
+  SelfieFaceWarning,
 } from '@cloud-webapp/shared';
+import { SelfieFaceReasonSchema } from '@cloud-webapp/shared';
 import {
   apiGet,
   apiUpload,
@@ -22,7 +25,14 @@ import {
 } from '../lib/originals.js';
 import { getRecaptchaToken } from '../lib/recaptcha.js';
 import { useSelection } from '../lib/selection.js';
-import { combineReferences, visibleResults, scoreBand, displayConfidence } from '../lib/results.js';
+import {
+  combineReferences,
+  visibleResults,
+  scoreBand,
+  displayConfidence,
+  faceAlertFor,
+  type FaceAlert,
+} from '../lib/results.js';
 import { analyzePhoto, type QualityResult, type QualityIssue } from '../lib/photoQuality.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
 import { canShareImageFiles } from '../lib/share.js';
@@ -75,6 +85,7 @@ const STR = {
     namePlaceholder: 'e.g. Jamie Lee',
     nameHint: 'Required. Shown to event organizers so they know who searched.',
     searchingAs: (n: string): string => `Searching as ${n}.`,
+    notYou: 'Not you? Enter a different name',
     consentPhoto:
       'I consent to the use of this photo for face matching in this event.',
     isMinor: 'The person in the photo is under 18.',
@@ -96,6 +107,33 @@ const STR = {
     qBright: 'It looks overexposed (too bright).',
     searchAnyway: 'Search anyway',
     chooseAnother: 'Choose a different photo',
+    multiFaceTitle: 'More than one face detected',
+    weakFaceTitle: 'This selfie may not match well',
+    multiFaceBody: (count: number) =>
+      `Your photo has ${count} faces in it, so we picked the clearest one and searched for that person.`,
+    wSmallFace:
+      'The face is small in the photo — hold the camera closer, or crop in so your face fills more of the frame.',
+    wNotFrontal:
+      'The face is turned away from the camera — look straight at the lens for the best match.',
+    multiFaceBoxHint: 'The outlined face is the one we matched.',
+    multiFaceCheck:
+      'If the matches below aren’t you, upload a photo with only you in it.',
+    weakFaceCheck: 'A clearer photo usually finds more of your pictures.',
+    multiFaceUseAnother: 'Upload a photo of just me',
+    weakFaceUseAnother: 'Try a better photo',
+    multiFaceDismiss: 'That’s me — carry on',
+    weakFaceDismiss: 'Carry on',
+    multiFaceSelfieAlt: 'The photo you uploaded, with the matched face outlined',
+    // Specific "we couldn't use this photo" reasons (the 422). Shown instead of
+    // the generic no-face line so the searcher knows what to change.
+    noFaceTitle: 'We couldn’t use that photo',
+    rNoFaceDetected: 'We couldn’t find a face in it at all.',
+    rTooSmall: 'The face is too small — get closer, or crop in so your face fills the frame.',
+    rTooBlurry: 'The photo is too blurry — hold still and try again in better light.',
+    rLowConfidence:
+      'We couldn’t make out a clear, front-facing face — look straight at the camera.',
+    noFaceFallback: 'Try a sharper, front-facing photo where your face fills more of the frame.',
+    orSearchOutfit: 'You can also search by outfit and appearance instead.',
     searchByOutfitInstead: 'Search by outfit instead',
     standardSearch: 'Standard search',
     standardSearchDesc:
@@ -179,6 +217,7 @@ const STR = {
     namePlaceholder: '例如：张三',
     nameHint: '必填。此姓名会提供给活动主办方，以便了解是谁进行了搜索。',
     searchingAs: (n: string): string => `以 ${n} 的身份搜索。`,
+    notYou: '不是您本人？输入其他姓名',
     consentPhoto: '我同意将此照片用于本次活动的人脸匹配。',
     isMinor: '照片中的人未满 18 岁。',
     guardianConsent: '我是该儿童的父母或法定监护人，并代表其同意本次搜索。',
@@ -195,6 +234,27 @@ const STR = {
     qBright: '照片看起来过曝（太亮）。',
     searchAnyway: '仍然搜索',
     chooseAnother: '换一张照片',
+    multiFaceTitle: '检测到多张人脸',
+    weakFaceTitle: '这张自拍可能不易匹配',
+    multiFaceBody: (count: number) =>
+      `您的照片中有 ${count} 张人脸，我们选择了其中最清晰的一张进行搜索。`,
+    wSmallFace: '照片中的人脸偏小——请靠近拍摄，或裁剪照片让面部占更大画面。',
+    wNotFrontal: '照片中的人脸没有正对镜头——请直视镜头以获得最佳匹配效果。',
+    multiFaceBoxHint: '方框标出的即为我们所匹配的人脸。',
+    multiFaceCheck: '如果下面的结果不是您，请上传一张只有您本人的照片。',
+    weakFaceCheck: '更清晰的照片通常能找到更多您的照片。',
+    multiFaceUseAnother: '上传只有我的照片',
+    weakFaceUseAnother: '换一张更好的照片',
+    multiFaceDismiss: '就是我，继续',
+    weakFaceDismiss: '继续',
+    multiFaceSelfieAlt: '您上传的照片，方框标出所匹配的人脸',
+    noFaceTitle: '无法使用这张照片',
+    rNoFaceDetected: '照片中完全没有检测到人脸。',
+    rTooSmall: '人脸太小——请靠近拍摄，或裁剪照片让面部占满画面。',
+    rTooBlurry: '照片太模糊——请保持稳定，并在光线更好的环境下重拍。',
+    rLowConfidence: '无法识别出清晰的正面人脸——请直视镜头。',
+    noFaceFallback: '请换一张更清晰、面部占比更大的正面照片。',
+    orSearchOutfit: '您也可以改用服装和外观搜索。',
     searchByOutfitInstead: '改用服装搜索',
     standardSearch: '标准搜索',
     standardSearchDesc: '使用人脸匹配，最准确，但需要清晰的正面照片。',
@@ -268,6 +328,17 @@ function withRemoved(set: ReadonlySet<string>, id: string): Set<string> {
 }
 
 /**
+ * Rejection reasons off a `no_usable_face` 422. Unknown codes are dropped
+ * rather than rendered raw; an empty result means "no diagnostics", and the
+ * caller falls back to the generic advice.
+ */
+function parseNoFaceReasons(err: ApiError): SelfieFaceReason[] {
+  const raw = err.body.reasons;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((r): r is SelfieFaceReason => SelfieFaceReasonSchema.safeParse(r).success);
+}
+
+/**
  * Find Me flow. Consent → selfie upload → per-selfie results, with a reference
  * picker to switch between uploads, an explicit deduped Combined view (B3),
  * multi-select original-resolution ZIP download (B1/B2), and "not me / that's
@@ -283,13 +354,21 @@ export function FindMe(): JSX.Element {
   // first use — then remembered, so we don't ask again on later events/pages.
   const [sessionName] = useState(() => getStoredName());
   const [name, setName] = useState(sessionName);
-  const haveSessionName = sessionName.length > 0;
+  // A remembered name saves the usual searcher from retyping, but the device may
+  // have been handed to someone else (they're common at events) — so the name is
+  // always changeable, and whoever is searching types their own.
+  const [editingName, setEditingName] = useState(false);
+  const haveSessionName = sessionName.length > 0 && !editingName;
   const [isMinor, setIsMinor] = useState(false);
   const [guardianOk, setGuardianOk] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // When a reference set has no detectable face we hold the files here to offer
   // an outfit-only retry (FR-7) without making the user re-pick them.
   const [noFaceFiles, setNoFaceFiles] = useState<File[]>([]);
+  // Why the matcher rejected them (too small / blurry / none found), so we can
+  // say what to fix instead of a generic "no clear face". Empty when the api
+  // reports no diagnostics — the generic line is then the fallback.
+  const [noFaceReasons, setNoFaceReasons] = useState<SelfieFaceReason[]>([]);
   // Picked files whose client-side quality check flagged them as poor: we hold
   // them and show a warning so the user can pick clearer photos OR search anyway,
   // rather than silently running a search that can't match well.
@@ -297,6 +376,8 @@ export function FindMe(): JSX.Element {
   const [photoQuality, setPhotoQuality] = useState<QualityResult | null>(null);
   const [checkingPhoto, setCheckingPhoto] = useState(false);
   const [references, setReferences] = useState<Reference[]>([]);
+  // Raised when the last search's reference photo held more than one face.
+  const [faceAlert, setFaceAlert] = useState<FaceAlert | null>(null);
   const [activeId, setActiveId] = useState<string>(COMBINED);
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
@@ -546,6 +627,12 @@ export function FindMe(): JSX.Element {
   /** Append a result set from a search response and make it the active tab. */
   function pushReference(res: SearchResponse, previewUrl: string, labelPrefix: string): void {
     const id = res.runId ?? crypto.randomUUID();
+    // Warn if this selfie was a group shot. First one to trip it wins and is
+    // never retracted here: reusing several stored selfies pushes one reference
+    // per photo, and a clean second photo must not silently withdraw the
+    // warning the first one earned. Callers clear it when a new search starts.
+    const alert = faceAlertFor(res.referenceFaces, previewUrl);
+    if (alert) setFaceAlert((prev) => prev ?? alert);
     setReferences((prev) => [
       ...prev,
       {
@@ -603,6 +690,7 @@ export function FindMe(): JSX.Element {
     if (chosen.length === 0) return;
     setPhase('searching');
     setError(null);
+    setFaceAlert(null);
     try {
       // Sequential: each stored photo produces its own result set (FR-9), and
       // serial calls keep us under the per-user search rate limit.
@@ -616,6 +704,30 @@ export function FindMe(): JSX.Element {
       if (e instanceof ApiError && e.code === 'guardian_required') setPhase('consent');
       else setPhase('pick');
       setError(e instanceof Error ? e.message : t.searchFailed);
+    }
+  }
+
+  /** Localized "why we couldn't use your photo" line (the 422 reasons). */
+  function noFaceReasonLabel(reason: SelfieFaceReason): string {
+    switch (reason) {
+      case 'no_face_detected':
+        return t.rNoFaceDetected;
+      case 'too_small':
+        return t.rTooSmall;
+      case 'too_blurry':
+        return t.rTooBlurry;
+      case 'low_confidence':
+        return t.rLowConfidence;
+    }
+  }
+
+  /** Localized advisory line for a face we DID use but that is weak. */
+  function faceWarningLabel(warning: SelfieFaceWarning): string {
+    switch (warning) {
+      case 'small_face':
+        return t.wSmallFace;
+      case 'not_frontal':
+        return t.wNotFrontal;
     }
   }
 
@@ -642,6 +754,7 @@ export function FindMe(): JSX.Element {
   async function handlePicked(files: File[]): Promise<void> {
     setError(null);
     setNoFaceFiles([]);
+    setNoFaceReasons([]);
     setPendingFiles([]);
     setPhotoQuality(null);
     if (files.length === 0) return;
@@ -681,8 +794,10 @@ export function FindMe(): JSX.Element {
     setPhase('searching');
     setError(null);
     setNoFaceFiles([]);
+    setNoFaceReasons([]);
     setPendingFiles([]);
     setPhotoQuality(null);
+    setFaceAlert(null);
     const form = new FormData();
     for (const file of files) form.append('file', file);
     form.set('eventId', eventId);
@@ -705,9 +820,11 @@ export function FindMe(): JSX.Element {
       void loadPastUploads(true);
     } catch (e) {
       if (e instanceof ApiError && e.code === 'no_usable_face') {
-        // FR-7: keep the files and offer an outfit/appearance-only retry.
+        // FR-7: keep the files and offer an outfit/appearance-only retry, and
+        // say exactly what was wrong with the photo (the reasons block renders
+        // in place of the generic error line).
         setNoFaceFiles(files);
-        setError(t.noUsableFace);
+        setNoFaceReasons(parseNoFaceReasons(e));
         setPhase('pick');
       } else if (e instanceof ApiError && e.code === 'guardian_required') {
         setError(e.message);
@@ -890,8 +1007,22 @@ export function FindMe(): JSX.Element {
           {error && <p className="error-text">{error}</p>}
           {haveSessionName ? (
             // Name already captured this session (guest sign-in or a prior
-            // event) — just confirm who's searching, don't ask again.
-            <p className="muted searching-as">{t.searchingAs(name)}</p>
+            // event) — just confirm who's searching, don't ask again. The
+            // "not you" escape matters on a shared phone: without it the next
+            // person's search is attributed to whoever used it first.
+            <p className="muted searching-as">
+              {t.searchingAs(name)}{' '}
+              <button
+                type="button"
+                className="btn-inline-link"
+                onClick={() => {
+                  setName('');
+                  setEditingName(true);
+                }}
+              >
+                {t.notYou}
+              </button>
+            </p>
           ) : (
             <label className="consent-row consent-name">
               <span>{t.yourNameRequired}</span>
@@ -958,6 +1089,28 @@ export function FindMe(): JSX.Element {
           <h3>{references.length > 0 ? t.addAnotherPhoto : t.uploadYourself}</h3>
           <p className="muted">{t.pickHint}</p>
           {error && <p className="error-text">{error}</p>}
+          {/* The photo we just refused, and precisely why — a searcher told
+              "no clear face" can't tell whether to move closer, hold still, or
+              turn to face the camera. */}
+          {noFaceFiles.length > 0 && (
+            <div className="multiface-warn" role="alert">
+              <div className="multiface-body">
+                <p>
+                  <strong>{t.noFaceTitle}</strong>
+                </p>
+                {noFaceReasons.length > 0 ? (
+                  <ul>
+                    {noFaceReasons.map((r) => (
+                      <li key={r}>{noFaceReasonLabel(r)}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="muted">{t.noFaceFallback}</p>
+                )}
+                <p className="muted">{t.orSearchOutfit}</p>
+              </div>
+            </div>
+          )}
           <input
             ref={fileInput}
             type="file"
@@ -1120,6 +1273,67 @@ export function FindMe(): JSX.Element {
             <p className="status-text" role="status" aria-live="polite">
               {status}
             </p>
+          )}
+
+          {faceAlert && (
+            // One block for everything worth saying about the selfie just
+            // uploaded: a group shot, and/or a face that is small or turned
+            // away. The multi-face case leads, since a wrong *identity* matters
+            // more than a weak match.
+            <div className="multiface-warn" role="alert">
+              <div className="multiface-body">
+                <p>
+                  <strong>{faceAlert.count > 1 ? t.multiFaceTitle : t.weakFaceTitle}</strong>
+                </p>
+                {faceAlert.count > 1 && (
+                  <p className="muted">
+                    {t.multiFaceBody(faceAlert.count)}
+                    {faceAlert.selectedFace ? ` ${t.multiFaceBoxHint}` : ''}
+                  </p>
+                )}
+                {faceAlert.warnings.length > 0 && (
+                  <ul>
+                    {faceAlert.warnings.map((w) => (
+                      <li key={w}>{faceWarningLabel(w)}</li>
+                    ))}
+                  </ul>
+                )}
+                <p className="muted">
+                  {faceAlert.count > 1 ? t.multiFaceCheck : t.weakFaceCheck}
+                </p>
+                <div className="quality-actions">
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => {
+                      setFaceAlert(null);
+                      setPhase('pick');
+                    }}
+                  >
+                    {faceAlert.count > 1 ? t.multiFaceUseAnother : t.weakFaceUseAnother}
+                  </button>
+                  <button className="btn btn-light" onClick={() => setFaceAlert(null)}>
+                    {faceAlert.count > 1 ? t.multiFaceDismiss : t.weakFaceDismiss}
+                  </button>
+                </div>
+              </div>
+              {faceAlert.selectedFace && (
+                // Percentage offsets over an unconstrained <img>, so the outline
+                // lands on the face regardless of the photo's aspect ratio. The
+                // box arrives normalized for exactly this reason.
+                <div className="multiface-preview">
+                  <img src={faceAlert.previewUrl} alt={t.multiFaceSelfieAlt} />
+                  <span
+                    className="face-box"
+                    style={{
+                      left: `${faceAlert.selectedFace[0] * 100}%`,
+                      top: `${faceAlert.selectedFace[1] * 100}%`,
+                      width: `${(faceAlert.selectedFace[2] - faceAlert.selectedFace[0]) * 100}%`,
+                      height: `${(faceAlert.selectedFace[3] - faceAlert.selectedFace[1]) * 100}%`,
+                    }}
+                  />
+                </div>
+              )}
+            </div>
           )}
 
           {visible.length === 0 ? (

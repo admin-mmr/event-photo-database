@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { MatchResult } from '@cloud-webapp/shared';
+import type { MatchResult, ReferenceFaces } from '@cloud-webapp/shared';
 import {
   combineReferences,
   visibleResults,
@@ -8,6 +8,7 @@ import {
   STRONG_MATCH_THRESHOLD,
   displayConfidence,
   DISPLAY_MIDPOINT,
+  faceAlertFor,
 } from './results.js';
 
 function mr(photoId: string, score: number): MatchResult {
@@ -88,5 +89,76 @@ describe('displayConfidence (calibrated %)', () => {
     expect(displayConfidence(0)).toBeGreaterThanOrEqual(1);
     expect(displayConfidence(1)).toBeLessThanOrEqual(99);
     expect(displayConfidence(5)).toBeLessThanOrEqual(99);
+  });
+});
+
+describe('faceAlertFor (selfie warnings)', () => {
+  const ref = (
+    faces: number,
+    opts: Partial<Omit<ReferenceFaces, 'faces'>> = {},
+  ): ReferenceFaces => ({
+    faces,
+    usableFaces: opts.usableFaces ?? faces,
+    selectedFace: opts.selectedFace === undefined ? [0.1, 0.2, 0.3, 0.4] : opts.selectedFace,
+    ...(opts.selectedWarnings ? { selectedWarnings: opts.selectedWarnings } : {}),
+  });
+
+  it('stays silent for a good solo selfie', () => {
+    expect(faceAlertFor([ref(1)], 'blob:a')).toBeNull();
+  });
+
+  it('stays silent when the matcher reports no census (older revision)', () => {
+    expect(faceAlertFor(undefined, 'blob:a')).toBeNull();
+    expect(faceAlertFor([], 'blob:a')).toBeNull();
+  });
+
+  it('warns with the face count and outlines the face that was matched', () => {
+    expect(faceAlertFor([ref(3)], 'blob:a')).toEqual({
+      count: 3,
+      warnings: [],
+      previewUrl: 'blob:a',
+      selectedFace: [0.1, 0.2, 0.3, 0.4],
+    });
+  });
+
+  it('reports the busiest selfie of the batch', () => {
+    expect(faceAlertFor([ref(1), ref(4)], 'blob:a')?.count).toBe(4);
+  });
+
+  it('outlines nothing when the previewed (first) selfie is the clean one', () => {
+    // The preview shows selfie 1; selfie 2's box would land on the wrong photo.
+    expect(faceAlertFor([ref(1), ref(2)], 'blob:a')?.selectedFace).toBeNull();
+  });
+
+  it('outlines nothing when no face was usable', () => {
+    expect(
+      faceAlertFor([ref(2, { usableFaces: 0, selectedFace: null })], 'blob:a')?.selectedFace,
+    ).toBeNull();
+  });
+
+  it('warns about a lone face that is small or turned away', () => {
+    const alert = faceAlertFor([ref(1, { selectedWarnings: ['not_frontal'] })], 'blob:a');
+    expect(alert).toEqual({
+      count: 1,
+      warnings: ['not_frontal'],
+      previewUrl: 'blob:a',
+      selectedFace: [0.1, 0.2, 0.3, 0.4],
+    });
+  });
+
+  it('dedupes warnings across selfies', () => {
+    const alert = faceAlertFor(
+      [
+        ref(1, { selectedWarnings: ['small_face'] }),
+        ref(1, { selectedWarnings: ['small_face', 'not_frontal'] }),
+      ],
+      'blob:a',
+    );
+    expect(alert?.warnings).toEqual(['small_face', 'not_frontal']);
+  });
+
+  it('outlines nothing when only a LATER selfie has the weak face', () => {
+    const alert = faceAlertFor([ref(1), ref(1, { selectedWarnings: ['small_face'] })], 'blob:a');
+    expect(alert?.selectedFace).toBeNull();
   });
 });

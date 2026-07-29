@@ -1273,6 +1273,66 @@ pre.error {
   border: 2px solid var(--primary);
 }
 
+/* "More than one person in your selfie" warning. The matcher picked one face on
+   the searcher's behalf, so this sits above the results and shows which. */
+.multiface-warn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 14px;
+  margin: 12px 0;
+  padding: 14px 16px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn);
+  border-radius: var(--r-md);
+  color: var(--text);
+}
+
+/* min-width, not just the basis: a shrinkable body never wraps, it just squeezes
+   the text into a ~150px column beside the preview on a phone. */
+.multiface-body {
+  flex: 1 1 260px;
+  min-width: 220px;
+  display: grid;
+  gap: 6px;
+}
+
+.multiface-body p {
+  margin: 0;
+}
+
+.multiface-warn .quality-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* The <img> is left unconstrained in height so its box matches the image box
+   exactly — that is what makes the percentage-positioned outline land on the
+   right face for any aspect ratio. */
+.multiface-preview {
+  position: relative;
+  flex: 0 0 auto;
+  width: 140px;
+  line-height: 0;
+}
+
+.multiface-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--r-sm);
+}
+
+.multiface-preview .face-box {
+  position: absolute;
+  border: 2px solid var(--primary);
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.7);
+  pointer-events: none;
+}
+
 .result-cell {
   position: relative;
   display: flex;
@@ -1420,6 +1480,17 @@ pre.error {
 
 .consent-row.consent-name span {
   font-weight: 600;
+}
+
+/* Text-looking button for inline escapes ("Not you? Enter a different name"). */
+.btn-inline-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--primary);
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .consent-row.consent-name input {
