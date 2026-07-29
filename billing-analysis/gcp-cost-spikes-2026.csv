@@ -1,0 +1,9 @@
+date,metric,value,unit,normal_baseline,incident,root_cause,fix_deployed,confirmed_after_effect
+2026-06-17,matcher memory,594584,GiB-seconds,~1500,matcher warm instance,min-instances=1 holding 2 vCPU / 8 GiB 24x7,removed warm instance; scale-to-zero policy,July all-services memory 185956 GiB-s (8% of June)
+2026-06-18,matcher memory,691232,GiB-seconds,~1500,matcher warm instance,exactly 8 GiB x 86400s = 691200 (warm 24h),removed warm instance,instance_count returned to <1.0 mean
+2026-06-19,matcher memory,691239,GiB-seconds,~1500,matcher warm instance,instance_count = 1.00 all day,removed warm instance,confirmed
+2026-06-20,matcher memory,96862,GiB-seconds,~1500,matcher warm instance (window ends),warm instance removed mid-day,scale-to-zero,confirmed
+2026-06-21,Firebase Hosting egress,2.44,GiB,~0.02,originals streamed through api,api piped createReadStream to response; billed twice (Cloud Run egress + Hosting transfer),302-redirect to signed GCS URLs,July total 0.6 GiB
+2026-06-22,Firebase Hosting egress,22.37,GiB,~0.02,originals streamed through api (live event day),Save-to-Photos and full-res lightbox fetched originals via api,signed URLs + browser-side ZIP assembly,July total 0.6 GiB = 97% reduction
+2026-07-27,Cloud Run vCPU,21012,vCPU-seconds,~3000,upload loss + recovery,CI deployed --timeout=60 overriding script 1800; ~half of process-batch requests killed at 60.000s,restored 1800s + CI now asserts live value,1188 photos recovered; 9 permanently lost
+2026-07-28,Cloud Run vCPU,37286,vCPU-seconds,~3000,recovery re-indexing,recovery OOM at 512Mi from 10 concurrent chunks,api memory 512Mi->1Gi; staggered dispatch costed by bytes,July total 216923 = 90% of 240000 free tier
