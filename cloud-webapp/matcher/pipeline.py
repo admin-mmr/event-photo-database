@@ -80,11 +80,37 @@ def _iou(a: list[float], b: list[float]) -> float:
     return inter / max(area_a + area_b - inter, 1e-9)
 
 
-def _face_in_person(face_box: list[float], person_box: list[float]) -> bool:
-    """True if the face box center lies inside the person box."""
+def face_in_person(face_box: list[float], person_box: list[float]) -> bool:
+    """True if the face box center lies inside the person box.
+
+    Public because `main.py` pairs an *indexed* face row with its outfit row the
+    same way when an anchor photo is folded into the query — the manifest stores
+    both boxes but not the pairing, so the association has to be recomputed with
+    identical geometry or the anchor would carry a bystander's clothing."""
     cx = (face_box[0] + face_box[2]) / 2
     cy = (face_box[1] + face_box[3]) / 2
     return person_box[0] <= cx <= person_box[2] and person_box[1] <= cy <= person_box[3]
+
+
+def assess_faces(img_rgb: np.ndarray, bundle=None) -> dict:
+    """Detect faces and grade them — WITHOUT embedding anything.
+
+    Backs the upload-time selfie check: the user should be told "that one's
+    blurry / you're turned away / there are two people in it" while they are
+    still picking photos, not after a search comes back. Skipping the ArcFace
+    and person-detector passes makes this a fraction of `embed_image`'s cost, and
+    means no face embedding is computed for what is only a UI hint.
+
+    Returns {"faces": [{box, score, quality}], "model_version": str}.
+    """
+    bundle = bundle or load_bundle()
+    return {
+        "faces": [
+            {"box": det["box"], "score": det["score"], "quality": assess_face(img_rgb, det)}
+            for det in bundle.face_det.detect(img_rgb)
+        ],
+        "model_version": bundle.version,
+    }
 
 
 def embed_image(img_rgb: np.ndarray, bundle=None) -> dict:
@@ -136,7 +162,7 @@ def embed_image(img_rgb: np.ndarray, bundle=None) -> dict:
         if crop.shape[0] < 8 or crop.shape[1] < 8:
             continue
         face_idx = next(
-            (i for i, f in enumerate(faces) if _face_in_person(f["box"], p["box"])),
+            (i for i, f in enumerate(faces) if face_in_person(f["box"], p["box"])),
             None,
         )
         persons.append({**p, "face_idx": face_idx, "embedding": bundle.person_emb.embed(crop)})

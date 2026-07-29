@@ -172,8 +172,45 @@ export const SearchAlgoSchema = z.object({
   prfCount: z.number(),
   /** Reference selfies averaged into the centroid query (§1.1). */
   numReferences: z.number(),
+  /**
+   * Event photos promoted to anchors for this search — an in-domain reference
+   * (right camera, right lighting, right outfit) that the user picked from an
+   * earlier result set. Defaulted rather than required: `SearchAlgoSchema` is
+   * parsed back out of stored `match_runs` / vote documents written before
+   * anchors existed, and a required field would fail those.
+   */
+  anchorCount: z.number().default(0),
+  /** Candidate-side face-quality weighting in force (matcher FACE_QUALITY_WEIGHT,
+   *  Item 5). 0 = off, which is the default until the offline sweep sets it. */
+  faceQualityWeight: z.number().default(0),
 });
 export type SearchAlgo = z.infer<typeof SearchAlgoSchema>;
+
+/**
+ * The result this search nominates as a better reference than the selfie: a
+ * confirmed, in-domain, front-facing, near-solo photo of the searcher. Feed its
+ * `photoId` back as `anchorPhotoId` to re-search from it — nothing is
+ * re-uploaded or re-embedded, the matcher reads the crop out of the index.
+ *
+ * Always one of the `results` in the same response, so the UI can reuse that
+ * entry's signed thumbnail instead of signing another URL.
+ */
+export const AnchorSuggestionSchema = z.object({
+  photoId: z.string(),
+  /** 0..1 blend of frontality, face size, solo-ness and match confidence. */
+  suitability: z.number(),
+  /** The matched face's score in this search (cosine, or z-score under T-norm). */
+  faceScore: z.number(),
+  /** Faces the indexer found in the photo — 1 means the crop can't be a stranger. */
+  faceCount: z.number(),
+  facePx: z.number(),
+  /** Null when the event was indexed before per-face quality was recorded. */
+  frontality: z.number().nullable(),
+  faceFrac: z.number().nullable(),
+  /** False when the above two are null, i.e. ranked on size/solo-ness alone. */
+  qualityKnown: z.boolean(),
+});
+export type AnchorSuggestion = z.infer<typeof AnchorSuggestionSchema>;
 
 export const SearchResponseSchema = z.object({
   ok: z.literal(true),
@@ -184,9 +221,53 @@ export const SearchResponseSchema = z.object({
   runId: z.string().optional(),
   /** Retrieval algorithm that produced these results (see SEARCH_ALGO_VERSION). */
   algo: SearchAlgoSchema.optional(),
+  /** A better reference to re-search from, or null when no result qualifies. */
+  anchorSuggestion: AnchorSuggestionSchema.nullable().default(null),
+  /** Anchors that were applied to THIS search (echo of the request). */
+  anchorPhotoIds: z.array(z.string()).default([]),
   results: z.array(MatchResultSchema),
 });
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
+
+// ── Selfie quality check (POST /api/findme/selfie-check, multipart) ───────────
+
+/**
+ * Verdict for one picked selfie. Produced by face DETECTION only (no embeddings)
+ * so it can run the moment the user picks a photo instead of after a search
+ * round-trip: "no clear face / you're turned away / two people in frame" is
+ * feedback they can act on while the picker is still open.
+ */
+export const SelfieCheckFileSchema = z.object({
+  /** Position in the picked set — the client's handle for this file. */
+  index: z.number(),
+  filename: z.string().default(''),
+  /** False = this photo cannot be searched with; `reasons` says why. */
+  usable: z.boolean(),
+  /** Hard failures, the same gate a search applies: 'no_face' | 'bad_image' |
+   *  'too_small' | 'too_blurry' | 'low_confidence'. */
+  reasons: z.array(z.string()).default([]),
+  /** Non-blocking hints: 'multiple_faces' | 'not_frontal' |
+   *  'face_small_in_frame' | 'slightly_soft'. */
+  advisories: z.array(z.string()).default([]),
+  /** 0..1 suitability as a reference — same ingredients as anchor suitability. */
+  selfieScore: z.number(),
+  faceCount: z.number().default(0),
+  faceScore: z.number().optional(),
+  frontality: z.number().nullable().default(null),
+  faceFrac: z.number().optional(),
+  facePx: z.number().optional(),
+  blur: z.number().optional(),
+});
+export type SelfieCheckFile = z.infer<typeof SelfieCheckFileSchema>;
+
+export const SelfieCheckResponseSchema = z.object({
+  ok: z.literal(true),
+  files: z.array(SelfieCheckFileSchema),
+  /** Index of the best usable pick, or null when none is usable. */
+  bestIndex: z.number().nullable().default(null),
+  anyUsable: z.boolean(),
+});
+export type SelfieCheckResponse = z.infer<typeof SelfieCheckResponseSchema>;
 
 /** 422 from the matcher when the reference photo has no usable face. */
 export const NoUsableFaceResponseSchema = z.object({
@@ -245,6 +326,9 @@ export const SearchByUploadRequestSchema = z.object({
   mode: z.enum(['fused', 'person']).optional(),
   subjectIsMinor: z.boolean().optional(),
   guardianAttested: z.boolean().optional(),
+  /** Event photo to anchor this search on (from a previous response's
+   *  `anchorSuggestion`, or any result the user confirmed). */
+  anchorPhotoId: z.string().min(1).optional(),
 });
 export type SearchByUploadRequest = z.infer<typeof SearchByUploadRequestSchema>;
 

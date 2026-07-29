@@ -27,6 +27,8 @@ Analysis add-ons (map to PEOPLE_RECOGNITION_QUALITY_PLAN.md items, all opt-in):
     --time-conditional [--time-windows ... --anchors ...]  Item 1 (capture-time fusion)
     --tnorm                                                Item 2 (T-norm)
     --prf [--prf-fold N]                                   Item 3 (pseudo-relevance feedback)
+    --anchor-promotion                                     anchor promotion (in-domain re-query)
+    --face-quality-weight 0.25;0.5;1.0                     Item 5 (candidate quality weighting)
 """
 
 from __future__ import annotations
@@ -48,6 +50,21 @@ WEIGHT_SWEEP = [(1.0, 0.0), (0.9, 0.1), (0.8, 0.2), (0.7, 0.3), (0.6, 0.4), (0.5
 # (w_full_min, w_zero_min, floor). Bracket the plan's 45 min / 3 h default with a
 # tighter and a looser pair so the sweep shows how sharply to trust outfit.
 DEFAULT_TIME_WINDOWS = "30:120:0;45:180:0;60:240:0.1"
+
+# Anchor gates/weights for --anchor-promotion. These MUST track the matcher's
+# ANCHOR_* env defaults (matcher/main.py) — the sweep exists to predict what
+# production would suggest, so a divergence here makes its numbers fiction.
+ANCHOR_SWEEP_CFG = {
+    "pool": 40,
+    "max_faces": 2,
+    "min_frontality": 0.55,
+    "min_face_frac": 0.05,
+    "min_face_px": 110.0,
+    "min_face_score": 0.45,
+    "min_face_z": 6.0,
+    "full_face_frac": 0.20,
+    "full_face_px": 400.0,
+}
 
 
 def parse_windows(spec: str) -> list[tuple[float, float, float]]:
@@ -170,6 +187,55 @@ def _fold_prf(event, kind: str, prf_ids, refs: list, centroid):
             continue
         refs.append(crops[int(np.argmax(crops @ centroid))])
     return _mean_unit(refs)
+
+
+def _anchor_candidate_score(event, face_hit: dict, min_face_score: float, cfg: dict):
+    """Suitability of one result as an anchor, or None if it fails a gate.
+
+    Mirrors matcher.main._anchor_candidate — kept local because main.py imports
+    flask/onnx and the eval deliberately depends only on numpy/fusion/store. If
+    you change the gates or the weights there, change them here or the sweep stops
+    describing production."""
+    if face_hit["score"] < min_face_score:
+        return None
+    faces = event.face_count(face_hit["photoId"])
+    if faces > cfg["max_faces"]:
+        return None
+    q = face_hit.get("quality") or {}
+    if q.get("usable") is False:
+        return None
+    front = q.get("frontality")
+    frac = q.get("face_frac")
+    if front is not None and front < cfg["min_frontality"]:
+        return None
+    if frac is not None and frac < cfg["min_face_frac"]:
+        return None
+    box = face_hit.get("box") or [0.0, 0.0, 0.0, 0.0]
+    face_px = float(min(box[2] - box[0], box[3] - box[1]))
+    if frac is None and face_px < cfg["min_face_px"]:
+        return None
+    size_term = (
+        min(1.0, frac / cfg["full_face_frac"]) if frac is not None
+        else min(1.0, face_px / cfg["full_face_px"])
+    )
+    front_term = 0.6 if front is None else front
+    solo_term = 1.0 if faces <= 1 else 0.5
+    conf_term = min(1.0, max(0.0, (face_hit["score"] - min_face_score) / max(min_face_score, 1e-9)))
+    return 0.40 * front_term + 0.30 * size_term + 0.20 * solo_term + 0.10 * conf_term
+
+
+def _pick_anchor(event, ranked: list, face_hits: list, min_face_score: float, cfg: dict):
+    """The photoId this run would suggest anchoring on, or None."""
+    by_photo = {h["photoId"]: h for h in face_hits}
+    best_id, best_score = None, None
+    for hit in ranked[: cfg["pool"]]:
+        face_hit = by_photo.get(hit["photoId"])
+        if face_hit is None:
+            continue
+        score = _anchor_candidate_score(event, face_hit, min_face_score, cfg)
+        if score is not None and (best_score is None or score > best_score):
+            best_id, best_score = face_hit["photoId"], score
+    return best_id
 
 
 def _fused_candidates(event, q: dict, w_face: float, w_person: float, tnorm: bool, person_weight_fn=None) -> list:
@@ -338,6 +404,214 @@ def prf_evaluate(
         "lift": (prf_sum - base_sum) / n if n else None,
     }
     return {"k": k, "fold": fold, "tnorm": tnorm, "queries": n, "mean": mean, "per_person": per_person}
+
+
+def anchor_evaluate(
+    event,
+    truth: dict[str, set[str]],
+    negatives: dict[str, set[str]],
+    query_embeddings: dict,
+    k: int,
+    w_face: float,
+    w_person: float,
+    tnorm: bool,
+    cfg: dict,
+) -> dict:
+    """Anchor promotion: does re-querying from one of the event's own photos beat
+    the selfie? (PEOPLE_RECOGNITION_QUALITY_PLAN.md — anchor promotion.)
+
+    Two numbers, and the first matters more:
+
+    1. **Anchor precision** — how often the photo this pipeline WOULD suggest is
+       actually the right person, per the judged labels. A wrong anchor doesn't
+       just fail to help, it sends the follow-up search after someone else, and
+       the user is being invited to accept it with one tap. Suggestions on
+       unjudged photos are counted separately (`unjudged`), never as correct.
+
+    2. **Recall lift** — recall@k on the held-out positives, selfie query vs
+       anchored query. The anchor photo itself is excluded from both rankings and
+       from the denominator, so the anchor can't score by finding itself (same
+       apples-to-apples construction as `prf_evaluate`).
+
+    Fused mode only: half the point of an anchor is that its outfit is the one
+    worn at the event, which face-only scoring can't see.
+    """
+    import numpy as np
+
+    min_face_score = cfg["min_face_z"] if tnorm else cfg["min_face_score"]
+    per_person: dict[str, dict] = {}
+    correct = wrong = unjudged = 0
+    base_sum = anchor_sum = 0.0
+    n = 0
+    for person, relevant in truth.items():
+        q = query_embeddings.get(person)
+        if q is None or q.get("face") is None or len(relevant) < 2:
+            continue
+        face_hits = event.top_photos("face", q["face"], k=None, tnorm=tnorm)
+        ranked = _fused_candidates(event, q, w_face, w_person, tnorm)
+        anchor_id = _pick_anchor(event, ranked, face_hits, min_face_score, cfg)
+        if anchor_id is None:
+            per_person[person] = {"anchor": None}
+            continue
+
+        if anchor_id in relevant:
+            verdict = "correct"
+            correct += 1
+        elif anchor_id in negatives.get(person, set()):
+            verdict = "wrong"
+            wrong += 1
+        else:
+            verdict = "unjudged"
+            unjudged += 1
+
+        held = relevant - {anchor_id}
+
+        def recall_excluding(query: dict) -> float:
+            ids = [
+                h["photoId"]
+                for h in _fused_candidates(event, query, w_face, w_person, tnorm)
+                if h["photoId"] != anchor_id
+            ]
+            hits = sum(1 for pid in ids[:k] if pid in held)
+            return hits / len(held) if held else 0.0
+
+        base_recall = recall_excluding(q)
+        # Build the anchored query the way the matcher does: the anchor's matched
+        # face joins the centroid, and its outfit REPLACES the selfie's.
+        rows = event.rows_for_photo("face", anchor_id)
+        face_row = rows[int(np.argmax(event.vectors["face"][rows] @ q["face"]))]
+        anchored = {"face": _mean_unit([q["face"], event.vectors["face"][face_row]])}
+        person_rows = event.rows_for_photo("person", anchor_id)
+        if person_rows:
+            face_box = event.crop_meta("face", face_row).get("box")
+            inside = [
+                r for r in person_rows
+                if event.crop_meta("person", r).get("box") is not None
+                and _box_holds_face(face_box, event.crop_meta("person", r)["box"])
+            ]
+            pick = inside[0] if len(inside) == 1 else (person_rows[0] if len(person_rows) == 1 else None)
+            if pick is not None:
+                anchored["person"] = event.vectors["person"][pick]
+        elif q.get("person") is not None:
+            anchored["person"] = q["person"]  # nothing to replace it with
+        anchor_recall = recall_excluding(anchored)
+
+        per_person[person] = {
+            "anchor": anchor_id,
+            "verdict": verdict,
+            "held": len(held),
+            "base_recall": base_recall,
+            "anchor_recall": anchor_recall,
+        }
+        base_sum += base_recall
+        anchor_sum += anchor_recall
+        n += 1
+
+    judged = correct + wrong
+    return {
+        "k": k,
+        "tnorm": tnorm,
+        "weights": {"face": w_face, "person": w_person},
+        "queries": n,
+        "suggested": {
+            "correct": correct,
+            "wrong": wrong,
+            "unjudged": unjudged,
+            # None when no suggestion landed on a judged photo — do not read that
+            # as 1.0; it means the sweep has nothing to say yet.
+            "precision": (correct / judged) if judged else None,
+        },
+        "mean": {
+            "base_recall": base_sum / n if n else None,
+            "anchor_recall": anchor_sum / n if n else None,
+            "lift": (anchor_sum - base_sum) / n if n else None,
+        },
+        "per_person": per_person,
+    }
+
+
+def _box_holds_face(face_box, person_box) -> bool:
+    """Face centre inside the person box (mirrors pipeline.face_in_person)."""
+    if face_box is None or person_box is None:
+        return False
+    cx = (face_box[0] + face_box[2]) / 2
+    cy = (face_box[1] + face_box[3]) / 2
+    return person_box[0] <= cx <= person_box[2] and person_box[1] <= cy <= person_box[3]
+
+
+def face_quality_sweep(
+    event,
+    truth: dict[str, set[str]],
+    negatives: dict[str, set[str]],
+    query_embeddings: dict,
+    k: int,
+    weights: list[float],
+    w_face: float,
+    w_person: float,
+    tnorm: bool,
+    judged: bool,
+) -> dict:
+    """Item 5: sweep FACE_QUALITY_WEIGHT (candidate-side attenuation by the
+    crop's own frontality × size).
+
+    Reports fused P@K and mean judged recall proxy per weight. Weight 0.0 is
+    production today, so it is always included as the baseline row. Needs an event
+    indexed AFTER per-face quality started being written — on an older manifest
+    every crop is 'unmeasured', every factor is 1.0, and every row will read the
+    same. `coverage` says how much of the index actually carries quality, so a
+    flat sweep can't be mistaken for "no effect"."""
+    rows = event.meta["face"]
+    measured = sum(1 for m in rows if (m.get("quality") or {}).get("frontality") is not None)
+    out = []
+    for w in sorted({0.0, *weights}):
+        prec_total = kept_total = 0.0
+        n = 0
+        for person, relevant in truth.items():
+            q = query_embeddings.get(person)
+            if q is None or q.get("face") is None:
+                continue
+            face_hits = event.top_photos("face", q["face"], k=None, tnorm=tnorm, quality_weight=w)
+            person_hits = (
+                event.top_photos("person", q["person"], k=None, tnorm=tnorm)
+                if q.get("person") is not None else []
+            )
+            ranked = [
+                h["photoId"]
+                for h in fusion_mod.fuse(
+                    face_hits, person_hits, w_face=w_face, w_person=w_person,
+                    threshold=-1e9, top_k=None,
+                )[: k * 3]
+            ]
+            if not ranked:
+                continue
+            m = (
+                judged_metrics_at_k(ranked, relevant, negatives.get(person, set()), k)
+                if judged else metrics_at_k(ranked, relevant, k)
+            )
+            if m["precision"] is None:
+                continue
+            prec_total += m["precision"]
+            # How many known-good photos survive in the top-K — the recall side of
+            # the trade, measurable even from partial labels.
+            kept_total += sum(1 for pid in ranked[:k] if pid in relevant)
+            n += 1
+        out.append({
+            "weight": w,
+            "queries": n,
+            "precision": prec_total / n if n else None,
+            "mean_positives_in_top_k": kept_total / n if n else None,
+        })
+    return {
+        "k": k,
+        "tnorm": tnorm,
+        "judged": judged,
+        "coverage": {
+            "face_rows": len(rows),
+            "with_quality": measured,
+            "fraction": (measured / len(rows)) if rows else None,
+        },
+        "rows": out,
+    }
 
 
 def time_conditional_sweep(
@@ -621,6 +895,20 @@ def main() -> int:
         help="JSON {person: epoch_ms | ISO8601} overriding each query's capture-time anchor "
         "(e.g. real Find-Me upload times from match_runs); default uses the reference selfie's EXIF.",
     )
+    parser.add_argument(
+        "--anchor-promotion",
+        action="store_true",
+        help="add an anchor-promotion pass: pick the anchor this pipeline would suggest, "
+        "report how often it is the RIGHT person (judged), and the recall@k lift from "
+        "re-querying with it (its face joins the centroid, its outfit replaces the selfie's).",
+    )
+    parser.add_argument(
+        "--face-quality-weight",
+        default="",
+        help="';'- or ','-separated FACE_QUALITY_WEIGHT values to sweep (Item 5), e.g. "
+        "'0.25;0.5;1.0'. Attenuates each candidate crop by its own frontality × size. "
+        "0.0 (production today) is always included as the baseline row.",
+    )
     args = parser.parse_args()
 
     from store import EmbeddingStore
@@ -717,6 +1005,47 @@ def main() -> int:
         print(f"  Recall@{args.k}:  base={fmt(m['base_recall'])}   +PRF={fmt(m['prf_recall'])}   lift={fmt(m['lift'])}")
         if prf["queries"] == 0:
             print("  ⚠️  No person had more than --prf-fold relevant photos — nothing to hold out.")
+
+    if args.anchor_promotion:
+        bw_f, bw_p = report["best_fusion"]["w_face"], report["best_fusion"]["w_person"]
+        ap = anchor_evaluate(
+            event, truth, negatives, queries, args.k, bw_f, bw_p,
+            tnorm=args.tnorm, cfg=ANCHOR_SWEEP_CFG,
+        )
+        report["anchor_analysis"] = ap
+        s, m = ap["suggested"], ap["mean"]
+        print(f"\n=== Anchor promotion (fused wF={bw_f} wP={bw_p}, tnorm={ap['tnorm']}) ===")
+        print(f"  Suggested an anchor for {ap['queries']}/{len(truth)} people.")
+        print(f"  Anchor is the right person: {s['correct']} correct / {s['wrong']} wrong "
+              f"/ {s['unjudged']} unjudged → P={fmt(s['precision'])}")
+        print(f"  Recall@{args.k}:  selfie={fmt(m['base_recall'])}   +anchor={fmt(m['anchor_recall'])}"
+              f"   lift={fmt(m['lift'])}")
+        if s["wrong"]:
+            print("  ⚠️  At least one suggestion was a photo the user marked NOT them — tighten the "
+                  "gates (ANCHOR_MIN_FACE_Z / ANCHOR_MIN_FRONTALITY / ANCHOR_MAX_FACES) before shipping it.")
+        if s["precision"] is None:
+            print("  ⚠️  No suggestion landed on a judged photo — this run says nothing about anchor precision.")
+
+    if args.face_quality_weight:
+        bw_f, bw_p = report["best_fusion"]["w_face"], report["best_fusion"]["w_person"]
+        weights = [float(w) for w in args.face_quality_weight.replace(";", ",").split(",") if w.strip()]
+        fq = face_quality_sweep(
+            event, truth, negatives, queries, args.k, weights, bw_f, bw_p,
+            tnorm=args.tnorm, judged=args.judged_only,
+        )
+        report["face_quality_analysis"] = fq
+        cov = fq["coverage"]
+        print(f"\n=== Face-quality weighting (Item 5; fused wF={bw_f} wP={bw_p}, tnorm={fq['tnorm']}) ===")
+        print(f"  Index coverage: {cov['with_quality']}/{cov['face_rows']} face rows carry quality "
+              f"({fmt(cov['fraction'])}).")
+        if not cov["with_quality"]:
+            print("  ⚠️  No face row has quality recorded — re-index this event (FORCE_REINDEX=1) or every "
+                  "weight below is the baseline by construction.")
+        for row in fq["rows"]:
+            print(f"    w={row['weight']:.2f}: P@{args.k}={fmt(row['precision'])}  "
+                  f"positives-in-top-{args.k}={fmt(row['mean_positives_in_top_k'])}  (n={row['queries']})")
+        print("  → take the largest weight that holds positives-in-top-K while precision improves; "
+              "that value is FACE_QUALITY_WEIGHT.")
 
     if args.time_conditional:
         bw_f, bw_p = report["best_fusion"]["w_face"], report["best_fusion"]["w_person"]

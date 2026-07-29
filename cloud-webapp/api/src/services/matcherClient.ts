@@ -20,6 +20,19 @@ export interface MatcherSearchHit {
   personScore: number | null;
 }
 
+/** Matcher's nomination for a better (in-domain) reference — see
+ *  `AnchorSuggestionSchema` in shared for what the fields mean. */
+export interface MatcherAnchorSuggestion {
+  photoId: string;
+  suitability: number;
+  faceScore: number;
+  faceCount: number;
+  facePx: number;
+  frontality: number | null;
+  faceFrac: number | null;
+  qualityKnown: boolean;
+}
+
 export type MatcherSearchResult =
   | {
       ok: true;
@@ -27,8 +40,38 @@ export type MatcherSearchResult =
       mode: 'fused' | 'face' | 'person';
       modelVersion?: string;
       normalized?: boolean;
+      /**
+       * Anchors the matcher actually folded in (unknown photoIds are dropped).
+       * Optional because the api and the matcher deploy independently: a matcher
+       * revision older than this api simply omits these three fields, and a
+       * search must still succeed rather than 500 mid-rollout.
+       */
+      anchorPhotoIds?: string[];
+      anchorSuggestion?: MatcherAnchorSuggestion | null;
+      /** Candidate-side quality weighting the matcher applied (0 = off). */
+      faceQualityWeight?: number;
       results: MatcherSearchHit[];
     }
+  | { ok: false; status: number; error: string; message: string };
+
+/** One picked selfie's verdict from POST /quality (detection only). */
+export interface MatcherSelfieReport {
+  index: number;
+  filename: string;
+  usable: boolean;
+  reasons: string[];
+  advisories: string[];
+  selfieScore: number;
+  faceCount: number;
+  faceScore?: number;
+  frontality: number | null;
+  faceFrac?: number;
+  facePx?: number;
+  blur?: number;
+}
+
+export type MatcherQualityResult =
+  | { ok: true; files: MatcherSelfieReport[]; bestIndex: number | null; anyUsable: boolean }
   | { ok: false; status: number; error: string; message: string };
 
 /** One reference selfie for the query. Passing more than one builds a
@@ -64,6 +107,10 @@ export async function matcherSearch(opts: {
   /** photoIds the user confirmed as matches; folded back into the query on the
    *  matcher (pseudo-relevance feedback, §1.2). */
   prfPhotoIds?: string[];
+  /** Event photoIds to anchor the query on. Unlike `prfPhotoIds` these are
+   *  explicit, quality-gated picks, and the anchor's outfit REPLACES the
+   *  selfie's in the person half of the query (anchor promotion). */
+  anchorPhotoIds?: string[];
   /** Apply T-norm cohort score normalization (§1.3). */
   normalize?: boolean;
 }): Promise<MatcherSearchResult> {
@@ -95,6 +142,7 @@ export async function matcherSearch(opts: {
   if (opts.topK !== undefined) form.set('top_k', String(opts.topK));
   if (opts.mode) form.set('mode', opts.mode);
   if (opts.prfPhotoIds?.length) form.set('prf_photo_ids', opts.prfPhotoIds.join(','));
+  if (opts.anchorPhotoIds?.length) form.set('anchor_photo_ids', opts.anchorPhotoIds.join(','));
   if (opts.normalize) form.set('normalize', '1');
 
   let res: Response;
@@ -125,6 +173,66 @@ export async function matcherSearch(opts: {
     mode: (body.mode as 'fused' | 'face' | 'person') ?? 'fused',
     ...(typeof body.modelVersion === 'string' ? { modelVersion: body.modelVersion } : {}),
     ...(typeof body.normalized === 'boolean' ? { normalized: body.normalized } : {}),
+    anchorPhotoIds: Array.isArray(body.anchorPhotoIds) ? (body.anchorPhotoIds as string[]) : [],
+    anchorSuggestion: (body.anchorSuggestion as MatcherAnchorSuggestion | null) ?? null,
+    faceQualityWeight: typeof body.faceQualityWeight === 'number' ? body.faceQualityWeight : 0,
     results: (body.results as MatcherSearchHit[]) ?? [],
+  };
+}
+
+/**
+ * POST /quality on the matcher: grade picked selfies before searching with them.
+ * Detection only — no embeddings are computed and nothing is persisted, so this
+ * is safe (and cheap) to call every time the user changes their selection.
+ */
+export async function matcherQualityCheck(opts: {
+  images: MatcherReferenceImage[];
+}): Promise<MatcherQualityResult> {
+  if (!env.MATCHER_URL) {
+    return {
+      ok: false,
+      status: 503,
+      error: 'matcher_unconfigured',
+      message: 'MATCHER_URL is not set — deploy the matcher and redeploy the api with its URL',
+    };
+  }
+  if (opts.images.length === 0) {
+    return { ok: false, status: 400, error: 'missing_file', message: 'no image provided' };
+  }
+
+  const url = `${env.MATCHER_URL.replace(/\/$/, '')}/quality`;
+  const form = new FormData();
+  for (const ref of opts.images) {
+    form.append('file', new Blob([new Uint8Array(ref.image)], { type: ref.contentType }), ref.filename);
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(url, { method: 'POST', headers: await authHeaders(url), body: form });
+  } catch (err) {
+    return {
+      ok: false,
+      status: 502,
+      error: 'matcher_unreachable',
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) {
+    return {
+      ok: false,
+      status: res.status,
+      error: typeof body.error === 'string' ? body.error : 'matcher_error',
+      message: typeof body.detail === 'string' ? body.detail : `matcher returned ${res.status}`,
+    };
+  }
+
+  const files = (body.files as MatcherSelfieReport[]) ?? [];
+  return {
+    ok: true,
+    files,
+    bestIndex: typeof body.bestIndex === 'number' ? body.bestIndex : null,
+    anyUsable: body.anyUsable === true,
   };
 }

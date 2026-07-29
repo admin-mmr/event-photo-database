@@ -2,6 +2,7 @@
  * findme.ts — Find Me search + reference reuse.
  *
  *  POST /api/findme/search                    multipart: fresh selfie upload
+ *  POST /api/findme/selfie-check              multipart: grade picks before searching
  *  GET  /api/findme/uploads                   the user's past reference selfies
  *  POST /api/findme/uploads/:uploadId/search  reuse a stored selfie (D7/FR-10b)
  *
@@ -28,6 +29,7 @@ import {
   type MatchResult,
   type ListReferencesResponse,
   type ReferenceUpload,
+  type SelfieCheckResponse,
   type DeleteReferenceResponse,
   type DeleteMyDataResponse,
 } from '@cloud-webapp/shared';
@@ -39,7 +41,7 @@ import type { AuthedUser } from '../middleware/auth.js';
 import { requireAuth } from '../middleware/auth.js';
 import { findmeSearchRateLimit } from '../middleware/rateLimit.js';
 import { requireRecaptcha } from '../middleware/recaptcha.js';
-import { matcherSearch } from '../services/matcherClient.js';
+import { matcherQualityCheck, matcherSearch } from '../services/matcherClient.js';
 import { confirmedPhotoIdsForUser } from '../services/feedback.js';
 import {
   signPhotoUrls,
@@ -69,6 +71,24 @@ const upload = multer({
   limits: { fileSize: 15 * 1024 * 1024, files: MAX_REFERENCE_IMAGES },
 });
 
+/** Max anchor photos per search. One is the product flow ("search again with
+ *  this photo"); the cap exists so a crafted request can't fold in hundreds of
+ *  index crops and turn the query into an average of the whole event. */
+const MAX_ANCHOR_PHOTOS = 3;
+
+/** Normalize the request's anchor field: a single id or a comma-separated list,
+ *  trimmed, de-duplicated and capped. Ids are not validated here — the matcher
+ *  is the only thing that knows which photoIds an event index contains, and it
+ *  ignores the ones it doesn't. */
+function parseAnchorIds(raw: unknown): string[] {
+  if (typeof raw !== 'string' || !raw.trim()) return [];
+  const ids = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set(ids)].slice(0, MAX_ANCHOR_PHOTOS);
+}
+
 interface ReferenceImage {
   buffer: Buffer;
   contentType: string;
@@ -92,6 +112,10 @@ interface RunSearchOpts {
   /** The stored selfie being reused, when this is a reuse search. Recorded on
    *  the run so the admin verdict-batch review can show what was searched with. */
   reuseUploadId?: string;
+  /** Event photos to anchor this search on — an in-domain reference the user
+   *  picked out of an earlier result set (anchor promotion). The bytes are never
+   *  re-sent: the matcher reads the crops straight out of the event index. */
+  anchorPhotoIds?: string[];
 }
 
 /**
@@ -169,11 +193,13 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
   // No topK: the matcher returns every photo above the fused score threshold,
   // so someone who appears in more than 50 photos gets all of their matches
   // (the UI pages them and downloads in batches under MAX_DOWNLOAD_PHOTOS).
+  const anchorPhotoIds = opts.anchorPhotoIds ?? [];
   const match = await matcherSearch({
     images: images.map((img) => ({ image: img.buffer, filename: img.filename, contentType: img.contentType })),
     eventId,
     mode,
     ...(prfPhotoIds.length ? { prfPhotoIds } : {}),
+    ...(anchorPhotoIds.length ? { anchorPhotoIds } : {}),
     ...(env.FINDME_TNORM ? { normalize: true } : {}),
   });
 
@@ -239,6 +265,7 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
       resultCount,
       prfCount: prfPhotoIds.length,
       numReferences: images.length,
+      anchorCount: anchorPhotoIds.length,
     },
     `Find Me search by ${name}${isGuest ? ' (guest)' : ''} on ${eventId} — ${outcome}`,
   );
@@ -276,12 +303,20 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
   // current-pipeline votes apart from pre-improvement ones (§1.1–1.3). `tnorm`
   // reflects what the matcher ACTUALLY applied (match.normalized), not just what
   // the api requested, so a matcher that ignored the flag is recorded honestly.
+  // What the matcher REPORTS it applied, not what we asked for: an anchor whose
+  // photo isn't in the event index is silently dropped, and recording the request
+  // instead would misattribute the ranking. Absent (older matcher revision) is
+  // read as "no anchors, no quality weighting" rather than failing the search.
+  const appliedAnchors = match.anchorPhotoIds ?? [];
+  const anchorSuggestion = match.anchorSuggestion ?? null;
   const algo: SearchAlgo = {
     version: SEARCH_ALGO_VERSION,
     tnorm: match.normalized === true,
     prf: prfPhotoIds.length > 0,
     prfCount: prfPhotoIds.length,
     numReferences: images.length,
+    anchorCount: appliedAnchors.length,
+    faceQualityWeight: match.faceQualityWeight ?? 0,
   };
 
   // Persist a minimal run record for the feedback loop (M4 / eval doc).
@@ -300,6 +335,20 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
       searcherName: name,
       resultPhotoIds: match.results.map((r) => r.photoId),
       scores: Object.fromEntries(match.results.map((r) => [r.photoId, r.score])),
+      // Per-modality scores alongside the fused one. Without these a reviewed
+      // batch cannot be diagnosed after the fact: a wrong match looks identical
+      // whether the face carried it or a coincidental outfit did, and neither
+      // the eval replay nor a threshold decision can tell them apart.
+      faceScores: Object.fromEntries(
+        match.results.filter((r) => r.faceScore !== null).map((r) => [r.photoId, r.faceScore]),
+      ),
+      personScores: Object.fromEntries(
+        match.results.filter((r) => r.personScore !== null).map((r) => [r.photoId, r.personScore]),
+      ),
+      // Which event photos anchored this run, and what it proposes anchoring the
+      // next one on (photoId only — the metrics live in the response).
+      anchorPhotoIds: appliedAnchors,
+      anchorSuggestionPhotoId: anchorSuggestion?.photoId ?? null,
       createdAt: nowIso,
     });
     runId = ref.id;
@@ -325,6 +374,8 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
     ...(match.modelVersion !== undefined ? { modelVersion: match.modelVersion } : {}),
     ...(runId !== undefined ? { runId } : {}),
     algo,
+    anchorSuggestion,
+    anchorPhotoIds: appliedAnchors,
     results,
   };
   res.json(body);
@@ -387,6 +438,11 @@ findmeRouter.post(
       // face was found. Only 'fused' (default) and 'person' are accepted.
       const mode = req.body?.mode === 'person' ? 'person' : 'fused';
 
+      // Anchor promotion: re-search the same selfie with an event photo of the
+      // searcher folded in. A bogus id costs nothing — the matcher drops
+      // photoIds it cannot find in the event index and reports what it used.
+      const anchorPhotoIds = parseAnchorIds(req.body?.anchorPhotoId);
+
       await runSearch(res, {
         user: req.user!,
         eventId,
@@ -400,7 +456,79 @@ findmeRouter.post(
         subjectIsMinor: req.body?.subjectIsMinor === 'true',
         guardianAttested: req.body?.guardianAttested === 'true',
         persistReference: true,
+        anchorPhotoIds,
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ── Selfie quality check (pick time, before any search) ──────────────────────
+
+/**
+ * Grade the selfies the user just picked, immediately — don't make them wait for
+ * a search to find out the photo was unusable. Detection only on the matcher
+ * (`POST /quality`): no embeddings, nothing written to Firestore, and the bytes
+ * are not persisted to the uploads bucket (a check is not a search, so it earns
+ * no reference record and no consent row; the search that follows records both).
+ *
+ * Consent is still required before we run a face detector over someone's photo.
+ * Rate-limited on the search budget: it is the same upstream service, and a
+ * check always precedes a search in the UI.
+ */
+findmeRouter.post(
+  '/findme/selfie-check',
+  requireAuth,
+  findmeSearchRateLimit(),
+  upload.array('file', MAX_REFERENCE_IMAGES),
+  async (req, res, next) => {
+    try {
+      const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+      if (files.length === 0) {
+        res.status(400).json({ ok: false, error: 'missing_file', message: "multipart field 'file' required" });
+        return;
+      }
+      const badMime = files.find((f) => !ALLOWED_MIMES.has(f.mimetype));
+      if (badMime) {
+        res.status(415).json({
+          ok: false,
+          error: 'unsupported_format',
+          message: `Unsupported image type '${badMime.mimetype}'`,
+        });
+        return;
+      }
+      if (req.body?.consent !== 'true') {
+        res.status(403).json({
+          ok: false,
+          error: 'consent_required',
+          message: 'Biometric search requires explicit consent',
+        });
+        return;
+      }
+
+      const check = await matcherQualityCheck({
+        images: files.map((f) => ({
+          image: f.buffer,
+          filename: f.originalname || 'reference.jpg',
+          contentType: f.mimetype,
+        })),
+      });
+      if (!check.ok) {
+        // A check failing must never block the search that follows — the client
+        // treats a non-200 as "no verdict available" and lets the user proceed.
+        logger.warn({ error: check.error, status: check.status }, 'selfie quality check failed');
+        res.status(502).json({ ok: false, error: check.error, message: check.message });
+        return;
+      }
+
+      const body: SelfieCheckResponse = {
+        ok: true,
+        files: check.files,
+        bestIndex: check.bestIndex,
+        anyUsable: check.anyUsable,
+      };
+      res.json(body);
     } catch (err) {
       next(err);
     }
@@ -490,7 +618,7 @@ findmeRouter.post(
         });
         return;
       }
-      const { eventId, name, mode, subjectIsMinor, guardianAttested } = parsed.data;
+      const { eventId, name, mode, subjectIsMinor, guardianAttested, anchorPhotoId } = parsed.data;
 
       const rec = await getReference(String(req.params.uploadId));
       // 404 (not 403) when it isn't the caller's, so we don't confirm existence
@@ -523,6 +651,7 @@ findmeRouter.post(
         guardianAttested: guardianAttested ?? false,
         persistReference: false,
         reuseUploadId: rec.uploadId,
+        anchorPhotoIds: parseAnchorIds(anchorPhotoId),
       });
     } catch (err) {
       next(err);

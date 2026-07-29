@@ -1273,6 +1273,42 @@ pre.error {
   border: 2px solid var(--primary);
 }
 
+/* "Found a clearer photo of you" — offers one of the results as the reference
+   for a follow-up search (anchor promotion). Stacks on narrow screens so the
+   thumbnail never squeezes the copy. */
+.anchor-suggest {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--primary);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.anchor-suggest img {
+  width: 88px;
+  height: 88px;
+  flex: 0 0 auto;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+}
+
+.anchor-suggest .anchor-copy {
+  min-width: 0;
+}
+
+.anchor-suggest p {
+  margin: 0 0 6px;
+}
+
+@media (max-width: 480px) {
+  .anchor-suggest {
+    flex-direction: column;
+  }
+}
+
 .result-cell {
   position: relative;
   display: flex;

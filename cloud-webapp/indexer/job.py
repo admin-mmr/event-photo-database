@@ -148,6 +148,32 @@ def _rows_by_photo(manifest: dict, vectors: dict) -> dict[str, dict]:
     return out
 
 
+def _face_quality_meta(q: dict | None) -> dict:
+    """Compact per-face quality for the manifest.
+
+    The pipeline already grades every face it embeds (`quality.assess_face`); the
+    manifest just never kept it, so the matcher could not tell a solo portrait
+    from a back-row face when picking a re-query anchor, nor down-weight crops
+    whose embedding is unreliable (PEOPLE_RECOGNITION_QUALITY_PLAN.md Item 5).
+
+    Trimmed and rounded on purpose: this lands on EVERY face row, and the
+    manifest is a single JSON blob loaded per event. `det_score` is omitted — the
+    row's own `score` already carries it. Rows written before this existed simply
+    have no `quality` key, and the matcher treats absent as "unmeasured" rather
+    than "bad", so an event only gains the fields when it is re-indexed with
+    FORCE_REINDEX=1 (an unchanged photo reuses its stored row verbatim).
+    """
+    q = q or {}
+    out: dict = {"usable": bool(q.get("usable", True))}
+    if q.get("frontality") is not None:
+        out["frontality"] = round(float(q["frontality"]), 3)
+    if q.get("face_frac") is not None:
+        out["face_frac"] = round(float(q["face_frac"]), 4)
+    if q.get("blur") is not None:
+        out["blur"] = round(float(q["blur"]), 1)
+    return out
+
+
 def _write_store(blobs, event_id: str, manifest: dict,
                  faces: np.ndarray, persons: np.ndarray) -> None:
     for kind, arr in (("face", faces), ("person", persons)):
@@ -392,7 +418,8 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
 
         for face in result["faces"]:
             faces_vecs.append(face["embedding"])
-            faces_meta.append({"photoId": pid, "box": face["box"], "score": face["score"]})
+            faces_meta.append({"photoId": pid, "box": face["box"], "score": face["score"],
+                               "quality": _face_quality_meta(face.get("quality"))})
         for person in result["persons"]:
             persons_vecs.append(person["embedding"])
             persons_meta.append({"photoId": pid, "box": person["box"],

@@ -538,6 +538,45 @@
   401 (the access token expires ~1h mid-run). Follow-up worth doing:
   incremental checkpointing so interrupted runs persist progress.
 
+## Find-Me matching: per-face quality, anchors, and the pick-time check
+
+- **Per-face quality now lives in the manifest** (`faces_meta[].quality` =
+  `{usable, frontality, face_frac, blur}`, written by `indexer/job._face_quality_meta`).
+  `frontality` is a landmark yaw proxy from the SCRFD keypoints; `face_frac` is
+  the face's short side over the image's short side (absolute px is not
+  comparable across cameras). Two rules to keep:
+  - **An event only gains the fields on `FORCE_REINDEX=1`** — a byte-unchanged
+    photo reuses its stored row verbatim, so a plain re-index backfills nothing.
+  - **Absent ≠ bad.** Every consumer treats a missing field as *unmeasured*, so
+    pre-quality events behave exactly as before. Don't "default" it to 0.
+- **Two knobs, both off/opt-in until a judged sweep says otherwise:**
+  `FACE_QUALITY_WEIGHT` (candidate-side attenuation, default **0.0** = today's
+  behaviour) and `anchor_photo_ids` (only ever sent because a user tapped
+  "find more using this photo"). Sweep them with
+  `run_eval.py --anchor-promotion --face-quality-weight '0.25;0.5;1.0'`;
+  `PEOPLE_RECOGNITION_QUALITY_PLAN.md` Items 5/11/12 hold the reasoning.
+  - `ANCHOR_SWEEP_CFG` in `eval/run_eval.py` **duplicates the matcher's `ANCHOR_*`
+    defaults** (the eval can't import `main.py` — flask/onnx). Change one, change
+    both, or the sweep stops predicting production.
+- **An anchor's outfit REPLACES the selfie's** (`ANCHOR_PERSON_MODE=replace`).
+  That is the point: the selfie's clothing may be from another day, and with
+  T-norm a strong outfit score can lower the face bar a match must clear.
+- **The api tolerates a matcher that predates all this.** `anchorPhotoIds`,
+  `anchorSuggestion` and `faceQualityWeight` are optional on the wire and read as
+  "none/0" when absent — the two services deploy separately, and a search must
+  not 500 mid-rollout. Keep them optional.
+- **`POST /quality` (matcher) → `POST /api/findme/selfie-check` (api) is
+  detection-only.** No embeddings, no consent row, no reference record, no
+  `match_runs` doc; it grades picked selfies before a search. Don't "reuse
+  `/embed`" for it — running ArcFace + the person detector on every picked file
+  is most of a search's cost for a UI hint, and it would compute biometrics we
+  have no reason to compute. It also must never block the search: any failure is
+  a missing hint, not an error the user has to clear.
+- **`match_runs` stores per-modality scores** (`faceScores`/`personScores`) as
+  well as the fused `scores`. Without them a reviewed verdict batch cannot tell a
+  face-driven wrong match from an outfit-driven one — which is what sent one
+  investigation guessing. Keep writing them.
+
 ## Indexer speed vs. free tier
 
 - **Embedding is CPU-bound ONNX**, so throughput scales ~linearly with vCPUs.
