@@ -82,7 +82,11 @@ class Config:
     extra: dict = field(default_factory=dict)
 
 
-# ── Firestore metadata (PRD §6.2: photos, events.indexState) ────────────────
+# ── document metadata (PRD §6.2: photos, events.indexState) ─────────────────
+#
+# Two implementations of one 5-method interface, selected by CLOUD_PROVIDER:
+# FirestoreMeta (GCP) and CosmosMeta (Azure, AZ2). Tests substitute a fake with
+# the same API. `make_meta()` at the bottom is what main() calls.
 
 class FirestoreMeta:
     """Real Firestore implementation; tests substitute a fake with the same API."""
@@ -122,6 +126,169 @@ class FirestoreMeta:
 
     def delete_photo(self, photo_id: str) -> None:
         self._db.collection("photos").document(photo_id).delete()
+
+
+class CosmosMeta:
+    """Azure Cosmos DB implementation of the same interface (AZ2).
+
+    Mirrors `api/src/lib/db/cosmosDb.ts`, and the same three hazards apply here.
+    Read that file before changing this one — the two must agree, because they
+    write the SAME documents:
+
+    1. **There is no `set(merge=True)`.** Cosmos `upsert_item` REPLACES the
+       document. Every write here is therefore read-merge-write. Getting this
+       wrong is not a crash: `upsert_photo(pid, patch)` is called with a PARTIAL
+       patch on the reused-photo path (job.py's `if patch:` branch), so a
+       replacing write would silently drop `takenAt`, `contentHash`,
+       `duplicateCount` and the rest — the gallery would keep working and just
+       sort wrongly.
+    2. **`photos` is partitioned by `/eventId`, and the interface has no event
+       id.** `upsert_photo`/`delete_photo` take a photo id only. When the patch
+       does not carry `eventId`, the partition key is recovered with a
+       cross-partition `WHERE c.id = @id`. That costs RU, never correctness —
+       exactly the trade the api adapter makes.
+    3. **`id` is a reserved property on Cosmos** and lives outside the body on
+       Firestore, so it is stripped from what callers see and re-attached on
+       write.
+
+    Auth is the job's **managed identity** (Cosmos DB Built-in Data
+    Contributor); `COSMOS_KEY` exists only for the local emulator, which has no
+    Entra identity. Keyless on both clouds.
+    """
+
+    def __init__(self, database):
+        """`database` is a DatabaseProxy (or anything with the same
+        `get_container_client` surface). Constructing the client is `from_env`'s
+        job, which is what keeps this class testable with no SDK installed —
+        the same split as `CosmosStore(ops)` / `sdkOps()` on the api side."""
+        self._db = database
+
+    @classmethod
+    def from_env(cls) -> "CosmosMeta":
+        from azure.cosmos import CosmosClient  # lazy: never imported on GCP
+
+        endpoint = os.environ["COSMOS_ENDPOINT"]
+        database = os.environ.get("COSMOS_DATABASE", "eventphotos")
+        key = os.environ.get("COSMOS_KEY", "")
+        if key:
+            client = CosmosClient(endpoint, credential=key)
+        else:
+            from azure.identity import DefaultAzureCredential
+
+            client = CosmosClient(endpoint, credential=DefaultAzureCredential())
+        return cls(client.get_database_client(database))
+
+    # ── plumbing ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _strip_id(row: dict | None) -> dict | None:
+        """Cosmos system properties are not part of the document as Firestore
+        callers understand it (`get_event()` feeds straight into `ev.get(...)`)."""
+        if row is None:
+            return None
+        return {k: v for k, v in row.items() if not k.startswith("_") and k != "id"}
+
+    def _read(self, container: str, doc_id: str, partition_key) -> dict | None:
+        try:
+            return self._db.get_container_client(container).read_item(doc_id, partition_key)
+        except Exception as err:  # noqa: BLE001 — narrowed by status code below
+            # Matched on status_code rather than on CosmosResourceNotFoundError so
+            # this module needs no SDK import on the data path (same reasoning as
+            # `statusOf()` in cosmosDb.ts). Anything that is not a 404 propagates.
+            if getattr(err, "status_code", None) == 404:
+                return None
+            raise
+
+    def _find_any_partition(self, container: str, doc_id: str) -> dict | None:
+        """The cross-partition fallback for hazard 2. Returns the raw row (with
+        its partition-key field intact), or None."""
+        rows = list(
+            self._db.get_container_client(container).query_items(
+                query="SELECT * FROM c WHERE c.id = @id",
+                parameters=[{"name": "@id", "value": doc_id}],
+                enable_cross_partition_query=True,
+            )
+        )
+        return rows[0] if rows else None
+
+    def _merge_write(self, container: str, doc_id: str, patch: dict, partition_key) -> None:
+        """Firestore's `set(..., merge=True)`: a shallow field merge, creating the
+        document when absent."""
+        existing = self._read(container, doc_id, partition_key) or {}
+        body = {k: v for k, v in existing.items() if not k.startswith("_")}
+        body.update(patch)
+        body["id"] = doc_id
+        self._db.get_container_client(container).upsert_item(body)
+
+    # ── the interface ───────────────────────────────────────────────────────
+
+    def get_event(self, event_id: str) -> dict | None:
+        # `events` is partitioned by /id, so the id IS the partition key.
+        return self._strip_id(self._read("events", event_id, event_id))
+
+    def set_index_state(self, event_id: str, state: dict) -> None:
+        from datetime import datetime, timezone
+
+        stamped = {"updatedAt": datetime.now(timezone.utc).isoformat(), **state}
+        # Nested-field merge: Firestore's merge=True replaces the whole
+        # `indexState` map (the path is `indexState`, not `indexState.status`), so
+        # replacing it wholesale here matches — do NOT deep-merge it or a stale
+        # `status: running` would outlive a completed run.
+        self._merge_write("events", event_id, {"indexState": stamped}, event_id)
+
+    def set_event_name_if_empty(self, event_id: str, name: str) -> bool:
+        """Same contract as FirestoreMeta: never clobber an existing name.
+
+        Not a transaction, and deliberately so — it matches the Firestore version,
+        which is also a read-then-write. The race is between this job and the
+        Sheet reconciler, and the loser's value is a Drive folder name that the
+        reconciler will overwrite on its next pass anyway.
+        """
+        if not name:
+            return False
+        ev = self.get_event(event_id) or {}
+        if str(ev.get("name", "") or "").strip():
+            return False
+        self._merge_write("events", event_id, {"name": name}, event_id)
+        return True
+
+    def upsert_photo(self, photo_id: str, doc: dict) -> None:
+        event_id = str(doc.get("eventId") or "")
+        if not event_id:
+            # A partial patch (the reused-photo path). Find the document to learn
+            # its partition key; if it does not exist there is nothing to merge
+            # into and no event to file it under, so skip rather than invent one.
+            row = self._find_any_partition("photos", photo_id)
+            if row is None:
+                log.warning("photo %s: partial patch with no existing doc, skipping", photo_id)
+                return
+            event_id = str(row.get("eventId") or "")
+        self._merge_write("photos", photo_id, doc, event_id)
+
+    def delete_photo(self, photo_id: str) -> None:
+        row = self._find_any_partition("photos", photo_id)
+        if row is None:
+            return  # already gone — Firestore's delete is a no-op too
+        try:
+            self._db.get_container_client("photos").delete_item(
+                photo_id, partition_key=str(row.get("eventId") or "")
+            )
+        except Exception as err:  # noqa: BLE001 — narrowed by status code
+            if getattr(err, "status_code", None) == 404:
+                return
+            raise
+
+
+def make_meta():
+    """The metadata backend for this run, chosen by CLOUD_PROVIDER (default gcp).
+
+    Kept as a function rather than a module-level constant so a failed run's
+    `set_index_state(status=failed)` in main()'s except block can build a fresh
+    client without re-reading config at import time.
+    """
+    if os.environ.get("CLOUD_PROVIDER", "gcp") == "azure":
+        return CosmosMeta.from_env()
+    return FirestoreMeta()
 
 
 # ── store helpers (manifest with idempotency map) ────────────────────────────
@@ -513,14 +680,14 @@ def main() -> int:
     from drive import DriveClient
 
     try:
-        run(cfg, DriveClient(), BlobStore(root), FirestoreMeta(), embed,
+        run(cfg, DriveClient(), BlobStore(root), make_meta(), embed,
             model_version=bundle.version,
             face_dim=bundle.face_emb.dim, person_dim=bundle.person_emb.dim)
         return 0
     except Exception:
         log.exception("indexing failed")
         try:
-            FirestoreMeta().set_index_state(cfg.event_id, {"status": "failed"})
+            make_meta().set_index_state(cfg.event_id, {"status": "failed"})
         except Exception:
             pass
         return 1

@@ -53,6 +53,44 @@ proves about its caller — is in `cosmos-access-notes.md`, and is asserted by
 by `if false`; on Azure it is not**, so that test is the control that replaces the
 rules file.
 
+## The Python services (AZ2, landed 2026-07-29)
+
+The indexer writes derivatives and embeddings; the matcher reads the embeddings.
+Both now pick a backend from the root URI, with the SDK behind a lazy import so a
+local run and CI need neither installed:
+
+| Root | Backend |
+|---|---|
+| `/any/local/path` | local dir (tests) |
+| `gs://bucket[/prefix]` | GCS |
+| `az://container[/prefix]` | Blob — needs `AZURE_STORAGE_ACCOUNT_URL` |
+| `https://<acct>.blob.core.windows.net/container[/prefix]` | Blob, self-describing |
+| `http://127.0.0.1:10000/devstoreaccount1/container` | Azurite |
+
+Set `DERIVATIVES_ROOT` (indexer) / the matcher's embeddings root accordingly.
+Identities: the indexer needs **Storage Blob Data Contributor**, the matcher only
+**Storage Blob Data Reader**. `AZURE_STORAGE_CONNECTION_STRING` is Azurite-only.
+
+Three things a verbatim translation gets wrong, all now handled and tested:
+
+1. **`upload_blob` refuses to overwrite by default** (`BlobAlreadyExists`), where
+   GCS's `upload_from_string` replaces. The writer passes `overwrite=True` — without
+   it a re-index dies on the first photo it had already written, and re-running a
+   partially-failed run is the normal recovery path.
+2. **Azurite puts the account name in the FIRST path segment**
+   (`http://127.0.0.1:10000/devstoreaccount1/...`), unlike the
+   `<acct>.blob.core.windows.net` form. Miss that and every blob key is off by one
+   segment — an emulator run writes into a container called `devstoreaccount1`.
+3. **An `az://` root with no `AZURE_STORAGE_ACCOUNT_URL` raises** rather than
+   defaulting. A silent default would write a whole event's derivatives into the
+   wrong storage account.
+
+The URI parsing is **duplicated** in `indexer/blobs.py` and `matcher/store.py`,
+because they are separate deployables with separate Docker build contexts and the
+indexer image copies a hand-listed set of matcher modules — a shared module would
+be one more entry on a list that has already shipped a `ModuleNotFoundError`.
+`indexer/test_blobs.py::test_uri_parsing_matches_matcher` pins them in sync.
+
 Two Blob-specific notes that have no Firestore analogue:
 
 - **Container-level public access must stay off.** `--allow-blob-public-access

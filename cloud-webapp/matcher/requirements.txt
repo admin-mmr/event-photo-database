@@ -6,3 +6,7 @@ opencv-python-headless>=4.10,<5
 Pillow>=10.4,<13
 pillow-heif>=0.18
 google-cloud-storage>=2.18,<4
+# Azure read backend (AZ2). Imported only when the embeddings root is an
+# az://https Blob root — see store.parse_root.
+azure-storage-blob>=12.20,<13
+azure-identity>=1.17,<2

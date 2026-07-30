@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import type { Request, Response, NextFunction } from 'express';
 
+import { fakeStore } from './helpers/fakeDb.js';
+
 // ── mocks (must precede the server import) ──────────────────────────────────
 
 vi.mock('../src/middleware/auth.js', () => ({
@@ -16,99 +18,47 @@ vi.mock('../src/middleware/auth.js', () => ({
   },
 }));
 
-const fakeDb = {
-  events: new Map<string, Record<string, unknown>>(),
-  photos: [] as Array<{ id: string; data: Record<string, unknown> }>,
-  // When true, querying by `addedAt` throws — simulates the composite index not
-  // existing yet (Firestore FAILED_PRECONDITION) so we can test the fallback.
-  failAddedAt: false,
+/**
+ * The database is the SHARED in-memory `DocumentStore` (AZ2), not a bespoke
+ * query stub.
+ *
+ * What was here before hand-rolled ~75 lines of Firestore paging — and ordered
+ * with `localeCompare`, where Firestore orders by UTF-8 code point. With Chinese
+ * filenames in play (this app has plenty) that fake could pass while production
+ * paged differently: exactly the code-point-vs-locale trap CLAUDE.md documents
+ * for duplicate removal. The shared fake compares by code point, so these paging
+ * assertions now mean something.
+ */
+const store = fakeStore();
+
+/** Side effects outside the database, recorded so tests can assert on them. */
+const side = {
   // When true, the Drive trash call throws — exercises the per-photo failure
   // path in the admin delete endpoint.
   failTrash: false,
-  // Records calls so a test can assert the side effects of admin delete.
   trashed: [] as string[],
   deletedDerivatives: [] as string[],
   reindexed: [] as string[],
 };
 
-vi.mock('../src/lib/firestore.js', () => ({
-  firestore: () => ({
-    collection: (name: string) => {
-      if (name === 'events') {
-        return {
-          doc: (id: string) => ({
-            get: async () => ({ exists: fakeDb.events.has(id), data: () => fakeDb.events.get(id) }),
-            // merge-set used by the delete endpoint to flag indexState=queued.
-            set: async (patch: Record<string, unknown>) => {
-              fakeDb.events.set(id, { ...(fakeDb.events.get(id) ?? {}), ...patch });
-            },
-          }),
-        };
-      }
-      if (name === 'photos') {
-        // Chainable query stub: where → orderBy(field) → orderBy(__name__) →
-        // [startAfter(val, id)] → limit → get. Tracks the primary order-by
-        // field and the cursor's id; sorts by (primary value, id) and slices
-        // after the cursor id — mirroring the route's value+__name__ paging.
-        const makeQuery = (
-          eventId: string,
-          orderField: string | null,
-          orderDir: 'asc' | 'desc',
-          afterId: string | null,
-        ) => ({
-          orderBy: (field: unknown, dir?: unknown) => {
-            const f = typeof field === 'string' ? field : '__name__';
-            // First string orderBy wins as the primary key + direction; the
-            // __name__ tiebreak and any later orderBy leave it unchanged.
-            if (orderField === null && f !== '__name__') {
-              return makeQuery(eventId, f, dir === 'desc' ? 'desc' : 'asc', afterId);
-            }
-            return makeQuery(eventId, orderField, orderDir, afterId);
-          },
-          startAfter: (...args: unknown[]) =>
-            makeQuery(eventId, orderField, orderDir, String(args[args.length - 1] ?? '')),
-          limit: (n: number) => ({
-            get: async () => {
-              if (orderField === 'addedAt' && fakeDb.failAddedAt) {
-                throw new Error('9 FAILED_PRECONDITION: The query requires an index');
-              }
-              const key = (p: { id: string; data: Record<string, unknown> }) =>
-                orderField ? String(p.data[orderField] ?? '') : '';
-              let all = fakeDb.photos.filter((p) => p.data.eventId === eventId);
-              // Firestore excludes docs that lack the orderBy field.
-              if (orderField) all = all.filter((p) => p.data[orderField] != null);
-              all = all.sort((a, b) => key(a).localeCompare(key(b)) || a.id.localeCompare(b.id));
-              if (orderDir === 'desc') all.reverse();
-              const start = afterId ? all.findIndex((p) => p.id === afterId) + 1 : 0;
-              const page = all.slice(start, start + n);
-              return {
-                size: page.length,
-                empty: page.length === 0,
-                docs: page.map((p) => ({ id: p.id, data: () => p.data })),
-              };
-            },
-          }),
-        });
-        return {
-          where: (_field: string, _op: string, eventId: string) =>
-            makeQuery(eventId, null, 'asc', null),
-          // doc(id).get()/delete() back the admin delete + download lookups.
-          doc: (id: string) => ({
-            get: async () => {
-              const hit = fakeDb.photos.find((p) => p.id === id);
-              return { exists: Boolean(hit), id, data: () => hit?.data };
-            },
-            delete: async () => {
-              const i = fakeDb.photos.findIndex((p) => p.id === id);
-              if (i >= 0) fakeDb.photos.splice(i, 1);
-            },
-          }),
-        };
-      }
-      throw new Error(`unexpected collection ${name}`);
-    },
-  }),
-}));
+vi.mock('../src/lib/firestore.js', () => ({ firestore: () => store }));
+
+/** Seed photos using the same `{ id, data }` rows the tests already declare. */
+function seedPhotos(...rows: Array<{ id: string; data: Record<string, unknown> }>): void {
+  store.seed('photos', Object.fromEntries(rows.map((r) => [r.id, r.data])));
+}
+
+function seedEvent(id: string, data: Record<string, unknown>): void {
+  store.seed('events', { [id]: data });
+}
+
+function clearPhotos(): void {
+  store.data.get('photos')?.clear();
+}
+
+function clearEvents(): void {
+  store.data.get('events')?.clear();
+}
 
 vi.mock('../src/services/gcsService.js', () => ({
   signThumbUrls: async (eventId: string, photoIds: string[]) =>
@@ -119,20 +69,20 @@ vi.mock('../src/services/gcsService.js', () => ({
   signPhotoUrl: async (eventId: string, photoId: string, kind = 'thumb', ext = 'jpg') =>
     `https://signed.example/${eventId}/${kind}/${photoId}.${ext}`,
   deletePhotoDerivatives: async (_eventId: string, photoId: string) => {
-    fakeDb.deletedDerivatives.push(photoId);
+    side.deletedDerivatives.push(photoId);
   },
 }));
 
 vi.mock('../src/services/driveService.js', () => ({
   trashFile: async (fileId: string) => {
-    if (fakeDb.failTrash) throw new Error('Drive trash 500');
-    fakeDb.trashed.push(fileId);
+    if (side.failTrash) throw new Error('Drive trash 500');
+    side.trashed.push(fileId);
   },
 }));
 
 vi.mock('../src/services/indexerJob.js', () => ({
   triggerIndexJob: async (eventId: string) => {
-    fakeDb.reindexed.push(eventId);
+    side.reindexed.push(eventId);
     return { execution: `projects/p/locations/us-central1/jobs/photo-indexer/executions/${eventId}` };
   },
 }));
@@ -150,15 +100,15 @@ describe('GET /api/events/:id/photos', () => {
   const app = buildServer();
 
   beforeEach(() => {
-    fakeDb.events.clear();
-    fakeDb.photos.length = 0;
-    fakeDb.failAddedAt = false;
-    fakeDb.failTrash = false;
-    fakeDb.trashed.length = 0;
-    fakeDb.deletedDerivatives.length = 0;
-    fakeDb.reindexed.length = 0;
-    fakeDb.events.set('ev1', { name: 'Spring Run 2026', driveFolderId: 'folder1' });
-    fakeDb.photos.push(
+    clearEvents();
+    clearPhotos();
+    store.failQueryOnOrderBy.clear();
+    side.failTrash = false;
+    side.trashed.length = 0;
+    side.deletedDerivatives.length = 0;
+    side.reindexed.length = 0;
+    seedEvent('ev1', { name: 'Spring Run 2026', driveFolderId: 'folder1' });
+    seedPhotos(
       { id: 'p1', data: { eventId: 'ev1', name: 'IMG_001.jpg', addedAt: '2026-06-20T10:00:00' } },
       { id: 'p2', data: { eventId: 'ev1', name: 'IMG_002.jpg', addedAt: '2026-06-20T09:00:00' } },
       { id: 'px', data: { eventId: 'other', name: 'IMG_999.jpg', addedAt: '2026-06-20T11:00:00' } },
@@ -198,10 +148,10 @@ describe('GET /api/events/:id/photos', () => {
   });
 
   it('paginates with limit + cursor and reports nextCursor', async () => {
-    fakeDb.photos.length = 0;
+    clearPhotos();
     for (let i = 1; i <= 5; i += 1) {
       // addedAt descends with i so the newest-first default yields p1..p5.
-      fakeDb.photos.push({
+      seedPhotos({
         id: `p${i}`,
         data: { eventId: 'ev1', name: `IMG_${i}.jpg`, addedAt: `2026-06-${String(30 - i).padStart(2, '0')}T00:00:00` },
       });
@@ -228,8 +178,8 @@ describe('GET /api/events/:id/photos', () => {
   });
 
   it('default sort=recent orders by addedAt, newest first', async () => {
-    fakeDb.photos.length = 0;
-    fakeDb.photos.push(
+    clearPhotos();
+    seedPhotos(
       // pNew was uploaded later but TAKEN earlier — proves we sort on upload time.
       { id: 'pOld', data: { eventId: 'ev1', name: 'z.jpg', addedAt: '2026-06-20T08:00:00', takenAt: '2026-06-01T08:00:00' } },
       { id: 'pNew', data: { eventId: 'ev1', name: 'a.jpg', addedAt: '2026-06-20T09:00:00', takenAt: '2026-05-01T08:00:00' } },
@@ -240,8 +190,8 @@ describe('GET /api/events/:id/photos', () => {
   });
 
   it('sort=taken_asc orders by takenAt ascending', async () => {
-    fakeDb.photos.length = 0;
-    fakeDb.photos.push(
+    clearPhotos();
+    seedPhotos(
       { id: 'pA', data: { eventId: 'ev1', name: 'z.jpg', takenAt: '2026-06-20T09:00:00', takenAtSource: 'exif' } },
       { id: 'pB', data: { eventId: 'ev1', name: 'a.jpg', takenAt: '2026-06-20T08:00:00', takenAtSource: 'exif' } },
     );
@@ -253,8 +203,8 @@ describe('GET /api/events/:id/photos', () => {
   });
 
   it('sort=taken_desc orders by takenAt descending', async () => {
-    fakeDb.photos.length = 0;
-    fakeDb.photos.push(
+    clearPhotos();
+    seedPhotos(
       { id: 'pEarly', data: { eventId: 'ev1', name: 'a.jpg', takenAt: '2026-06-20T08:00:00' } },
       { id: 'pLate', data: { eventId: 'ev1', name: 'z.jpg', takenAt: '2026-06-20T09:00:00' } },
     );
@@ -263,8 +213,8 @@ describe('GET /api/events/:id/photos', () => {
   });
 
   it('sort=added_asc orders by addedAt ascending (upload time, oldest first)', async () => {
-    fakeDb.photos.length = 0;
-    fakeDb.photos.push(
+    clearPhotos();
+    seedPhotos(
       { id: 'pNew', data: { eventId: 'ev1', name: 'z.jpg', addedAt: '2026-06-20T09:00:00' } },
       { id: 'pOld', data: { eventId: 'ev1', name: 'a.jpg', addedAt: '2026-06-20T08:00:00' } },
     );
@@ -273,8 +223,8 @@ describe('GET /api/events/:id/photos', () => {
   });
 
   it('sort=added_desc (and the legacy `recent` alias) order by addedAt, newest first', async () => {
-    fakeDb.photos.length = 0;
-    fakeDb.photos.push(
+    clearPhotos();
+    seedPhotos(
       { id: 'pOld', data: { eventId: 'ev1', name: 'z.jpg', addedAt: '2026-06-20T08:00:00' } },
       { id: 'pNew', data: { eventId: 'ev1', name: 'a.jpg', addedAt: '2026-06-20T09:00:00' } },
     );
@@ -285,8 +235,8 @@ describe('GET /api/events/:id/photos', () => {
   });
 
   it('legacy `time` alias still maps to takenAt ascending', async () => {
-    fakeDb.photos.length = 0;
-    fakeDb.photos.push(
+    clearPhotos();
+    seedPhotos(
       { id: 'pA', data: { eventId: 'ev1', name: 'z.jpg', takenAt: '2026-06-20T09:00:00' } },
       { id: 'pB', data: { eventId: 'ev1', name: 'a.jpg', takenAt: '2026-06-20T08:00:00' } },
     );
@@ -295,9 +245,9 @@ describe('GET /api/events/:id/photos', () => {
   });
 
   it('sort=recent falls back to takenAt desc (no 500) when the addedAt index is missing', async () => {
-    fakeDb.failAddedAt = true; // simulate Firestore FAILED_PRECONDITION
-    fakeDb.photos.length = 0;
-    fakeDb.photos.push(
+    store.failQueryOnOrderBy.add('addedAt'); // the composite index does not exist yet
+    clearPhotos();
+    seedPhotos(
       { id: 'pEarly', data: { eventId: 'ev1', name: 'z.jpg', takenAt: '2026-06-20T08:00:00', addedAt: '2026-06-20T08:00:00' } },
       { id: 'pLate', data: { eventId: 'ev1', name: 'a.jpg', takenAt: '2026-06-20T09:00:00', addedAt: '2026-06-20T09:00:00' } },
     );
@@ -308,8 +258,8 @@ describe('GET /api/events/:id/photos', () => {
   });
 
   it('sort=recent falls back to takenAt desc when no photo has addedAt', async () => {
-    fakeDb.photos.length = 0;
-    fakeDb.photos.push(
+    clearPhotos();
+    seedPhotos(
       { id: 'pEarly', data: { eventId: 'ev1', name: 'z.jpg', takenAt: '2026-06-20T08:00:00' } },
       { id: 'pLate', data: { eventId: 'ev1', name: 'a.jpg', takenAt: '2026-06-20T09:00:00' } },
     );
@@ -319,13 +269,60 @@ describe('GET /api/events/:id/photos', () => {
   });
 
   it('sort=name orders by filename', async () => {
-    fakeDb.photos.length = 0;
-    fakeDb.photos.push(
+    clearPhotos();
+    seedPhotos(
       { id: 'pA', data: { eventId: 'ev1', name: 'z.jpg', takenAt: '2026-06-20T08:00:00' } },
       { id: 'pB', data: { eventId: 'ev1', name: 'a.jpg', takenAt: '2026-06-20T09:00:00' } },
     );
     const res = await request(app).get('/api/events/ev1/photos?sort=name').set('x-test-user', USER);
     expect(res.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['pB', 'pA']);
+  });
+
+  it('orders names by CODE POINT, not by locale', async () => {
+    // Firestore (and Cosmos) order strings by UTF-8 code point. A locale collation
+    // disagrees on exactly these inputs: `localeCompare` sorts 'a' before 'B'
+    // (case-insensitive-ish) and puts most CJK before Latin, where code point puts
+    // every uppercase ASCII letter first and CJK last.
+    //
+    // This test is why the bespoke fake had to go — it hand-rolled paging with
+    // localeCompare, so it would have passed on the wrong order while production
+    // paged differently. Chinese filenames are routine in this app.
+    clearPhotos();
+    seedPhotos(
+      { id: 'p1', data: { eventId: 'ev1', name: 'apple.jpg' } },
+      { id: 'p2', data: { eventId: 'ev1', name: 'Banana.jpg' } },
+      { id: 'p3', data: { eventId: 'ev1', name: '湘舍动.jpg' } },
+    );
+    const res = await request(app).get('/api/events/ev1/photos?sort=name').set('x-test-user', USER);
+    expect(res.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['p2', 'p1', 'p3']);
+    // Guard the premise: if these ever agree, the test has stopped proving anything.
+    expect(['apple.jpg', 'Banana.jpg'].sort((a, b) => a.localeCompare(b))).toEqual([
+      'apple.jpg',
+      'Banana.jpg',
+    ]);
+    expect(['apple.jpg', 'Banana.jpg'].sort()).toEqual(['Banana.jpg', 'apple.jpg']);
+  });
+
+  it('pages by code point across a cursor boundary', async () => {
+    // The cursor is a (name, id) keyset, so a page break in the middle of the
+    // collation difference is where a locale-ordered fake and the real thing
+    // diverge visibly: page 2 would either repeat or skip a photo.
+    clearPhotos();
+    seedPhotos(
+      { id: 'p1', data: { eventId: 'ev1', name: 'apple.jpg' } },
+      { id: 'p2', data: { eventId: 'ev1', name: 'Banana.jpg' } },
+      { id: 'p3', data: { eventId: 'ev1', name: '湘舍动.jpg' } },
+    );
+    const first = await request(app)
+      .get('/api/events/ev1/photos?sort=name&limit=2')
+      .set('x-test-user', USER);
+    expect(first.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['p2', 'p1']);
+    expect(first.body.nextCursor).toBeTruthy();
+
+    const second = await request(app)
+      .get(`/api/events/ev1/photos?sort=name&limit=2&cursor=${encodeURIComponent(first.body.nextCursor)}`)
+      .set('x-test-user', USER);
+    expect(second.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['p3']);
   });
 });
 
@@ -333,14 +330,14 @@ describe('POST /api/events/:id/photos/delete (admin)', () => {
   const app = buildServer();
 
   beforeEach(() => {
-    fakeDb.events.clear();
-    fakeDb.photos.length = 0;
-    fakeDb.failTrash = false;
-    fakeDb.trashed.length = 0;
-    fakeDb.deletedDerivatives.length = 0;
-    fakeDb.reindexed.length = 0;
-    fakeDb.events.set('ev1', { name: 'Spring Run 2026', driveFolderId: 'folder1' });
-    fakeDb.photos.push(
+    clearEvents();
+    clearPhotos();
+    side.failTrash = false;
+    side.trashed.length = 0;
+    side.deletedDerivatives.length = 0;
+    side.reindexed.length = 0;
+    seedEvent('ev1', { name: 'Spring Run 2026', driveFolderId: 'folder1' });
+    seedPhotos(
       { id: 'p1', data: { eventId: 'ev1', name: 'IMG_001.jpg', mimeType: 'image/jpeg' } },
       { id: 'p2', data: { eventId: 'ev1', name: 'IMG_002.jpg', mimeType: 'image/jpeg' } },
       { id: 'px', data: { eventId: 'other', name: 'IMG_999.jpg', mimeType: 'image/jpeg' } },
@@ -358,7 +355,7 @@ describe('POST /api/events/:id/photos/delete (admin)', () => {
       .set('x-test-user', NON_ADMIN)
       .send({ photoIds: ['p1'] });
     expect(res.status).toBe(403);
-    expect(fakeDb.trashed).toEqual([]); // nothing touched
+    expect(side.trashed).toEqual([]); // nothing touched
   });
 
   it('400s when photoIds is missing/empty', async () => {
@@ -388,13 +385,13 @@ describe('POST /api/events/:id/photos/delete (admin)', () => {
     expect(res.body.failed).toEqual([]);
     expect(res.body.reindex).toContain('photo-indexer');
     // Side effects: both originals trashed, derivatives cleared, docs gone.
-    expect(fakeDb.trashed.sort()).toEqual(['p1', 'p2']);
-    expect(fakeDb.deletedDerivatives.sort()).toEqual(['p1', 'p2']);
-    expect(fakeDb.photos.find((p) => p.id === 'p1')).toBeUndefined();
-    expect(fakeDb.photos.find((p) => p.id === 'p2')).toBeUndefined();
-    expect(fakeDb.reindexed).toEqual(['ev1']);
+    expect(side.trashed.sort()).toEqual(['p1', 'p2']);
+    expect(side.deletedDerivatives.sort()).toEqual(['p1', 'p2']);
+    expect(store.peek('photos', 'p1')).toBeUndefined();
+    expect(store.peek('photos', 'p2')).toBeUndefined();
+    expect(side.reindexed).toEqual(['ev1']);
     // The event isn't a different one's photo: px untouched.
-    expect(fakeDb.photos.find((p) => p.id === 'px')).toBeTruthy();
+    expect(store.peek('photos', 'px')).toBeTruthy();
   });
 
   it('reports photos not in this event as failed (and does not trash them)', async () => {
@@ -405,11 +402,11 @@ describe('POST /api/events/:id/photos/delete (admin)', () => {
     expect(res.status).toBe(200);
     expect(res.body.deleted).toEqual(['p1']);
     expect(res.body.failed.map((f: { photoId: string }) => f.photoId).sort()).toEqual(['ghost', 'px']);
-    expect(fakeDb.trashed).toEqual(['p1']);
+    expect(side.trashed).toEqual(['p1']);
   });
 
   it('collects a Drive failure as failed without aborting and skips re-index when nothing deleted', async () => {
-    fakeDb.failTrash = true;
+    side.failTrash = true;
     const res = await request(app)
       .post('/api/events/ev1/photos/delete')
       .set('x-test-user', USER)
@@ -418,8 +415,8 @@ describe('POST /api/events/:id/photos/delete (admin)', () => {
     expect(res.body.deleted).toEqual([]);
     expect(res.body.failed[0].photoId).toBe('p1');
     expect(res.body.reindex).toBeNull();
-    expect(fakeDb.reindexed).toEqual([]);
+    expect(side.reindexed).toEqual([]);
     // The index doc survives a failed trash (we delete it only after Drive succeeds).
-    expect(fakeDb.photos.find((p) => p.id === 'p1')).toBeTruthy();
+    expect(store.peek('photos', 'p1')).toBeTruthy();
   });
 });

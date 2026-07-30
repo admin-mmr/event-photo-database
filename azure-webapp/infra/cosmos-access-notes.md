@@ -100,6 +100,41 @@ authorization control, which is why deleting an event revokes its links FIRST
 (`eventDeletionService`), and why the token is rotatable
 (`POST /admin/links/:linkId/rotate`).
 
+## The indexer writes Cosmos too (AZ2, landed 2026-07-29)
+
+`indexer/job.py` has a `CosmosMeta` beside `FirestoreMeta`, selected by
+`CLOUD_PROVIDER` (default `gcp`). It writes the SAME documents the api reads, so
+it has to make the same choices as `api/src/lib/db/cosmosDb.ts` — read both before
+changing either. Identity: **Cosmos DB Built-in Data Contributor**;
+`COSMOS_KEY` is emulator-only.
+
+The five-method surface is `get_event` · `set_index_state` ·
+`set_event_name_if_empty` · `upsert_photo` · `delete_photo`. Three hazards, each
+covered by `indexer/test_cosmos_meta.py`:
+
+1. **There is no `set(merge=True)`.** `upsert_item` REPLACES. Every write is
+   therefore read-merge-write. This is the one that fails *quietly*: the
+   reused-photo path calls `upsert_photo(pid, patch)` with a PARTIAL patch, so a
+   replacing write drops `takenAt`/`contentHash`/`duplicateCount` and the gallery
+   keeps working — just sorted wrongly, with nothing in the logs.
+   - The merge is **shallow**, matching Firestore: `set_index_state` writes the
+     path `indexState`, not `indexState.status`, so the previous map is replaced
+     wholesale. Deep-merging would let a stale `status: running` outlive a
+     finished run — the exact state that blocks new triggers with
+     `409 already_running`.
+2. **`photos` is partitioned by `/eventId` and the interface has no event id.**
+   A partial patch recovers the key with a cross-partition `WHERE c.id = @id`.
+   Costs RU, never correctness. A partial patch for a photo that does not exist
+   writes **nothing** — inventing a partition would strand the doc where no
+   event-scoped query finds it.
+3. **`id` is reserved on Cosmos** and lives outside the body on Firestore, so it
+   is stripped from reads (along with `_etag`/`_ts`) and re-attached on write.
+   `get_event()`'s result is consumed as a plain document, so the shapes must match.
+
+Not proven, and cannot be from these tests: RU cost and real cross-partition
+behaviour. Run one index of a real event against the emulator or a dev account in
+AZ4 — that is the gate.
+
 ## Partition keys (chosen in bootstrap-azure.sh)
 
 | Container    | Partition key | Why |

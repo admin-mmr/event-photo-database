@@ -2,7 +2,7 @@
 store.py — flat-file embedding store + in-memory cosine search.
 
 Zero-cost vector store (decision 2026-06-09, see SETUP_NOTES.md / runbook
-Phase F). Per-event layout, local dir or GCS:
+Phase F). Per-event layout, local dir / GCS / Azure Blob:
 
     <root>/<event_id>/embeddings/faces.npy      # float32 [N, dim], L2-normalized rows
     <root>/<event_id>/embeddings/persons.npy    # float32 [M, dim]
@@ -27,6 +27,60 @@ import quality as quality_mod
 EMB_SUBDIR = "embeddings"
 FILES = {"face": "faces.npy", "person": "persons.npy"}
 MANIFEST = "manifest.json"
+
+AZURE_SUFFIX = ".blob.core.windows.net"
+
+
+def parse_root(root: str) -> tuple[str, object]:
+    """Classify `root` → ("local" | "gcs" | "azure", details).
+
+    Recognized forms:
+
+        gs://bucket[/prefix]
+        az://container[/prefix]                     + AZURE_STORAGE_ACCOUNT_URL
+        https://<acct>.blob.core.windows.net/container[/prefix]
+        http://127.0.0.1:10000/devstoreaccount1/container[/prefix]   (Azurite)
+        /any/local/path
+
+    **Duplicated verbatim in `indexer/blobs.py`**, which is the writer to this
+    reader — the two are separate deployables with separate Docker build contexts
+    (the indexer image copies a hand-listed set of matcher modules), so a shared
+    module would be one more entry on a list that has already shipped a
+    ModuleNotFoundError once. `indexer/test_blobs.py` pins the two in sync.
+    Change one, change both.
+
+    For azure, details is (account_url, container, prefix).
+    """
+    root = root.rstrip("/")
+    if root.startswith("gs://"):
+        bucket, _, prefix = root[len("gs://") :].partition("/")
+        return "gcs", (bucket, prefix)
+    if root.startswith("az://"):
+        account_url = os.environ.get("AZURE_STORAGE_ACCOUNT_URL", "").rstrip("/")
+        if not account_url:
+            raise ValueError(
+                "az:// root needs AZURE_STORAGE_ACCOUNT_URL "
+                "(e.g. https://myacct.blob.core.windows.net)"
+            )
+        container, _, prefix = root[len("az://") :].partition("/")
+        return "azure", (account_url, container, prefix)
+    if root.startswith(("https://", "http://")):
+        scheme, _, rest = root.partition("://")
+        netloc, _, path = rest.partition("/")
+        if netloc.endswith(AZURE_SUFFIX):
+            account_url = f"{scheme}://{netloc}"
+        else:
+            # Azurite puts the account name in the FIRST path segment, so the
+            # account URL has to swallow it or every blob path is off by one.
+            account, _, path = path.partition("/")
+            if not account:
+                raise ValueError(f"cannot find the storage account in {root!r}")
+            account_url = f"{scheme}://{netloc}/{account}"
+        container, _, prefix = path.partition("/")
+        if not container:
+            raise ValueError(f"no container in {root!r}")
+        return "azure", (account_url, container, prefix)
+    return "local", root
 
 
 def build_manifest(event_id: str, model_version: str, faces_meta: list[dict], persons_meta: list[dict]) -> dict:
@@ -250,9 +304,14 @@ class EventEmbeddings:
 
 
 class EmbeddingStore:
-    """Loads + caches EventEmbeddings from a local dir or a GCS bucket.
+    """Loads + caches EventEmbeddings from a local dir, GCS, or Azure Blob.
 
-    root = "/path/to/dir"  or  "gs://bucket[/prefix]"
+    root = "/path/to/dir" | "gs://bucket[/prefix]" | "az://container[/prefix]"
+           | "https://<acct>.blob.core.windows.net/container[/prefix]"
+
+    Read-only: the indexer writes these files (indexer/blobs.py), the matcher
+    only loads them. The cloud SDKs are imported lazily, so a local run needs
+    neither installed.
     """
 
     def __init__(self, root: str):
@@ -281,8 +340,11 @@ class EmbeddingStore:
     # ── backends ────────────────────────────────────────────────────────────
 
     def _load(self, event_id: str) -> EventEmbeddings:
-        if self.root.startswith("gs://"):
+        backend, details = parse_root(self.root)
+        if backend == "gcs":
             blobs = self._read_gcs(event_id)
+        elif backend == "azure":
+            blobs = self._read_azure(event_id, details)  # type: ignore[arg-type]
         else:
             blobs = self._read_local(event_id)
         import io
@@ -320,3 +382,34 @@ class EmbeddingStore:
                 )
             out[name] = blob.download_as_bytes()
         return out
+
+    def _read_azure(self, event_id: str, details: tuple[str, str, str]) -> dict[str, bytes]:
+        account_url, container_name, prefix = details
+        container = _azure_container(account_url, container_name)
+        base = "/".join(p for p in (prefix, event_id, EMB_SUBDIR) if p)
+        out = {}
+        for name in (MANIFEST, FILES["face"], FILES["person"]):
+            blob = container.get_blob_client(f"{base}/{name}")
+            if not blob.exists():
+                raise FileNotFoundError(
+                    f"event '{event_id}' not indexed: {account_url}/{container_name}/{base}/{name} missing"
+                )
+            out[name] = blob.download_blob().readall()
+        return out
+
+
+def _azure_container(account_url: str, container: str):
+    """A ContainerClient. Auth is the service's **managed identity** (Storage Blob
+    Data Reader is enough — the matcher never writes), matching the keyless
+    posture on GCP. `AZURE_STORAGE_CONNECTION_STRING` exists only for Azurite,
+    which has no Entra identity."""
+    from azure.storage.blob import BlobServiceClient
+
+    conn = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
+    if conn:
+        service = BlobServiceClient.from_connection_string(conn)
+    else:
+        from azure.identity import DefaultAzureCredential
+
+        service = BlobServiceClient(account_url, credential=DefaultAzureCredential())
+    return service.get_container_client(container)
