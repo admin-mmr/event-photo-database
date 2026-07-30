@@ -316,16 +316,22 @@ export const SelfieCheckFileSchema = z.object({
   filename: z.string().default(''),
   /** False = this photo cannot be searched with; `reasons` says why. */
   usable: z.boolean(),
-  /** Hard failures, the same gate a search applies: 'no_face' | 'bad_image' |
-   *  'too_small' | 'too_blurry' | 'low_confidence'. */
+  /** Hard failures: 'no_face' | 'bad_image' | 'too_small' | 'too_blurry' |
+   *  'low_confidence', plus 'multiple_faces'. The last is specific to reference
+   *  selfies — a bystander in frame means the searched-for face would be picked
+   *  by detector confidence alone, so the photo is refused outright. */
   reasons: z.array(z.string()).default([]),
-  /** Non-blocking hints: 'multiple_faces' | 'not_frontal' |
-   *  'face_small_in_frame' | 'slightly_soft'. */
+  /** Non-blocking hints: 'not_frontal' | 'face_small_in_frame' |
+   *  'slightly_soft'. `multiple_faces` is NOT here — it is a hard reason. */
   advisories: z.array(z.string()).default([]),
   /** 0..1 suitability as a reference — same ingredients as anchor suitability. */
   selfieScore: z.number(),
   faceCount: z.number().default(0),
   faceScore: z.number().optional(),
+  /** Graded face as fractions of the image ([x1, y1, x2, y2], 0–1). Lets the
+   *  client crop to it and ask "is this you?" when the face is small in frame.
+   *  Absent when nothing was gradeable (no_face / bad_image). */
+  faceBox: z.tuple([z.number(), z.number(), z.number(), z.number()]).nullable().optional(),
   frontality: z.number().nullable().default(null),
   faceFrac: z.number().optional(),
   facePx: z.number().optional(),

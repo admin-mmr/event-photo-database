@@ -578,6 +578,44 @@ describe('POST /api/findme/selfie-check', () => {
     expect(res.body.files[0].reasons).toEqual(['no_face']);
   });
 
+  it('passes the multi-face refusal and the face box through untouched', async () => {
+    // The api is a relay here: the reject decision and the crop box are the
+    // matcher's, and the client acts on both, so the hop must not drop them.
+    matcherQualityCheck.mockResolvedValue({
+      ok: true,
+      files: [
+        {
+          ...GOOD,
+          usable: false,
+          reasons: ['multiple_faces'],
+          faceCount: 2,
+          faceBox: [0.1, 0.2, 0.3, 0.45],
+        },
+      ],
+      bestIndex: null,
+      anyUsable: false,
+    });
+    const res = await check({ consent: 'true' });
+    expect(res.status).toBe(200);
+    expect(res.body.anyUsable).toBe(false);
+    expect(res.body.bestIndex).toBeNull();
+    expect(res.body.files[0].reasons).toEqual(['multiple_faces']);
+    expect(res.body.files[0].faceBox).toEqual([0.1, 0.2, 0.3, 0.45]);
+  });
+
+  it('tolerates a matcher too old to report a face box', async () => {
+    matcherQualityCheck.mockResolvedValue({
+      ok: true,
+      files: [GOOD],
+      bestIndex: 0,
+      anyUsable: true,
+    });
+    const res = await check({ consent: 'true' });
+    expect(res.status).toBe(200);
+    expect(res.body.files[0].faceBox).toBeUndefined();
+    expect(res.body.anyUsable).toBe(true);
+  });
+
   it('surfaces a matcher failure as 502 so the client can skip the hint', async () => {
     matcherQualityCheck.mockResolvedValue({
       ok: false,
