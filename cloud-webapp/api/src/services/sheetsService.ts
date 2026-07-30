@@ -199,6 +199,57 @@ export async function ensureSheetTab(
 }
 
 /**
+ * Make the named tabs visible again via `batchUpdate { updateSheetProperties }`,
+ * for tabs that are currently hidden. Titles that don't exist are ignored, so
+ * this is safe to call with a set of tabs a caller is about to create.
+ *
+ * ONE `spreadsheets.get` plus AT MOST ONE `batchUpdate` for the whole set — a
+ * per-tab call would multiply the shared per-subject Sheets quota (see the 429
+ * note on sheetsFetch). Nothing hidden = a single read and no write. Returns the
+ * titles it actually un-hid, so the caller can log a self-heal.
+ *
+ * Note `hidden` is ABSENT (not `false`) in the response for a visible tab, hence
+ * the strict `=== true`.
+ */
+export async function unhideSheetTabs(
+  spreadsheetId: string,
+  titles: ReadonlyArray<string>,
+  opts?: { token?: string },
+): Promise<string[]> {
+  if (titles.length === 0) return [];
+  const token = opts?.token ?? (await getSheetsToken());
+  const url = `${SHEETS}/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties(sheetId,title,hidden)`;
+  const res = await sheetsFetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`Sheets API get ${res.status}: ${await res.text()}`);
+  const json = (await res.json()) as {
+    sheets?: Array<{ properties?: { sheetId?: number; title?: string; hidden?: boolean } }>;
+  };
+  const wanted = new Set(titles);
+  const hidden = (json.sheets ?? [])
+    .map((s) => s.properties)
+    .filter(
+      (p): p is { sheetId: number; title: string; hidden: true } =>
+        typeof p?.sheetId === 'number' && typeof p?.title === 'string' && p.hidden === true && wanted.has(p.title),
+    );
+  if (hidden.length === 0) return [];
+
+  const batchUrl = `${SHEETS}/${encodeURIComponent(spreadsheetId)}:batchUpdate`;
+  const write = await sheetsFetch(batchUrl, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requests: hidden.map((p) => ({
+        updateSheetProperties: { properties: { sheetId: p.sheetId, hidden: false }, fields: 'hidden' },
+      })),
+    }),
+  });
+  if (!write.ok) {
+    throw new Error(`Sheets API updateSheetProperties ${write.status}: ${await write.text()}`);
+  }
+  return hidden.map((p) => p.title);
+}
+
+/**
  * Clear a tab's cell contents via `values.clear` (keeps formatting/frozen rows).
  * Used by the public folder-index writer before rewriting a tab wholesale.
  */

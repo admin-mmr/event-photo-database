@@ -12,8 +12,10 @@
  *   - "Video Folders" — one row per (event, club, tag) Videos folder.
  *   - one tab PER CLUB — one row per (event, tag) Album folder for that club.
  *
- * Each tab is rewritten wholesale (folder churn is small). Hot-path callers use
- * tryRebuildPublicFolderIndex so a Sheets hiccup never fails an upload.
+ * Each tab is rewritten wholesale (folder churn is small), and any of these tabs
+ * hidden by hand in the Sheets UI is un-hidden first (see unhideManagedTabs).
+ * Hot-path callers use tryRebuildPublicFolderIndex so a Sheets hiccup never
+ * fails an upload.
  */
 
 import { env } from '../lib/config.js';
@@ -24,6 +26,7 @@ import {
   ensureSheetTab,
   clearSheetValues,
   updateSheetValues,
+  unhideSheetTabs,
 } from './sheetsService.js';
 import { listClubs, type Club } from './clubStore.js';
 import { UserStatus } from '../lib/roles.js';
@@ -192,6 +195,35 @@ async function writeTab(
 }
 
 /**
+ * Un-hide the tabs this service owns, so a tab hidden by hand in the Sheets UI
+ * comes back on the next rebuild instead of staying invisible forever.
+ *
+ * This is needed because NOTHING else in the rebuild notices visibility:
+ * `ensureSheetTab` sees the title present and returns false, and `writeTab` only
+ * clears and rewrites cell VALUES — so a hidden tab kept silently receiving
+ * fresh rows that nobody could see. (Field case: "Video Folders" sat
+ * `state="hidden"` on the public sheet with 11 current rows in it.)
+ *
+ * Deliberately BEST-EFFORT and run BEFORE the writes: visibility is cosmetic
+ * next to the rows themselves, so a failure here must not fail an index refresh
+ * (nor an upload, via tryRebuildPublicFolderIndex), and going first means the
+ * self-heal still lands if a later tab write throws. Newly created tabs are
+ * visible by default, so passing not-yet-existing titles is a no-op.
+ *
+ * The tradeoff, per the decision to add this: a DELIBERATE hide of one of these
+ * tabs will be undone on the next rebuild. Hide the whole sheet, or move the tab
+ * out of this service's set, if that is ever wanted.
+ */
+async function unhideManagedTabs(fileId: string, tabNames: ReadonlyArray<string>, token: string): Promise<void> {
+  try {
+    const restored = await unhideSheetTabs(fileId, tabNames, { token });
+    if (restored.length > 0) logger.info({ restored }, 'public folder index: un-hid tab(s) hidden outside the app');
+  } catch (err) {
+    logger.warn({ err }, 'public folder index: un-hide check failed (non-fatal)');
+  }
+}
+
+/**
  * Rebuild the public folder index. Reads Special_Folders (master Sheet) + events
  * (Firestore) + clubs (master Sheet) and rewrites the Photo/Video/per-club tabs.
  * No-op (returns 0) when PUBLIC_FOLDER_INDEX_SHEET_ID is unset. Throws on Sheets
@@ -219,6 +251,8 @@ export async function rebuildPublicFolderIndex(): Promise<number> {
   const photoRows = buildPhotoFolderRows(records, events);
   const videoRows = buildVideoFolderRows(records, events, clubs);
   const clubTabs = buildClubAlbumTabs(records, events, clubs);
+
+  await unhideManagedTabs(fileId, [PHOTO_FOLDERS_TAB, VIDEO_FOLDERS_TAB, ...clubTabs.map((t) => t.tabName)], token);
 
   const refreshedAt = new Date().toISOString();
   await writeTab(fileId, PHOTO_FOLDERS_TAB, PHOTO_FOLDERS_HEADERS, photoRows, token, refreshedAt);
