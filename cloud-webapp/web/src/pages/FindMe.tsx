@@ -36,6 +36,7 @@ import {
   type FaceAlert,
 } from '../lib/results.js';
 import { analyzePhoto, type QualityResult, type QualityIssue } from '../lib/photoQuality.js';
+import { cropFaceToDataUrl } from '../lib/faceCrop.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
 import { canShareImageFiles } from '../lib/share.js';
 import { downloadOriginalsZip } from '../lib/zipDownload.js';
@@ -120,11 +121,17 @@ const STR = {
     qFaceTooSmall: 'Your face is too small in it to match reliably.',
     qLowConfidence: 'We’re not confident that’s a face.',
     qMultipleFaces:
-      'There’s more than one face in it — we’d search for the most obvious one, which might not be you.',
+      'There’s more than one face in it. We can’t tell which one is you, so please use a photo with only you in it.',
     qNotFrontal: 'Your face is turned away from the camera — a head-on photo matches better.',
     qFaceSmallInFrame: 'Your face is small in the frame — hold the camera closer.',
     qSlightlySoft: 'It’s a little soft — a sharper photo matches better.',
     searchAnyway: 'Search anyway',
+    rejectedTitle: 'We can’t search with that photo',
+    confirmFaceTitle: 'Is this you?',
+    confirmFaceBody:
+      'Your face is small in this photo, so we want to be sure we found the right person before searching.',
+    confirmFaceYes: 'Yes, that’s me — search',
+    confirmFaceAlt: 'Close-up of the face we detected in your photo',
     chooseAnother: 'Choose a different photo',
     multiFaceTitle: 'More than one face detected',
     weakFaceTitle: 'This selfie may not match well',
@@ -263,11 +270,16 @@ const STR = {
     qBadImage: '无法读取该文件。',
     qFaceTooSmall: '照片中的面部太小，难以可靠匹配。',
     qLowConfidence: '不太确定这是一张人脸。',
-    qMultipleFaces: '照片中有多张人脸——我们会搜索最明显的那一张，可能不是您。',
+    qMultipleFaces: '照片中有多张人脸。我们无法判断哪一张是您，请改用只有您本人的照片。',
     qNotFrontal: '面部偏离镜头——正面照片匹配效果更好。',
     qFaceSmallInFrame: '面部在画面中偏小——请把相机靠近一些。',
     qSlightlySoft: '照片略欠清晰——更锐利的照片匹配效果更好。',
     searchAnyway: '仍然搜索',
+    rejectedTitle: '无法使用这张照片进行搜索',
+    confirmFaceTitle: '这是您本人吗？',
+    confirmFaceBody: '照片中您的面部较小，为确保找对了人，请先确认。',
+    confirmFaceYes: '是我，开始搜索',
+    confirmFaceAlt: '照片中检测到的人脸特写',
     chooseAnother: '换一张照片',
     multiFaceTitle: '检测到多张人脸',
     weakFaceTitle: '这张自拍可能不易匹配',
@@ -379,11 +391,13 @@ interface Finding {
 }
 
 /**
- * Advisories we interrupt on. `multiple_faces` is the important one: the matcher
- * searches for the most confident face in the reference, so a friend in frame can
- * silently send the whole search after the wrong person — and only the user, at
- * pick time, can fix that. Softness and a slightly small face degrade matching
- * without misdirecting it, so they are reported, not blocking.
+ * Findings that stop the flow outright — there is no "search anyway" past these.
+ *
+ * All of them come back as hard `reasons` from the check, meaning the server
+ * already marked the photo unusable. `multiple_faces` is the one that is a
+ * refusal rather than a failure: the photo is perfectly good, but with a
+ * bystander in frame the searched-for face is chosen by detector confidence,
+ * so an override would just be a coin flip dressed up as a choice.
  */
 const BLOCKING_FINDINGS: ReadonlySet<string> = new Set([
   'no_face',
@@ -392,8 +406,16 @@ const BLOCKING_FINDINGS: ReadonlySet<string> = new Set([
   'too_blurry',
   'low_confidence',
   'multiple_faces',
-  'not_frontal',
 ]);
+
+/**
+ * Advisories worth a confirmation step rather than a silent pass. A face that is
+ * small in frame is the case where the detector may have locked onto the wrong
+ * person entirely, so we show the crop and ask — the photo is still searchable
+ * either way. `not_frontal` and `slightly_soft` only degrade matching, so they
+ * are mentioned alongside, never on their own.
+ */
+const CONFIRM_FINDINGS: ReadonlySet<string> = new Set(['face_small_in_frame']);
 
 function withRemoved(set: ReadonlySet<string>, id: string): Set<string> {
   const next = new Set(set);
@@ -451,6 +473,10 @@ export function FindMe(): JSX.Element {
   // What the server-side face check found about the current picks (empty when
   // there is nothing to say, or when the check couldn't run).
   const [selfieFindings, setSelfieFindings] = useState<Finding[]>([]);
+  // A refused pick: shown as a dead end with no way to search anyway.
+  const [rejectedFindings, setRejectedFindings] = useState<Finding[]>([]);
+  // Data URL of the detected face, when we're asking "is this you?".
+  const [faceCropUrl, setFaceCropUrl] = useState<string | null>(null);
   const [checkingPhoto, setCheckingPhoto] = useState(false);
   // Reference-set ids whose anchor suggestion the user waved away, so it stays
   // dismissed while they keep browsing that set.
@@ -856,6 +882,8 @@ export function FindMe(): JSX.Element {
     setPendingFiles([]);
     setPhotoQuality(null);
     setSelfieFindings([]);
+    setFaceCropUrl(null);
+    setRejectedFindings([]);
     if (files.length === 0) return;
     setCheckingPhoto(true);
     // Multiple selfies are averaged into one centroid query (§1.1). We quality-
@@ -895,18 +923,30 @@ export function FindMe(): JSX.Element {
     // the order decides which selfie the user gets offered again later.
     const ordered = orderByBest(files, check.bestIndex);
     const findings = selfieFindingLabels(check);
-    if (!check.anyUsable) {
-      setPendingFiles(ordered);
-      setSelfieFindings(findings);
-      // Every pick failed the face gate. A search would 422, but an outfit-only
-      // search can still work — offer it now rather than after a wasted round trip.
+    if (!check.anyUsable || findings.some((f) => f.blocking)) {
+      // Rejected. `rejected` (rather than pendingFiles) is what removes the
+      // "search anyway" escape: there is no held-back file set to search with.
+      setRejectedFindings(findings);
+      // Every pick failed for want of a face. A search would 422, but an
+      // outfit-only search can still work — offer it now rather than after a
+      // wasted round trip.
       if (check.files.every((f) => f.reasons.includes('no_face'))) setNoFaceFiles(ordered);
       return;
     }
-    if (findings.some((f) => f.blocking)) {
-      setPendingFiles(ordered);
-      setSelfieFindings(findings);
-      return;
+    // Usable, but the face is small enough that the detector could have locked
+    // onto someone behind them. Show the crop and let them confirm.
+    const best = check.files.find((f) => f.index === check.bestIndex) ?? check.files[0];
+    const needsConfirm = (best?.advisories ?? []).some((a) => CONFIRM_FINDINGS.has(a));
+    if (needsConfirm && best?.faceBox) {
+      const url = await cropFaceToDataUrl(ordered[0]!, best.faceBox);
+      // A crop we couldn't draw would leave the prompt with nothing to look at,
+      // which is worse than not asking — fall through to the search.
+      if (url) {
+        setPendingFiles(ordered);
+        setSelfieFindings(findings);
+        setFaceCropUrl(url);
+        return;
+      }
     }
     void search(ordered);
   }
@@ -977,6 +1017,8 @@ export function FindMe(): JSX.Element {
     setPendingFiles([]);
     setPhotoQuality(null);
     setSelfieFindings([]);
+    setFaceCropUrl(null);
+    setRejectedFindings([]);
   }
 
   /**
@@ -1017,6 +1059,8 @@ export function FindMe(): JSX.Element {
     setPendingFiles([]);
     setPhotoQuality(null);
     setSelfieFindings([]);
+    setFaceCropUrl(null);
+    setRejectedFindings([]);
     setFaceAlert(null);
     const form = new FormData();
     for (const file of files) form.append('file', file);
@@ -1355,7 +1399,70 @@ export function FindMe(): JSX.Element {
               if (picked.length > 0) void handlePicked(picked);
             }}
           />
-          {(photoQuality || selfieFindings.length > 0) && pendingFiles.length > 0 ? (
+          {rejectedFindings.length > 0 ? (
+            /* Refused. No "search anyway": every finding here means we cannot
+               tell which face to search for, so an override would just pick one
+               at random on the user's behalf. */
+            <div className="photo-quality-warn" role="alert">
+              <p>
+                <strong>{t.rejectedTitle}</strong>
+              </p>
+              <ul>
+                {rejectedFindings.map((f) => (
+                  <li key={f.code}>{f.label}</li>
+                ))}
+              </ul>
+              <div className="quality-actions">
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    dismissQualityWarning();
+                    fileInput.current?.click();
+                  }}
+                >
+                  {t.chooseAnother}
+                </button>
+              </div>
+            </div>
+          ) : faceCropUrl && pendingFiles.length > 0 ? (
+            /* Usable, but small in frame — the one case where the detector may
+               have found a different person entirely. Show what it found. */
+            <div className="photo-quality-warn face-confirm" role="alert">
+              <div className="face-confirm-body">
+                <p>
+                  <strong>{t.confirmFaceTitle}</strong>
+                </p>
+                <p className="muted">{t.confirmFaceBody}</p>
+                <ul>
+                  {selfieFindings.map((f) => (
+                    <li key={f.code}>{f.label}</li>
+                  ))}
+                </ul>
+                <div className="quality-actions">
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => {
+                      const f = pendingFiles;
+                      dismissQualityWarning();
+                      void search(f);
+                    }}
+                  >
+                    {t.confirmFaceYes}
+                  </button>
+                  <button
+                    className="btn btn-light"
+                    onClick={() => {
+                      dismissQualityWarning();
+                      fileInput.current?.click();
+                    }}
+                  >
+                    {t.chooseAnother}
+                  </button>
+                </div>
+              </div>
+              <img className="face-crop" src={faceCropUrl} alt={t.confirmFaceAlt} />
+            </div>
+          ) : (photoQuality || selfieFindings.length > 0) && pendingFiles.length > 0 ? (
             <div className="photo-quality-warn" role="alert">
               <p>
                 <strong>{t.photoQualityTitle}</strong>

@@ -411,9 +411,13 @@ def check_quality():
     a full search came back ("no clear face found — try again").
 
     Returns {modelVersion, files: [{index, filename, usable, faceCount,
-    selfieScore, advisories[], reasons[], faceScore, frontality, faceFrac,
-    facePx, blur}], bestIndex, anyUsable}. `reasons` are hard failures (the same
-    gate `/search` applies); `advisories` are non-blocking hints.
+    selfieScore, advisories[], reasons[], faceScore, faceBox, frontality,
+    faceFrac, facePx, blur}], bestIndex, anyUsable}. `reasons` are hard failures;
+    `advisories` are non-blocking hints.
+
+    `reasons` here is the `/search` gate PLUS `multiple_faces`: a reference
+    selfie with a bystander in it is refused outright, because which face gets
+    searched for would otherwise be decided by detector confidence alone.
     """
     files = request.files.getlist("file")
     if not files:
@@ -443,14 +447,35 @@ def check_quality():
                             "advisories": [], "reasons": ["no_face"]})
             continue
         q = best["quality"]
+        # More than one face in a REFERENCE selfie is a hard failure, not a hint.
+        # The matcher would silently query with whichever face it is most
+        # confident about, and on a group shot that is a coin flip between the
+        # searcher and their friend — which surfaces as "it found someone else's
+        # photos". There is no safe way to guess, so we refuse the photo and ask
+        # for one with only them in it.
+        #
+        # Scoped to THIS endpoint on purpose: `assess_face` is shared with the
+        # indexer, where a photo full of faces is the normal case and must stay
+        # perfectly usable.
+        reasons = list(q["reasons"])
+        if len(faces) > 1:
+            reasons.insert(0, "multiple_faces")
+        img_h, img_w = img.shape[:2]
         reports.append({
             **entry,
-            "usable": bool(q["usable"]),
+            "usable": not reasons,
             "faceCount": len(faces),
             "selfieScore": quality.selfie_score(q),
-            "advisories": quality.selfie_advisories(q, len(faces)),
-            "reasons": list(q["reasons"]),
+            # face_advisories, not selfie_advisories: the multi-face case is a
+            # `reason` here, and reporting it in both lists would show the user
+            # the same complaint twice.
+            "advisories": quality.face_advisories(q),
+            "reasons": reasons,
             "faceScore": round(float(best["score"]), 4),
+            # Normalized box of the graded face, so the client can show a crop of
+            # it ("is this you?") without knowing the image's pixel size. Same
+            # convention as /search's referenceFaces.selectedFace.
+            "faceBox": _norm_box(best["box"], img_w, img_h),
             "frontality": None if q["frontality"] is None else round(float(q["frontality"]), 3),
             "faceFrac": round(float(q["face_frac"]), 4),
             "facePx": q["face_px"],

@@ -1052,6 +1052,56 @@ class TestQualityEndpoint:
     def test_missing_file_400(self, client):
         assert client.post("/quality", data={}).status_code == 400
 
+    def test_a_second_face_makes_the_selfie_unusable(self, client):
+        # Hard stop, not a hint: with a bystander in frame the query face would
+        # be chosen by detector confidence, which is a coin flip.
+        set_bundle(make_bundle(basis(0), basis(1), face_det=TwoFaceDet()))
+        resp = client.post("/quality", data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg")})
+        assert resp.status_code == 200
+        f = resp.get_json()["files"][0]
+        assert f["faceCount"] == 2
+        assert f["usable"] is False
+        assert f["reasons"][0] == "multiple_faces"
+        # Reported once, as a reason — never also as an advisory.
+        assert "multiple_faces" not in f["advisories"]
+        assert resp.get_json()["anyUsable"] is False
+        assert resp.get_json()["bestIndex"] is None
+
+    def test_a_multi_face_pick_never_becomes_best(self, client):
+        set_bundle(make_bundle(basis(0), basis(1), face_det=TwoFaceDet()))
+        resp = client.post(
+            "/quality",
+            data={"file": [(io.BytesIO(jpeg_bytes()), "group.jpg"),
+                           (io.BytesIO(jpeg_bytes()), "solo.jpg")]},
+        )
+        body = resp.get_json()
+        # Both picks came from TwoFaceDet, so neither is selectable.
+        assert body["anyUsable"] is False and body["bestIndex"] is None
+
+    def test_indexed_faces_are_untouched_by_the_selfie_rule(self):
+        """The multi-face stop is endpoint-scoped. `assess_face` is shared with
+        the indexer, where a photo full of faces is the normal case."""
+        img = rng.integers(0, 255, (400, 400, 3), dtype=np.uint8)
+        det = {"box": [100, 100, 300, 300], "score": 0.9}
+        assert quality.assess_face(img, det)["usable"] is True
+
+    def test_reports_the_face_box_for_a_crop_preview(self, client):
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post("/quality", data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg")})
+        # FakeFaceDet's box, as fractions of the image — the client crops to it
+        # to ask "is this you?" without knowing the pixel dimensions.
+        assert resp.get_json()["files"][0]["faceBox"] == pytest.approx([0.3, 0.2, 0.7, 0.8], abs=1e-6)
+
+    def test_unreadable_and_faceless_picks_have_no_box(self, client):
+        set_bundle(make_bundle(basis(0), basis(1), face_det=NoFaceDet()))
+        resp = client.post(
+            "/quality",
+            data={"file": [(io.BytesIO(b"not an image"), "a.jpg"), (io.BytesIO(jpeg_bytes()), "b.jpg")]},
+        )
+        files = resp.get_json()["files"]
+        assert files[0].get("faceBox") is None  # bad_image short-circuits
+        assert files[1].get("faceBox") is None  # no_face short-circuits
+
     def test_computes_no_embeddings(self, client, monkeypatch):
         """The pick-time check must stay detection-only (cost + no biometrics)."""
         bundle = make_bundle(basis(0), basis(1))

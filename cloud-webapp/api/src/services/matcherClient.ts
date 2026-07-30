@@ -120,6 +120,8 @@ export interface MatcherSelfieReport {
   selfieScore: number;
   faceCount: number;
   faceScore?: number;
+  /** Normalized box of the graded face, for the client's crop preview. */
+  faceBox?: [number, number, number, number] | null;
   frontality: number | null;
   faceFrac?: number;
   facePx?: number;
