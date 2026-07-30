@@ -10,3 +10,10 @@ google-cloud-storage>=2.18,<4
 google-cloud-firestore>=2.19,<3
 google-auth>=2.34,<3
 requests>=2.32,<3
+# Azure backends (AZ2). Imported ONLY when DERIVATIVES_ROOT is an az://https
+# Blob root (blobs.py) or CLOUD_PROVIDER=azure (job.py CosmosMeta), so the GCP
+# runtime never loads them — but they are installed unconditionally so one image
+# serves both clouds, matching how the api ships @azure/* in package.json.
+azure-storage-blob>=12.20,<13
+azure-cosmos>=4.7,<5
+azure-identity>=1.17,<2

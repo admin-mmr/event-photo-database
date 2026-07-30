@@ -93,7 +93,7 @@ class FakeQuery implements Query {
     protected readonly db: FakeStore,
     protected readonly name: string,
     private readonly filters: readonly Filter[] = [],
-    private readonly orders: readonly Order[] = [],
+    protected readonly orders: readonly Order[] = [],
     private readonly max: number | null = null,
     private readonly after: readonly unknown[] | null = null,
     private readonly projection: readonly string[] | null = null,
@@ -210,6 +210,7 @@ class FakeQuery implements Query {
   }
 
   async get(): Promise<QuerySnapshot> {
+    this.db.checkQueryFault(this.orders);
     const docs = this.rows().map(
       (r) =>
         new FakeDocSnapshot(r.id, r.body, new FakeDocRef(this.db, this.name, r.id)) as QueryDocSnapshot,
@@ -327,6 +328,30 @@ export class FakeStore implements DocumentStore {
 
   /** How many transactions have been run — some tests assert on this. */
   transactions = 0;
+
+  /**
+   * Fields whose `orderBy` query should fail as if its composite index were
+   * missing.
+   *
+   * Firestore rejects an un-indexed composite ORDER BY with
+   * `9 FAILED_PRECONDITION`, and `routes/gallery.ts` has a real fallback for it
+   * (`addedAt` → `takenAt`) that only ever runs in that case. Without a way to
+   * provoke it, the fallback is untestable — and it is the branch that decides
+   * whether a freshly-indexed event's gallery is ordered or empty.
+   */
+  readonly failQueryOnOrderBy = new Set<string>();
+
+  /** Called by a query before it runs. Internal to the fake. */
+  checkQueryFault(orders: readonly { field: OrderField }[]): void {
+    for (const o of orders) {
+      if (typeof o.field === 'string' && this.failQueryOnOrderBy.has(o.field)) {
+        throw Object.assign(
+          new Error(`9 FAILED_PRECONDITION: The query requires an index. (orderBy ${o.field})`),
+          { code: 9 },
+        );
+      }
+    }
+  }
 
   private idSeq = 0;
 

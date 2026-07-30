@@ -577,7 +577,83 @@ downstream needs them:
 - Verified: `tsc` clean, `eslint` clean, **68 api test files / 715 tests green**
   (from 67/704). No production behaviour change beyond the two function names.
 
-- ⬜ Remaining: the Python backends; migrating the other ~36 bespoke test fakes.
+**Landed 2026-07-29 — the Python backends, and AZ2 closes:**
+
+- ✅ **`indexer/blobs.py`** — a Blob backend beside local and `gs://`, chosen by
+  `parse_root` from `DERIVATIVES_ROOT`: `az://container[/prefix]` (terse, mirrors
+  `gs://`, needs `AZURE_STORAGE_ACCOUNT_URL`), the self-describing
+  `https://<acct>.blob.core.windows.net/container[/prefix]`, or Azurite. Three
+  things a verbatim translation gets wrong, each now tested:
+  - **`upload_blob` refuses to overwrite by default** (`BlobAlreadyExists`) where
+    GCS's `upload_from_string` replaces. `overwrite=True` is not optional: without
+    it a re-index dies on the first photo it had already written, and re-running a
+    partially-failed run is the normal recovery path.
+  - **Azurite puts the account name in the FIRST path segment**, unlike the
+    `<acct>.blob.core.windows.net` form. Miss it and every blob key is off by one
+    — an emulator run writes into a container called `devstoreaccount1`.
+  - **An `az://` root with no account URL raises** rather than defaulting. A
+    silent default would write a whole event's derivatives to the wrong account.
+- ✅ **`matcher/store.py`** — the read side of the same layout, with the same
+  parser. The matcher only needs **Storage Blob Data Reader**.
+- ✅ **`indexer/job.py` `CosmosMeta`** beside `FirestoreMeta`, selected by
+  `CLOUD_PROVIDER` via `make_meta()`. It writes the SAME documents the api reads,
+  so it makes the same choices as `cosmosDb.ts`:
+  - **There is no `set(merge=True)`** — `upsert_item` REPLACES, so every write is
+    read-merge-write. **This is the one that fails quietly:** the reused-photo path
+    calls `upsert_photo(pid, patch)` with a PARTIAL patch, so a replacing write
+    drops `takenAt`/`contentHash`/`duplicateCount` and the gallery keeps working,
+    just sorted wrongly, with nothing in the logs.
+  - The merge is **shallow**, matching Firestore: `set_index_state` writes the path
+    `indexState`, so the previous map is replaced wholesale. Deep-merging would let
+    a stale `status: running` outlive a finished run — the exact state that blocks
+    new triggers with `409 already_running`.
+  - **`photos` is partitioned by `/eventId` and the interface has no event id**, so
+    a partial patch recovers the key with a cross-partition `WHERE c.id = @id` (RU,
+    never correctness). A partial patch for a photo that does not exist writes
+    **nothing** — inventing a partition would strand the doc where no event-scoped
+    query finds it.
+  - `id`/`_etag`/`_ts` are stripped on read and `id` re-attached on write.
+- ✅ **The SDKs stay lazy and the tests need none.** CI installs only
+  `numpy Pillow pytest` for the indexer, so `CosmosMeta` takes a database object
+  (with `from_env()` owning client construction) and `_AzureContainer` is a narrow
+  3-method port — the same `CosmosStore(ops)` / `BlobOps` split as the TS side. The
+  first draft failed this: `write()` needed `ContentSettings` from the SDK, which
+  quietly defeats a lazy import. 404s are matched on `status_code`, not on the
+  SDK's exception type, for the same reason.
+- ✅ **The URI parser is duplicated on purpose** in `blobs.py` and `store.py` —
+  separate deployables, separate Docker contexts, and the indexer image copies a
+  hand-listed set of matcher modules, so a shared module would be one more entry on
+  a list that has already shipped a `ModuleNotFoundError`.
+  `test_blobs.py::test_uri_parsing_matches_matcher` pins them in sync (same
+  convention as ORIG_EXT_BY_MIME ↔ `origExtParity.test.ts`).
+- ✅ **`gallery.test.ts` migrated onto the shared fake**, closing the
+  test-fidelity finding above. It hand-rolled ~75 lines of Firestore paging and
+  ordered with `localeCompare`; the shared fake orders by code point, as Firestore
+  and Cosmos do. `FakeStore.failQueryOnOrderBy` is the fault-injection hook the
+  missing-composite-index fallback needed. Two new cases pin the difference
+  (`Banana.jpg` before `apple.jpg` before `湘舍动.jpg`, and the same across a cursor
+  boundary) and assert the premise, so the test cannot quietly stop proving
+  anything.
+- Verified: `tsc` + `eslint` clean; **717 api tests**, **75 indexer** (from 51),
+  **12 new matcher store tests**, **163 web** — all green. The matcher's
+  pre-existing `test_main.py` needs onnxruntime/opencv, unavailable locally; its
+  baseline failure count was identical before and after this change (46, all
+  `ModuleNotFoundError`), and CI installs the real requirements.
+- ⬜ **Deliberately NOT done: the other ~35 bespoke Firestore fakes.** The plan
+  always framed these as opportunistic ("as files get touched"), and they are
+  low-value churn with real risk — each rewrite can silently weaken a passing
+  test. The one with a *correctness* argument (`gallery.test.ts`) is done. Migrate
+  the rest when their file is next edited for another reason.
+
+**AZ2 is complete.** Every remaining Cosmos/Blob unknown is a run-it-for-real
+item and belongs to AZ4:
+  - RU cost, real cross-partition `ORDER BY`, and whether one index of a real
+    event behaves — `fakeCosmos.ts` and `test_cosmos_meta.py`'s fake are models of
+    Cosmos, not Cosmos.
+  - Real SAS validation, account-level CORS, and whether a browser's Put Block
+    List behaves as documented.
+  - Whether Azure's missing md5 on browser-committed blobs degrades the upload
+    dedup more than the name+size fallback covers.
   - **Not yet proven, and cannot be here:** real SAS validation, account-level
     CORS, per-transaction cost, and whether a browser's Put Block List behaves as
     documented. `fakeBlobService.ts` is a model of Blob Storage, not Blob
@@ -619,9 +695,10 @@ downstream needs them:
   volunteer resumable session → block-blob SAS upload (browser client change
   in `web/src` upload path). Delete dead `origFile()`.~~ **DONE 2026-07-29** —
   see the storage-seam entry above.
-- **Python:** Blob backend in `matcher/store.py` + `indexer/blobs.py`
+- ~~**Python:** Blob backend in `matcher/store.py` + `indexer/blobs.py`
   (`https://…blob.core.windows.net/...` or `az://` prefix beside `gs://` and
-  local); Cosmos impl of `FirestoreMeta` in `indexer/job.py`.
+  local); Cosmos impl of `FirestoreMeta` in `indexer/job.py`.~~
+  **DONE 2026-07-29** — see the Python-backends entry below.
 - ~~**Port the rules spec:** recover `firestore.rules`/`storage.rules` from git
   history, embed the conditions verbatim in the two `infra/*-notes.md` files,
   and verify each condition exists as api middleware (most already do —
