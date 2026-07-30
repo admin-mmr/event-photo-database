@@ -36,7 +36,15 @@ import {
   type FaceAlert,
 } from '../lib/results.js';
 import { analyzePhoto, type QualityResult, type QualityIssue } from '../lib/photoQuality.js';
-import { cropFaceToDataUrl } from '../lib/faceCrop.js';
+import {
+  suggestedPortraitRect,
+  renderCropToFile,
+  renderCropToDataUrl,
+  imageSize,
+  type CropRect,
+  type NormBox,
+} from '../lib/faceCrop.js';
+import { CropEditor } from '../components/CropEditor.js';
 import { savePhotosIndividually, type NamedBlob } from '../lib/downloads.js';
 import { canShareImageFiles } from '../lib/share.js';
 import { downloadOriginalsZip } from '../lib/zipDownload.js';
@@ -127,11 +135,16 @@ const STR = {
     qSlightlySoft: 'It’s a little soft — a sharper photo matches better.',
     searchAnyway: 'Search anyway',
     rejectedTitle: 'We can’t search with that photo',
-    confirmFaceTitle: 'Is this you?',
-    confirmFaceBody:
-      'Your face is small in this photo, so we want to be sure we found the right person before searching.',
-    confirmFaceYes: 'Yes, that’s me — search',
-    confirmFaceAlt: 'Close-up of the face we detected in your photo',
+    reframeTitle: 'We’ve zoomed in on you',
+    reframeBody:
+      'You were small in the original, so we cropped in. Check it’s you, adjust it, or pick another photo — we’ll search with the version shown here.',
+    reframeAlt: 'The cropped version of your photo that will be used to search',
+    cropUse: 'Looks good — search',
+    cropAdjust: 'Adjust the crop',
+    cropEditTitle: 'Adjust the crop',
+    cropEditHint:
+      'Drag inside the box to move it, or a corner to resize. Keep your head and upper body in frame — your clothing helps the match too.',
+    cropRegionLabel: 'Crop area',
     chooseAnother: 'Choose a different photo',
     multiFaceTitle: 'More than one face detected',
     weakFaceTitle: 'This selfie may not match well',
@@ -276,10 +289,15 @@ const STR = {
     qSlightlySoft: '照片略欠清晰——更锐利的照片匹配效果更好。',
     searchAnyway: '仍然搜索',
     rejectedTitle: '无法使用这张照片进行搜索',
-    confirmFaceTitle: '这是您本人吗？',
-    confirmFaceBody: '照片中您的面部较小，为确保找对了人，请先确认。',
-    confirmFaceYes: '是我，开始搜索',
-    confirmFaceAlt: '照片中检测到的人脸特写',
+    reframeTitle: '已为您放大画面',
+    reframeBody:
+      '原图中您占比较小，我们已裁剪。请确认是您本人，也可自行调整或换一张照片——搜索将使用此处显示的版本。',
+    reframeAlt: '将用于搜索的裁剪后照片',
+    cropUse: '就用这张搜索',
+    cropAdjust: '调整裁剪',
+    cropEditTitle: '调整裁剪范围',
+    cropEditHint: '拖动方框可移动，拖动四角可缩放。请保留头部和上半身——衣着也有助于匹配。',
+    cropRegionLabel: '裁剪区域',
     chooseAnother: '换一张照片',
     multiFaceTitle: '检测到多张人脸',
     weakFaceTitle: '这张自拍可能不易匹配',
@@ -383,6 +401,22 @@ interface Reference {
 const COMBINED = 'combined';
 
 /** One thing the server-side selfie check found, ready to render. */
+/**
+ * A proposed reframe of a badly-framed pick. Held together because the editor
+ * needs the same decode the preview came from: the object URL to draw, the
+ * natural size to map screen coordinates onto, and the suggested rect to start
+ * from. `objectUrl` is owned here and revoked by `clearReframe`.
+ */
+interface Reframe {
+  file: File;
+  objectUrl: string;
+  width: number;
+  height: number;
+  rect: CropRect;
+  /** Data URL of the suggested crop, shown before the editor is opened. */
+  previewUrl: string;
+}
+
 interface Finding {
   code: string;
   label: string;
@@ -475,8 +509,10 @@ export function FindMe(): JSX.Element {
   const [selfieFindings, setSelfieFindings] = useState<Finding[]>([]);
   // A refused pick: shown as a dead end with no way to search anyway.
   const [rejectedFindings, setRejectedFindings] = useState<Finding[]>([]);
-  // Data URL of the detected face, when we're asking "is this you?".
-  const [faceCropUrl, setFaceCropUrl] = useState<string | null>(null);
+  // The reframe we're proposing for a badly-framed pick, or null.
+  const [reframe, setReframe] = useState<Reframe | null>(null);
+  // True while the user is adjusting that crop by hand.
+  const [editingCrop, setEditingCrop] = useState(false);
   const [checkingPhoto, setCheckingPhoto] = useState(false);
   // Reference-set ids whose anchor suggestion the user waved away, so it stays
   // dismissed while they keep browsing that set.
@@ -882,7 +918,7 @@ export function FindMe(): JSX.Element {
     setPendingFiles([]);
     setPhotoQuality(null);
     setSelfieFindings([]);
-    setFaceCropUrl(null);
+    clearReframe();
     setRejectedFindings([]);
     if (files.length === 0) return;
     setCheckingPhoto(true);
@@ -933,22 +969,61 @@ export function FindMe(): JSX.Element {
       if (check.files.every((f) => f.reasons.includes('no_face'))) setNoFaceFiles(ordered);
       return;
     }
-    // Usable, but the face is small enough that the detector could have locked
-    // onto someone behind them. Show the crop and let them confirm.
+    // Usable, but badly framed — the face is small enough that the detector
+    // could have locked onto someone behind them, and a distant subject matches
+    // worse. Propose a reframe, which becomes the photo we upload.
     const best = check.files.find((f) => f.index === check.bestIndex) ?? check.files[0];
-    const needsConfirm = (best?.advisories ?? []).some((a) => CONFIRM_FINDINGS.has(a));
-    if (needsConfirm && best?.faceBox) {
-      const url = await cropFaceToDataUrl(ordered[0]!, best.faceBox);
+    const needsReframe = (best?.advisories ?? []).some((a) => CONFIRM_FINDINGS.has(a));
+    if (needsReframe && best?.faceBox) {
+      const proposal = await proposeReframe(ordered[0]!, best.faceBox);
       // A crop we couldn't draw would leave the prompt with nothing to look at,
-      // which is worse than not asking — fall through to the search.
-      if (url) {
+      // which is worse than not asking — fall through and search the original.
+      if (proposal) {
         setPendingFiles(ordered);
         setSelfieFindings(findings);
-        setFaceCropUrl(url);
+        setReframe(proposal);
         return;
       }
     }
     void search(ordered);
+  }
+
+  /**
+   * Measure the picked photo and work out the crop we'd suggest. Everything the
+   * reframe UI needs (and the editor after it) in one decode.
+   */
+  async function proposeReframe(file: File, faceBox: NormBox): Promise<Reframe | null> {
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const size = await imageSize(objectUrl);
+      if (!size) {
+        URL.revokeObjectURL(objectUrl);
+        return null;
+      }
+      const rect = suggestedPortraitRect(faceBox, size.width, size.height);
+      const previewUrl = await renderCropToDataUrl(file, rect);
+      if (!previewUrl) {
+        URL.revokeObjectURL(objectUrl);
+        return null;
+      }
+      return { file, objectUrl, ...size, rect, previewUrl };
+    } catch {
+      URL.revokeObjectURL(objectUrl);
+      return null;
+    }
+  }
+
+  /** Replace the leading pick with its cropped version and search.
+   *
+   *  Only the leading pick is reframed: it is the one the check graded and the
+   *  one persisted for reuse, and silently recropping the others would apply a
+   *  box computed from a different photo's face. */
+  async function searchReframed(r: Reframe, rect: CropRect): Promise<void> {
+    const cropped = await renderCropToFile(r.file, rect);
+    const rest = pendingFiles.slice(1);
+    const files = cropped ? [cropped, ...rest] : pendingFiles;
+    dismissQualityWarning();
+    void search(files);
   }
 
   /** POST the picks to the server check. Null = no verdict available (offline,
@@ -1013,11 +1088,20 @@ export function FindMe(): JSX.Element {
     }
   }
 
+  /** Drop the proposal and release the object URL it owns. */
+  function clearReframe(): void {
+    setReframe((prev) => {
+      if (prev) URL.revokeObjectURL(prev.objectUrl);
+      return null;
+    });
+    setEditingCrop(false);
+  }
+
   function dismissQualityWarning(): void {
     setPendingFiles([]);
     setPhotoQuality(null);
     setSelfieFindings([]);
-    setFaceCropUrl(null);
+    clearReframe();
     setRejectedFindings([]);
   }
 
@@ -1059,7 +1143,7 @@ export function FindMe(): JSX.Element {
     setPendingFiles([]);
     setPhotoQuality(null);
     setSelfieFindings([]);
-    setFaceCropUrl(null);
+    clearReframe();
     setRejectedFindings([]);
     setFaceAlert(null);
     const form = new FormData();
@@ -1424,15 +1508,34 @@ export function FindMe(): JSX.Element {
                 </button>
               </div>
             </div>
-          ) : faceCropUrl && pendingFiles.length > 0 ? (
-            /* Usable, but small in frame — the one case where the detector may
-               have found a different person entirely. Show what it found. */
+          ) : reframe && editingCrop ? (
+            <div className="photo-quality-warn">
+              <CropEditor
+                src={reframe.objectUrl}
+                imgWidth={reframe.width}
+                imgHeight={reframe.height}
+                initial={reframe.rect}
+                onCancel={() => setEditingCrop(false)}
+                onConfirm={(rect) => void searchReframed(reframe, rect)}
+                labels={{
+                  title: t.cropEditTitle,
+                  hint: t.cropEditHint,
+                  confirm: t.cropUse,
+                  cancel: t.cancel,
+                  region: t.cropRegionLabel,
+                }}
+              />
+            </div>
+          ) : reframe ? (
+            /* Badly framed. We propose a crop — head, shoulders and torso, so
+               the outfit half of the query survives — and that crop is what
+               gets uploaded if they accept it. */
             <div className="photo-quality-warn face-confirm" role="alert">
               <div className="face-confirm-body">
                 <p>
-                  <strong>{t.confirmFaceTitle}</strong>
+                  <strong>{t.reframeTitle}</strong>
                 </p>
-                <p className="muted">{t.confirmFaceBody}</p>
+                <p className="muted">{t.reframeBody}</p>
                 <ul>
                   {selfieFindings.map((f) => (
                     <li key={f.code}>{f.label}</li>
@@ -1441,13 +1544,12 @@ export function FindMe(): JSX.Element {
                 <div className="quality-actions">
                   <button
                     className="btn btn-primary"
-                    onClick={() => {
-                      const f = pendingFiles;
-                      dismissQualityWarning();
-                      void search(f);
-                    }}
+                    onClick={() => void searchReframed(reframe, reframe.rect)}
                   >
-                    {t.confirmFaceYes}
+                    {t.cropUse}
+                  </button>
+                  <button className="btn btn-light" onClick={() => setEditingCrop(true)}>
+                    {t.cropAdjust}
                   </button>
                   <button
                     className="btn btn-light"
@@ -1460,7 +1562,7 @@ export function FindMe(): JSX.Element {
                   </button>
                 </div>
               </div>
-              <img className="face-crop" src={faceCropUrl} alt={t.confirmFaceAlt} />
+              <img className="face-crop" src={reframe.previewUrl} alt={t.reframeAlt} />
             </div>
           ) : (photoQuality || selfieFindings.length > 0) && pendingFiles.length > 0 ? (
             <div className="photo-quality-warn" role="alert">
