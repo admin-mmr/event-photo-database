@@ -671,7 +671,15 @@ def main() -> int:
     )
     root = os.environ.get("DERIVATIVES_ROOT", "gs://mmr-data-pipeline-derivatives")
 
-    bundle = load_bundle()
+    # The indexer WRITES the store, so it requires the person detector by default:
+    # a run without it bakes face-expanded person crops into every row, and finding
+    # that out later costs a full re-embed (which is exactly what happened — see
+    # matcher/models/registry.py). Failing the job is the cheap outcome. Set
+    # REQUIRE_PERSON_DET=0 for a deliberate fallback run; embeddings are then
+    # tagged '+faceexpand+' so the event is self-describing.
+    bundle = load_bundle(require_person_det=os.environ.get("REQUIRE_PERSON_DET", "1") != "0")
+    log.info("model bundle: version=%s person_detector=%s", bundle.version,
+             "yes" if bundle.uses_person_detector else "NO (face-expand fallback)")
 
     def embed(data: bytes) -> dict:
         return embed_image(decode_image(data), bundle=bundle)

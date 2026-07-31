@@ -577,6 +577,51 @@
   face-driven wrong match from an outfit-driven one — which is what sent one
   investigation guessing. Keep writing them.
 
+## The person detector was never staged — and the version tag hid it
+
+- **Every indexed event's "outfit" embeddings were built from face-box expansion,
+  not person detections, while the manifest claimed `+yolov8n+`.** Confirmed
+  2026-07-31 across all 9 events / 9,574 photos / 55,270 person crops: only 4 model
+  files were ever staged (`gs://<proj>-models/model_files/` has no
+  `yolov8n.onnx`), so `load_bundle` took the `person_det = None` path every time.
+  `81a584f7` — the event the judged P@20 baseline was measured on — is among them.
+- **Root cause was a constant that could only guess.** `MODEL_VERSION` was a
+  literal string containing `yolov8n` regardless of what loaded, so nothing in the
+  system could distinguish the two geometries and the `@m1` bump looked applied.
+  `registry.model_version(person_det_loaded)` now DERIVES the token
+  (`yolov8n` vs `faceexpand`); `MODEL_VERSION` is no longer exported from
+  `models/__init__.py`, deliberately. Don't reintroduce a constant here.
+- **The fallback is no longer silent, and the two callers differ on purpose:**
+  `load_bundle(require_person_det=...)`. The **indexer requires it** (default
+  `REQUIRE_PERSON_DET=1`) because it WRITES the store and a bad run costs a full
+  re-embed; the **matcher service tolerates it** (default off) because raising
+  would turn a missing optional file into 500s on every Find-Me search. A cached
+  bundle is re-checked against a stricter caller, so whoever loads first can't
+  decide for everyone.
+- **Verify geometry, don't trust the tag:**
+  `./cloud-webapp/infra/scripts/audit-person-crops.sh [project] [event …]`. It
+  exits non-zero when a manifest claims a detector its boxes contradict.
+  - The discriminator is the share of person boxes sitting **exactly** on 3.00×
+    face width / 7.00× face height. Do NOT use spread — `expand_face_to_person`
+    **clamps to image bounds**, so edge-of-frame crops come out smaller and a
+    `spread < 0.02` test cleared 8 of 9 genuinely-fallback events. Clamping can
+    only ever *reduce* a ratio, never exceed it.
+  - Pair face/person rows **by index**, not by photoId: the indexer appends them in
+    lockstep (hence identical counts), and matching every person box of a group
+    shot against that photo's first face produces plausible-looking ratios
+    (2.84×/5.64y) and a false all-clear.
+- **Staging the detector forces a full re-index** (person crops genuinely change →
+  new `+yolov8n+` tag → md5+version reuse check misses). Re-prepare the
+  outfit-tagger's events too, since it keys on `sourceModelVersion`.
+- **Unresolved: Ultralytics YOLOv8 is AGPL-3.0**, which the quality plan's "ship
+  only permissive (MIT/Apache) weights" guardrail forbids. `matcher/yolov8n.pt` is
+  committed but was never exported to ONNX, and AGPL §13 network-use makes a public
+  web service the aggressive case. A permissive swap (YOLOX / RTMDet / RT-DETR,
+  all Apache-2.0) needs a new decode path in `models/person.py`, since only the
+  YOLOv8 output layout is implemented.
+- Note `azure-webapp/matcher/models/registry.py` is at `@m0` with **no** yolov8n
+  token — that copy was always honest; the bad tag is cloud-webapp-only.
+
 ## outfit-tagger — "find this outfit" is a SEPARATE service
 
 - **`cloud-webapp/outfit-tagger/` is not part of Find-Me and must stay that way.**
