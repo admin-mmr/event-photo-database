@@ -577,6 +577,93 @@
   face-driven wrong match from an outfit-driven one — which is what sent one
   investigation guessing. Keep writing them.
 
+## outfit-tagger — "find this outfit" is a SEPARATE service
+
+- **`cloud-webapp/outfit-tagger/` is not part of Find-Me and must stay that way.**
+  It answers "which photos show this outfit/accessory?" from sample crops and/or a
+  text description (SigLIP, Apache-2.0), and it is a separate Cloud Run service
+  with its own URL, its own build context, and its own vector store. The api
+  reaches it via its own `OUTFIT_URL` (empty until deployed → `/admin/outfit`
+  routes 503 and nothing else changes). Deploy with
+  `./cloud-webapp/infra/scripts/deploy-outfit-tagger.sh`; full docs in
+  `cloud-webapp/outfit-tagger/README.md`.
+- **It writes ONLY `<eventId>/outfit/{crops.npy,index.json}`** — a sibling of the
+  matcher's `<eventId>/embeddings/`, never inside it. So the matcher needs no
+  redeploy, a bad prepare run cannot degrade a search, and rollback is deleting
+  the prefix. Keep that boundary: the moment this service writes something the
+  matcher reads, the isolation is gone.
+- **No detector runs in it.** Person + face boxes come from the indexer's
+  `embeddings/manifest.json` (read-only), so there is no new detection compute.
+  Two crops per photo: `person` (outfits fill it) and `head` (a face box expanded
+  for ears/headwear — an earpiece is a few pixels inside a person crop and
+  contributes nothing). Accessory queries want `region=head`.
+- **Crops come from the mirrored ORIGINAL, not the 1600px `web` derivative.**
+  Manifest boxes are in original-image pixel coordinates and the manifest records
+  no original dimensions, so a box cannot be soundly rescaled onto a web copy —
+  and the downscale is what destroys the detail a head crop exists for. A photo
+  whose original is missing is SKIPPED and recorded, never guessed at.
+- **The prepare pass is a Cloud Run JOB (`outfit-prepare`), not an endpoint.**
+  ~3,000 crops for a 1,600-photo event is minutes of CPU-ONNX work; this is the
+  same 60s ceiling that broke duplicate removal, folder rebuild, and the upload
+  worker. Do not "simplify" it into a request. One execution = one event,
+  idempotent, skipped when already prepared under the same model + source-manifest
+  versions.
+- **The two modalities are normalized DIFFERENTLY. Do not "unify" them.**
+  Image↔image cosines are ~0.5–0.9 and image↔text ~0.05–0.15, so a raw weighted sum
+  is entirely the sample term and `text_weight` would be a lie. Both are mapped to
+  "std above background" — but samples use a **cohort z-score** (query and crops
+  are the same distribution, as in the matcher's T-norm) while text uses a
+  **query-independent calibration**: the mean/std of the (background-prompt × crop)
+  cosine population for that event (`scoring.BACKGROUND_PROMPTS`, cached per event
+  per process).
+  - **Cohort z-scoring the TEXT channel is a real bug and it shipped once.** The
+    per-query std is the relevance signal: an out-of-domain prompt is uniformly
+    dissimilar to every crop → tiny spread → noise becomes a big z; a relevant
+    prompt is broadly similar to all runner crops → its best hit sits fewer std
+    above a higher mean. Measured on event 2622d5ab (2,589 crops/region), absurd
+    prompts beat plausible ones **+4.41 vs +3.36**, while the RAW cosines separated
+    cleanly (0.106 vs 0.031). After the fix: **+3.20 vs +1.04**.
+  - A z-score is affine, so it never reordered results *within* a query — the
+    damage was to magnitude, which is exactly what `text_weight` and any threshold
+    consume. That is why a "harmless rescale" was not harmless.
+  - **Absurd-prompt controls are how this was caught.** Keep them in any future
+    evaluation; a plausible-only sweep looks fine and says nothing.
+  - There is deliberately **no default `min_score`** — the guardrails want a judged
+    sweep before a number gates anything.
+- **Text is weak on fine-grained gear** ("open-ear headphones", brands) and fine
+  on coarse attributes ("orange singlet"). `/detect` returns a `textAdvisory`
+  rather than refusing. Samples are the strong modality; `sample_photo_ids` reuses
+  stored crop vectors, so it costs no inference and is better framed than an
+  uploaded wide shot.
+- **Preprocessing is recorded at export time, never hardcoded.**
+  `scripts/export_siglip.py` writes `vision_config.json` / `text_config.json` from
+  the real processor and refuses to finish unless (1) our tokenizer matches
+  `transformers` id-for-id, (2) each graph has exactly ONE rank-2 output, and
+  (3) the ONNX towers match torch to cosine ≥ 0.999. A wrong normalization
+  constant or pad id yields confidently-wrong embeddings that raise nothing — do
+  not hand-assemble `model_files/`.
+  - Check (2) earned its place on the first real export: in **transformers 5.x**
+    `get_image_features`/`get_text_features` return a `BaseModelOutputWithPooling`,
+    not a tensor, and exporting that object flattens it into **two** ONNX outputs
+    with `last_hidden_state` FIRST. The runtime reads `outputs[0]`, so it would
+    have embedded a `[batch, 196, 768]` token tensor instead of the pooled
+    `[batch, 768]` vector — loads fine, raises nothing, ranks garbage. The tower
+    wrappers now take `.pooler_output` explicitly.
+  - Also version-fragile: `image_processor.size` is a `SizeDict` (attribute
+    access, not a dict) in 5.x, and `torch.onnx.export` needs **onnxscript**
+    installed or it dies partway through the first export.
+- **`model_files/*.onnx` are NOT self-contained** — torch writes weights to
+  sibling `*.onnx.data` files (~780 MB; the graphs are ~110 KB). onnxruntime
+  resolves them by relative path, so always move the directory whole.
+- Changing weights changes the embedding space: bump `OUTFIT_MODEL_VERSION` and
+  re-prepare every event. `/detect` returns **409 `model_version_mismatch`** rather
+  than ranking a query against vectors from another model.
+- `parse_root` is now duplicated a THIRD time (matcher/store.py,
+  indexer/blobs.py, outfit-tagger/store.py), as is `ORIG_EXT_BY_MIME`. Same reason
+  as before — separate build contexts — and both are pinned by parity tests
+  (`outfit-tagger/test_store.py`, `test_crops.py`). The ext-table test caught a
+  real drift on the first run; trust it over a grep.
+
 ## Indexer speed vs. free tier
 
 - **Embedding is CPU-bound ONNX**, so throughput scales ~linearly with vCPUs.

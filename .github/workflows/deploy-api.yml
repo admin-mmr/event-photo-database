@@ -52,6 +52,11 @@ jobs:
           # Repo variable (Settings → Secrets and variables → Actions → Variables).
           # Set after the matcher service is deployed; empty = findme routes 503.
           MATCHER_URL: ${{ vars.MATCHER_URL }}
+          # Repo variable for the optional outfit-tagger service. Unlike
+          # MATCHER_URL this is appended to --update-env-vars ONLY when non-empty
+          # (see OUTFIT_ENV below), so a repo without the variable set keeps
+          # whatever the live service already has instead of being blanked.
+          OUTFIT_URL: ${{ vars.OUTFIT_URL }}
           # Master Sheet id for "Sync with Drive" (repo variable); empty = sync 503s.
           MASTER_SPREADSHEET_ID: ${{ vars.MASTER_SPREADSHEET_ID }}
           # NOTE: SYNC_TRIGGER_TOKEN is NOT injected here as a literal env var.
@@ -100,6 +105,8 @@ jobs:
           API_MEMORY: "1Gi"
         run: |
           UPLOAD_WORKER_URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)')"
+          OUTFIT_ENV=""
+          if [ -n "${OUTFIT_URL}" ]; then OUTFIT_ENV=",OUTFIT_URL=${OUTFIT_URL}"; fi
           gcloud run deploy "$SERVICE" \
             --image="$IMAGE" \
             --region="$REGION" \
@@ -112,7 +119,7 @@ jobs:
             --min-instances=0 \
             --concurrency=80 \
             --timeout="${API_TIMEOUT_SECONDS}" \
-            --update-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=${GITHUB_SHA::7},MATCHER_URL=${MATCHER_URL},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID},FINDME_EVENT_ALLOWLIST=${FINDME_EVENT_ALLOWLIST},UPLOAD_DISPATCH_TO_WORKER=${UPLOAD_DISPATCH_TO_WORKER},UPLOAD_TASKS_QUEUE=${UPLOAD_TASKS_QUEUE},UPLOAD_TASKS_LOCATION=${UPLOAD_TASKS_LOCATION},UPLOAD_WORKER_URL=${UPLOAD_WORKER_URL}" \
+            --update-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=${GITHUB_SHA::7},MATCHER_URL=${MATCHER_URL},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID},FINDME_EVENT_ALLOWLIST=${FINDME_EVENT_ALLOWLIST},UPLOAD_DISPATCH_TO_WORKER=${UPLOAD_DISPATCH_TO_WORKER},UPLOAD_TASKS_QUEUE=${UPLOAD_TASKS_QUEUE},UPLOAD_TASKS_LOCATION=${UPLOAD_TASKS_LOCATION},UPLOAD_WORKER_URL=${UPLOAD_WORKER_URL}${OUTFIT_ENV}" \
             --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_API_KEY=RECAPTCHA_KEY:latest"
           # Auth: deliberately pass NEITHER --allow-unauthenticated nor
           # --no-allow-unauthenticated, so the deploy leaves the service's IAM

@@ -1,0 +1,17 @@
+# Build context for the outfit-tagger image is cloud-webapp/outfit-tagger/
+# (deploy-outfit-tagger.sh runs `gcloud builds submit $REPO_ROOT/outfit-tagger`),
+# so cloud-webapp/.dockerignore does NOT apply here — Docker reads the
+# .dockerignore at the context root. The Dockerfile copies `*.py` by glob (so new
+# modules are never silently omitted); these excludes keep tests, caches, and
+# local-only data out of the image.
+**/test_*.py
+**/conftest.py
+**/requirements-test.txt
+**/__pycache__
+**/.pytest_cache
+**/pytest-cache-files-*
+**/.venv
+local_store/
+samples/
+*.log
+.DS_Store

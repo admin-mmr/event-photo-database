@@ -1,0 +1,7 @@
+model_files/
+local_store/
+__pycache__/
+.pytest_cache/
+# Local sample crops used as /detect queries can be photos of real people —
+# they stay local, same posture as the matcher's eval data (PRD §8).
+samples/
