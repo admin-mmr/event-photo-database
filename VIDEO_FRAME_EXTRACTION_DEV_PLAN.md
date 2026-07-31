@@ -1,7 +1,16 @@
 # Video → best running photos: library research + dev plan
 
-Status: **research complete, plan proposed, nothing implemented.**
-Date: 2026-07-26.
+Status: **research complete; Phase 0 harness built and run on 10 real clips;
+human judging still outstanding, so the Phase 0 gate is undecided.**
+Date: 2026-07-26, Phase 0 run 2026-07-29.
+
+> **Read [VIDEO_FRAME_EXTRACTION_PHASE0.md](VIDEO_FRAME_EXTRACTION_PHASE0.md)
+> before acting on anything below.** It supersedes several assumptions in this
+> document with measurements: real clips are much shorter than the 5–60 s assumed
+> here, motion blur is *not* what costs frames (§1.3 expected it to be), the
+> §2.4 cost estimate was ~3–6× pessimistic, and yield is governed almost entirely
+> by the `MIN_FACE_PX = 40` gate that §2.3 Phase 1 says to import from the
+> reference-selfie path. Phases 1–4 below are unchanged and still pending.
 
 Goal: when a volunteer uploads a short clip (reel, 5–60 s, phone or action cam),
 automatically extract a handful of **stills that look like deliberate running
