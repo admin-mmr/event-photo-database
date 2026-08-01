@@ -2,6 +2,7 @@
   "name": "xiangsheidong-file-system",
   "version": "1.0.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "description": "湘舍动公益文件系统 — Google Apps Script v1",
   "scripts": {
     "login": "clasp login",

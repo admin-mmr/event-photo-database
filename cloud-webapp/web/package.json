@@ -2,6 +2,7 @@
   "name": "@cloud-webapp/web",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "description": "React SPA for the Event Photo Database, deployed to Firebase Hosting",
   "scripts": {

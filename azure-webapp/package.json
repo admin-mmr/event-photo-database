@@ -2,6 +2,7 @@
   "name": "cloud-webapp",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "description": "Event Photo Database — Cloud Run + Firebase Hosting + Firestore implementation",
   "workspaces": [
     "shared",
