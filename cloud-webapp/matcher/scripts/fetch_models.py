@@ -89,7 +89,10 @@ def main() -> int:
                 file=sys.stderr,
             )
 
-    # YOLOv8n (optional person detector)
+    # Person detector. "Optional" only in the sense that the pipeline still runs
+    # without it — NOT in the sense that its absence is harmless. Calling it
+    # optional here, next to a MODEL_VERSION that claimed `+yolov8n+` regardless,
+    # is how all 9 events came to be embedded with face-box expansion unnoticed.
     yolo_path = os.path.join(args.dir, "yolov8n.onnx")
     if not args.skip_optional and not os.path.exists(yolo_path):
         if YOLO_URL:
@@ -97,8 +100,15 @@ def main() -> int:
                 f.write(_download(YOLO_URL, "YOLOv8n person detector"))
         else:
             print(
-                "NOTE: yolov8n.onnx not present (optional). Pipeline will use "
-                "face-box expansion for person crops.",
+                "WARNING: yolov8n.onnx not present. Person ('outfit') crops will be a\n"
+                "  fixed 3x/7x expansion of the face box instead of real detections, and\n"
+                "  anyone whose face was not detected gets NO person crop at all — so\n"
+                "  back-turned and no-face shots are invisible to outfit matching.\n"
+                "  Embeddings will be tagged '+faceexpand+' rather than '+yolov8n+'.\n"
+                "  The indexer REFUSES to run in this state unless REQUIRE_PERSON_DET=0\n"
+                "  (see matcher/models/registry.py). Verify any indexed event with\n"
+                "  infra/scripts/audit-person-crops.sh.",
+                file=sys.stderr,
             )
 
     print(f"Done. Models in {os.path.abspath(args.dir)}")

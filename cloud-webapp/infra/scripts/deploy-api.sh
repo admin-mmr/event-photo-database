@@ -62,6 +62,17 @@ else
   echo "WARN: could not resolve the '$MATCHER_SERVICE' service URL; leaving MATCHER_URL unchanged (merge preserves any existing value)." >&2
 fi
 
+# OUTFIT_URL: same auto-resolve pattern as MATCHER_URL, for the outfit-tagger
+# service. Appended ONLY when it resolves — the outfit-tagger is optional, and
+# blanking the var on a deploy from a shell that lacks it would silently turn the
+# /admin/outfit routes off (merge preserves the existing value instead).
+OUTFIT_SERVICE="${OUTFIT_SERVICE:-outfit-tagger}"
+OUTFIT_URL="${OUTFIT_URL:-$(gcloud run services describe "$OUTFIT_SERVICE" \
+  --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)' 2>/dev/null || true)}"
+if [[ -n "$OUTFIT_URL" ]]; then
+  ENV_VARS="${ENV_VARS},OUTFIT_URL=${OUTFIT_URL}"
+fi
+
 if [[ -n "${MASTER_SPREADSHEET_ID:-}" ]]; then ENV_VARS="${ENV_VARS},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID}"; fi
 
 # Rate limits (dev plan §5B C2). Set EXPLICITLY so behaviour isn't an accident

@@ -1,0 +1,15 @@
+flask==3.0.3
+gunicorn==22.0.0
+numpy>=2.0,<3
+onnxruntime>=1.18,<2
+opencv-python-headless>=4.10,<5
+Pillow>=10.4,<13
+pillow-heif>=0.18
+# SigLIP's tokenizer is a SentencePiece model (Apache-2.0). Text queries need it;
+# sample-image queries do not.
+sentencepiece>=0.2,<1
+google-cloud-storage>=2.18,<4
+# Azure read/write backend (AZ2). Imported only when the root is an az://https
+# Blob root — see store.parse_root.
+azure-storage-blob>=12.20,<13
+azure-identity>=1.17,<2

@@ -164,6 +164,13 @@ const EnvSchema = z.object({
   // rather than failing confusingly.
   MATCHER_URL: z.string().default(''),
 
+  // Base URL of the private outfit-tagger Cloud Run service — a SEPARATE
+  // deployable from the matcher (own image, own URL, own vector store under
+  // <eventId>/outfit/), so it can be deployed, rolled back, or left off without
+  // touching Find-Me. Empty until deployed, in which case the /admin/outfit
+  // routes 503 with a clear message and nothing else in the api changes.
+  OUTFIT_URL: z.string().default(''),
+
   // T-norm cohort score normalization (FACE_RECOGNITION_IMPROVEMENT_ANALYSIS
   // §1.3, PEOPLE_RECOGNITION_QUALITY_PLAN.md Item 2). **ON by default as of the
   // 2026-07-23 judged sweep** (EVAL_FEEDBACK_LOOP.md): on event 81a584f7

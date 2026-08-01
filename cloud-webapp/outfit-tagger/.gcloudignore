@@ -1,0 +1,22 @@
+# .gcloudignore — controls what `gcloud builds submit` uploads as the build
+# context. IMPORTANT: when this file exists, gcloud uses it INSTEAD of .gitignore.
+#
+# The model files are deliberately EXCLUDED from the upload:
+# deploy-outfit-tagger.sh syncs them into the build context from GCS in-cloud
+# (MODELS_GCS in that script), so ~400 MB of weights never travel from the laptop
+# on a deploy. Keeping the upload to ~1 MB of code makes deploys fast.
+
+# The ONNX weights + recorded configs — pulled from GCS by Cloud Build.
+model_files/
+
+# Local-only junk.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+pytest-cache-files-*/
+.DS_Store
+
+# Local sample store and any local sample crops stay local.
+local_store/
+samples/
