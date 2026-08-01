@@ -1307,6 +1307,8 @@ pre.error {
   .anchor-suggest {
     flex-direction: column;
   }
+}
+
 /* Pick-time verdicts on a selfie: a hard refusal, an "is this you?" crop
    confirmation, or a soft quality hint. One shell, since to the user they are
    the same moment in the flow. Previously unstyled — fine for a hint, not for a
