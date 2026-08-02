@@ -78,6 +78,18 @@ if not faces or not persons:
 # reports a clean bill of health for an event that is 100% fallback. That false
 # all-clear is worse than no check, so the photoId equality below is an assertion,
 # not a lookup key.
+# Unequal counts are CONCLUSIVE evidence of a real detector, not a problem to
+# report as "unpaired". The fallback derives exactly one person box per face box,
+# so it can only ever produce equal counts; a detector finds people whose faces
+# were never detected (back-turned, occluded, too small) and the person count
+# rises above the face count. Report that as the success signal it is.
+if len(faces) != len(persons):
+    extra = len(persons) - len(faces)
+    note = "detections +%d no-face" % extra if extra > 0 else "detections (%d fewer)" % -extra
+    print("%-10s %7d %7d %8d  %-13s %-22s %s" % (os.environ["EVENT"][:8], photos,
+          len(faces), len(persons), "n/a 1:1", note, version))
+    sys.exit(0)
+
 ratios = []
 if len(faces) == len(persons):
     for f, p in list(zip(faces, persons))[:500]:
