@@ -28,8 +28,15 @@ matcher manifest.**
   are compute-neutral or compute-gated; note the cost delta of anything that isn't.
 - **Precision-first on auto-assignment.** A wrong tag in Find-Me is worse than a miss —
   flag/expander over silent false positives (PRD §2, feedback-loop §4b).
-- **License hygiene.** Ship only permissive (MIT/Apache) weights in production. Open flags
-  tracked inline (AGPL YOLO, non-commercial LVFace).
+- **License hygiene.** **Superseded 2026-07-31 for the copyleft half:** the project
+  relicensed MIT → **AGPL-3.0** (`8ebb394`) precisely because the bundled Ultralytics
+  YOLOv8 person detector is AGPL and makes the combined work AGPL, so LICENSE and NOTICE
+  now agree. AGPL weights are therefore in scope, and YOLOv8 is the shipped detector
+  (`matcher/scripts/export_yolov8.py`). What still stands: **no non-commercial or
+  research-only weights** (e.g. LVFace) — those are incompatible with the AGPL grant we
+  now make to users, not merely inconvenient. Prefer permissive weights where they are
+  competitive, since every AGPL component widens the source-disclosure obligation that
+  AGPL §13 attaches to a public web service.
 
 ---
 

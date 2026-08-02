@@ -9,10 +9,12 @@ Sources (override with env vars if a URL moves):
   - BUFFALO_URL: insightface buffalo_l bundle (det_10g.onnx + w600k_r50.onnx
     are extracted from the zip; the other models in the zip are discarded).
   - YOLO_URL (optional): a YOLOv8n ONNX export for person detection. No
-    official ONNX is hosted by ultralytics; either export one locally
-    (`pip install ultralytics && yolo export model=yolov8n.pt format=onnx`)
-    or point YOLO_URL at a trusted mirror. Without it, the pipeline falls
-    back to face-box expansion (see models/person.py).
+    official ONNX is hosted by ultralytics. Export it from the committed
+    checkpoint with `python scripts/export_yolov8.py` — NOT a bare
+    `yolo export`, which skips the contract checks (class 0 == person, output
+    layout) that models/person.py depends on. Without the file the pipeline
+    falls back to face-box expansion, which is how 9 events were embedded with
+    the wrong geometry; the indexer now refuses to run in that state.
   - OSNET_URL: OSNet person-ReID ONNX. The torchreid model zoo publishes
     .pth weights; export with deep-person-reid's torchreid → ONNX, or point
     OSNET_URL at a trusted converted artifact.
