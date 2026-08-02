@@ -278,3 +278,60 @@ def test_non_jpeg_mime_reads_the_right_extension(tmp_path):
 
     summary = job_mod.run(blobs, FakeBundle(), "e1")
     assert summary["crops"] == 1
+
+
+def test_reprepare_is_forced_when_boxes_change_under_the_same_version(tmp_path):
+    """The bug this guards: the indexer tagged face-expanded crops '+yolov8n+' for
+    months, so an event re-indexed with the REAL detector carries an identical
+    modelVersion with completely different boxes. Keyed on the version alone, the
+    re-prepare that matters most would be skipped."""
+    blobs = _setup(tmp_path, BASE_MANIFEST, {"p1": _jpeg()})
+    job_mod.run(blobs, FakeBundle(), "e1")
+
+    # Same version string, different geometry — exactly the re-index case.
+    reindexed = {
+        **BASE_MANIFEST,
+        "persons": [{"photoId": "p1", "box": [12, 40, 88, 150]}],
+    }
+    assert reindexed["modelVersion"] == BASE_MANIFEST["modelVersion"]
+    blobs.write(manifest_path("e1"), json.dumps(reindexed).encode("utf-8"), "application/json")
+
+    bundle = FakeBundle()
+    summary = job_mod.run(blobs, bundle, "e1")
+    assert summary["status"] == "done", "must re-embed when the boxes moved"
+    assert len(bundle.vision.shapes) == 2
+
+
+def test_identical_manifest_still_skips(tmp_path):
+    """The fingerprint must not defeat idempotence for an unchanged event."""
+    blobs = _setup(tmp_path, BASE_MANIFEST, {"p1": _jpeg()})
+    job_mod.run(blobs, FakeBundle(), "e1")
+    bundle = FakeBundle()
+    assert job_mod.run(blobs, bundle, "e1")["status"] == "skipped"
+    assert bundle.vision.shapes == []
+
+
+def test_index_without_a_fingerprint_is_re_prepared(tmp_path):
+    """An index written before the fingerprint existed cannot prove it matches, so
+    it must be rebuilt rather than trusted."""
+    from store import INDEX_FILE, outfit_path
+
+    blobs = _setup(tmp_path, BASE_MANIFEST, {"p1": _jpeg()})
+    job_mod.run(blobs, FakeBundle(), "e1")
+    rel = outfit_path("e1", INDEX_FILE)
+    index = json.loads(blobs.read(rel).decode("utf-8"))
+    index.pop("sourceFingerprint")
+    blobs.write(rel, json.dumps(index).encode("utf-8"), "application/json")
+
+    bundle = FakeBundle()
+    assert job_mod.run(blobs, bundle, "e1")["status"] == "done"
+
+
+def test_source_fingerprint_tracks_boxes_not_version():
+    from store import source_fingerprint
+
+    a = {"modelVersion": "v1", "persons": [{"photoId": "p", "box": [0, 0, 10, 10]}], "faces": []}
+    same_boxes_new_version = {**a, "modelVersion": "v2"}
+    moved_boxes = {**a, "persons": [{"photoId": "p", "box": [0, 0, 11, 10]}]}
+    assert source_fingerprint(a) == source_fingerprint(same_boxes_new_version)
+    assert source_fingerprint(a) != source_fingerprint(moved_boxes)
