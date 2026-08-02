@@ -538,6 +538,47 @@
   401 (the access token expires ~1h mid-run). Follow-up worth doing:
   incremental checkpointing so interrupted runs persist progress.
 
+## "Indexing…" forever — a stuck event is a REPORTING bug, not a slow run
+
+- **`indexState` is the only liveness signal there is**, because the store is
+  written only at the end of a run. Three things conspired to make an event
+  (5ff5ff5c, 2026-08-02) sit on "Indexing… · 300 photos" while its Drive folder
+  held 6,899 — all three are fixed, keep them fixed:
+  1. **A crash before `run()` recorded nothing.** `main()` did its setup —
+     `load_bundle`, `Config`, `DriveClient`, `BlobStore` — OUTSIDE the try that
+     writes `status: failed`, so the job exit(1)'d silently and the doc kept the
+     `queued` the api had stamped at trigger time. Setup now lives inside the
+     try, which also catches **SystemExit** (`run()` raises it for an event with
+     no `driveFolderId`, and it is not an `Exception`). The reason is written to
+     `indexState.error` so an admin needn't go read Cloud Run logs.
+  2. **An in-flight state never expired.** index-scan skipped the event as
+     `already_running` every tick and "Index now" 409'd, so the only paths that
+     could clear it were the ones it blocked — one crash and the event was stuck
+     until a human noticed. `isIndexInFlight()` in `api/src/routes/events.ts`
+     now disbelieves a `queued`/`running` older than `STALE_INDEX_MS` (30 min).
+     A missing/unparseable `updatedAt` counts as FRESH — an unknown age must not
+     license a second concurrent execution.
+  3. **Nothing refreshed the doc mid-run.** `run()` stamped `running` once and
+     said nothing until `done`, so a live 2h run and a dead job looked
+     identical. It now heartbeats every `HEARTBEAT_SEC` (30s) with
+     `processed`/`total` (of CHANGED photos, so on a re-index `total` is far
+     below `photoCount`), and the UI shows "n of m indexed". **The 30-min
+     staleness window and the 30s heartbeat are a pair** — lengthening the
+     heartbeat without lengthening the window would let the api re-trigger a
+     healthy run.
+- **What actually broke it: the deploy preflight only checked that the models
+  PREFIX listed, not the files in it.** `8586cc6` shipped an indexer that
+  requires `yolov8n.onnx` (`REQUIRE_PERSON_DET=1`) against a bucket that had
+  only the other four, so every execution died in `load_bundle`. Both
+  `deploy-indexer.sh` and `deploy-matcher.sh` now check file by file — the
+  indexer FAILS on a missing detector (it writes the store; a fallback geometry
+  baked into a store costs a full re-embed), the matcher only WARNS (it
+  deliberately tolerates the fallback rather than 500 on every search).
+- Diagnose in this order: the job's executions (`gcloud run jobs executions
+  list --job=photo-indexer`) → the failing execution's logs → the event doc's
+  `indexState`. A red execution with a green-looking event doc is this bug
+  class; "Indexing…" with recent `processed`/`total` is just a big event.
+
 ## Find-Me matching: per-face quality, anchors, and the pick-time check
 
 - **Per-face quality now lives in the manifest** (`faces_meta[].quality` =

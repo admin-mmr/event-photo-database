@@ -21,6 +21,16 @@ export const IndexStateSchema = z.object({
   removed: z.number().int().nonnegative().optional(),
   /** Byte-identical duplicates collapsed during indexing (B6 / FR-2c). */
   duplicates: z.number().int().nonnegative().optional(),
+  /** Live progress of the current run, refreshed by the indexer every ~30s:
+   *  `processed` of `total` CHANGED photos (an unchanged photo is reused from
+   *  the previous manifest and never counted here, so `total` is normally far
+   *  below `photoCount` on a re-index). Absent on events last indexed by an
+   *  indexer that predates the heartbeat — the UI just omits the detail. */
+  processed: z.number().int().nonnegative().optional(),
+  total: z.number().int().nonnegative().optional(),
+  /** Why the last run failed (`type: message`, truncated). Set only with
+   *  `status: 'failed'`; saves an admin a trip to the Cloud Run logs. */
+  error: z.string().optional(),
 });
 export type IndexState = z.infer<typeof IndexStateSchema>;
 

@@ -52,12 +52,29 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # Preflight: confirm the models exist in GCS, otherwise the in-cloud sync
 # (and the COPY model_files/ build step) will produce an empty dir and the
 # container fails to load models at runtime.
-if ! gcloud storage ls "$MODELS_GCS/" --project="$PROJECT_ID" >/dev/null 2>&1; then
-  echo "ERROR: no model files found at $MODELS_GCS" >&2
+#
+# File by file, not just the prefix — see the same check in deploy-indexer.sh
+# for what a prefix-only check missed. yolov8n.onnx is WARNED about here rather
+# than required: the matcher deliberately tolerates its absence (raising would
+# turn a missing optional file into a 500 on every Find-Me search), but serving
+# without it means face-expanded person crops, so a silent deploy is not OK
+# either.
+REQUIRED_MODELS=(det_10g.onnx w600k_r50.onnx osnet_x0_25.onnx)
+missing=()
+for m in "${REQUIRED_MODELS[@]}"; do
+  gcloud storage ls "$MODELS_GCS/$m" --project="$PROJECT_ID" >/dev/null 2>&1 || missing+=("$m")
+done
+if (( ${#missing[@]} )); then
+  echo "ERROR: model files missing from $MODELS_GCS: ${missing[*]}" >&2
   echo "  Stage them once (from cloud-webapp/matcher/):" >&2
   echo "    python3 scripts/fetch_models.py --dir model_files   # if not fetched yet" >&2
   echo "    gcloud storage cp -r model_files/* $MODELS_GCS/" >&2
   exit 1
+fi
+if ! gcloud storage ls "$MODELS_GCS/yolov8n.onnx" --project="$PROJECT_ID" >/dev/null 2>&1; then
+  echo "WARNING: yolov8n.onnx is not staged at $MODELS_GCS — the matcher will" >&2
+  echo "  fall back to face-box expansion for person ('outfit') crops." >&2
+  echo "  Stage it with: python3 scripts/export_yolov8.py --out model_files/yolov8n.onnx" >&2
 fi
 
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE}:$(date +%Y%m%d-%H%M%S)"

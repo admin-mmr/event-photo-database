@@ -19,6 +19,9 @@ const STR = {
     syncing: 'Syncing…',
     noEvents: 'No events yet.',
     photos: (n: number): string => `${n} photos`,
+    /** Live progress of a running index, so "Indexing…" is visibly moving
+     *  rather than a frozen badge next to the previous run's photo count. */
+    progress: (done: number, total: number): string => `${done} of ${total} indexed`,
     indexNow: 'Index now',
     indexing: 'Indexing…',
     starting: 'Starting…',
@@ -55,6 +58,7 @@ const STR = {
     syncing: '同步中…',
     noEvents: '暂无活动。',
     photos: (n: number): string => `${n} 张照片`,
+    progress: (done: number, total: number): string => `已处理 ${done} / ${total}`,
     indexNow: '立即建立索引',
     indexing: '建立索引中…',
     starting: '启动中…',
@@ -261,6 +265,13 @@ export function Events({ isGuest = false }: EventsProps): JSX.Element {
             const pill = pillFor(ev);
             const photoCount = ev.indexState?.photoCount;
             const updated = timeAgo(ev.indexState?.updatedAt, t.time);
+            // Only while a run is live: once it's done these numbers describe
+            // the finished run and `photos` already says it better.
+            const { processed, total } = ev.indexState ?? {};
+            const progress =
+              pill.key === 'running' && typeof processed === 'number' && typeof total === 'number' && total > 0
+                ? t.progress(processed, total)
+                : '';
             const hasName = Boolean(ev.name);
             const hasPhotos = (photoCount ?? 0) > 0;
             const label = eventLabel({ name: ev.name, date: ev.date, id: ev.id, hasPhotos });
@@ -274,6 +285,7 @@ export function Events({ isGuest = false }: EventsProps): JSX.Element {
                   </Link>
                   <div className="event-meta">
                     <span className={pill.className}>{t.pill[pill.key]}</span>
+                    {progress && <span className="muted event-stat">{progress}</span>}
                     {typeof photoCount === 'number' && (
                       <span className="muted event-stat">{t.photos(photoCount)}</span>
                     )}

@@ -430,3 +430,49 @@ def test_rename_is_idempotent_when_already_prefixed(tmp_path, monkeypatch):
     blobs = BlobStore(str(tmp_path))
     _run(drive, fs, blobs)
     assert drive.renames == []  # already prefixed → no rename
+
+
+# ── progress + failure reporting ─────────────────────────────────────────────
+# The store is written only at the END of a run, so `indexState` is the ONLY
+# thing that can tell an admin (or the api's stale-state recovery) whether a run
+# is alive. These two cover the ways that signal went missing on 2026-08-02.
+
+def test_run_heartbeats_progress_and_settles_it_on_done(env, monkeypatch):
+    """A long run must refresh indexState as it goes: without it the doc keeps
+    the map stamped at start-up for hours and a dead job is indistinguishable
+    from a working one."""
+    import job
+
+    monkeypatch.setattr(job, "HEARTBEAT_SEC", 0)  # beat on every photo
+    drive, fs, blobs = env
+    _run(drive, fs, blobs)
+
+    # The first `running` write happens before the Drive listing, so it has no
+    # denominator yet; the heartbeats are the ones carrying counts.
+    beats = [s for s in fs.states if s.get("status") == "running" and "total" in s]
+    assert beats, "no heartbeat written during the run"
+    assert beats[0]["total"] == 2 and beats[0]["processed"] == 0  # denominator first
+    assert [s["processed"] for s in beats] == sorted(s["processed"] for s in beats)
+    # Firestore merges the map field-wise, so a finished run must not be left
+    # reading "1/2" from the last heartbeat.
+    done = fs.states[-1]
+    assert done["status"] == "done" and done["processed"] == done["total"] == 2
+
+
+def test_main_records_failed_when_setup_dies(monkeypatch, tmp_path):
+    """A crash BEFORE run() — a missing model file, bad credentials — must still
+    land `failed`. It used to exit(1) silently from outside the try, leaving the
+    event on the api's `queued` forever: the UI showed "Indexing…" and the scan
+    skipped it as already-running, so nothing ever retried it."""
+    import job
+
+    fs = FakeFS()
+    monkeypatch.setattr(job, "make_meta", lambda: fs)
+    monkeypatch.setenv("EVENT_ID", "ev1")
+    # An empty MATCHER_DIR makes `from models import load_bundle` fail — the
+    # same point in main() where the real yolov8n.onnx crash happened.
+    monkeypatch.setenv("MATCHER_DIR", str(tmp_path / "no-matcher"))
+
+    assert job.main() == 1
+    assert fs.states[-1]["status"] == "failed"
+    assert fs.states[-1]["error"]  # the reason, so an admin needn't read job logs
