@@ -185,6 +185,31 @@ describe('events routes', () => {
       expect(forced.status).toBe(202);
     });
 
+    // A run that dies without recording `failed` (OOM, task timeout, or a crash
+    // before the handler is installed — a missing model file did this to a live
+    // event on 2026-08-02) leaves the state in flight forever. Without an expiry
+    // the 409 below is permanent and the event can never be re-indexed.
+    it('re-triggers when the in-flight state has gone stale', async () => {
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      fakeDb.events.set('ev1', {
+        driveFolderId: 'f',
+        indexState: { status: 'running', updatedAt: twoHoursAgo },
+      });
+      const res = await request(app).post('/api/events/ev1/index').set('x-test-user', ADMIN);
+      expect(res.status).toBe(202);
+      expect(triggerIndexJob).toHaveBeenCalledWith('ev1', { force: false });
+    });
+
+    it('still blocks while a fresh run is in flight', async () => {
+      fakeDb.events.set('ev1', {
+        driveFolderId: 'f',
+        indexState: { status: 'running', updatedAt: new Date().toISOString() },
+      });
+      const res = await request(app).post('/api/events/ev1/index').set('x-test-user', ADMIN);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('already_running');
+    });
+
     it('accepts the machine X-Sync-Token path (no Firebase user)', async () => {
       const res = await request(app).post('/api/events/ev1/index').set('X-Sync-Token', 'cron-secret');
       expect(res.status).toBe(202);
@@ -221,6 +246,16 @@ describe('events routes', () => {
       expect(res.status).toBe(200);
       expect(res.body.triggered).toEqual([]);
       expect(res.body.skipped).toContainEqual({ eventId: 'ev1', reason: 'already_running' });
+    });
+
+    it('picks up an event whose in-flight state has gone stale', async () => {
+      fakeDb.events.set('ev1', {
+        driveFolderId: 'f',
+        indexState: { status: 'queued', updatedAt: new Date(Date.now() - 45 * 60 * 1000).toISOString() },
+      });
+      const res = await request(app).post('/api/admin/index-scan').set('X-Sync-Token', 'cron-secret');
+      expect(res.status).toBe(200);
+      expect(res.body.triggered).toEqual(['ev1']);
     });
 
     it('skips events outside the active window', async () => {

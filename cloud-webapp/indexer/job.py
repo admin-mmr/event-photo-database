@@ -41,6 +41,7 @@ import json
 import logging
 import os
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
@@ -64,6 +65,15 @@ RENAME_ENABLED = os.environ.get("CAPTURE_TIME_RENAME", "") == "1"
 # GIL), so threads overlap well even on a 2-vCPU job. Override with the
 # INDEX_CONCURRENCY env var; 1 reproduces the old serial behaviour.
 DEFAULT_CONCURRENCY = 8
+
+# How often a run refreshes `indexState` while the heavy stage is grinding. The
+# store is only written at the END of a run, so without this the doc keeps the
+# `running` map stamped at start-up for the whole run (2h on a big event) — the
+# UI shows a frozen "Indexing…" next to the PREVIOUS run's photo count, and
+# nothing downstream can tell a live run from a job that died. The api's
+# stale-state recovery keys off the timestamp this refreshes, so any change
+# here has to stay far below STALE_INDEX_MS in api/src/routes/events.ts.
+HEARTBEAT_SEC = 30
 
 EMB_DIR = "embeddings"
 FILES = {"face": "faces.npy", "person": "persons.npy"}
@@ -464,10 +474,22 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
     workers = max(1, min(workers, len(changed) or 1))
     log.info("processing %d changed photos with %d worker(s)", len(changed), workers)
 
+    def beat(processed: int) -> None:
+        """Refresh `indexState` mid-run. Best-effort: a metadata hiccup must not
+        fail a run that is otherwise fine."""
+        try:
+            fs.set_index_state(cfg.event_id, {"status": "running", "modelVersion": model_version,
+                                              "processed": processed, "total": len(changed)})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("progress heartbeat skipped (%s)", exc)
+
+    beat(0)  # publish the denominator before the first photo lands
+
     results: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_process, f): f for f in changed}
         done = 0
+        last_beat = time.monotonic()
         for fut in as_completed(futures):
             f = futures[fut]
             try:
@@ -478,6 +500,10 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
             done += 1
             if done % 25 == 0:
                 log.info("  %d/%d changed photos processed", done, len(changed))
+            now = time.monotonic()
+            if now - last_beat >= HEARTBEAT_SEC:
+                last_beat = now
+                beat(done)
 
     # ── Capture time (CAPTURE_TIME_SORT_DESIGN) ──────────────────────────────
     # Resolve takenAt + source per photo: EXIF (from the bytes _process read) →
@@ -644,7 +670,11 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
                "faces": len(faces_meta), "persons": len(persons_meta),
                "embedded": embedded, "reused": reused, "skipped": skipped,
                "removed": len(removed), "duplicates": dup_count,
-               "modelVersion": model_version}
+               "modelVersion": model_version,
+               # Firestore merges the indexState map field-wise, so the last
+               # heartbeat's numbers survive into this write unless we settle
+               # them here — a finished run would otherwise read "6874/6899".
+               "processed": len(changed), "total": len(changed)}
     fs.set_index_state(cfg.event_id, {"status": "done", **summary})
     log.info("done: %s", summary)
     return summary
@@ -655,47 +685,64 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    matcher_dir = os.environ.get(
-        "MATCHER_DIR",
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "matcher"),
-    )
-    sys.path.insert(0, matcher_dir)
-    from models import load_bundle  # noqa: E402  (matcher modules)
-    from pipeline import decode_image, embed_image  # noqa: E402
+    # Read the event id BEFORE anything else can fail: it is the only thing the
+    # failure path below needs, and without it there is no event to mark.
+    event_id = os.environ["EVENT_ID"]
 
-    cfg = Config(
-        event_id=os.environ["EVENT_ID"],
-        drive_folder_id=os.environ.get("DRIVE_FOLDER_ID") or None,
-        force=os.environ.get("FORCE_REINDEX", "") == "1",
-        limit=int(os.environ.get("LIMIT", "0")),
-    )
-    root = os.environ.get("DERIVATIVES_ROOT", "gs://mmr-data-pipeline-derivatives")
-
-    # The indexer WRITES the store, so it requires the person detector by default:
-    # a run without it bakes face-expanded person crops into every row, and finding
-    # that out later costs a full re-embed (which is exactly what happened — see
-    # matcher/models/registry.py). Failing the job is the cheap outcome. Set
-    # REQUIRE_PERSON_DET=0 for a deliberate fallback run; embeddings are then
-    # tagged '+faceexpand+' so the event is self-describing.
-    bundle = load_bundle(require_person_det=os.environ.get("REQUIRE_PERSON_DET", "1") != "0")
-    log.info("model bundle: version=%s person_detector=%s", bundle.version,
-             "yes" if bundle.uses_person_detector else "NO (face-expand fallback)")
-
-    def embed(data: bytes) -> dict:
-        return embed_image(decode_image(data), bundle=bundle)
-
-    from blobs import BlobStore
-    from drive import DriveClient
-
+    # EVERYTHING from here on is inside the try. Setup used to sit outside it,
+    # so a failure before `run()` — a missing model file, a bad DERIVATIVES_ROOT,
+    # Drive credentials — exited(1) without ever writing `failed`, leaving the
+    # event's indexState on the `queued` the api stamped at trigger time. The
+    # UI then shows "Indexing…" forever and index-scan skips the event as
+    # already-running, so it never retries: one crash and the event is stuck.
+    # That is exactly what a missing yolov8n.onnx did to 5ff5ff5c on 2026-08-02.
+    # SystemExit is caught too — run() raises it for an event with no
+    # driveFolderId, and it does not derive from Exception.
     try:
+        matcher_dir = os.environ.get(
+            "MATCHER_DIR",
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "matcher"),
+        )
+        sys.path.insert(0, matcher_dir)
+        from models import load_bundle  # noqa: E402  (matcher modules)
+        from pipeline import decode_image, embed_image  # noqa: E402
+
+        cfg = Config(
+            event_id=event_id,
+            drive_folder_id=os.environ.get("DRIVE_FOLDER_ID") or None,
+            force=os.environ.get("FORCE_REINDEX", "") == "1",
+            limit=int(os.environ.get("LIMIT", "0")),
+        )
+        root = os.environ.get("DERIVATIVES_ROOT", "gs://mmr-data-pipeline-derivatives")
+
+        # The indexer WRITES the store, so it requires the person detector by default:
+        # a run without it bakes face-expanded person crops into every row, and finding
+        # that out later costs a full re-embed (which is exactly what happened — see
+        # matcher/models/registry.py). Failing the job is the cheap outcome. Set
+        # REQUIRE_PERSON_DET=0 for a deliberate fallback run; embeddings are then
+        # tagged '+faceexpand+' so the event is self-describing.
+        bundle = load_bundle(require_person_det=os.environ.get("REQUIRE_PERSON_DET", "1") != "0")
+        log.info("model bundle: version=%s person_detector=%s", bundle.version,
+                 "yes" if bundle.uses_person_detector else "NO (face-expand fallback)")
+
+        def embed(data: bytes) -> dict:
+            return embed_image(decode_image(data), bundle=bundle)
+
+        from blobs import BlobStore
+        from drive import DriveClient
+
         run(cfg, DriveClient(), BlobStore(root), make_meta(), embed,
             model_version=bundle.version,
             face_dim=bundle.face_emb.dim, person_dim=bundle.person_emb.dim)
         return 0
-    except Exception:
+    except (Exception, SystemExit) as exc:
         log.exception("indexing failed")
         try:
-            make_meta().set_index_state(cfg.event_id, {"status": "failed"})
+            # Carry the reason into the doc: without it an admin sees "Index
+            # failed" and has to go read Cloud Run logs to learn why.
+            make_meta().set_index_state(
+                event_id, {"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:500]}
+            )
         except Exception:
             pass
         return 1

@@ -25,6 +25,37 @@ export const eventsRouter = Router();
 const IN_FLIGHT = new Set(['queued', 'running']);
 
 /**
+ * How old an in-flight `indexState` may get before we stop believing it.
+ *
+ * A `queued`/`running` state with no expiry is a trap: the indexer records
+ * `failed` from its own except block, so a run that dies WITHOUT running that
+ * block — a container killed by OOM or the 7200s task timeout, or a crash
+ * before the handler is installed (a missing model file did exactly this to
+ * event 5ff5ff5c on 2026-08-02) — leaves the state in flight forever. The scan
+ * below then skips the event as already-running on every tick and the "Index
+ * now" button 409s, so the one path that could clear it never runs. The event
+ * shows "Indexing…" until a human notices.
+ *
+ * 30 minutes is comfortably above the indexer's HEARTBEAT_SEC (30s) plus the
+ * un-beaten stretches around it (cold start + model load, the Drive listing,
+ * and the post-loop store write), and comfortably below the 2h task timeout, so
+ * a live run is never mistaken for a dead one. If you lengthen the indexer's
+ * heartbeat gap, lengthen this too.
+ */
+const STALE_INDEX_MS = 30 * 60 * 1000;
+
+/** Whether an event's index run should still be treated as in flight. A state
+ *  whose `updatedAt` is missing or unparseable is treated as fresh: an unknown
+ *  age must not license a second concurrent execution. */
+function isIndexInFlight(indexState: unknown, now = Date.now()): boolean {
+  const state = (indexState ?? {}) as { status?: unknown; updatedAt?: unknown };
+  if (!IN_FLIGHT.has(String(state.status))) return false;
+  const updatedAt = Date.parse(String(state.updatedAt ?? ''));
+  if (!Number.isFinite(updatedAt)) return true;
+  return now - updatedAt < STALE_INDEX_MS;
+}
+
+/**
  * A cheap fingerprint of an event's Drive image set: total image count plus the
  * latest `modifiedTime` across all images (listEventImages recurses, so nested
  * upload buckets are covered). The value changes whenever a photo is added,
@@ -187,7 +218,7 @@ eventsRouter.post('/events/:id/index', allowCronOrAdmin, async (req, res, next) 
       });
       return;
     }
-    if (doc.data()?.indexState?.status === 'running' && !force) {
+    if (isIndexInFlight(doc.data()?.indexState) && !force) {
       res.status(409).json({
         ok: false,
         error: 'already_running',
@@ -263,7 +294,7 @@ eventsRouter.post('/admin/index-scan', allowCronOrAdmin, async (req, res, next) 
         skipped.push({ eventId, reason: 'no_drive_folder' });
         continue;
       }
-      if (IN_FLIGHT.has(data?.indexState?.status)) {
+      if (isIndexInFlight(data?.indexState)) {
         skipped.push({ eventId, reason: 'already_running' });
         continue;
       }

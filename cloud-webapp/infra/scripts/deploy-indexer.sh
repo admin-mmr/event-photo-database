@@ -59,10 +59,24 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # Preflight: confirm the models exist in GCS, otherwise the in-cloud sync (and
 # the Dockerfile's `COPY matcher/model_file[s]/`) yields an empty dir and the
 # job fails to load models at runtime.
-if ! gcloud storage ls "$MODELS_GCS/" --project="$PROJECT_ID" >/dev/null 2>&1; then
-  echo "ERROR: no model files found at $MODELS_GCS" >&2
+#
+# Check FILE BY FILE, not just that the prefix lists. A prefix-only check is
+# what let the indexer ship requiring yolov8n.onnx against a bucket that had
+# only the other four files: the deploy passed, and then every execution died
+# in load_bundle() before it could record a status, so the events it was
+# triggered for sat on "Indexing…" indefinitely (event 5ff5ff5c, 2026-08-02).
+# The indexer WRITES the store, so it needs all four — REQUIRE_PERSON_DET
+# defaults to 1 precisely so a fallback geometry can't be baked into a store.
+REQUIRED_MODELS=(det_10g.onnx w600k_r50.onnx osnet_x0_25.onnx yolov8n.onnx)
+missing=()
+for m in "${REQUIRED_MODELS[@]}"; do
+  gcloud storage ls "$MODELS_GCS/$m" --project="$PROJECT_ID" >/dev/null 2>&1 || missing+=("$m")
+done
+if (( ${#missing[@]} )); then
+  echo "ERROR: model files missing from $MODELS_GCS: ${missing[*]}" >&2
   echo "  Stage them once (from cloud-webapp/matcher/):" >&2
   echo "    python3 scripts/fetch_models.py --dir model_files   # if not fetched yet" >&2
+  echo "    python3 scripts/export_yolov8.py --out model_files/yolov8n.onnx  # person detector" >&2
   echo "    gcloud storage cp -r model_files/* $MODELS_GCS/" >&2
   exit 1
 fi
