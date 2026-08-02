@@ -223,6 +223,31 @@ def load_matcher_manifest(blobs: BlobIO, event_id: str) -> dict:
 # ── the outfit index ─────────────────────────────────────────────────────────
 
 
+def source_fingerprint(manifest: dict) -> str:
+    """A short digest of the manifest boxes this index was built from.
+
+    `sourceModelVersion` alone CANNOT detect a re-index that changed the crops.
+    The indexer spent months tagging face-expanded crops `+yolov8n+`; once the
+    detector is actually staged, a re-indexed event carries the *same* version
+    string with completely different boxes. Keying idempotence on the version
+    would then skip a re-prepare that is genuinely required, and the outfit store
+    would keep serving vectors cut from the old geometry.
+
+    So fingerprint what actually determines the crops: each row's photoId and box,
+    in order, for both kinds. Cheap — the manifest is already in memory.
+    """
+    import hashlib
+
+    digest = hashlib.sha1(usedforsecurity=False)
+    for kind in ("persons", "faces"):
+        digest.update(kind.encode())
+        for row in manifest.get(kind) or []:
+            box = row.get("box") or []
+            digest.update(str(row.get("photoId")).encode())
+            digest.update(",".join(f"{float(v):.2f}" for v in box).encode())
+    return digest.hexdigest()[:16]
+
+
 def build_index(
     event_id: str,
     model_version: str,
@@ -230,6 +255,7 @@ def build_index(
     rows: list[dict],
     photos: int,
     skipped: list[dict] | None = None,
+    source_fingerprint_value: str = "",
 ) -> dict:
     """Index rows are parallel to the crops.npy rows.
     Each row: {photoId, region, box, small}."""
@@ -238,6 +264,7 @@ def build_index(
         "eventId": event_id,
         "modelVersion": model_version,
         "sourceModelVersion": source_model_version,
+        "sourceFingerprint": source_fingerprint_value,
         "photos": photos,
         "rows": rows,
         "skipped": skipped or [],

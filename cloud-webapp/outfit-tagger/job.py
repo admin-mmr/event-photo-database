@@ -40,6 +40,7 @@ from store import (
     build_index,
     load_matcher_manifest,
     outfit_path,
+    source_fingerprint,
     write_outfit,
 )
 
@@ -53,12 +54,26 @@ log = logging.getLogger("outfit-prepare")
 DEFAULT_CONCURRENCY = 4
 
 
-def _already_prepared(blobs: BlobIO, event_id: str, model_version: str, source_version: str) -> bool:
-    """True when a usable index for this exact pair of model versions exists.
+def _already_prepared(
+    blobs: BlobIO,
+    event_id: str,
+    model_version: str,
+    source_version: str,
+    fingerprint: str,
+) -> bool:
+    """True when a usable index built from these exact inputs already exists.
 
     Guards the common re-run (a scheduled sweep over every event) from redoing
-    work. A mismatch in EITHER version means the stored vectors are not
-    comparable to what this build would produce, so it re-embeds.
+    work. Any mismatch means the stored vectors are not what this build would
+    produce, so it re-embeds.
+
+    The **fingerprint** is what makes this trustworthy. `sourceModelVersion` alone
+    cannot detect a re-index that moved the boxes: the indexer tagged
+    face-expanded crops `+yolov8n+` for months, so an event re-indexed with the
+    real detector carries the SAME version string with entirely different
+    geometry. Keyed on the version, this would skip the re-prepare that is most
+    needed. An index written before the fingerprint existed has none — treat that
+    as "cannot prove it matches" and re-prepare, rather than trusting it.
     """
     rel = outfit_path(event_id, INDEX_FILE)
     if not blobs.exists(rel):
@@ -72,6 +87,8 @@ def _already_prepared(blobs: BlobIO, event_id: str, model_version: str, source_v
     return (
         index.get("modelVersion") == model_version
         and index.get("sourceModelVersion") == source_version
+        and bool(index.get("sourceFingerprint"))
+        and index.get("sourceFingerprint") == fingerprint
         and bool(index.get("rows"))
     )
 
@@ -136,7 +153,8 @@ def run(
     source_version = str(manifest.get("modelVersion", ""))
     photos_meta: dict = manifest.get("photos") or {}
 
-    if not force and _already_prepared(blobs, event_id, bundle.version, source_version):
+    fingerprint = source_fingerprint(manifest)
+    if not force and _already_prepared(blobs, event_id, bundle.version, source_version, fingerprint):
         log.info("event %s already prepared for %s — skipping (FORCE=1 to redo)", event_id, bundle.version)
         return {"eventId": event_id, "status": "skipped", "reason": "already_prepared"}
 
@@ -196,6 +214,7 @@ def run(
         rows=rows,
         photos=len({r["photoId"] for r in rows}),
         skipped=skipped,
+        source_fingerprint_value=fingerprint,
     )
     # Validate before publishing: OutfitIndex is what the service constructs, so
     # building it here means a shape bug fails the job rather than every query.
@@ -210,6 +229,7 @@ def run(
         "skipped": len(skipped),
         "modelVersion": bundle.version,
         "sourceModelVersion": source_version,
+        "sourceFingerprint": fingerprint,
     }
     log.info("done: %s", summary)
     return summary
