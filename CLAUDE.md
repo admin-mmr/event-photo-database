@@ -613,12 +613,21 @@
 - **Staging the detector forces a full re-index** (person crops genuinely change →
   new `+yolov8n+` tag → md5+version reuse check misses). Re-prepare the
   outfit-tagger's events too, since it keys on `sourceModelVersion`.
-- **Unresolved: Ultralytics YOLOv8 is AGPL-3.0**, which the quality plan's "ship
-  only permissive (MIT/Apache) weights" guardrail forbids. `matcher/yolov8n.pt` is
-  committed but was never exported to ONNX, and AGPL §13 network-use makes a public
-  web service the aggressive case. A permissive swap (YOLOX / RTMDet / RT-DETR,
-  all Apache-2.0) needs a new decode path in `models/person.py`, since only the
-  YOLOv8 output layout is implemented.
+- **License: RESOLVED — the project is AGPL-3.0.** `8ebb394` relicensed MIT →
+  AGPL-3.0 *because* the bundled Ultralytics YOLOv8 detector is AGPL and makes the
+  combined work AGPL, so LICENSE and NOTICE now agree and YOLOv8 is the sanctioned
+  detector. The quality plan's old "permissive weights only" guardrail is
+  superseded for copyleft (non-commercial/research-only weights are still out).
+  If you ever swap in a permissive detector (YOLOX / RTMDet / RT-DETR, Apache-2.0)
+  to narrow the §13 obligation, note `models/person.py` implements ONLY the YOLOv8
+  output layout and needs a new decode path.
+- **Export the detector with `matcher/scripts/export_yolov8.py`**, not a bare
+  `yolo export`. It asserts the three things `models/person.py` silently depends
+  on: a single rank-3 `(1, 4+num_classes, N)` output, **class 0 == `person`**
+  (that is what makes column 4 the person score), and that the exported graph
+  driven through the real `PersonDetector` actually finds the people in
+  Ultralytics' bundled samples. A `yolo export` one-liner in a comment is what
+  this repo had before, and it was never run.
 - Note `azure-webapp/matcher/models/registry.py` is at `@m0` with **no** yolov8n
   token — that copy was always honest; the bad tag is cloud-webapp-only.
 
