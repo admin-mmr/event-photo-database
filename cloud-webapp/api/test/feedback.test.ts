@@ -124,3 +124,83 @@ describe('POST /api/feedback (B7)', () => {
     expect(added[0]!.doc).toMatchObject({ runId: 'run-old', searchVersion: null, algo: null });
   });
 });
+
+describe('POST /api/feedback/batch ("all me" / "all not me")', () => {
+  const app = buildServer();
+
+  beforeEach(() => {
+    added.length = 0;
+    for (const k of Object.keys(runs)) delete runs[k];
+  });
+
+  function batch(body: unknown, user: string | null = USER) {
+    const req = request(app).post('/api/feedback/batch');
+    if (user) req.set('x-test-user', user);
+    return req.send(body as object);
+  }
+
+  it('requires auth', async () => {
+    const res = await batch({ eventId: 'ev1', photoIds: ['p1'], verdict: 'confirmed' }, null);
+    expect(res.status).toBe(401);
+  });
+
+  it('records one immutable doc per photo, exactly like the clicks it replaces', async () => {
+    const res = await batch({
+      eventId: 'ev1',
+      photoIds: ['p1', 'p2', 'p3'],
+      verdict: 'not_me',
+      runId: 'run-1',
+    });
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ ok: true, recorded: 3 });
+    expect(added).toHaveLength(3);
+    expect(added.map((a) => a.doc.photoId)).toEqual(['p1', 'p2', 'p3']);
+    for (const a of added) {
+      expect(a.collection).toBe('match_feedback');
+      expect(a.doc).toMatchObject({ uid: 'u1', eventId: 'ev1', verdict: 'not_me', runId: 'run-1' });
+    }
+  });
+
+  it('resolves the run algorithm ONCE for the whole batch', async () => {
+    runs['run-7'] = { algo: { version: '2026.07-x', tnorm: true, prf: false, prfCount: 0, numReferences: 1 } };
+    const res = await batch({
+      eventId: 'ev1',
+      photoIds: ['p1', 'p2', 'p3', 'p4'],
+      verdict: 'confirmed',
+      runId: 'run-7',
+    });
+    expect(res.status).toBe(201);
+    // Every vote still carries the snapshot — the saving is the lookup, not the label.
+    for (const a of added) {
+      expect(a.doc.searchVersion).toBe('2026.07-x');
+      expect(a.doc.algo).toMatchObject({ tnorm: true });
+    }
+  });
+
+  it('collapses duplicate photoIds within one request', async () => {
+    const res = await batch({ eventId: 'ev1', photoIds: ['p1', 'p1', 'p2'], verdict: 'confirmed' });
+    expect(res.body.recorded).toBe(2);
+    expect(added.map((a) => a.doc.photoId)).toEqual(['p1', 'p2']);
+  });
+
+  it('rejects an empty list and a batch past the page-size cap', async () => {
+    expect((await batch({ eventId: 'ev1', photoIds: [], verdict: 'confirmed' })).status).toBe(400);
+    const tooMany = Array.from({ length: 201 }, (_, i) => `p${i}`);
+    expect((await batch({ eventId: 'ev1', photoIds: tooMany, verdict: 'confirmed' })).status).toBe(400);
+    expect(added).toHaveLength(0);
+  });
+
+  it('rejects an unknown verdict', async () => {
+    const res = await batch({ eventId: 'ev1', photoIds: ['p1'], verdict: 'maybe' });
+    expect(res.status).toBe(400);
+    expect(added).toHaveLength(0);
+  });
+
+  it('writes a full page without dropping any', async () => {
+    const ids = Array.from({ length: 200 }, (_, i) => `p${i}`);
+    const res = await batch({ eventId: 'ev1', photoIds: ids, verdict: 'not_me' });
+    expect(res.status).toBe(201);
+    expect(res.body.recorded).toBe(200);
+    expect(added).toHaveLength(200);
+  });
+});

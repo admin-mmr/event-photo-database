@@ -12,10 +12,12 @@
 
 import { Router } from 'express';
 import {
+  FeedbackBatchRequestSchema,
   FeedbackRequestSchema,
   FeedbackVerdictSchema,
   SearchAlgoSchema,
   type FeedbackResponse,
+  type FeedbackBatchResponse,
   type FeedbackItem,
   type FeedbackVerdict,
   type AdminFeedbackResponse,
@@ -90,6 +92,72 @@ feedbackRouter.post('/feedback', requireAuth, async (req, res, next) => {
       'match feedback recorded',
     );
     const body: FeedbackResponse = { ok: true, feedbackId: ref.id };
+    res.status(201).json(body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/feedback/batch — one verdict over several results ("all me").
+ *
+ * The UI offers this only for the results currently on screen, so the list is
+ * bounded by the page size (MAX_FEEDBACK_BATCH). Each photoId still becomes its
+ * own immutable `match_feedback` doc — identical to the clicks it replaces —
+ * so nothing downstream has to know a batch happened.
+ *
+ * The saving is the round trips and, more importantly, the run lookup:
+ * `resolveRunAlgo` runs ONCE for the whole batch instead of once per vote. The
+ * writes themselves are still individual `add()` calls (the store's WriteBatch
+ * only does deletes), run in bounded chunks so a full page can't open 200
+ * concurrent writes.
+ */
+const BATCH_WRITE_CONCURRENCY = 20;
+
+feedbackRouter.post('/feedback/batch', requireAuth, async (req, res, next) => {
+  try {
+    const parsed = FeedbackBatchRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({
+        ok: false,
+        error: 'invalid_request',
+        message:
+          parsed.error.issues[0]?.message ?? 'eventId, photoIds and verdict are required',
+      });
+      return;
+    }
+    const { eventId, photoIds, verdict, runId } = parsed.data;
+    const user = req.user!;
+    // A double-tap or an overlapping selection must not record the same photo
+    // twice in one request.
+    const unique = [...new Set(photoIds)];
+
+    const { searchVersion, algo } = await resolveRunAlgo(runId);
+    const createdAt = new Date().toISOString();
+    const row = {
+      uid: user.uid,
+      email: user.email ?? null,
+      eventId,
+      verdict,
+      runId: runId ?? null,
+      searchVersion,
+      algo,
+      createdAt,
+    };
+
+    for (let i = 0; i < unique.length; i += BATCH_WRITE_CONCURRENCY) {
+      const chunk = unique.slice(i, i + BATCH_WRITE_CONCURRENCY);
+      // eslint-disable-next-line no-await-in-loop
+      await Promise.all(
+        chunk.map((photoId) => firestore().collection('match_feedback').add({ ...row, photoId })),
+      );
+    }
+
+    logger.info(
+      { eventId, verdict, runId, searchVersion, uid: user.uid, count: unique.length },
+      'match feedback recorded (batch)',
+    );
+    const body: FeedbackBatchResponse = { ok: true, recorded: unique.length };
     res.status(201).json(body);
   } catch (err) {
     next(err);

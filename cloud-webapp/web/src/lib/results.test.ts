@@ -9,6 +9,7 @@ import {
   displayConfidence,
   DISPLAY_MIDPOINT,
   faceAlertFor,
+  bulkVoteTargets,
 } from './results.js';
 
 function mr(photoId: string, score: number): MatchResult {
@@ -160,5 +161,53 @@ describe('faceAlertFor (selfie warnings)', () => {
   it('outlines nothing when only a LATER selfie has the weak face', () => {
     const alert = faceAlertFor([ref(1), ref(1, { selectedWarnings: ['face_small_in_frame'] })], 'blob:a');
     expect(alert?.selectedFace).toBeNull();
+  });
+});
+
+describe('bulkVoteTargets (what a bulk verdict would label)', () => {
+  const shown = ['a', 'b', 'c', 'd'];
+
+  it('treats everything unjudged on the page as fair game', () => {
+    const t = bulkVoteTargets(shown, new Set(), () => false);
+    expect(t.unvoted).toEqual(shown);
+    expect(t.rest).toEqual(shown);
+    expect(t.selected).toEqual([]);
+  });
+
+  it('never re-labels a photo the user already confirmed', () => {
+    const t = bulkVoteTargets(shown, new Set(['a', 'c']), () => false);
+    expect(t.unvoted).toEqual(['b', 'd']);
+  });
+
+  it('splits on the download ticks', () => {
+    const ticked = new Set(['b', 'd']);
+    const t = bulkVoteTargets(shown, new Set(), (id) => ticked.has(id));
+    expect(t.selected).toEqual(['b', 'd']);
+    expect(t.rest).toEqual(['a', 'c']);
+  });
+
+  it('a ticked photo that was already confirmed is not labelled twice', () => {
+    const ticked = new Set(['a', 'b']);
+    const t = bulkVoteTargets(shown, new Set(['a']), (id) => ticked.has(id));
+    expect(t.selected).toEqual(['b']);
+    expect(t.rest).toEqual(['c', 'd']);
+  });
+
+  it('selected and rest partition unvoted exactly — no photo in both, none lost', () => {
+    const ticked = new Set(['a', 'd']);
+    const t = bulkVoteTargets(shown, new Set(['c']), (id) => ticked.has(id));
+    expect([...t.selected, ...t.rest].sort()).toEqual([...t.unvoted].sort());
+    expect(t.selected.filter((id) => t.rest.includes(id))).toEqual([]);
+  });
+
+  it('is empty when the page is fully judged', () => {
+    const t = bulkVoteTargets(shown, new Set(shown), () => true);
+    expect(t).toEqual({ unvoted: [], selected: [], rest: [] });
+  });
+
+  it('only ever covers the page it was given', () => {
+    // The whole result set is larger; the page is what's passed in.
+    const t = bulkVoteTargets(['a', 'b'], new Set(), () => false);
+    expect(t.unvoted).toEqual(['a', 'b']);
   });
 });
