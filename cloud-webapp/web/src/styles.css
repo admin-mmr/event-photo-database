@@ -1338,6 +1338,61 @@ pre.error {
   margin-top: 10px;
 }
 
+/* Crop editor: the box is positioned in percentages over the image, so it stays
+   glued to it at any rendered width. touch-action:none is what makes a drag
+   work on a phone — without it the browser scrolls the page instead. */
+.crop-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.crop-editor p {
+  margin: 0;
+}
+
+.crop-frame {
+  position: relative;
+  max-width: 420px;
+  margin: 4px 0;
+  line-height: 0;
+  touch-action: none;
+  user-select: none;
+  /* Clips the crop box's 9999px dim shadow. Without it the shadow escapes and
+     greys out the entire page, not just the area outside the crop. */
+  overflow: hidden;
+  border-radius: var(--r-sm);
+}
+
+.crop-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--r-sm);
+}
+
+.crop-box {
+  position: absolute;
+  border: 2px solid var(--primary);
+  /* The dim outside the box comes from a huge spread shadow rather than four
+     extra elements. */
+  box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.45);
+  cursor: move;
+}
+
+.crop-handle {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  background: var(--surface);
+  border: 2px solid var(--primary);
+  border-radius: 50%;
+}
+
+.crop-nw { top: -11px; left: -11px; cursor: nwse-resize; }
+.crop-ne { top: -11px; right: -11px; cursor: nesw-resize; }
+.crop-sw { bottom: -11px; left: -11px; cursor: nesw-resize; }
+.crop-se { bottom: -11px; right: -11px; cursor: nwse-resize; }
+
 /* Crop confirmation: prompt beside the face we actually detected. */
 .face-confirm {
   display: flex;
