@@ -1331,6 +1331,21 @@ pre.error {
   margin-left: auto;
 }
 
+/* Opt-in extra, so it reads as a qualifier on the button next to it rather
+   than a second, equal action. */
+.bulk-rest {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.bulk-rest input {
+  margin: 0;
+}
+
 /* Pick-time verdicts on a selfie: a hard refusal, an "is this you?" crop
    confirmation, or a soft quality hint. One shell, since to the user they are
    the same moment in the flow. Previously unstyled — fine for a hint, not for a

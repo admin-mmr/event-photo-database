@@ -222,9 +222,10 @@ const STR = {
     bulkAllMe: 'All me',
     bulkAllNotMe: 'All not me',
     bulkAskSelected: (sel: number, rest: number) =>
-      `You've ticked ${sel} on this page${rest > 0 ? ` and left ${rest} unticked` : ''}. Use that as your answer?`,
-    bulkSelectedAreMe: 'Ticked ones are me',
-    bulkRestNotMe: 'Ticked are me, rest aren’t',
+      `You've ticked ${sel} on this page${rest > 0 ? ` and left ${rest} unticked` : ''}. Mark the ticked ones as you?`,
+    bulkSelectedAreMe: (n: number) => `Yes — ${n} ${n === 1 ? 'photo' : 'photos'} of me`,
+    bulkRestNotMe: (n: number) =>
+      `The other ${n} on this page ${n === 1 ? "isn't" : "aren't"} me`,
     bulkDismiss: 'I’ll do them one by one',
     bulkRecorded: (n: number) => `Recorded ${n} ${n === 1 ? 'photo' : 'photos'}.`,
     meConfirmed: '✓ Me',
@@ -374,9 +375,9 @@ const STR = {
     bulkAllMe: '全部是我',
     bulkAllNotMe: '全部不是我',
     bulkAskSelected: (sel: number, rest: number) =>
-      `本页已勾选 ${sel} 张${rest > 0 ? `，未勾选 ${rest} 张` : ''}。是否据此标注？`,
-    bulkSelectedAreMe: '勾选的是我',
-    bulkRestNotMe: '勾选的是我，其余不是',
+      `本页已勾选 ${sel} 张${rest > 0 ? `，未勾选 ${rest} 张` : ''}。将勾选的标注为您本人？`,
+    bulkSelectedAreMe: (n: number) => `是，这 ${n} 张是我`,
+    bulkRestNotMe: (n: number) => `本页其余 ${n} 张不是我`,
     bulkDismiss: '我逐张确认',
     bulkRecorded: (n: number) => `已记录 ${n} 张照片。`,
     meConfirmed: '✓ 是我',
@@ -546,6 +547,10 @@ export function FindMe(): JSX.Element {
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
   // Hides the bulk-verdict nudge until the page or reference changes.
   const [bulkDismissed, setBulkDismissed] = useState(false);
+  // Opt-in: also mark this page's UNticked results as "not me". Off by default —
+  // people download in batches, so an unticked photo usually means "not this
+  // time", not "not me".
+  const [restNotMe, setRestNotMe] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [saving, setSaving] = useState(false);
   // Save-to-Photos progress (C9): how many originals have been fetched so far.
@@ -718,6 +723,7 @@ export function FindMe(): JSX.Element {
   // A dismissal applies to the page it was made on; a new page is a new ask.
   useEffect(() => {
     setBulkDismissed(false);
+    setRestNotMe(false);
   }, [page, activeId]);
 
   // Keep the page in range if the result set shrinks (e.g. "Not me" removals).
@@ -2017,23 +2023,32 @@ export function FindMe(): JSX.Element {
                   <div className="bulk-vote-actions">
                     {selectedUnvotedCount > 0 ? (
                       /* Their ticks are a judgement they already made photo by
-                         photo — better evidence than a blanket verdict, and the
-                         answer to "500 results, all me?" being obviously no. */
+                         photo — better evidence than a blanket verdict.
+                         Labelling the ticked ones is the whole action; the rest
+                         is an opt-in, because people download in batches and a
+                         half-finished selection says nothing about what's left. */
                       <>
-                        <button
-                          className="btn btn-sm btn-light"
-                          onClick={() => handleSelectionVote(activeRef, 'selected-only')}
-                        >
-                          {t.bulkSelectedAreMe}
-                        </button>
                         {unvotedOnPage.length > selectedUnvotedCount && (
-                          <button
-                            className="btn btn-sm btn-light"
-                            onClick={() => handleSelectionVote(activeRef, 'rest-not-me')}
-                          >
-                            {t.bulkRestNotMe}
-                          </button>
+                          <label className="bulk-rest">
+                            <input
+                              type="checkbox"
+                              checked={restNotMe}
+                              onChange={(e) => setRestNotMe(e.target.checked)}
+                            />
+                            <span>{t.bulkRestNotMe(unvotedOnPage.length - selectedUnvotedCount)}</span>
+                          </label>
                         )}
+                        <button
+                          className="btn btn-sm btn-primary"
+                          onClick={() =>
+                            handleSelectionVote(
+                              activeRef,
+                              restNotMe ? 'rest-not-me' : 'selected-only',
+                            )
+                          }
+                        >
+                          {t.bulkSelectedAreMe(selectedUnvotedCount)}
+                        </button>
                       </>
                     ) : (
                       <>
