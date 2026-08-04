@@ -11,6 +11,8 @@ import type {
   SelfieCheckResponse,
   SelfieFaceReason,
   SelfieFaceWarning,
+  FeedbackBatchRequest,
+  FeedbackBatchResponse,
 } from '@cloud-webapp/shared';
 import { SelfieFaceReasonSchema } from '@cloud-webapp/shared';
 import {
@@ -33,6 +35,7 @@ import {
   scoreBand,
   displayConfidence,
   faceAlertFor,
+  bulkVoteTargets,
   type FaceAlert,
 } from '../lib/results.js';
 import { analyzePhoto, type QualityResult, type QualityIssue } from '../lib/photoQuality.js';
@@ -214,6 +217,16 @@ const STR = {
     deselectPhoto: 'Deselect photo',
     selectPhoto: 'Select photo',
     notMe: 'Not me',
+    bulkAsk: (n: number) =>
+      `${n} more on this page — are they all you?`,
+    bulkAllMe: 'All me',
+    bulkAllNotMe: 'All not me',
+    bulkAskSelected: (sel: number, rest: number) =>
+      `You've ticked ${sel} on this page${rest > 0 ? ` and left ${rest} unticked` : ''}. Use that as your answer?`,
+    bulkSelectedAreMe: 'Ticked ones are me',
+    bulkRestNotMe: 'Ticked are me, rest aren’t',
+    bulkDismiss: 'I’ll do them one by one',
+    bulkRecorded: (n: number) => `Recorded ${n} ${n === 1 ? 'photo' : 'photos'}.`,
     meConfirmed: '✓ Me',
     thatsMe: "That's me",
     addAnotherPhotoBtn: '+ Add another photo',
@@ -357,6 +370,15 @@ const STR = {
     deselectPhoto: '取消选择照片',
     selectPhoto: '选择照片',
     notMe: '不是我',
+    bulkAsk: (n: number) => `本页还有 ${n} 张——都是您吗？`,
+    bulkAllMe: '全部是我',
+    bulkAllNotMe: '全部不是我',
+    bulkAskSelected: (sel: number, rest: number) =>
+      `本页已勾选 ${sel} 张${rest > 0 ? `，未勾选 ${rest} 张` : ''}。是否据此标注？`,
+    bulkSelectedAreMe: '勾选的是我',
+    bulkRestNotMe: '勾选的是我，其余不是',
+    bulkDismiss: '我逐张确认',
+    bulkRecorded: (n: number) => `已记录 ${n} 张照片。`,
     meConfirmed: '✓ 是我',
     thatsMe: '是我',
     addAnotherPhotoBtn: '+ 添加另一张照片',
@@ -522,6 +544,8 @@ export function FindMe(): JSX.Element {
   const [faceAlert, setFaceAlert] = useState<FaceAlert | null>(null);
   const [activeId, setActiveId] = useState<string>(COMBINED);
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
+  // Hides the bulk-verdict nudge until the page or reference changes.
+  const [bulkDismissed, setBulkDismissed] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [saving, setSaving] = useState(false);
   // Save-to-Photos progress (C9): how many originals have been fetched so far.
@@ -618,6 +642,19 @@ export function FindMe(): JSX.Element {
     () => visible.slice(page * pageSize, page * pageSize + pageSize),
     [visible, page, pageSize],
   );
+  // Results on this page the user hasn't judged yet. "Judged" means confirmed
+  // OR hidden by a "not me" — but a hidden result has already left `visible`,
+  // so in practice this is the shown set minus the confirmed ones.
+  const unvotedOnPage = useMemo(
+    () => shown.filter((r) => !confirmed.has(r.photoId)).map((r) => r.photoId),
+    [shown, confirmed],
+  );
+  const votedOnPage = shown.length - unvotedOnPage.length;
+  // Offer the bulk verdict once they've judged a few and there is a worthwhile
+  // remainder — not before (nothing to generalize from) and not after (nothing
+  // left to apply it to). Per-reference only: feedback is attached to a runId,
+  // and the Combined view has no single run behind it.
+
   const rangeStart = visible.length === 0 ? 0 : page * pageSize + 1;
   const rangeEnd = Math.min(visible.length, (page + 1) * pageSize);
 
@@ -629,6 +666,23 @@ export function FindMe(): JSX.Element {
   // Stable key for the selected set so prefetch/prune effects only re-run when
   // the set changes, not every render.
   const selectedKey = useMemo(() => [...sel.selected].sort().join(','), [sel.selected]);
+  // Ticked for download AND not yet judged — the photos a selection-driven
+  // verdict would label.
+  const selectedUnvotedCount = useMemo(
+    () => unvotedOnPage.filter((id) => sel.isSelected(id)).length,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [unvotedOnPage, selectedKey],
+  );
+
+  const showBulkPrompt =
+    !isCombined &&
+    Boolean(activeRef) &&
+    !bulkDismissed &&
+    unvotedOnPage.length > 0 &&
+    // Either they've judged a few (so there's a pattern to generalize) or
+    // they've ticked some for download (a judgement in its own right).
+    (votedOnPage > 0 || selectedUnvotedCount > 0);
+
   // All selected originals cached → the batch share can fire synchronously.
   const selectedReady = sel.count > 0 && [...sel.selected].every((id) => Boolean(origBlobs[id]));
   // Every selected original has SETTLED — cached, or its prefetch failed. Once
@@ -660,6 +714,11 @@ export function FindMe(): JSX.Element {
   useEffect(() => {
     setPage(0);
   }, [pageSize, activeId]);
+
+  // A dismissal applies to the page it was made on; a new page is a new ask.
+  useEffect(() => {
+    setBulkDismissed(false);
+  }, [page, activeId]);
 
   // Keep the page in range if the result set shrinks (e.g. "Not me" removals).
   useEffect(() => {
@@ -1232,6 +1291,103 @@ export function FindMe(): JSX.Element {
   function handleConfirm(ref: Reference, photoId: string): void {
     setConfirmed((prev) => new Set(prev).add(photoId));
     void sendFeedback(photoId, 'confirmed', ref.runId).catch(() => undefined);
+  }
+
+  /**
+   * Record one verdict over several photos: optimistic first, reverted if the
+   * write fails — the same contract as the single-vote handlers, which is why
+   * nothing downstream can tell a bulk vote from the clicks it replaces.
+   */
+  function submitVotes(
+    ref: Reference,
+    ids: string[],
+    verdict: 'not_me' | 'confirmed',
+  ): Promise<number> {
+    if (ids.length === 0) return Promise.resolve(0);
+
+    if (verdict === 'confirmed') {
+      setConfirmed((prev) => new Set([...prev, ...ids]));
+    } else {
+      setReferences((prev) =>
+        prev.map((r) => (r.id === ref.id ? { ...r, hidden: new Set([...r.hidden, ...ids]) } : r)),
+      );
+      for (const id of ids) if (sel.isSelected(id)) sel.toggle(id);
+    }
+
+    const body: FeedbackBatchRequest = {
+      eventId,
+      photoIds: ids,
+      verdict,
+      ...(ref.runId !== undefined ? { runId: ref.runId } : {}),
+    };
+    return apiPost<FeedbackBatchResponse, FeedbackBatchRequest>('/api/feedback/batch', body)
+      .then(() => ids.length)
+      .catch((e: unknown) => {
+        // Put them back rather than silently losing real matches — the same
+        // reasoning as the single "not me" revert.
+        if (verdict === 'confirmed') {
+          setConfirmed((prev) => new Set([...prev].filter((id) => !ids.includes(id))));
+        } else {
+          setReferences((prev) =>
+            prev.map((r) =>
+              r.id === ref.id
+                ? { ...r, hidden: new Set([...r.hidden].filter((id) => !ids.includes(id))) }
+                : r,
+            ),
+          );
+        }
+        throw e;
+      });
+  }
+
+  /**
+   * Apply one verdict to every result on this page the user hasn't judged yet.
+   *
+   * Scoped to `shown` — the current page — never the whole result set. Someone
+   * with 800 matches should not be able to label 800 photos from a screen
+   * showing 50 of them; they judge a page, page on, judge the next. That also
+   * keeps the request inside MAX_FEEDBACK_BATCH by construction.
+   */
+  function handleBulkVote(ref: Reference, verdict: 'not_me' | 'confirmed'): void {
+    runBulk(submitVotes(ref, unvotedOnPage, verdict));
+  }
+
+  /**
+   * Label from the download selection instead of a blanket verdict.
+   *
+   * A blanket "all me" over a big page is where wrong labels come from; the
+   * ticks are already a careful judgement the user made photo by photo, so
+   * reusing them is strictly better evidence. What the UNTICKED ones mean is
+   * genuinely ambiguous — "not me", or "me but blurry and I don't want it" —
+   * so that is the user's call, not an inference:
+   *
+   *   'selected-only'  ticked → me. Unticked left unlabelled.
+   *   'rest-not-me'    ticked → me, unticked → not me.
+   */
+  function handleSelectionVote(ref: Reference, mode: 'selected-only' | 'rest-not-me'): void {
+    const { selected: selectedIds, rest: restIds } = bulkVoteTargets(
+      pageIds,
+      confirmed,
+      sel.isSelected,
+    );
+    const work =
+      mode === 'selected-only'
+        ? submitVotes(ref, selectedIds, 'confirmed')
+        : // Sequential: the "not me" pass hides its photos, and letting that
+          // race the confirm pass would reorder the page under the user.
+          submitVotes(ref, selectedIds, 'confirmed').then(async (n) =>
+            n + (await submitVotes(ref, restIds, 'not_me')),
+          );
+    runBulk(work);
+  }
+
+  /** Shared bookkeeping around any bulk verdict. */
+  function runBulk(work: Promise<number>): void {
+    setBulkDismissed(true);
+    setError(null);
+    work
+      .then((n) => setStatus(t.bulkRecorded(n)))
+      .catch(() => setError(t.feedbackFailed));
   }
 
   async function downloadSelected(): Promise<void> {
@@ -1847,6 +2003,62 @@ export function FindMe(): JSX.Element {
                 <p className="muted batch-hint">
                   {t.showingRange(rangeStart, rangeEnd, visible.length)}
                 </p>
+              )}
+              {showBulkPrompt && activeRef && (
+                /* They've judged a few on this page; offer to finish the rest
+                   in one go. Deliberately scoped to this page — see
+                   handleBulkVote. */
+                <div className="bulk-vote" role="status">
+                  <span>
+                    {selectedUnvotedCount > 0
+                      ? t.bulkAskSelected(selectedUnvotedCount, unvotedOnPage.length - selectedUnvotedCount)
+                      : t.bulkAsk(unvotedOnPage.length)}
+                  </span>
+                  <div className="bulk-vote-actions">
+                    {selectedUnvotedCount > 0 ? (
+                      /* Their ticks are a judgement they already made photo by
+                         photo — better evidence than a blanket verdict, and the
+                         answer to "500 results, all me?" being obviously no. */
+                      <>
+                        <button
+                          className="btn btn-sm btn-light"
+                          onClick={() => handleSelectionVote(activeRef, 'selected-only')}
+                        >
+                          {t.bulkSelectedAreMe}
+                        </button>
+                        {unvotedOnPage.length > selectedUnvotedCount && (
+                          <button
+                            className="btn btn-sm btn-light"
+                            onClick={() => handleSelectionVote(activeRef, 'rest-not-me')}
+                          >
+                            {t.bulkRestNotMe}
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          className="btn btn-sm btn-light"
+                          onClick={() => handleBulkVote(activeRef, 'confirmed')}
+                        >
+                          {t.bulkAllMe}
+                        </button>
+                        <button
+                          className="btn btn-sm btn-light"
+                          onClick={() => handleBulkVote(activeRef, 'not_me')}
+                        >
+                          {t.bulkAllNotMe}
+                        </button>
+                      </>
+                    )}
+                    <button
+                      className="btn-inline-link"
+                      onClick={() => setBulkDismissed(true)}
+                    >
+                      {t.bulkDismiss}
+                    </button>
+                  </div>
+                </div>
               )}
               <SelectBar
                 total={pageIds.length}

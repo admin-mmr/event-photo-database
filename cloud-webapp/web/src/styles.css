@@ -1309,6 +1309,28 @@ pre.error {
   }
 }
 
+/* "N more on this page — are they all you?" Sits between the range hint and the
+   select bar, so it reads as part of judging the page rather than a dialog. */
+.bulk-vote {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+  padding: 10px 14px;
+  background: var(--primary-weak);
+  border: 1px solid var(--primary);
+  border-radius: var(--r-md);
+}
+
+.bulk-vote-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
 /* Pick-time verdicts on a selfie: a hard refusal, an "is this you?" crop
    confirmation, or a soft quality hint. One shell, since to the user they are
    the same moment in the flow. Previously unstyled — fine for a hint, not for a

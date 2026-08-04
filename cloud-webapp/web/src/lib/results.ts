@@ -129,3 +129,29 @@ export function faceAlertFor(
     selectedFace: primaryIsSubject ? primary.selectedFace : null,
   };
 }
+
+/**
+ * Which photos on the CURRENT PAGE a bulk verdict would label.
+ *
+ * Pulled out and tested on its own because this is the mislabelling surface: a
+ * page of 200 results, one tap, and every id in the wrong bucket is a false
+ * label in the eval set. The rules are deliberately narrow —
+ *
+ *  - only what is on screen (`shownIds`), never the whole result set;
+ *  - never a photo the user already judged (`confirmed`; a "not me" has already
+ *    left the visible list, so it cannot appear here);
+ *  - `selected` mirrors the download ticks, which are a per-photo judgement the
+ *    user already made, and `rest` is everything else still unjudged.
+ */
+export function bulkVoteTargets(
+  shownIds: readonly string[],
+  confirmed: ReadonlySet<string>,
+  isSelected: (id: string) => boolean,
+): { unvoted: string[]; selected: string[]; rest: string[] } {
+  const unvoted = shownIds.filter((id) => !confirmed.has(id));
+  return {
+    unvoted,
+    selected: unvoted.filter(isSelected),
+    rest: unvoted.filter((id) => !isSelected(id)),
+  };
+}

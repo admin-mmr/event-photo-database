@@ -28,6 +28,38 @@ export const FeedbackResponseSchema = z.object({
 export type FeedbackResponse = z.infer<typeof FeedbackResponseSchema>;
 
 /**
+ * Most votes one batch may carry. Matches the largest Find Me page size
+ * (FINDME_PAGE_SIZE_OPTIONS caps at 200), because the UI only ever offers a
+ * bulk verdict over the results currently ON SCREEN — never the whole result
+ * set. Someone with 800 matches judges them a page at a time, which keeps each
+ * request bounded and keeps the user looking at what they are labelling.
+ */
+export const MAX_FEEDBACK_BATCH = 200;
+
+/**
+ * One verdict applied to several results at once ("all me" / "all not me").
+ *
+ * Same shape as a single vote with `photoId` widened to a list: each entry
+ * still becomes its own immutable `match_feedback` doc, so the eval loop sees
+ * no difference between a bulk vote and the clicks it replaces. Batching is a
+ * transport concern, not a data-model one.
+ */
+export const FeedbackBatchRequestSchema = z.object({
+  eventId: z.string().min(1),
+  photoIds: z.array(z.string().min(1)).min(1).max(MAX_FEEDBACK_BATCH),
+  verdict: FeedbackVerdictSchema,
+  runId: z.string().optional(),
+});
+export type FeedbackBatchRequest = z.infer<typeof FeedbackBatchRequestSchema>;
+
+export const FeedbackBatchResponseSchema = z.object({
+  ok: z.literal(true),
+  /** Votes actually written (duplicates within the request are collapsed). */
+  recorded: z.number(),
+});
+export type FeedbackBatchResponse = z.infer<typeof FeedbackBatchResponseSchema>;
+
+/**
  * Admin review queue (dev plan M4.4 / FR-16/FR-17). One recorded vote, surfaced
  * to admins so they can audit wrong/confirmed matches and feed model tuning.
  */
