@@ -1,0 +1,23 @@
+{
+  "displayName": "Find Me — searcher stuck on selfie upload",
+  "documentation": {
+    "content": "A Find Me searcher had their selfie refused several times in a row and was shown the admin@mmrunners.org escape hatch. The log entry's jsonPayload carries `context.streak` (how many consecutive rejections), `context.reasons` (the refusal codes — e.g. multiple_faces, no_face, too_blurry), `context.eventId`, plus `uid` and `by` (email, absent for guests).\n\nThis fires from the SAME /api/client-errors path as browser crashes, so it also matches the general error-alert policy. Filter on `jsonPayload.kind=\"selfie_stuck\"` (as below) to route it separately — it is a usability signal, not an outage: someone is about to give up on finding their photos. Reasons that repeat across users point at a real problem (a detector regression, or wording that isn't landing); reasons that vary usually mean one person with an awkward photo.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Repeated selfie rejections reported by the web client",
+      "conditionMatchedLog": {
+        "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"event-photo-api\" AND jsonPayload.clientError=true AND jsonPayload.kind=\"selfie_stuck\""
+      }
+    }
+  ],
+  "alertStrategy": {
+    "notificationRateLimit": { "period": "300s" },
+    "autoClose": "1800s"
+  },
+  "notificationChannels": [
+    "projects/mmr-data-pipeline/notificationChannels/2707820505476417914"
+  ]
+}

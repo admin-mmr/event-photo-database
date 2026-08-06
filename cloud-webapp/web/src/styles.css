@@ -1430,6 +1430,15 @@ pre.error {
 .crop-sw { bottom: -11px; left: -11px; cursor: nesw-resize; }
 .crop-se { bottom: -11px; right: -11px; cursor: nwse-resize; }
 
+/* The "email us" escape hatch, after repeated rejections. Sits inside the
+   refusal box, separated from the reasons above it. */
+.stuck-help {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--warn);
+  font-size: 14px;
+}
+
 /* Crop confirmation: prompt beside the face we actually detected. */
 .face-confirm {
   display: flex;
