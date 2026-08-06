@@ -131,9 +131,33 @@ class BlobStore:
             return self._container.has(self._key(rel))
         return os.path.exists(os.path.join(self.root, rel))
 
+    def remove(self, rel: str) -> None:
+        """Delete one blob. **A missing blob is not an error.**
+
+        Every caller depends on that: the indexer's removal sweep re-runs from
+        scratch whenever a run dies before writing the manifest, and
+        `deletePhotoDerivatives` in `api/src/services/gcsService.ts` makes the
+        same promise on the TypeScript side ("a re-delete is a no-op").
+        """
+        if self.backend == "gcs":
+            # Lazy, like the client in __init__ — a local run installs no SDK.
+            from google.api_core.exceptions import NotFound
+
+            try:
+                self._bucket.blob(self._key(rel)).delete()
+            except NotFound:
+                pass
+        elif self.backend == "azure":
+            self._container.delete(self._key(rel))
+        else:
+            try:
+                os.remove(os.path.join(self.root, rel))
+            except FileNotFoundError:
+                pass
+
 
 class _AzureContainer:
-    """The three operations BlobStore needs, and the ONLY place
+    """The four operations BlobStore needs, and the ONLY place
     `azure.storage.blob` is touched.
 
     A narrow port rather than the raw ContainerClient (which is what the first
@@ -165,6 +189,16 @@ class _AzureContainer:
 
     def has(self, key: str) -> bool:
         return self._c.get_blob_client(key).exists()
+
+    def delete(self, key: str) -> None:
+        # Azure raises on a missing blob where GCS's delete is the same call;
+        # swallowing it here is what makes BlobStore.remove idempotent on both.
+        from azure.core.exceptions import ResourceNotFoundError
+
+        try:
+            self._c.delete_blob(key)
+        except ResourceNotFoundError:
+            pass
 
 
 def _azure_container(root: AzureRoot) -> _AzureContainer:

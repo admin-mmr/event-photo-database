@@ -94,6 +94,53 @@
   Symptom of missing CORS: Save-to-Photos / Download-ZIP fail in the browser
   console with a CORS error while the signed URL itself opens fine in a new tab.
 
+## Stranded derivatives — the indexer sweeps them now; a script cleans the backlog
+
+- **Every photo owns three objects** (`photos/{orig,web,thumb}/<photoId>`), and
+  `orig` is ~94% of the derivatives bucket's bytes. Until this landed, nothing
+  ever collected them: `indexer/job.py`'s removal path deleted the Firestore doc
+  and left the bytes, so a photo leaving Drive stranded its objects **forever** —
+  only a whole-event delete (`gcsService.deleteEventDerivatives`) swept them.
+- **`run()` now sweeps as photos leave**, via `_remove_photo_blobs` +
+  `BlobStore.remove` (new; the store previously had no delete at all). Keep these:
+  - **The Firestore doc goes FIRST, the bytes second.** The doc is what the
+    gallery lists, so there is never a window where a listed photo 404s its thumb.
+  - **The sweep is best-effort** — a failed delete logs and continues. The doc is
+    already gone, so the photo is out of the gallery either way, and a stray
+    object must not fail an otherwise good run.
+  - **`remove` must treat a missing blob as success** on all three backends (GCS
+    is forgiving, Azure raises, so `_AzureContainer.delete` swallows
+    `ResourceNotFoundError`). The manifest is written only at the END of a run, so
+    a run that dies mid-sweep leaves the photo in `prev_photos` and the next run
+    re-sweeps it — idempotence is what makes that safe, not politeness.
+  - **`mimeType` comes from the PREVIOUS manifest row**, not Drive: the photo is
+    gone, so the `orig` extension can only be reconstructed from what was stored.
+  - The carve-out for a photo that merely FAILED to download applies to bytes too
+    — sweeping a transient failure's derivatives would blank a live photo in the
+    gallery until the next re-embed. Both are pinned by tests in `test_job.py`.
+- **The backlog needs `./cloud-webapp/infra/scripts/sweep-stranded-derivatives.sh`**
+  (dry run by default, `--apply` to delete). The fix above only sees photos as
+  they leave; anything stranded earlier is in no manifest, so no future run will
+  ever look at it again. Measured 2026-08-05: **3,663 objects / 7.44 GiB**, all in
+  two events, every one a byte-identical duplicate that lost canonical status in a
+  past run (its bytes still exist under the canonical photoId).
+  - **Four conditions gate a delete** — absent from the manifest's `photos`,
+    **no Firestore `photos/<id>` doc** (the decisive one: `download.ts` reads that
+    doc before signing, so a doc means the bytes are still reachable), event not
+    mid-index, and object older than `MIN_AGE_HOURS` (24).
+  - **The in-flight and age guards are not paranoia.** The indexer writes a
+    photo's objects during the run but the manifest only at the END, so mid-run a
+    brand-new photo looks *exactly* like a stranded one — deleting it would
+    destroy that run's work. An event with `indexState` queued/running is skipped,
+    and a missing/unreadable state counts as in-flight. An event with no manifest
+    is skipped too: there is no way to tell live from stranded, and guessing
+    deletes photos.
+  - **Verify the Firestore check is not vacuous if you touch it.** If
+    `firestore_photo_ids` ever returns an empty set, every object looks safe and
+    the tool becomes a bulk deleter. Test it against known-live photoIds and
+    assert they come back found — a run reporting "0 still have a Firestore doc"
+    is indistinguishable from a broken check.
+
 ## Duplicate-file removal (three layers, don't confuse them)
 
 - "Duplicates" means three different things in this repo; a bug report about
@@ -697,6 +744,16 @@
   no original dimensions, so a box cannot be soundly rescaled onto a web copy —
   and the downscale is what destroys the detail a head crop exists for. A photo
   whose original is missing is SKIPPED and recorded, never guessed at.
+  - **But outfit-tagger is NOT why `photos/orig/` exists, and must not be
+    mistaken for its only consumer.** `signOrigUrl` serves it to users —
+    `download.ts` signs it for "Save to Photos", the full-res lightbox and the
+    bulk-ZIP — which is the whole Hosting-egress fix above. A cost review of the
+    derivatives bucket read this section, concluded `orig/` was outfit-tagger
+    scratch space, and came within one confirmation of deleting 109 GiB that the
+    gallery depends on. `signOrigUrl` does NOT check the object exists, so the
+    damage would have surfaced as browser-side 404s with nothing in the api logs.
+    Grep the TypeScript as well as the Python before calling any derivative
+    unused.
 - **The prepare pass is a Cloud Run JOB (`outfit-prepare`), not an endpoint.**
   ~3,000 crops for a 1,600-photo event is minutes of CPU-ONNX work; this is the
   same 60s ceiling that broke duplicate removal, folder rebuild, and the upload

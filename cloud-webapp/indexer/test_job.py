@@ -201,6 +201,65 @@ def test_deleted_photo_rows_and_doc_removed(env):
     assert faces.shape == (1, DIM)
 
 
+def test_deleted_photo_derivatives_are_swept(env):
+    """The bytes go too, not just the row and the doc.
+
+    This leaked for the bucket's entire history: only a whole-event delete ever
+    collected these, so every photo that left Drive stranded its mirrored
+    original (~94% of the bucket's bytes) forever.
+    """
+    drive, fs, blobs = env
+    _run(drive, fs, blobs)
+    assert blobs.exists("ev1/photos/orig/f2.png")
+    del drive.files["f2"]
+
+    _run(drive, fs, blobs)
+    assert not blobs.exists("ev1/photos/orig/f2.png")
+    assert not blobs.exists("ev1/photos/web/f2.jpg")
+    assert not blobs.exists("ev1/photos/thumb/f2.jpg")
+    # The surviving photo keeps all three.
+    assert blobs.exists("ev1/photos/orig/f1.png")
+    assert blobs.exists("ev1/photos/web/f1.jpg")
+    assert blobs.exists("ev1/photos/thumb/f1.jpg")
+
+
+def test_a_photo_still_in_drive_keeps_its_derivatives(env):
+    """The sweep follows `removed`, so the transient-failure carve-out must hold
+    for bytes as well as for rows — deleting the derivatives of a photo that only
+    failed to download would blank it in the gallery until the next re-embed."""
+    drive, fs, blobs = env
+    _run(drive, fs, blobs)
+
+    def failing_download(file_id):
+        if file_id == "f2":
+            raise RuntimeError("transient Drive 5xx")
+        return drive.files[file_id]["data"]
+
+    drive.files["f2"]["md5Checksum"] = "md5-b2"  # force a re-download
+    drive.download = failing_download
+
+    summary = _run(drive, fs, blobs)
+    assert summary["removed"] == 0 and summary["skipped"] == 1
+    assert blobs.exists("ev1/photos/orig/f2.png")
+
+
+def test_sweep_failure_does_not_fail_the_run(env):
+    """A stray object must not cost an otherwise good run: the doc is already
+    gone, so the photo is out of the gallery either way."""
+    drive, fs, blobs = env
+    _run(drive, fs, blobs)
+    del drive.files["f2"]
+
+    def failing_remove(rel):
+        raise RuntimeError("bucket said no")
+
+    blobs.remove = failing_remove
+
+    summary = _run(drive, fs, blobs)
+    assert summary["removed"] == 1 and summary["photoCount"] == 1
+    assert "f2" not in fs.photos
+
+
 def test_model_version_bump_full_reembed(env):
     drive, fs, blobs = env
     _run(drive, fs, blobs)

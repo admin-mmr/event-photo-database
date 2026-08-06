@@ -362,6 +362,31 @@ def _write_store(blobs, event_id: str, manifest: dict,
                 content_type="application/json")
 
 
+def _remove_photo_blobs(blobs, event_id: str, pid: str, mime_type: str | None) -> None:
+    """Delete the three derivatives of a photo that is no longer in Drive.
+
+    Mirrors `deletePhotoDerivatives` in `api/src/services/gcsService.ts` — same
+    three keys, same idempotence. `mime_type` comes from the PREVIOUS manifest
+    row (the photo is gone from Drive, so it cannot be re-read) and reconstructs
+    the exact `orig` extension this indexer wrote; an unknown type was stored
+    under `bin`, so it is swept under `bin` too.
+
+    Best-effort on purpose: the Firestore doc is already deleted, so the photo is
+    out of the gallery whatever happens here, and a stray object must not fail an
+    otherwise good run. Nothing is lost by failing — a run that dies leaves the
+    manifest unwritten, so the next one still sees this photo in `prev_photos`
+    and sweeps it again.
+    """
+    ext = ORIG_EXT_BY_MIME.get(mime_type or "", "bin")
+    for rel in (f"{event_id}/photos/orig/{pid}.{ext}",
+                f"{event_id}/photos/web/{pid}.jpg",
+                f"{event_id}/photos/thumb/{pid}.jpg"):
+        try:
+            blobs.remove(rel)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("derivative sweep skipped %s (%s)", rel, exc)
+
+
 # ── the run ──────────────────────────────────────────────────────────────────
 
 def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
@@ -651,6 +676,19 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
     for pid in removed:
         fs.delete_photo(pid)
     if removed:
+        # ...and their bytes. Nothing else ever collected these: until this
+        # existed, a photo that left Drive kept its orig/web/thumb objects
+        # forever, and only a whole-event delete
+        # (gcsService.deleteEventDerivatives) ever swept them. The mirrored
+        # original is ~94% of the bucket's bytes, so every removal leaked.
+        #
+        # Concurrent because a removal set can be the entire event (3 deletes
+        # each), and sequential ones would make a big cleanup look like a hang.
+        with ThreadPoolExecutor(max_workers=max(1, min(workers, len(removed)))) as pool:
+            list(pool.map(
+                lambda pid: _remove_photo_blobs(
+                    blobs, cfg.event_id, pid, prev_photos[pid].get("mimeType")),
+                removed))
         log.info("removed %d photos no longer in Drive", len(removed))
 
     faces = (np.stack([np.asarray(v, np.float32) for v in faces_vecs])
