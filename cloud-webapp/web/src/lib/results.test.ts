@@ -10,6 +10,7 @@ import {
   DISPLAY_MIDPOINT,
   faceAlertFor,
   bulkVoteTargets,
+  shouldAskBeforeLeaving,
 } from './results.js';
 
 function mr(photoId: string, score: number): MatchResult {
@@ -209,5 +210,34 @@ describe('bulkVoteTargets (what a bulk verdict would label)', () => {
     // The whole result set is larger; the page is what's passed in.
     const t = bulkVoteTargets(['a', 'b'], new Set(), () => false);
     expect(t.unvoted).toEqual(['a', 'b']);
+  });
+});
+
+describe('shouldAskBeforeLeaving (page-turn checkpoint)', () => {
+  const base = { unvoted: 10, voted: 0, selected: 0, asked: false, canVote: true };
+
+  it('asks when they judged some and left others', () => {
+    expect(shouldAskBeforeLeaving({ ...base, voted: 3 })).toBe(true);
+  });
+
+  it('asks when they ticked photos for download', () => {
+    expect(shouldAskBeforeLeaving({ ...base, selected: 2 })).toBe(true);
+  });
+
+  it('stays silent for someone just browsing', () => {
+    // No vote, no tick — scrolling past is not judging.
+    expect(shouldAskBeforeLeaving(base)).toBe(false);
+  });
+
+  it('stays silent when the page is fully judged', () => {
+    expect(shouldAskBeforeLeaving({ ...base, unvoted: 0, voted: 10 })).toBe(false);
+  });
+
+  it('never asks twice on the same page', () => {
+    expect(shouldAskBeforeLeaving({ ...base, voted: 3, asked: true })).toBe(false);
+  });
+
+  it('never asks in the Combined view, which has no run to attach votes to', () => {
+    expect(shouldAskBeforeLeaving({ ...base, voted: 3, canVote: false })).toBe(false);
   });
 });

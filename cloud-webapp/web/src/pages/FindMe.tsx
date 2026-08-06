@@ -36,6 +36,7 @@ import {
   displayConfidence,
   faceAlertFor,
   bulkVoteTargets,
+  shouldAskBeforeLeaving,
   type FaceAlert,
 } from '../lib/results.js';
 import { analyzePhoto, type QualityResult, type QualityIssue } from '../lib/photoQuality.js';
@@ -232,6 +233,8 @@ const STR = {
     bulkRestNotMe: (n: number) =>
       `The other ${n} on this page ${n === 1 ? "isn't" : "aren't"} me`,
     bulkDismiss: 'I’ll do them one by one',
+    bulkLeavingPrefix: 'Before you move on —',
+    bulkSkipAndGo: 'Skip, next page',
     bulkRecorded: (n: number) => `Recorded ${n} ${n === 1 ? 'photo' : 'photos'}.`,
     meConfirmed: '✓ Me',
     thatsMe: "That's me",
@@ -389,6 +392,8 @@ const STR = {
     bulkSelectedAreMe: (n: number) => `是，这 ${n} 张是我`,
     bulkRestNotMe: (n: number) => `本页其余 ${n} 张不是我`,
     bulkDismiss: '我逐张确认',
+    bulkLeavingPrefix: '在离开本页前——',
+    bulkSkipAndGo: '跳过，下一页',
     bulkRecorded: (n: number) => `已记录 ${n} 张照片。`,
     meConfirmed: '✓ 是我',
     thatsMe: '是我',
@@ -572,6 +577,11 @@ export function FindMe(): JSX.Element {
   // people download in batches, so an unticked photo usually means "not this
   // time", not "not me".
   const [restNotMe, setRestNotMe] = useState(false);
+  // A page turn we're holding until they answer (or wave us past). Null when
+  // nothing is pending — the usual case.
+  const [pendingPage, setPendingPage] = useState<number | null>(null);
+  // One interruption per page, ever. The second Next always goes through.
+  const [askedOnPage, setAskedOnPage] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [saving, setSaving] = useState(false);
   // Save-to-Photos progress (C9): how many originals have been fetched so far.
@@ -708,6 +718,10 @@ export function FindMe(): JSX.Element {
     // Either they've judged a few (so there's a pattern to generalize) or
     // they've ticked some for download (a judgement in its own right).
     (votedOnPage > 0 || selectedUnvotedCount > 0);
+  // The same prompt, but raised because they're leaving rather than because
+  // they paused — worth saying differently, since "before you go" is the only
+  // part that makes an interruption reasonable.
+  const leaving = pendingPage !== null;
 
   // All selected originals cached → the batch share can fire synchronously.
   const selectedReady = sel.count > 0 && [...sel.selected].every((id) => Boolean(origBlobs[id]));
@@ -745,6 +759,8 @@ export function FindMe(): JSX.Element {
   useEffect(() => {
     setBulkDismissed(false);
     setRestNotMe(false);
+    setAskedOnPage(false);
+    setPendingPage(null);
   }, [page, activeId]);
 
   // Keep the page in range if the result set shrinks (e.g. "Not me" removals).
@@ -1456,6 +1472,44 @@ export function FindMe(): JSX.Element {
     work
       .then((n) => setStatus(t.bulkRecorded(n)))
       .catch(() => setError(t.feedbackFailed));
+    // Whatever they answered, take them where they were going. The prompt is a
+    // speed bump, not a detour.
+    completePageTurn();
+  }
+
+  /**
+   * Every page change goes through here, so this is the one place a checkpoint
+   * can live. Holding the turn is the only option that works: once `page`
+   * changes, `shown` changes with it and the photos we'd be asking about are
+   * gone — and labelling off-screen photos is the mislabelling risk bulk voting
+   * exists to avoid.
+   */
+  function requestPageChange(next: number): void {
+    const ask = shouldAskBeforeLeaving({
+      unvoted: unvotedOnPage.length,
+      voted: votedOnPage,
+      selected: selectedUnvotedCount,
+      asked: askedOnPage,
+      canVote: !isCombined && Boolean(activeRef),
+    });
+    if (!ask) {
+      setPage(next);
+      return;
+    }
+    setAskedOnPage(true);
+    setPendingPage(next);
+    // Re-open the prompt even if they dismissed it earlier on this page: they
+    // are leaving now, which is new information.
+    setBulkDismissed(false);
+  }
+
+  /** Resume a held page turn, if there is one. */
+  function completePageTurn(): void {
+    // Read the value rather than setPage inside a setPendingPage updater —
+    // updaters must be pure, and StrictMode runs them twice.
+    if (pendingPage === null) return;
+    setPage(pendingPage);
+    setPendingPage(null);
   }
 
   async function downloadSelected(): Promise<void> {
@@ -2125,6 +2179,7 @@ export function FindMe(): JSX.Element {
                    handleBulkVote. */
                 <div className="bulk-vote" role="status">
                   <span>
+                    {leaving && <strong>{t.bulkLeavingPrefix} </strong>}
                     {selectedUnvotedCount > 0
                       ? t.bulkAskSelected(selectedUnvotedCount, unvotedOnPage.length - selectedUnvotedCount)
                       : t.bulkAsk(unvotedOnPage.length)}
@@ -2177,9 +2232,14 @@ export function FindMe(): JSX.Element {
                     )}
                     <button
                       className="btn-inline-link"
-                      onClick={() => setBulkDismissed(true)}
+                      onClick={() => {
+                        setBulkDismissed(true);
+                        // Never a trap: waving the prompt away still takes them
+                        // to the page they asked for.
+                        completePageTurn();
+                      }}
                     >
-                      {t.bulkDismiss}
+                      {leaving ? t.bulkSkipAndGo : t.bulkDismiss}
                     </button>
                   </div>
                 </div>
@@ -2249,7 +2309,7 @@ export function FindMe(): JSX.Element {
                   );
                 })}
               </div>
-              <Pager page={page} pageCount={pageCount} onChange={setPage} />
+              <Pager page={page} pageCount={pageCount} onChange={requestPageChange} />
             </>
           )}
 
