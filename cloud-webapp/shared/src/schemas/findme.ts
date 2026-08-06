@@ -227,6 +227,25 @@ export const SelfieFaceReasonSchema = z.enum([
 export type SelfieFaceReason = z.infer<typeof SelfieFaceReasonSchema>;
 
 /**
+ * Below this `selfieScore`, a selfie is worth commenting on even though it
+ * passed every gate.
+ *
+ * The discrete checks catch FAILURES — no face, too small, too blurry, turned
+ * away past 0.55 frontality. They say nothing about mediocre: a face at
+ * frontality 0.56, 11% of the frame, just the sharp side of the blur floor
+ * clears all of them and still scores ~0.61, and the searcher gets a thin
+ * result set with no idea why.
+ *
+ * PROVISIONAL. Unlike the gates, this number is not backed by judged data — it
+ * is set just above that worked example so the case it exists for actually
+ * trips. It only ever changes what we SAY, never whether a search runs, so a
+ * wrong value costs a needless sentence rather than a lost search. Sweep it
+ * against judged labels before letting it gate anything
+ * (PEOPLE_RECOGNITION_QUALITY_PLAN.md, same treatment as FACE_QUALITY_WEIGHT).
+ */
+export const WEAK_SELFIE_SCORE = 0.65;
+
+/**
  * Advisory (non-blocking) problems with the face a search actually used.
  *
  * Same vocabulary as the pick-time `/selfie-check` advisories, minus

@@ -24,6 +24,9 @@ export type ClientErrorKind =
   | 'unhandled_error'
   | 'unhandled_rejection'
   | 'react_render'
+  /** A searcher's selfie has been refused several times running — not a crash,
+   *  but someone is stuck and about to give up, which ops wants to know. */
+  | 'selfie_stuck'
   | 'client_error';
 
 interface ReportOptions {

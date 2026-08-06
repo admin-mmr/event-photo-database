@@ -14,7 +14,7 @@ import type {
   FeedbackBatchRequest,
   FeedbackBatchResponse,
 } from '@cloud-webapp/shared';
-import { SelfieFaceReasonSchema } from '@cloud-webapp/shared';
+import { SelfieFaceReasonSchema, WEAK_SELFIE_SCORE } from '@cloud-webapp/shared';
 import {
   apiGet,
   apiUpload,
@@ -138,6 +138,11 @@ const STR = {
     qSlightlySoft: 'It’s a little soft — a sharper photo matches better.',
     searchAnyway: 'Search anyway',
     rejectedTitle: 'We can’t search with that photo',
+    stuckHelp: 'Still not working? Tell us what’s happening and we’ll look into it —',
+    stuckSubject: 'Find Me — my photo keeps getting rejected',
+    weakSelfieTitle: 'This photo will work, but not well',
+    weakSelfieBody:
+      'Nothing’s wrong with it exactly — it’s just not a strong reference, so you may see fewer of your photos than you should. A clear, close, front-on shot finds more.',
     reframeTitle: 'We’ve zoomed in on you',
     reframeBody:
       'You were small in the original, so we cropped in. Check it’s you, adjust it, or pick another photo — we’ll search with the version shown here.',
@@ -303,6 +308,11 @@ const STR = {
     qSlightlySoft: '照片略欠清晰——更锐利的照片匹配效果更好。',
     searchAnyway: '仍然搜索',
     rejectedTitle: '无法使用这张照片进行搜索',
+    stuckHelp: '仍然无法使用？请告诉我们具体情况，我们会跟进——',
+    stuckSubject: '人脸识别——我的照片一直无法通过',
+    weakSelfieTitle: '这张照片可用，但效果一般',
+    weakSelfieBody:
+      '照片本身没有明显问题，只是作为参考照片不够理想，可能会漏掉一些您的照片。清晰、较近的正面照片能找到更多。',
     reframeTitle: '已为您放大画面',
     reframeBody:
       '原图中您占比较小，我们已裁剪。请确认是您本人，也可自行调整或换一张照片——搜索将使用此处显示的版本。',
@@ -474,6 +484,13 @@ const BLOCKING_FINDINGS: ReadonlySet<string> = new Set([
  */
 const CONFIRM_FINDINGS: ReadonlySet<string> = new Set(['face_small_in_frame']);
 
+/** Consecutive rejected picks before we stop saying "try another" and offer a
+ *  human. Three is enough to be a pattern rather than bad luck. */
+const REJECTS_BEFORE_HELP = 3;
+
+/** Where a stuck searcher is pointed. */
+const SUPPORT_EMAIL = 'admin@mmrunners.org';
+
 function withRemoved(set: ReadonlySet<string>, id: string): Set<string> {
   const next = new Set(set);
   next.delete(id);
@@ -532,6 +549,10 @@ export function FindMe(): JSX.Element {
   const [selfieFindings, setSelfieFindings] = useState<Finding[]>([]);
   // A refused pick: shown as a dead end with no way to search anyway.
   const [rejectedFindings, setRejectedFindings] = useState<Finding[]>([]);
+  // Set when the best pick clears every gate but scores poorly — advisory only.
+  const [weakSelfie, setWeakSelfie] = useState(false);
+  // Consecutive rejected picks this session, for the "email us" escape hatch.
+  const [rejectStreak, setRejectStreak] = useState(0);
   // The reframe we're proposing for a badly-framed pick, or null.
   const [reframe, setReframe] = useState<Reframe | null>(null);
   // True while the user is adjusting that crop by hand.
@@ -985,6 +1006,7 @@ export function FindMe(): JSX.Element {
     setSelfieFindings([]);
     clearReframe();
     setRejectedFindings([]);
+    setWeakSelfie(false);
     if (files.length === 0) return;
     setCheckingPhoto(true);
     // Multiple selfies are averaged into one centroid query (§1.1). We quality-
@@ -1028,12 +1050,15 @@ export function FindMe(): JSX.Element {
       // Rejected. `rejected` (rather than pendingFiles) is what removes the
       // "search anyway" escape: there is no held-back file set to search with.
       setRejectedFindings(findings);
+      noteRejection(findings);
       // Every pick failed for want of a face. A search would 422, but an
       // outfit-only search can still work — offer it now rather than after a
       // wasted round trip.
       if (check.files.every((f) => f.reasons.includes('no_face'))) setNoFaceFiles(ordered);
       return;
     }
+    // Past the gate: nothing here blocks a search.
+    setRejectStreak(0);
     // Usable, but badly framed — the face is small enough that the detector
     // could have locked onto someone behind them, and a distant subject matches
     // worse. Propose a reframe, which becomes the photo we upload.
@@ -1050,7 +1075,42 @@ export function FindMe(): JSX.Element {
         return;
       }
     }
+    // Passed every gate but still a poor reference. The gates catch failures;
+    // this catches mediocre — the selfie that works and quietly returns half
+    // the photos it should. Say so once, and let them search anyway.
+    if (best && best.selfieScore < WEAK_SELFIE_SCORE) {
+      setPendingFiles(ordered);
+      setSelfieFindings(findings);
+      setWeakSelfie(true);
+      return;
+    }
     void search(ordered);
+  }
+
+  /**
+   * Track consecutive rejected picks, and after a few offer a way out that
+   * isn't "try again".
+   *
+   * Someone whose photos keep bouncing has no idea whether the fault is theirs
+   * or ours, and the only thing the UI has told them so far is to pick a
+   * different photo. At REJECTS_BEFORE_HELP we surface a support address and
+   * report it once, so ops learns about it from the alert rather than from a
+   * user who eventually gives up and says nothing.
+   */
+  function noteRejection(findings: Finding[]): void {
+    setRejectStreak((prev) => {
+      const streak = prev + 1;
+      if (streak === REJECTS_BEFORE_HELP) {
+        // Once per streak, not once per rejection: each accepted report is a
+        // potential email (see api/src/routes/telemetry.ts).
+        reportClientError(
+          'selfie_stuck',
+          `Selfie rejected ${streak} times in a row`,
+          { context: { eventId, streak, reasons: findings.map((f) => f.code) } },
+        );
+      }
+      return streak;
+    });
   }
 
   /**
@@ -1168,6 +1228,7 @@ export function FindMe(): JSX.Element {
     setSelfieFindings([]);
     clearReframe();
     setRejectedFindings([]);
+    setWeakSelfie(false);
   }
 
   /**
@@ -1210,6 +1271,7 @@ export function FindMe(): JSX.Element {
     setSelfieFindings([]);
     clearReframe();
     setRejectedFindings([]);
+    setWeakSelfie(false);
     setFaceAlert(null);
     const form = new FormData();
     for (const file of files) form.append('file', file);
@@ -1658,6 +1720,16 @@ export function FindMe(): JSX.Element {
                   <li key={f.code}>{f.label}</li>
                 ))}
               </ul>
+              {rejectStreak >= REJECTS_BEFORE_HELP && (
+                /* They've tried repeatedly. "Pick another photo" has stopped
+                   being useful advice, so give them a person instead. */
+                <p className="stuck-help">
+                  {t.stuckHelp}{' '}
+                  <a href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(t.stuckSubject)}`}>
+                    {SUPPORT_EMAIL}
+                  </a>
+                </p>
+              )}
               <div className="quality-actions">
                 <button
                   className="btn btn-primary"
@@ -1725,6 +1797,43 @@ export function FindMe(): JSX.Element {
                 </div>
               </div>
               <img className="face-crop" src={reframe.previewUrl} alt={t.reframeAlt} />
+            </div>
+          ) : weakSelfie && pendingFiles.length > 0 ? (
+            /* Usable, with no specific fault to point at, but a poor reference
+               overall. Advisory only — searching is one tap away. */
+            <div className="photo-quality-warn" role="alert">
+              <p>
+                <strong>{t.weakSelfieTitle}</strong>
+              </p>
+              <p className="muted">{t.weakSelfieBody}</p>
+              {selfieFindings.length > 0 && (
+                <ul>
+                  {selfieFindings.map((f) => (
+                    <li key={f.code}>{f.label}</li>
+                  ))}
+                </ul>
+              )}
+              <div className="quality-actions">
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    dismissQualityWarning();
+                    fileInput.current?.click();
+                  }}
+                >
+                  {t.chooseAnother}
+                </button>
+                <button
+                  className="btn btn-light"
+                  onClick={() => {
+                    const f = pendingFiles;
+                    dismissQualityWarning();
+                    void search(f);
+                  }}
+                >
+                  {t.searchAnyway}
+                </button>
+              </div>
             </div>
           ) : (photoQuality || selfieFindings.length > 0) && pendingFiles.length > 0 ? (
             <div className="photo-quality-warn" role="alert">
