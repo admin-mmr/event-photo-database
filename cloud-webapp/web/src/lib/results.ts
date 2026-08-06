@@ -155,3 +155,40 @@ export function bulkVoteTargets(
     rest: unvoted.filter((id) => !isSelected(id)),
   };
 }
+
+/** What a page-turn checkpoint needs to know about the page being left. */
+export interface PageTurnState {
+  /** Results on this page the user hasn't judged. */
+  unvoted: number;
+  /** Results on this page they HAVE judged. */
+  voted: number;
+  /** Unjudged results they've ticked for download. */
+  selected: number;
+  /** Already interrupted once on this page. */
+  asked: boolean;
+  /** Voting is per-reference; the Combined view has no single run behind it. */
+  canVote: boolean;
+}
+
+/**
+ * Whether to hold a page turn and ask about the unjudged results first.
+ *
+ * The ask has to happen while the page is still on screen — once the page
+ * changes those photos are gone, and labelling off-screen photos is exactly the
+ * mislabelling risk bulk voting is scoped to avoid. So this is an interruption,
+ * and it earns its place only under a narrow gate:
+ *
+ *  - there is something left to judge;
+ *  - they were DEMONSTRABLY judging — a vote cast or a photo ticked for
+ *    download on this page. Scrolling and hitting Next is browsing, not
+ *    judging, and interrupting a browser trains everyone to dismiss on sight.
+ *    Deliberately excludes "opened the lightbox": that reads as easily as
+ *    "nice photo" as it does "is this me?".
+ *  - we haven't already asked on this page. The second Next always goes
+ *    through, so the worst case is one extra tap, never a trap.
+ */
+export function shouldAskBeforeLeaving(s: PageTurnState): boolean {
+  if (!s.canVote || s.asked) return false;
+  if (s.unvoted === 0) return false;
+  return s.voted > 0 || s.selected > 0;
+}
