@@ -119,6 +119,20 @@ def test_local_roundtrip(tmp_path):
     assert store.read("e1/photos/thumb/p1.jpg") == b"bytes"
 
 
+def test_local_remove(tmp_path):
+    store = BlobStore(str(tmp_path))
+    store.write("e1/photos/orig/p1.jpg", b"bytes", "image/jpeg")
+    store.remove("e1/photos/orig/p1.jpg")
+    assert not store.exists("e1/photos/orig/p1.jpg")
+
+
+def test_remove_of_a_missing_blob_is_not_an_error(tmp_path):
+    # The indexer's removal sweep re-runs whole whenever a run dies before
+    # writing the manifest, so a second pass over already-swept photos must be a
+    # no-op rather than an exception.
+    BlobStore(str(tmp_path)).remove("e1/photos/orig/never-existed.jpg")
+
+
 # ── the Azure backend, over a fake container port ────────────────────────────
 
 class FakeSdkContainer:
@@ -147,6 +161,13 @@ class FakeSdkContainer:
     def get_blob_client(self, name):
         return _FakeBlobClient(self, name)
 
+    def delete_blob(self, name):
+        if name not in self.blobs:
+            # What the service actually does, and the reason _AzureContainer has
+            # to swallow it to match GCS's forgiving delete.
+            raise FakeResourceNotFoundError(name)
+        del self.blobs[name]
+
 
 class _FakeDownload:
     def __init__(self, data: bytes):
@@ -171,9 +192,14 @@ class FakeContentSettings:
         self.content_type = content_type
 
 
+class FakeResourceNotFoundError(Exception):
+    """Stands in for azure.core.exceptions.ResourceNotFoundError."""
+
+
 def _port(sdk_container) -> object:
     """`_AzureContainer` wrapping `sdk_container`, with the SDK's ContentSettings
-    swapped for a stub — the module imports it lazily inside put()."""
+    and ResourceNotFoundError swapped for stubs — the module imports both lazily,
+    inside put() and delete()."""
     import sys
     import types
 
@@ -184,6 +210,13 @@ def _port(sdk_container) -> object:
     pkg_azure.storage = pkg_storage  # type: ignore[attr-defined]
     pkg_storage.blob = mod  # type: ignore[attr-defined]
     sys.modules["azure.storage.blob"] = mod
+
+    exc_mod = types.ModuleType("azure.core.exceptions")
+    exc_mod.ResourceNotFoundError = FakeResourceNotFoundError  # type: ignore[attr-defined]
+    pkg_core = sys.modules.setdefault("azure.core", types.ModuleType("azure.core"))
+    pkg_azure.core = pkg_core  # type: ignore[attr-defined]
+    pkg_core.exceptions = exc_mod  # type: ignore[attr-defined]
+    sys.modules["azure.core.exceptions"] = exc_mod
     return _AzureContainer(sdk_container)
 
 
@@ -232,3 +265,29 @@ def test_azure_applies_the_prefix(monkeypatch):
     store = BlobStore("az://derivatives/staging")
     store.write("e1/photos/web/p1.jpg", b"x")
     assert "staging/e1/photos/web/p1.jpg" in sdk.blobs
+
+
+def test_azure_remove(azure_store):
+    store, container = azure_store
+    store.write("e1/photos/orig/p1.jpg", b"x", "image/jpeg")
+    store.remove("e1/photos/orig/p1.jpg")
+    assert "e1/photos/orig/p1.jpg" not in container.blobs
+
+
+def test_azure_remove_of_a_missing_blob_is_not_an_error(azure_store):
+    # The other behavioural difference from GCS: delete_blob raises where GCS's
+    # delete is forgiving, so the port has to swallow it — see test_local_remove…
+    store, _ = azure_store
+    store.remove("e1/photos/orig/never-existed.jpg")
+
+
+def test_azure_remove_applies_the_prefix(monkeypatch):
+    # A prefixed root that forgot to key the delete would silently sweep nothing
+    # and report success, which is exactly the leak this is meant to close.
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_URL", ACCT)
+    sdk = FakeSdkContainer()
+    monkeypatch.setattr("blobs._azure_container", lambda root: _port(sdk))
+    store = BlobStore("az://derivatives/staging")
+    store.write("e1/photos/orig/p1.jpg", b"x")
+    store.remove("e1/photos/orig/p1.jpg")
+    assert "staging/e1/photos/orig/p1.jpg" not in sdk.blobs
