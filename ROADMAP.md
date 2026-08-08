@@ -145,9 +145,14 @@ repo already runs, so there is nothing to reconcile there.
 
 **What flows the other way** — trailhead has three things this repo lacks:
 
-- `photo-manager/src/bib_analyzer.py` + the MySQL roster = exactly the
-  "roster-matched" half of quality-plan **Item 6 (bib signal)**, which is
-  unstarted here.
+- Bib OCR + the MySQL roster = exactly the "roster-matched" half of quality-plan
+  **Item 6 (bib signal)**, which is unstarted here. `photo-manager/` was deleted
+  from trailhead on 2026-08-08 (branch `claude/remove-photo-manager`); the useful
+  part survives at `git show e6f2583:photo-manager/src/modules/bib_ocr.py` — 310
+  lines, EasyOCR on torso crops with a prominence score to elect the primary bib,
+  and it consumes person boxes, which this repo's indexer already produces. It is
+  **MIT**, so porting it into this AGPL repo is fine as long as the MIT notice
+  travels with it.
 - `members` (unique `Email`, `WeChatID`) — the member identity the alert feature
   needs and this repo has no equivalent of.
 - `notification_log` ("dedupe_key makes scheduled jobs idempotent") plus a typed
@@ -179,20 +184,39 @@ vs MySQL-migration CI + macOS-Keychain secrets + Python 3.9/Flask there).
 
 - Deploy into the existing **`mmr-resources`** RG. Reuse **`mmrunnersstorage`**
   with new containers — do not create a storage account.
-- **Reuse `mmr-mysql-v4` instead of Cosmos.** This deletes D5 (free-tier slot),
-  D8 (keyset vs continuation tokens) and `cosmos-indexes.json` from the plan and
-  replaces them with a MySQL adapter behind the `lib/db` port that already exists.
-  Verify the server's version and tier first — trailhead pins MySQL **5.7**
-  quirks (no `IF NOT EXISTS` in `ALTER`), and 5.7 is upstream-EOL.
+- **Database — verified 2026-08-08 via `az`, and the region decides it.**
+  `mmr-mysql-v4` is a **Flexible Server, MySQL 8.4, Standard_B1ms (Burstable,
+  1 vCore / 2 GiB), 20 GB, in Sweden Central**. (trailhead's `CLAUDE.md` still
+  warns about MySQL **5.7** `ALTER` quirks — stale; 8.4 has `IF NOT EXISTS`.)
+  No Cosmos account exists in the subscription, so the **free-tier slot is
+  unclaimed**. Cost is not the deciding factor: reusing MySQL is ~$0 marginal
+  (photo rows are ~1 KB; even 1M photos ≈ 1 GB ≈ $0.12/mo) and Cosmos free tier
+  is $0 outright. Decide on these two instead:
+  - **Blast radius.** A 1-vCore burstable server currently carries membership and
+    payments. An index run upserting ~6,900 rows plus event-day gallery reads can
+    exhaust burst credits and degrade the member portal. Batch the writes, or move
+    to B2s (~$25/mo, well inside the grant).
+  - **Region.** Photo compute in the US writing per-photo rows to Sweden is the
+    one combination to avoid — it lands straight on §5.1's wall-clock margin. So:
+    **either** migrate MySQL to East US (dump/restore into a new server; a server's
+    region cannot be changed in place) and reuse it for everything, **or** leave it
+    in Sweden and put photo metadata in the free Cosmos slot in East US, with the
+    alert job doing the cross-store join. Reusing MySQL removes D5, D8 and
+    `cosmos-indexes.json` from the plan and replaces them with a MySQL adapter
+    behind the `lib/db` port that already exists.
 - **Email: not ACS.** The `mmr-comm` / `mmr` Communication Services resources are
   provisioned but unused — trailhead's mail actually routes through a GAS webhook
   (`lib/email/client.ts`) and this repo's through the Gmail API over DWD. Both are
   cloud-neutral (GAS plan §5); converge there and reuse `notification_log` rather
   than adding a provider.
-- **Region: `mmr-mysql-v4` is in Sweden Central, the Static Web App in East US 2.**
-  Put the Container Apps environment with the *database*, or a full index run pays
-  a cross-continent round trip per photo write (~6,900 on the largest event) —
-  which lands directly on §5.1's wall-clock headroom.
+- **The footprint is split three ways** (verified 2026-08-08): `mmrunnersstorage`
+  in **East US**; the Static Web App in **East US 2**; `mmr-mysql-v4`, the App
+  Service (`mmr-nyrr-viewer`), App Insights and the Log Analytics workspace all in
+  **Sweden Central**. For a US org that is backwards — the storage account is the
+  high-bandwidth path for photos, so new photo compute belongs in **East US** with
+  it. Whether the Sweden resources follow is trailhead's call and needs a
+  maintenance window; a Log Analytics workspace already exists, so Container Apps
+  needs no new one.
 - **Blob safety:** that account already holds member profile photos and payment
   screenshots. Keep "allow blob public access" **off** and stay SAS-only. Note
   **Blob CORS is per-account per-service, not per-container**, so the derivatives
@@ -200,11 +224,9 @@ vs MySQL-migration CI + macOS-Keychain secrets + Python 3.9/Flask there).
   their own merits (CORS grants no access by itself — don't rely on container
   scoping for either).
 
-**Stale doc living in the wrong repo:**
-`trailhead/photo-manager/partner/湘舍动公益文件系统/湘舍动_系统开发计划.md` is a
-March-2026 **v1.0 GAS-era** plan for *this* system, listing "Next: 2.0
-Node.js/Firebase". That migration is long done and gas-app is retired. Delete it
-there or replace it with a link to this repo.
+**Resolved 2026-08-08:** the stale March-2026 v1.0 GAS-era plan for *this* system
+that lived at `trailhead/photo-manager/partner/湘舍动公益文件系统/` went with the
+directory.
 
 ### 5.1 Settle first — the indexer does not fit the Consumption plan
 
