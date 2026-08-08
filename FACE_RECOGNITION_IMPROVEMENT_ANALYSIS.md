@@ -1,6 +1,8 @@
 # FACE_RECOGNITION_IMPROVEMENT_ANALYSIS.md
 
-**Status:** analysis drafted 2026-06-23. Scope: improving accuracy and recall of
+**Status:** analysis drafted 2026-06-23. **Superseded for sequencing by
+`PEOPLE_RECOGNITION_QUALITY_PLAN.md`** (which turned these options into Items
+1–12 with live status); kept as the background analysis it cites. Scope: improving accuracy and recall of
 the "Find Me" matcher, plus adding a runner-bib signal for race events. This is
 an options/roadmap doc, not a committed plan — items are ranked by return on
 effort so they can be slotted into the existing `FACE_MATCHING_DEV_PLAN.md`

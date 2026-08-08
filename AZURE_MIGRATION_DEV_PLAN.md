@@ -367,6 +367,15 @@ Effort labels: S ≤ 2 days, M ≤ 1 week, L ≤ 3 weeks.
 - Day-1 guardrails per the cost model: budget alert at $80/mo
   (50/80/100% thresholds), cost anomaly alert, Log Analytics 5 GB daily cap.
   `provision-budget-guardrails.sh` covers most of this — verify, don't trust.
+- **BLOCKER, settle before provisioning: the indexer does not fit the Container
+  Apps Consumption plan as scripted.** `infra/scripts/deploy-indexer.sh` asks for
+  4 vCPU / 8 GiB (the Consumption ceiling) while passing `INDEX_CONCURRENCY=8`,
+  which `CLAUDE.md` records as an OOM pairing (8 GiB wants ≈4). Worse, the
+  measured 6,914-photo event takes **55.6 min at 8 vCPU**, so at half the CPU it
+  lands near the script's **2 h `--replica-timeout`** — and with no incremental
+  checkpointing a timeout means zero progress, retried into the same wall.
+  Options and the recommended order are in **`ROADMAP.md` §5.1**. Cost is not the
+  deciding factor (vCPU-s and GiB-s come out roughly even); wall-clock is.
 
 ### AZ1 — Credential provider + service-to-service unbinding (M, code, ships on GCP)
 
