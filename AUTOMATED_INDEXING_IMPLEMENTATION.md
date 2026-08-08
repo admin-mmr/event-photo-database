@@ -1,6 +1,12 @@
 # Automated (No-Touch) Photo Indexing — Implementation
 
 **Status:** implemented (code + tests landed), pending deploy. See `AUTOMATED_INDEXING_RUNBOOK.md` for rollout.
+
+> **LIVE since June 2026.** One correction: §1's primary trigger was the *gas-app*
+> upload page, which is now deprecated — the end-of-batch trigger fires from
+> cloud-webapp's own upload worker, and `findme-index-scan` (~10 min) is the
+> backstop. The `CLAUDE.md` "Indexing… forever" section supersedes this doc on
+> `indexState` liveness (heartbeat + 30-min staleness window).
 **Author:** IT
 **Date:** 2026-06-15
 

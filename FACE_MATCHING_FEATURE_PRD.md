@@ -4,7 +4,8 @@
 **Feature:** Self-service photo discovery via face + person re-identification ("Find Me")
 **Prepared for:** IT Department, Youth4AM / mmrunners
 **Date:** June 8, 2026
-**Status:** Draft for review
+**Status:** Draft for review  → **SHIPPED. The consent, minors and retention decisions (D4, D8, D9, §8) are
+still live policy; the milestone/FR status is historical. See `ROADMAP.md`.**
 **Related docs:** `UX_AND_GCP_ASSESSMENT.md`, `STORAGE_AND_DATABASE_OPTIONS.md`, `cloud-webapp/ARCHITECTURE.md`, `UPLOAD_PREP_FEATURE_SPEC.md`, `PUBLIC_SHARING.md`
 
 ---

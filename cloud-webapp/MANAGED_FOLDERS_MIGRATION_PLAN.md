@@ -19,11 +19,17 @@ locked 2026-06-27):
    existing `index-scan` loop. Admin UI buttons to retrigger manually if the
    automatic run failed.
 
-This is a self-contained plan. **Status: M1–M8 implemented** (see
-`MANAGED_FOLDERS_CUTOVER.md` to enable). Feature ships disabled
-(`MANAGED_FOLDERS_ENABLED=false`); typecheck + lint clean, unit tests green, and
-an independent parity review against gas-app passed (only intentional deviations:
-JPEG→shortcut storage policy; minor cosmetics aligned).
+This is a self-contained plan. **Status: DELIVERED and live in production** —
+M1–M8 implemented, cut over, and `MANAGED_FOLDERS_ENABLED=true` on
+`event-photo-api` with `PUBLIC_FOLDER_INDEX_SHEET_ID` set and the
+`findme-folder-rebuild` scheduler draining rebuild batches (verified 2026-08-06).
+The one-time enablement runbook (`MANAGED_FOLDERS_CUTOVER.md`) was deleted once
+its steps were done — recover it from git history if you ever re-provision from
+scratch. An independent parity review against gas-app passed (only intentional
+deviations: JPEG→shortcut storage policy; minor cosmetics aligned).
+
+> Note this supersedes `CUTOVER_RUNBOOK.md` Phase E, which says to stop building
+> `Photos_NNN` / `Videos` / `Album`. We migrated them instead. See `ROADMAP.md` §4.
 
 ---
 

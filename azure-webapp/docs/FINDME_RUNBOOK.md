@@ -4,8 +4,8 @@ Operate the "Find Me" face/person matching feature: **deploy, enable the pilot,
 re-index, measure, respond to incidents, and delete user data.** This is the
 launch-and-run companion to the design docs (`FACE_MATCHING_FEATURE_PRD.md`,
 `FACE_MATCHING_DEV_PLAN.md`) and folds in the hard-won operational notes from
-the repo-root `CLAUDE.md`, `AUTOMATED_INDEXING_RUNBOOK.md`, and
-`FINDME_DEPLOY_CHECKLIST.md`.
+the repo-root `CLAUDE.md` and `AUTOMATED_INDEXING_RUNBOOK.md`. Outstanding
+work lives in `ROADMAP.md`.
 
 > Most commands need `gcloud`/`firebase`/`clasp` + GCP/GitHub auth and must run
 > from an operator's own terminal, not a sandbox.
