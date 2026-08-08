@@ -4,7 +4,9 @@
 **Implements:** `FACE_MATCHING_FEATURE_PRD.md`
 **Prepared for:** IT Department, Youth4AM / mmrunners
 **Date:** June 8, 2026
-**Status:** Draft for review
+**Status:** Draft for review  → **DELIVERED (M0–M5 shipped and live; M6 partly). Historical: read for the
+build sequence and the decision updates below, not for status. Find-Me work now
+open lives in `PEOPLE_RECOGNITION_QUALITY_PLAN.md` and `ROADMAP.md`.**
 **Builds on:** `cloud-webapp/` (existing scaffold), `cloud-run/` (existing Python image service), `ARCHITECTURE.md`, `STORAGE_AND_DATABASE_OPTIONS.md`
 
 ---
@@ -22,7 +24,7 @@ This is the build plan for the PRD. It is organized as: prerequisites → GCP pr
 > - **Task 0.5 decided:** **flat-file GCS embedding store** (see 2026-06-09 banner above); pgvector/Vertex dropped.
 > - **Task 0.3 scope relaxed:** M0 go/no-go is judged on **2 labeled people** (not ~10) on the `ev_sample` event, using `eval/run_eval.py` + `eval/make_review_page.py`. Exhaustive labeling is **deferred to the beta feedback loop** — accuracy is then measured continuously from real user feedback instead of a one-off hand-labeled set. Design: `EVAL_FEEDBACK_LOOP.md`. Consequence: the M2 DoD eval gate (P@20 ≥ 0.85 on 2 events) is measured as **judged precision** per that doc once feedback exists; until then the M0-style spot-labeled eval is the gate.
 
-> **⚠️ STATUS UPDATE (2026-06-12) — demo fast-path.** For the stakeholder demo, M2 (search API: `matcherClient.ts`, `gcsService.ts` signed URLs, `findme.ts` route) plus a minimal slice of M3 (Events/Gallery/FindMe pages, Firebase Auth, simple consent checkbox) shipped ahead of full M3. Demo-scope deferrals tracked in `cloud-webapp/docs/DEMO_CHECKLIST.md`: ZH localization, enrollment/MyData, minor-guardian consent path, Drive mirror of reference uploads (D6), rate limit + reCAPTCHA (M5.3), feedback UI (M4). These remain on the plan's original schedule. Remaining human steps to a live demo are in the checklist.
+> **⚠️ STATUS UPDATE (2026-06-12) — demo fast-path.** For the stakeholder demo, M2 (search API: `matcherClient.ts`, `gcsService.ts` signed URLs, `findme.ts` route) plus a minimal slice of M3 (Events/Gallery/FindMe pages, Firebase Auth, simple consent checkbox) shipped ahead of full M3. Demo-scope deferrals were tracked in `cloud-webapp/docs/DEMO_CHECKLIST.md` (deleted 2026-08-06, demo long past; in git history): ZH localization, enrollment/MyData, minor-guardian consent path, Drive mirror of reference uploads (D6), rate limit + reCAPTCHA (M5.3), feedback UI (M4). These remain on the plan's original schedule. Remaining human steps to a live demo are in the checklist.
 
 > **⚠️ STATUS UPDATE (2026-06-15) — demo-feedback backlog.** Hands-on use of the shipped demo on the live event surfaced two bugs (no back-navigation out of the Gallery; events display as "Untitled event") and a confirmed priority ordering for the deferred M3/M4 work (original-resolution batch download is the most-wanted feature). PRD §4.8 adds FR-1b, FR-2b, FR-2c, FR-9b and reaffirms FR-11/FR-12/FR-15. Ticket-level build sequence is in **§5A** below; it slots into the existing M3/M4 milestones rather than adding a new milestone.
 

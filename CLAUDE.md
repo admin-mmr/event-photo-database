@@ -1,5 +1,10 @@
 # CLAUDE.md — project notes for Claude
 
+> **Outstanding work lives in [`ROADMAP.md`](ROADMAP.md)** — one consolidated,
+> verified list, replacing the per-plan status banners. This file stays the
+> authority on *invariants*: what must not break. The plans say how; the roadmap
+> says what is left.
+
 ## Control plane migration (gas-app → cloud-webapp)
 
 - The admin/control plane (users, clubs, events, upload links, email, audit,

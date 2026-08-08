@@ -5,6 +5,11 @@
 **Precondition:** G0–G5 are merged (control-plane code lives in `cloud-webapp/`).
 **Date:** 2026-06-22
 
+> **Phases A–D are signed off** (gas-app writes frozen 2026-07-18; cloud-webapp is
+> the sole Sheet writer; all six schedulers `ENABLED`). Phase E is partly
+> **superseded** — managed folders and the public folder index were migrated into
+> cloud-webapp, not retired. What is genuinely left is tracked in `ROADMAP.md` §4.
+
 This is the operational sequence to move the admin/control plane from `gas-app`
 to `cloud-webapp` and retire the Apps Script app. **The Google Sheet stays the
 source of truth (SSOT) the whole way through** (dev-plan D2) — only the *writer*

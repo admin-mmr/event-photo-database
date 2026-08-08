@@ -2,6 +2,10 @@
 
 **Status:** In progress — decisions locked, implementing M1–M4 this pass (M5
 verification folded into each milestone).
+> **DELIVERED 2026-06-23** — the mobile-first refresh and the full EN·中文 toggle
+> shipped and are live. Kept for the conventions (mobile-first bar, i18n
+> structure); not a status document. Email templates are still EN-only —
+> `ROADMAP.md` §3.
 **Scope:** `cloud-webapp/web` (the React SPA only). No API, indexer, matcher, or
 infra changes.
 **Author:** IT Department AI · revised 2026-06-22
