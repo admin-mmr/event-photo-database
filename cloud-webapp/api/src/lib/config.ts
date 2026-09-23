@@ -187,6 +187,16 @@ const EnvSchema = z.object({
     .default('1')
     .transform((v) => ['1', 'true', 'yes'].includes(v.trim().toLowerCase())),
 
+  // "See more" (EVAL_FEEDBACK_LOOP.md §4b): ONE bounded step below the cutoff,
+  // drawn from the near-miss band the matcher logged on the run. A searcher gets
+  // at most FINDME_EXPAND_MAX extra photos scoring within one step of the cutoff
+  // — in z for a T-normed run (0.5 ≈ the old 4.0 cutoff under today's 4.5), in
+  // fused cosine otherwise. Deliberately small: every relaxation shows the
+  // searcher more photos of other attendees.
+  FINDME_EXPAND_STEP_Z: z.coerce.number().positive().default(0.5),
+  FINDME_EXPAND_STEP_RAW: z.coerce.number().positive().default(0.05),
+  FINDME_EXPAND_MAX: z.coerce.number().int().positive().default(20),
+
   // Derivatives bucket (indexer output; gallery + search serving copies).
   DERIVATIVES_BUCKET: z.string().default('mmr-data-pipeline-derivatives'),
 

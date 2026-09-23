@@ -47,6 +47,25 @@ describe('confirmedPhotoIdsForUser', () => {
     expect(await confirmedPhotoIdsForUser('u1', 'ev1', 25)).toHaveLength(25);
   });
 
+  it('lets the latest vote on a photo decide', async () => {
+    rows.push(
+      { uid: 'u1', eventId: 'ev1', photoId: 'a', verdict: 'confirmed', createdAt: '2026-01-01' },
+      { uid: 'u1', eventId: 'ev1', photoId: 'a', verdict: 'not_me', createdAt: '2026-01-02' },
+      { uid: 'u1', eventId: 'ev1', photoId: 'b', verdict: 'not_me', createdAt: '2026-01-01' },
+      { uid: 'u1', eventId: 'ev1', photoId: 'b', verdict: 'confirmed', createdAt: '2026-01-02' },
+    );
+    expect(await confirmedPhotoIdsForUser('u1', 'ev1')).toEqual(['b']);
+  });
+
+  it('never folds a friend or group tag — the face may be someone else', async () => {
+    rows.push(
+      { uid: 'u1', eventId: 'ev1', photoId: 'a', verdict: 'confirmed', reason: 'friend', createdAt: '3' },
+      { uid: 'u1', eventId: 'ev1', photoId: 'b', verdict: 'confirmed', reason: 'group', createdAt: '2' },
+      { uid: 'u1', eventId: 'ev1', photoId: 'c', verdict: 'confirmed', reason: 'me', createdAt: '1' },
+    );
+    expect(await confirmedPhotoIdsForUser('u1', 'ev1')).toEqual(['c']);
+  });
+
   it('returns empty when there are no confirmations', async () => {
     expect(await confirmedPhotoIdsForUser('u1', 'ev1')).toEqual([]);
   });

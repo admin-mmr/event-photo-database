@@ -61,6 +61,21 @@ def verdict_to_label(verdict: str, reason: str | None) -> str | None:
     return None  # unknown verdict — ignore
 
 
+def latest_votes(feedback: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One vote per (uid, event, photo): the most recent.
+
+    Votes are immutable docs, so a member who taps "that's me", then corrects it
+    to "not me" (or to "a friend"), leaves both behind. Only the last one is what
+    they meant; counting both scores the same photo as right AND wrong. Ties on
+    createdAt keep input order (stable sort), so the later-listed doc wins."""
+    ordered = sorted(feedback, key=lambda fb: str(fb.get("createdAt") or ""))
+    latest: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for fb in ordered:
+        key = (str(fb.get("uid", "")), str(fb.get("eventId", "")), str(fb.get("photoId", "")))
+        latest[key] = fb
+    return list(latest.values())
+
+
 def build_label_rows(
     feedback: Iterable[dict[str, Any]],
     runs_by_id: dict[str, dict[str, Any]] | None = None,
@@ -72,7 +87,7 @@ def build_label_rows(
     """
     runs_by_id = runs_by_id or {}
     rows: list[dict[str, str]] = []
-    for fb in feedback:
+    for fb in latest_votes(feedback):
         label = verdict_to_label(str(fb.get("verdict", "")), fb.get("reason") or fb.get("tagReason"))
         if label is None:
             continue

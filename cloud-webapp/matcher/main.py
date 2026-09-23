@@ -59,6 +59,17 @@ UNGATED_TOP_K = int(os.environ.get("MATCHER_UNGATED_TOP_K", "500"))
 # redeploy — change this default to make a new value stick.
 NORM_THRESHOLD = float(os.environ.get("MATCHER_NORM_THRESHOLD", "4.5"))
 
+# Near-miss band: fused-mode candidates that scored just BELOW the cutoff, with
+# their per-modality scores. They are never shown by default — the api stores
+# them on the search record so a cutoff or weight change can be replayed from
+# logs alone (a selfie is deleted 90 days after upload, which is what made the
+# July baseline event unreplayable), and so "see more" has something to reveal.
+# The band is in the same units as the cutoff it sits under: z for a T-normed
+# search, fused cosine otherwise. Scores only — nothing biometric.
+NEAR_MISS_BAND_Z = float(os.environ.get("MATCHER_NEAR_MISS_BAND_Z", "2.0"))
+NEAR_MISS_BAND_RAW = float(os.environ.get("MATCHER_NEAR_MISS_BAND_RAW", "0.1"))
+NEAR_MISS_MAX = int(os.environ.get("MATCHER_NEAR_MISS_MAX", "200"))
+
 # Capture-time-conditional outfit fusion. Off by default until swept on judged
 # labels. When on, the person (outfit) weight for a candidate photo is scaled by
 # how close its capture time is to the query selfie's — full within W_FULL,
@@ -543,7 +554,8 @@ def search():
     anchor_photo_ids? (comma-separated photoIds to re-query from, folded in from
     the index — anchor promotion), normalize? (1/true to T-norm scores — §1.3).
     Returns the per-photo ranking for the event, plus `anchorSuggestion`: the
-    most suitable result to anchor a follow-up search on."""
+    most suitable result to anchor a follow-up search on, and (fused mode) the
+    `cutoff` applied and the `nearMisses` scoring just below it."""
     event_id = request.form.get("event_id", "").strip()
     if not event_id:
         return jsonify({"error": "missing_event_id"}), 400
@@ -663,6 +675,10 @@ def search():
         else []
     )
 
+    # Single-modality modes have no cutoff (they're capped by count instead), so
+    # there is nothing "just below" to report.
+    cutoff: float | None = None
+    near_misses: list[dict] = []
     if mode == "face":
         ranked = [{"photoId": h["photoId"], "score": h["score"], "faceScore": h["score"], "personScore": None} for h in face_hits]
     elif mode == "person":
@@ -689,15 +705,21 @@ def search():
                     PERSON_TIME_FLOOR,
                 )
 
-        ranked = fusion_mod.fuse(
+        cutoff = NORM_THRESHOLD if normalize else fusion_mod.DEFAULT_THRESHOLD
+        band = NEAR_MISS_BAND_Z if normalize else NEAR_MISS_BAND_RAW
+        # Fuse down to the band floor, then split at the real cutoff: everything
+        # at or above it is a result exactly as before, the rest is the band.
+        fused = fusion_mod.fuse(
             face_hits,
             person_hits,
             w_face=float(request.form.get("w_face", fusion_mod.DEFAULT_FACE_WEIGHT)),
             w_person=w_person,
-            threshold=NORM_THRESHOLD if normalize else fusion_mod.DEFAULT_THRESHOLD,
-            top_k=top_k,
+            threshold=cutoff - band,
+            top_k=None,
             person_weight_fn=person_weight_fn,
         )
+        ranked = [h for h in fused if h["score"] >= cutoff]
+        near_misses = [h for h in fused if h["score"] < cutoff][:NEAR_MISS_MAX]
 
     results = ranked if top_k is None else ranked[:top_k]
     return jsonify(
@@ -719,6 +741,18 @@ def search():
             ),
             "faceQualityWeight": FACE_QUALITY_WEIGHT,
             "results": results,
+            # The cutoff `results` were gated on (null for face/person modes), so
+            # a stored run says what it was judged against even after a retune.
+            "cutoff": cutoff,
+            "nearMisses": [
+                {
+                    "photoId": h["photoId"],
+                    "score": h["score"],
+                    "faceScore": h["faceScore"],
+                    "personScore": h["personScore"],
+                }
+                for h in near_misses
+            ],
         }
     )
 

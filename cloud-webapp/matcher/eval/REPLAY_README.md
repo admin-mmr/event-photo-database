@@ -12,6 +12,21 @@ Check current per-event judged P@20 from the raw votes (no replay) any time with
 ~/.venvs/findme-eval/bin/python eval/export_feedback_labels.py --project mmr-data-pipeline --out-dir /tmp/labels
 ```
 
+## First try it without selfies: `rescore_logged_runs.py`
+
+Every search since 2026-09-23 logs its candidates' face/outfit z-scores, including the
+near-miss band just under the cutoff. That is enough to re-test a cutoff or fusion weight
+across every logged search with no selfies, no models and no Cloud Run job:
+
+```
+~/.venvs/findme-eval/bin/python eval/rescore_logged_runs.py --project mmr-data-pipeline \
+  --cutoffs '4.0;4.5;5.0' --weights '0.85:0.15;1.0:0.0'
+```
+
+Raising the cutoff is scored exactly. Photos a lower cutoff would admit were mostly never
+shown, so they are reported as *admitted, unjudged* — never as wrong. Use the full replay
+below when you need what the logs can't give: a new model, anchors, or face quality.
+
 ## Pick events whose voters still have a selfie
 
 **Selfies are deleted 90 days after UPLOAD** (lifecycle rule on the uploads

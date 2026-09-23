@@ -61,6 +61,12 @@ export type MatcherSearchResult =
        *  when the deployed matcher predates the field. */
       referenceFaces?: ReferenceFaces[];
       results: MatcherSearchHit[];
+      /** Cutoff `results` were gated on; null in face/person mode or from a
+       *  matcher that predates the field. */
+      cutoff?: number | null;
+      /** Candidates scoring just under the cutoff (never shown by default).
+       *  Empty from an older matcher — same rollout tolerance as the anchors. */
+      nearMisses?: MatcherSearchHit[];
     }
   | {
       ok: false;
@@ -239,6 +245,8 @@ export async function matcherSearch(opts: {
     faceQualityWeight: typeof body.faceQualityWeight === 'number' ? body.faceQualityWeight : 0,
     ...(referenceFaces ? { referenceFaces } : {}),
     results: (body.results as MatcherSearchHit[]) ?? [],
+    cutoff: typeof body.cutoff === 'number' ? body.cutoff : null,
+    nearMisses: Array.isArray(body.nearMisses) ? (body.nearMisses as MatcherSearchHit[]) : [],
   };
 }
 

@@ -201,6 +201,54 @@ describe('POST /api/findme/search', () => {
     expect(consents[0]?.data).toMatchObject({ name: 'Test Runner', isGuest: false });
   });
 
+  it('stores the near-miss band and the cutoff, and only says THAT more exists', async () => {
+    matcherSearch.mockResolvedValue({
+      ok: true,
+      eventId: 'ev1',
+      mode: 'fused',
+      normalized: true,
+      cutoff: 4.5,
+      results: [{ photoId: 'p1', score: 6.1, faceScore: 6.5, personScore: 3.9 }],
+      nearMisses: [
+        { photoId: 'p2', score: 4.3, faceScore: 4.6, personScore: 2.6 },
+        { photoId: 'p3', score: 2.9, faceScore: 3.1, personScore: 1.8 },
+      ],
+    });
+
+    const res = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(res.status).toBe(200);
+    expect(res.body.canExpand).toBe(true);
+    expect(res.body.algo.cutoff).toBe(4.5);
+    // The band itself never reaches the client before the searcher asks.
+    expect(JSON.stringify(res.body)).not.toContain('p2');
+
+    const run = fakeDb.added.find((a) => a.collection === 'match_runs')?.data;
+    expect(run?.algo).toMatchObject({ cutoff: 4.5, tnorm: true });
+    expect(run?.canExpand).toBe(true);
+    // The whole band is logged for replay, not just the "see more" slice.
+    expect(run?.nearMisses).toEqual([
+      { photoId: 'p2', score: 4.3, faceScore: 4.6, personScore: 2.6 },
+      { photoId: 'p3', score: 2.9, faceScore: 3.1, personScore: 1.8 },
+    ]);
+  });
+
+  it('offers no "see more" when nothing sits within one step of the cutoff', async () => {
+    matcherSearch.mockResolvedValue({
+      ok: true,
+      eventId: 'ev1',
+      mode: 'fused',
+      normalized: true,
+      cutoff: 4.5,
+      results: [{ photoId: 'p1', score: 6.1, faceScore: 6.5, personScore: 3.9 }],
+      nearMisses: [{ photoId: 'p3', score: 2.9, faceScore: 3.1, personScore: 1.8 }],
+    });
+    const res = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(res.body.canExpand).toBe(false);
+    const run = fakeDb.added.find((a) => a.collection === 'match_runs')?.data;
+    expect(run?.canExpand).toBe(false);
+    expect(run?.nearMisses).toHaveLength(1); // still logged for replay
+  });
+
   it('persists per-modality scores so a reviewed batch can be diagnosed', async () => {
     matcherSearch.mockResolvedValue({
       ok: true,

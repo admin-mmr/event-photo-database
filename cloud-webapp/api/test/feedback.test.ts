@@ -123,6 +123,36 @@ describe('POST /api/feedback (B7)', () => {
     expect(res.status).toBe(201);
     expect(added[0]!.doc).toMatchObject({ runId: 'run-old', searchVersion: null, algo: null });
   });
+
+  it('records why a "that\'s me" was tagged, defaulting to me', async () => {
+    const send = (body: Record<string, unknown>) =>
+      request(app).post('/api/feedback').set('x-test-user', USER).send({ eventId: 'ev1', ...body });
+    await send({ photoId: 'p1', verdict: 'confirmed' });
+    await send({ photoId: 'p2', verdict: 'confirmed', reason: 'friend' });
+    await send({ photoId: 'p3', verdict: 'not_me', reason: 'group' }); // a reason means nothing on not_me
+    expect(added.map((a) => a.doc.reason)).toEqual(['me', 'friend', null]);
+  });
+
+  it('rejects an unknown reason', async () => {
+    const res = await request(app)
+      .post('/api/feedback')
+      .set('x-test-user', USER)
+      .send({ eventId: 'ev1', photoId: 'p1', verdict: 'confirmed', reason: 'cousin' });
+    expect(res.status).toBe(400);
+  });
+
+  it('derives the tier from the run, never from the client', async () => {
+    runs['run-9'] = { resultPhotoIds: ['p1'], expandedPhotoIds: ['p2'] };
+    const send = (photoId: string, extra: Record<string, unknown> = {}) =>
+      request(app)
+        .post('/api/feedback')
+        .set('x-test-user', USER)
+        .send({ eventId: 'ev1', photoId, verdict: 'confirmed', runId: 'run-9', ...extra });
+    await send('p1');
+    await send('p2', { tier: 'default' }); // a client claim is ignored
+    await send('p3');
+    expect(added.map((a) => a.doc.tier)).toEqual(['default', 'expanded', null]);
+  });
 });
 
 describe('POST /api/feedback/batch ("all me" / "all not me")', () => {
@@ -175,6 +205,15 @@ describe('POST /api/feedback/batch ("all me" / "all not me")', () => {
       expect(a.doc.searchVersion).toBe('2026.07-x');
       expect(a.doc.algo).toMatchObject({ tnorm: true });
     }
+  });
+
+  it('gives each vote in a batch its own tier, and the batch reason', async () => {
+    runs['run-9'] = { resultPhotoIds: ['p1'], expandedPhotoIds: ['p2'] };
+    await batch({ eventId: 'ev1', photoIds: ['p1', 'p2'], verdict: 'confirmed', runId: 'run-9', reason: 'group' });
+    expect(added.map((a) => [a.doc.photoId, a.doc.tier, a.doc.reason])).toEqual([
+      ['p1', 'default', 'group'],
+      ['p2', 'expanded', 'group'],
+    ]);
   });
 
   it('collapses duplicate photoIds within one request', async () => {

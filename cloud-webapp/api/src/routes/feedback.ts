@@ -13,14 +13,18 @@
 import { Router } from 'express';
 import {
   FeedbackBatchRequestSchema,
+  FeedbackReasonSchema,
   FeedbackRequestSchema,
   FeedbackVerdictSchema,
+  MatchTierSchema,
   SearchAlgoSchema,
   type FeedbackResponse,
   type FeedbackBatchResponse,
   type FeedbackItem,
   type FeedbackVerdict,
+  type FeedbackReason,
   type AdminFeedbackResponse,
+  type MatchTier,
   type SearchAlgo,
 } from '@cloud-webapp/shared';
 import type { Query } from '../lib/db/types.js';
@@ -35,25 +39,49 @@ export const feedbackRouter = Router();
 const ADMIN_FEEDBACK_MAX = 500;
 const ADMIN_FEEDBACK_DEFAULT = 100;
 
+interface RunContext {
+  searchVersion: string | null;
+  algo: SearchAlgo | null;
+  /** Which band a photo was shown in for this run; null if in neither. */
+  tierOf: (photoId: string) => MatchTier | null;
+}
+
+const NO_RUN: RunContext = { searchVersion: null, algo: null, tierOf: () => null };
+
 /**
- * Resolve the retrieval-algorithm snapshot for a vote from its search run, so
- * the label is self-describing (the eval loop can filter by pipeline generation
- * without joining match_runs, and the snapshot survives run expiry/deletion).
+ * Resolve what a vote needs from its search run, so the label is
+ * self-describing (the eval loop can filter by pipeline generation and band
+ * without joining match_runs, and the snapshot survives run expiry/deletion):
+ *  - the retrieval-algorithm snapshot, and
+ *  - the TIER of each voted photo — derived here from the run's own lists rather
+ *    than trusted from the client, so a "see more" vote can't be mislabelled as
+ *    a default-band one (the two are scored separately when tuning a cutoff).
  * Best-effort: a missing runId, absent run, or unparseable `algo` yields nulls —
- * a vote must always record even if we can't attribute its algorithm.
+ * a vote must always record even if we can't attribute it.
  */
-async function resolveRunAlgo(
-  runId: string | undefined,
-): Promise<{ searchVersion: string | null; algo: SearchAlgo | null }> {
-  if (!runId) return { searchVersion: null, algo: null };
+async function resolveRun(runId: string | undefined): Promise<RunContext> {
+  if (!runId) return NO_RUN;
   try {
-    const snap = await firestore().collection('match_runs').doc(runId).get();
-    const parsed = SearchAlgoSchema.safeParse(snap.data()?.algo);
-    if (parsed.success) return { searchVersion: parsed.data.version, algo: parsed.data };
+    const data = (await firestore().collection('match_runs').doc(runId).get()).data();
+    if (!data) return NO_RUN;
+    const parsed = SearchAlgoSchema.safeParse(data.algo);
+    const shown = new Set(Array.isArray(data.resultPhotoIds) ? (data.resultPhotoIds as string[]) : []);
+    const expanded = new Set(Array.isArray(data.expandedPhotoIds) ? (data.expandedPhotoIds as string[]) : []);
+    return {
+      searchVersion: parsed.success ? parsed.data.version : null,
+      algo: parsed.success ? parsed.data : null,
+      tierOf: (photoId) => (shown.has(photoId) ? 'default' : expanded.has(photoId) ? 'expanded' : null),
+    };
   } catch (err) {
-    logger.warn({ err, runId }, 'feedback run-algo lookup failed (non-fatal)');
+    logger.warn({ err, runId }, 'feedback run lookup failed (non-fatal)');
   }
-  return { searchVersion: null, algo: null };
+  return NO_RUN;
+}
+
+/** A reason only means something on "that's me"; an omitted one is the UI's
+ *  default, `me`. Stored explicitly so the label exporter and PRF never guess. */
+function reasonFor(verdict: FeedbackVerdict, reason: FeedbackReason | undefined): FeedbackReason | null {
+  return verdict === 'confirmed' ? (reason ?? 'me') : null;
 }
 
 feedbackRouter.post('/feedback', requireAuth, async (req, res, next) => {
@@ -67,13 +95,14 @@ feedbackRouter.post('/feedback', requireAuth, async (req, res, next) => {
       });
       return;
     }
-    const { eventId, photoId, verdict, runId } = parsed.data;
+    const { eventId, photoId, verdict, runId, reason } = parsed.data;
     const user = req.user!;
 
     // Stamp the vote with the algorithm generation that produced the result, so
     // the eval feedback loop can separate current-pipeline labels (§1.1–1.3)
     // from pre-improvement ones. Denormalized from the run at click time.
-    const { searchVersion, algo } = await resolveRunAlgo(runId);
+    const run = await resolveRun(runId);
+    const { searchVersion, algo } = run;
 
     const ref = await firestore().collection('match_feedback').add({
       uid: user.uid,
@@ -81,6 +110,8 @@ feedbackRouter.post('/feedback', requireAuth, async (req, res, next) => {
       eventId,
       photoId,
       verdict,
+      reason: reasonFor(verdict, reason),
+      tier: run.tierOf(photoId),
       runId: runId ?? null,
       searchVersion,
       algo,
@@ -107,7 +138,7 @@ feedbackRouter.post('/feedback', requireAuth, async (req, res, next) => {
  * so nothing downstream has to know a batch happened.
  *
  * The saving is the round trips and, more importantly, the run lookup:
- * `resolveRunAlgo` runs ONCE for the whole batch instead of once per vote. The
+ * `resolveRun` runs ONCE for the whole batch instead of once per vote. The
  * writes themselves are still individual `add()` calls (the store's WriteBatch
  * only does deletes), run in bounded chunks so a full page can't open 200
  * concurrent writes.
@@ -126,19 +157,21 @@ feedbackRouter.post('/feedback/batch', requireAuth, async (req, res, next) => {
       });
       return;
     }
-    const { eventId, photoIds, verdict, runId } = parsed.data;
+    const { eventId, photoIds, verdict, runId, reason } = parsed.data;
     const user = req.user!;
     // A double-tap or an overlapping selection must not record the same photo
     // twice in one request.
     const unique = [...new Set(photoIds)];
 
-    const { searchVersion, algo } = await resolveRunAlgo(runId);
+    const run = await resolveRun(runId);
+    const { searchVersion, algo } = run;
     const createdAt = new Date().toISOString();
     const row = {
       uid: user.uid,
       email: user.email ?? null,
       eventId,
       verdict,
+      reason: reasonFor(verdict, reason),
       runId: runId ?? null,
       searchVersion,
       algo,
@@ -149,7 +182,9 @@ feedbackRouter.post('/feedback/batch', requireAuth, async (req, res, next) => {
       const chunk = unique.slice(i, i + BATCH_WRITE_CONCURRENCY);
       // eslint-disable-next-line no-await-in-loop
       await Promise.all(
-        chunk.map((photoId) => firestore().collection('match_feedback').add({ ...row, photoId })),
+        chunk.map((photoId) =>
+          firestore().collection('match_feedback').add({ ...row, photoId, tier: run.tierOf(photoId) }),
+        ),
       );
     }
 
@@ -200,6 +235,8 @@ feedbackRouter.get('/admin/feedback', requireAuth, attachRole, requireAnyAdmin, 
         createdAt: String(data.createdAt ?? ''),
         searchVersion: (data.searchVersion as string | null) ?? null,
         algo: SearchAlgoSchema.safeParse(data.algo).data ?? null,
+        reason: FeedbackReasonSchema.safeParse(data.reason).data ?? null,
+        tier: MatchTierSchema.safeParse(data.tier).data ?? null,
       };
     });
     if (eventId) items = items.filter((i) => i.eventId === eventId);

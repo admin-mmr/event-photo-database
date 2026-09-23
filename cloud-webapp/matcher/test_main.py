@@ -801,6 +801,57 @@ class TestSearch:
         assert body["results"][0]["photoId"] == "pB.jpg"  # strong match clears the z-threshold
         assert all(r["score"] >= 0.5 for r in body["results"])  # gated on the T-norm threshold
 
+    def test_near_misses_sit_below_the_cutoff_and_never_leak_into_results(
+        self, client, monkeypatch, seeded_store
+    ):
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        # A cutoff between the two scoring photos (pB ≈ 0.91, pA = 0.85) moves pA
+        # into the band; a wide band keeps it there rather than dropping it.
+        monkeypatch.setattr(main_mod.fusion_mod, "DEFAULT_THRESHOLD", 0.88)
+        monkeypatch.setattr(main_mod, "NEAR_MISS_BAND_RAW", 0.5)
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "ev1"},
+        )
+        body = resp.get_json()
+        assert body["cutoff"] == 0.88
+        assert [r["photoId"] for r in body["results"]] == ["pB.jpg"]
+        near = {h["photoId"]: h for h in body["nearMisses"]}
+        assert "pA.jpg" in near
+        assert all(h["score"] < 0.88 for h in body["nearMisses"])
+        assert near["pA.jpg"]["faceScore"] is not None  # per-modality scores come along
+        assert not near.keys() & {r["photoId"] for r in body["results"]}
+
+    def test_near_miss_band_floor_and_cap(self, client, monkeypatch, seeded_store):
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        monkeypatch.setattr(main_mod.fusion_mod, "DEFAULT_THRESHOLD", 0.88)
+        monkeypatch.setattr(main_mod, "NEAR_MISS_BAND_RAW", 0.01)  # floor 0.87 > pA's 0.85
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "ev1"},
+        )
+        assert resp.get_json()["nearMisses"] == []
+
+        monkeypatch.setattr(main_mod, "NEAR_MISS_BAND_RAW", 1.0)
+        monkeypatch.setattr(main_mod, "NEAR_MISS_MAX", 1)
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "ev1"},
+        )
+        assert len(resp.get_json()["nearMisses"]) == 1
+
+    def test_single_modality_modes_report_no_cutoff_or_band(self, client, monkeypatch, seeded_store):
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "ev1", "mode": "face"},
+        )
+        body = resp.get_json()
+        assert body["cutoff"] is None and body["nearMisses"] == []
+
     def test_prf_folds_confirmed_photo(self, client, monkeypatch, seeded_store):
         self._env(monkeypatch, seeded_store)
         set_bundle(make_bundle(basis(0), basis(1)))
