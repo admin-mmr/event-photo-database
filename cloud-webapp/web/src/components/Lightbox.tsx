@@ -20,8 +20,9 @@ const STR = {
 export interface LightboxItem {
   /** Stable key (photoId). */
   key: string;
-  /** Full-size image URL. On mobile this is the original (full-resolution)
-   *  object URL; elsewhere the `web` derivative. */
+  /** Full-size image URL — normally the `web` derivative. Callers may pass an
+   *  original's object URL only when it is already cached for another reason;
+   *  never download an original just to display it (see lib/lightboxSave). */
   src: string;
   /** Optional smaller URL to fall back to if `src` fails to decode (e.g. a HEIC
    *  original on a browser that can't render it → use the JPEG `web`/thumb). */
