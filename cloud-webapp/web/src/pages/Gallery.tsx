@@ -25,6 +25,7 @@ import { usePageSize } from '../lib/pageSize.js';
 import { useSortMode } from '../lib/sortMode.js';
 import { SelectBar } from '../components/SelectBar.js';
 import { Lightbox } from '../components/Lightbox.js';
+import { lightboxSaveState, lightboxSrc, originalsNeeded } from '../lib/lightboxSave.js';
 import { PageSizeSelect } from '../components/PageSizeSelect.js';
 import { SortSelect } from '../components/SortSelect.js';
 import { LoadMore } from '../components/LoadMore.js';
@@ -95,6 +96,7 @@ const STR = {
     download: '⬇ Download',
     preparing: 'Preparing…',
     saveToPhotos: '📲 Save to Photos',
+    tapToSave: '📲 Ready — tap to save',
     selected: '✓ Selected',
     select: 'Select',
   },
@@ -153,6 +155,7 @@ const STR = {
     download: '⬇ 下载',
     preparing: '准备中…',
     saveToPhotos: '📲 保存到照片',
+    tapToSave: '📲 已就绪 — 点击保存',
     selected: '✓ 已选中',
     select: '选择',
   },
@@ -216,10 +219,10 @@ export function Gallery(): JSX.Element {
   //  1. iOS "Save to Photos" needs the image FILE in hand so `navigator.share`
   //     can be called *synchronously* inside the tap — fetching first burns the
   //     tap's transient activation and iOS then rejects the share. So we
-  //     prefetch originals (current lightbox photo + selected photos) and only
-  //     share once they're cached.
-  //  2. On mobile the lightbox shows this original (full res) instead of the
-  //     downsized `web` derivative.
+  //     download originals ahead of the share — for selected photos, and for a
+  //     photo whose lightbox "Save to Photos" was tapped (see lib/lightboxSave).
+  //  2. When an original is already cached for (1), the lightbox displays it;
+  //     otherwise it shows the `web` derivative. Browsing never downloads one.
   // Both go through one fetcher per event: it caches, joins concurrent
   // requests for the same photo and caps how many transfers run at once, so the
   // prefetch, the save fallback and the ZIP cannot download the same original
@@ -234,6 +237,9 @@ export function Gallery(): JSX.Element {
   // saveSelected's fetch-then-share fallback, which retries and tolerates
   // per-photo failures.
   const [prefetchFailed, setPrefetchFailed] = useState<Set<string>>(new Set());
+  // The photo whose lightbox "Save to Photos" was tapped: its original is
+  // downloading (or ready) for the second, sharing tap. At most one at a time.
+  const [saveRequested, setSaveRequested] = useState<string | null>(null);
 
   /** Mirror one settled original into render state. Shared by the prefetch, the
    *  save fallback and the ZIP so all three report progress identically. */
@@ -282,18 +288,15 @@ export function Gallery(): JSX.Element {
   const ids = useMemo(() => list.map((p) => p.photoId), [list]);
   const sel = useSelection(ids);
 
-  // Photos whose originals we want cached: whatever the lightbox is showing
-  // (for full-res display + one-tap save) plus everything currently selected
-  // (for the batch "Save N to Photos"). `neededKey` is a stable string so the
-  // prefetch/prune effects only re-run when the *set* changes, not every render.
-  const neededIds = useMemo(() => {
-    const s = new Set<string>(sel.selected);
-    if (lightboxIndex !== null) {
-      const p = list[lightboxIndex];
-      if (p) s.add(p.photoId);
-    }
-    return s;
-  }, [sel.selected, lightboxIndex, list]);
+  // Photos whose originals we want cached: everything currently selected (for
+  // the batch "Save N to Photos") plus a lightbox save the user asked for. NOT
+  // the photo the lightbox is merely showing — that made browsing download
+  // ~6 MB originals (see lib/lightboxSave). `neededKey` is a stable string so
+  // the prefetch/prune effects only re-run when the *set* changes.
+  const neededIds = useMemo(
+    () => originalsNeeded(sel.selected, saveRequested),
+    [sel.selected, saveRequested],
+  );
   const neededKey = useMemo(() => [...neededIds].sort().join(','), [neededIds]);
 
   // Every selected original has SETTLED — cached, or its prefetch failed. Once
@@ -340,6 +343,7 @@ export function Gallery(): JSX.Element {
     setDeleteFlow(null);
     setWebUrls({});
     webFetching.current = new Set();
+    setSaveRequested(null);
     // Drop cached originals from the previous event and revoke their URLs.
     for (const url of Object.values(origUrlsRef.current)) URL.revokeObjectURL(url);
     origUrlsRef.current = {};
@@ -417,8 +421,8 @@ export function Gallery(): JSX.Element {
       .catch(() => webFetching.current.delete(p.photoId));
   }, [lightboxIndex, list, webUrls, eventId]);
 
-  // Prefetch the originals we need (current lightbox photo + selected) so a save
-  // can share synchronously and the lightbox can show full res. Mobile only —
+  // Prefetch the originals we need (selected + a requested lightbox save) so a
+  // save can share synchronously. Mobile only —
   // desktop saves go through the on-demand download path and don't need this.
   //
   // Debounced so ticking checkboxes doesn't fire a signing call per tick, and
@@ -759,11 +763,29 @@ export function Gallery(): JSX.Element {
   }
 
   /**
+   * First tap of the mobile lightbox save: download this photo's original so
+   * the second tap can share it synchronously. Fetched directly (not via the
+   * debounced prefetch) so "Preparing…" starts at once; the fetcher joins the
+   * prefetch effect's identical request. Clearing a previous failure first
+   * turns this into a retry.
+   */
+  function requestOriginal(p: GalleryPhoto): void {
+    setSaveRequested(p.photoId);
+    setPrefetchFailed((prev) => {
+      if (!prev.has(p.photoId)) return prev;
+      const next = new Set(prev);
+      next.delete(p.photoId);
+      return next;
+    });
+    void originals.current?.fetch([p.photoId], { onSettled: recordSettled });
+  }
+
+  /**
    * Save a single photo (from the lightbox) straight to the phone's Photos.
-   * On mobile the original is already cached (the lightbox prefetched it for
-   * full-res display), so we share synchronously — no awaited fetch that would
-   * burn the tap's user activation and make iOS reject the share. On desktop (or
-   * if the blob hasn't landed yet) we fetch first and the helper downloads.
+   * On mobile this is the second tap: the original is already cached (selected,
+   * or downloaded by requestOriginal), so we share synchronously — no awaited
+   * fetch that would burn the tap's user activation and make iOS reject the
+   * share. On desktop we fetch first and the helper downloads.
    */
   function saveOne(p: GalleryPhoto): void {
     setSaving(true);
@@ -985,39 +1007,50 @@ export function Gallery(): JSX.Element {
         <Lightbox
           items={list.map((p) => ({
             key: p.photoId,
-            // Mobile shows the full-resolution original (cached as an object
-            // URL); until it lands, and on desktop, fall back to the `web`
-            // derivative, then the thumbnail.
-            src:
-              (canSavePhotos ? origUrls[p.photoId] : undefined) ??
-              webUrls[p.photoId] ??
-              p.thumbUrl,
+            // The `web` derivative (thumbnail until it's signed); an original
+            // only if it's already cached for a save. See lib/lightboxSave.
+            src: lightboxSrc({
+              canSavePhotos,
+              origUrl: origUrls[p.photoId],
+              webUrl: webUrls[p.photoId],
+              thumbUrl: p.thumbUrl,
+            }),
             // If the original can't decode (e.g. HEIC off-Safari), drop to JPEG.
             fallbackSrc: webUrls[p.photoId] ?? p.thumbUrl,
             alt: p.name,
           }))}
           index={lightboxIndex}
-          onClose={() => setLightboxIndex(null)}
+          onClose={() => {
+            setLightboxIndex(null);
+            setSaveRequested(null);
+          }}
           onNavigate={setLightboxIndex}
           renderFooter={(item, idx) => {
             const p = list[idx];
             if (!p) return null;
             const checked = sel.isSelected(item.key);
-            // On mobile the original must be cached before we can share it
-            // synchronously, so disable until it lands ("Preparing…").
-            const preparing = canSavePhotos && !origBlobs[item.key];
+            // Two taps on mobile: download the original, then share it
+            // synchronously (iOS rejects a share after an awaited fetch).
+            const saveState = lightboxSaveState({
+              canSavePhotos,
+              cached: Boolean(origBlobs[item.key]),
+              requested: saveRequested === item.key,
+              failed: prefetchFailed.has(item.key),
+            });
             return (
               <>
                 <button
                   className="btn btn-primary btn-sm"
-                  disabled={saving || preparing}
-                  onClick={() => saveOne(p)}
+                  disabled={saving || saveState === 'preparing'}
+                  onClick={() => (saveState === 'prepare' ? requestOriginal(p) : saveOne(p))}
                 >
-                  {!canSavePhotos
+                  {saveState === 'download'
                     ? t.download
-                    : preparing
+                    : saveState === 'preparing'
                       ? t.preparing
-                      : t.saveToPhotos}
+                      : saveState === 'tapToSave'
+                        ? t.tapToSave
+                        : t.saveToPhotos}
                 </button>
                 <button
                   className={`btn btn-sm ${checked ? 'btn-primary' : 'btn-light'}`}
