@@ -192,6 +192,13 @@ backbone.
 
 ## 8. July 2026 update (landscape refresh)
 
+> **Superseded in part by the September 2026 review** in `PEOPLE_RECOGNITION_QUALITY_PLAN.md`.
+> Corrections: CR-FIQA is CC BY-NC 4.0 (not usable); AdaFace's MIT licence covers code only —
+> its weights follow the research-only training data; FastReID is dormant (use torchreid);
+> SigLIP 2 / PE-Core are CPU-feasible and strong zero-shot for appearance. And the licence
+> question now reaches the model we run: InsightFace lists `buffalo_l` as non-commercial
+> research only.
+
 Re-validated the §3/§5 package picks against the current (July 2026) landscape and
 practitioner/forum sentiment. **Most of §0–§6 still holds; the deltas below are what
 changed.** These findings drive the concrete, sequenced work in

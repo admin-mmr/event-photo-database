@@ -72,6 +72,19 @@ Build items (slot into M4 alongside task 4.4, ~2–3 days total):
 
 ## 4b. "Too few photos — see more" expander (decided 2026-06-11)
 
+> **✅ BUILT (2026-09-23)** — it had been designed only; no vote before this carried a
+> reason or tier. As built (`PEOPLE_RECOGNITION_QUALITY_PLAN.md` Items 13–15):
+> - The step is **one z-step of 0.5 below the cutoff, max 20 photos, once per search**
+>   (`FINDME_EXPAND_STEP_Z` / `FINDME_EXPAND_MAX`), served from the near-miss band the
+>   matcher logs on each run — no second search. The response to the search only says
+>   *whether* more exists (`canExpand`); the photos stay server-side until asked.
+> - `tier` is **derived on the server** from the run's own lists, not sent by the client.
+> - The reason field is `reason` (`me` / `friend` / `group`; omitted = `me`), not
+>   `tagReason`; the exporter reads either. PRF folds only `me`.
+> - Only the **latest** vote per (member, photo) counts — votes are immutable, so a
+>   corrected tag leaves both docs behind.
+> - Recall proxy: runs with `expandedAt` ÷ runs with `canExpand`, on `match_runs`.
+
 The results page shows only results above the conservative default cutoff. A **"Too few photos? See more"** button relaxes the cutoff **one bounded step** (fixed second threshold or next 20, whichever is smaller) and appends **only the diff**. The user can then tag photos to keep them — tagging adds the photo to their results/download set **and** writes a row to `match_feedback`.
 
 **Tag-reason dropdown.** Each tag carries a reason — **Me** (default) / **Friend** / **Group photo** — stored as `tagReason` on the `match_feedback` row (the PRD schema's `reason?` field, now structured). One tap keeps the default "Me"; the dropdown is there to *keep wrong labels out*, not to add friction. Eval semantics per reason:
