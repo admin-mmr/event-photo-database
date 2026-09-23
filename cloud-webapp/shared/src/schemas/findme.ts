@@ -154,8 +154,13 @@ export type MatchResult = z.infer<typeof MatchResultSchema>;
  * Bump this whenever a change materially alters ranking (new embedder, fusion
  * weights, threshold, a new signal). The date+feature form keeps it sortable
  * and self-documenting.
+ *
+ * History: 2026.07-tnorm-multiref-prf (T-norm z≥4.0) → 2026.09-tnorm45 (z≥4.5;
+ * also the first tag after real yolov8n person crops and anchor suggestions
+ * went live, neither of which bumped it). Filter an export with
+ * `--search-version 2026.09` to measure only votes cast at the new cutoff.
  */
-export const SEARCH_ALGO_VERSION = '2026.07-tnorm-multiref-prf';
+export const SEARCH_ALGO_VERSION = '2026.09-tnorm45-multiref-prf';
 
 /**
  * Descriptor of the retrieval algorithm that produced a set of results. The

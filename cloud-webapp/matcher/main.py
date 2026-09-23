@@ -49,8 +49,15 @@ UNGATED_TOP_K = int(os.environ.get("MATCHER_UNGATED_TOP_K", "500"))
 # precision-first operating point (guardrails: precision-first while data
 # accumulates). It is a GLOBAL default over two events — revisit per-event once
 # more events clear the evidence bar (PEOPLE_RECOGNITION_QUALITY_PLAN.md Item 8).
+# Raised to 4.5 on 2026-09-23 after a replay on three detector-clean events
+# (5ff5ff5c / ecd530b9 / c97aff22, 155 searchers): pooled, 4.0→4.5 dropped wrong
+# matches 212→114 (−46%) for right 2240→2053 (−8%), precision 0.914→0.947. The
+# fusion weights were left alone — at matched precision the outfit weight was
+# neutral on all three. Reports: gs://<project>-derivatives/eval/replay-2026-09-23-*.json.
 # Now on by default via the api's FINDME_TNORM=1; override the env to retune.
-NORM_THRESHOLD = float(os.environ.get("MATCHER_NORM_THRESHOLD", "4.0"))
+# deploy-matcher.sh uses --set-env-vars, so an env override does NOT survive a
+# redeploy — change this default to make a new value stick.
+NORM_THRESHOLD = float(os.environ.get("MATCHER_NORM_THRESHOLD", "4.5"))
 
 # Capture-time-conditional outfit fusion. Off by default until swept on judged
 # labels. When on, the person (outfit) weight for a candidate photo is scaled by
