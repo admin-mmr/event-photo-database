@@ -50,33 +50,47 @@ from export_feedback_labels import build_label_rows, write_event_csv  # noqa: E4
 DEFAULT_REFS_PER_USER = 1
 
 
-def select_reference_uploads(
+def rank_reference_uploads(
     uploads: list[dict[str, Any]],
     uids: set[str],
     event_id: str,
-    refs_per_user: int = DEFAULT_REFS_PER_USER,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Pick the reference selfie(s) to use as each judged searcher's query.
+    """Every stored selfie of each judged searcher, in the order to try them.
 
-    For every uid we take that user's own find_me_uploads, newest first,
-    preferring the ones first uploaded FOR this event (a reused selfie has a
-    different eventId, so it sorts after but is still eligible as a fallback).
-    Returns uid → up to `refs_per_user` upload docs. A uid with no stored
-    upload is simply absent (reported by the caller)."""
+    For every uid we take that user's own find_me_uploads, preferring the ones
+    first uploaded FOR this event (a reused selfie has a different eventId, so it
+    sorts after but is still eligible as a fallback), then most recent. A uid with
+    no stored upload is simply absent (reported by the caller).
+
+    The whole list is returned, not just the head, because a doc can outlive its
+    bytes: the uploads bucket deletes objects 90 days after UPLOAD, so a searcher
+    whose event-time selfie is gone may still have a newer one from another
+    event. That is the same face, and it is what keeps a months-old event
+    replayable at all."""
     by_uid: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for up in uploads:
         uid = str(up.get("uid", ""))
         if uid in uids and up.get("gcsPath"):
             by_uid[uid].append(up)
 
-    chosen: dict[str, list[dict[str, Any]]] = {}
-    for uid, ups in by_uid.items():
+    for ups in by_uid.values():
         ups.sort(
             key=lambda u: (u.get("eventId") == event_id, str(u.get("createdAt") or "")),
             reverse=True,  # this-event first, then most recent
         )
-        chosen[uid] = ups[: max(1, refs_per_user)]
-    return chosen
+    return dict(by_uid)
+
+
+def select_reference_uploads(
+    uploads: list[dict[str, Any]],
+    uids: set[str],
+    event_id: str,
+    refs_per_user: int = DEFAULT_REFS_PER_USER,
+) -> dict[str, list[dict[str, Any]]]:
+    """The first `refs_per_user` of `rank_reference_uploads` for each uid — the
+    selfies to use when every one of them still exists."""
+    ranked = rank_reference_uploads(uploads, uids, event_id)
+    return {uid: ups[: max(1, refs_per_user)] for uid, ups in ranked.items()}
 
 
 def _ext_from(upload: dict[str, Any]) -> str:
@@ -112,33 +126,49 @@ def prepare(
     labels_path = write_event_csv(out_dir, event_id, rows)
 
     uids = {r["person"] for r in rows if r["person"]}
-    chosen = select_reference_uploads(uploads, uids, event_id, refs_per_user)
+    ranked = rank_reference_uploads(uploads, uids, event_id)
+    want = max(1, refs_per_user)
 
     queries_dir = os.path.join(out_dir, "queries")
     written = 0
+    fallbacks = 0
+    with_refs: set[str] = set()
     download_errors: list[str] = []
-    for uid, ups in chosen.items():
+    for uid, ups in ranked.items():
         udir = os.path.join(queries_dir, uid)
-        os.makedirs(udir, exist_ok=True)
-        for up in ups:
+        got = 0
+        for pos, up in enumerate(ups):
+            if got >= want:
+                break
             gcs_path = str(up["gcsPath"])
+            os.makedirs(udir, exist_ok=True)
             dest = os.path.join(udir, f"{up.get('uploadId', 'ref')}.{_ext_from(up)}")
             try:
                 download(gcs_path, dest)
-                written += 1
-            except Exception as exc:  # noqa: BLE001 — best-effort per selfie
+            except Exception as exc:  # noqa: BLE001 — best-effort per selfie; try the next
                 download_errors.append(f"{uid}:{gcs_path}: {exc}")
+                continue
+            written += 1
+            got += 1
+            if pos >= want:  # a preferred selfie was gone and a later one stood in
+                fallbacks += 1
+        if got:
+            with_refs.add(uid)
+        elif os.path.isdir(udir) and not os.listdir(udir):
+            os.rmdir(udir)  # no empty query dirs: run_eval would count them as people
 
-    missing = sorted(uids - set(chosen))
     return {
         "eventId": event_id,
         "labels": len(rows),
         "users": len(uids),
-        "users_with_refs": len(chosen),
+        "users_with_refs": len(with_refs),
         "queries_written": written,
+        "fallbacks": fallbacks,
         "labels_csv": labels_path,
         "queries_dir": queries_dir,
-        "missing_refs": missing,
+        # No stored upload at all vs uploads whose bytes are all gone.
+        "missing_refs": sorted(uids - set(ranked)),
+        "no_live_ref": sorted(set(ranked) - with_refs),
         "download_errors": download_errors,
     }
 
@@ -219,12 +249,16 @@ def main() -> int:
 
     print(f"Event {args.event_id}:")
     print(f"  judged labels: {summary['labels']}  ({summary['users']} searchers)")
-    print(f"  reference selfies downloaded: {summary['queries_written']} for {summary.get('users_with_refs', 0)} searchers")
+    covered = summary.get("users_with_refs", 0)
+    print(f"  reference selfies downloaded: {summary['queries_written']} for {covered}/{summary['users']} searchers"
+          f" ({summary.get('fallbacks', 0)} via a newer selfie after the preferred one was gone)")
     if summary["missing_refs"]:
-        print(f"  ⚠️  {len(summary['missing_refs'])} searchers have NO stored selfie (skipped): "
-              f"{', '.join(summary['missing_refs'][:10])}{' …' if len(summary['missing_refs']) > 10 else ''}")
-    for err in summary["download_errors"][:10]:
-        print(f"  selfie download failed — {err}")
+        print(f"  ⚠️  {len(summary['missing_refs'])} searchers have NO stored selfie (skipped).")
+    if summary.get("no_live_ref"):
+        print(f"  ⚠️  {len(summary['no_live_ref'])} searchers' selfies have ALL been deleted "
+              "(the uploads bucket drops objects 90 days after upload) — skipped.")
+    if summary["download_errors"]:
+        print(f"  {len(summary['download_errors'])} selfie download(s) failed; first: {summary['download_errors'][0]}")
     if summary["labels"] == 0:
         print("  Nothing to replay (no judged feedback for this event).")
         return 1
