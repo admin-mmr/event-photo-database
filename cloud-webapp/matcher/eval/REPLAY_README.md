@@ -1,16 +1,29 @@
-# Replay tuning — T-norm threshold + PRF lift (§1.2 / §1.3)
+# Replay tuning — cutoff, fusion weights, anchors, face quality
 
-Once Find Me has real "That's me / Not me" votes, replay a past event to (a) pick
-`MATCHER_NORM_THRESHOLD` for T-norm and (b) confirm PRF actually lifts recall,
-**before** enabling `FINDME_TNORM` in prod.
+Replay past events against members' "That's me / Not me" votes to tune the
+matcher: `MATCHER_NORM_THRESHOLD` (the T-norm cutoff), the fusion weights, and the
+opt-in knobs (anchor suggestions, `FACE_QUALITY_WEIGHT`). T-norm has been live
+since 2026-07-22; the cutoff went 4.0 → **4.5** on 2026-09-23 (see
+[Last calibration](#last-calibration-2026-09-23)).
 
-Baseline to beat, from the raw votes (no replay): the biggest event
-`81a584f7-b9e8-4f18-9744-8002693364ba` sits at judged **P@20 = 0.684**
-(1,713 pairs / 99 users). Check current numbers any time with:
+Check current per-event judged P@20 from the raw votes (no replay) any time with:
 
 ```
 ~/.venvs/findme-eval/bin/python eval/export_feedback_labels.py --project mmr-data-pipeline --out-dir /tmp/labels
 ```
+
+## Pick events whose voters still have a selfie
+
+**Selfies are deleted 90 days after UPLOAD** (lifecycle rule on the uploads
+bucket, plus 7 days of soft delete) — not 90 days after the vote. An event searched
+months ago has lost most of its queries even if its votes are recent. On
+2026-09-23, `81a584f7` (the July baseline event) had a live selfie for only 25 of
+its 102 voters. Its votes still count for judged P@20; it just can't be replayed.
+
+`prepare_replay.py` falls back to a voter's newer selfie from another event (same
+face) when the preferred one is gone, and `run_eval.py` **exits 2 below 50% query
+coverage** (`--min-query-coverage`) — the survivors would be a biased sample. The
+evidence bar (≥20 judged pairs / ≥5 users) counts only people actually scored.
 
 ## What a replay needs
 
@@ -26,8 +39,14 @@ does the ranking and the sweep.
 ## Recommended: run it in-cloud (selfies never touch a laptop)
 
 ```
-./infra/scripts/run-replay-job.sh mmr-data-pipeline 81a584f7-b9e8-4f18-9744-8002693364ba
+EVAL_ARGS="--tnorm --anchor-promotion --face-quality-weight 0.25;0.5;1.0" \
+REPORT_GCS=gs://mmr-data-pipeline-derivatives/eval/replay-$(date +%F).json \
+./infra/scripts/run-replay-job.sh mmr-data-pipeline <event-id>,<event-id>,<event-id>
 ```
+
+Several comma-separated events share one image build and run as sequential
+executions; each gets `<report>-<event-id-prefix>.json`. `EVAL_ARGS` picks the
+analyses (default `--tnorm --prf`).
 
 Builds `eval/Dockerfile.replay` (matcher image + firestore + eval scripts, models
 baked in), then runs a Cloud Run **job** (`api-runtime@` SA; scales to zero after
@@ -46,18 +65,49 @@ MODEL_DIR=/path/to/model_files ~/.venvs/findme-eval/bin/python eval/prepare_repl
 (The venv needs `google-cloud-firestore` + `google-cloud-storage` + the matcher
 deps; downloads the selfies to `/tmp/replay/queries/` — delete when done, PRD §8.)
 
-## Reading the result → setting the threshold
+## Reading the result
 
-`--tnorm` prints, at the best fusion weights, fused P@K raw-vs-normalized and a
-precision/recall-vs-threshold sweep for each. **Pick the `tnorm` row that beats
-0.684 precision with the highest recall** — its threshold is `MATCHER_NORM_THRESHOLD`.
-`--prf` prints base vs +PRF recall@k and the lift.
+The `--tnorm` output ends in an **operating-point table**: T-normed fused results
+at fixed z cutoffs (3.0…6.0, including the production value) for several fusion
+weights, each cell `P right/wrong`. That table, not the `Best:` line, is what a
+config change should come from:
 
-Then, only if T-norm wins: set `MATCHER_NORM_THRESHOLD` on the matcher and
-`FINDME_TNORM=1` on the api, and redeploy. Leave off if it doesn't beat baseline.
+- **`Best: wF=… wP=…`** is the raw-cosine top-20 re-rank with no cutoff. It says
+  which weights order results best, not what members see at the production cutoff.
+  The anchor and face-quality passes currently run at those weights.
+- **Compare weights at matched precision, not at one cutoff.** The columns keep
+  `wF + wP = 1`, so lowering the outfit weight raises the face weight and every
+  score with it; at one fixed cutoff, "face only" looks like it admits more of
+  everything. Find the row where each column reaches the same precision and
+  compare the right-match counts.
+- Recall is unmeasurable from votes, so a higher cutoff always looks better on
+  precision. Trade right matches lost against wrong matches removed, and watch the
+  "see more" click rate after a change.
 
-> Tip: you just asked members to vote — let the labeled set grow for a week or
-> two, then replay, so the threshold is tuned on more than today's votes.
+Apply a new cutoff by changing the default in `matcher/main.py` (a deploy uses
+`--set-env-vars`, so an env override is wiped on the next deploy), and bump
+`SEARCH_ALGO_VERSION` in `shared/src/schemas/findme.ts` so later votes separate.
+
+## Last calibration (2026-09-23)
+
+Events `5ff5ff5c` (63/66 voters with a selfie), `ecd530b9` (65/71), `c97aff22`
+(27/30) — all with real yolov8n person crops. Reports:
+`gs://mmr-data-pipeline-derivatives/eval/replay-2026-09-23-<event8>.json`.
+
+| at wF/wP 0.85/0.15 | right | wrong | P |
+|---|---|---|---|
+| z ≥ 4.0 (was live) | 2,240 | 212 | 0.914 |
+| **z ≥ 4.5 (now live)** | **2,053** | **114** | **0.947** |
+
+- **Cutoff 4.0 → 4.5:** −8% right, −46% wrong, pooled (per event, wrong fell
+  29% / 69% / 62%).
+- **Fusion weights unchanged:** at matched precision the outfit weight was
+  neutral on all three events. Outfit is now informative for ranking (person-only
+  judged P@20 0.94 / 0.94 / 0.81, vs 0.50 in July on face-box crops), but not at
+  the cutoff.
+- **Anchor suggestions:** 39 right / 0 wrong / 30 unjudged; recall lift ≤ +0.016.
+- **Face-quality weight:** inconclusive (`ecd530b9` has no quality fields; ±0.01–0.03
+  on the others at small n) — `FACE_QUALITY_WEIGHT` stays 0.
 
 ## Filtering votes by pipeline generation (search_version)
 

@@ -11,6 +11,9 @@
 #   K               P@K                (default 20)
 #   REFS_PER_USER   selfies per uid    (default 1)
 #   REPORT_GCS      optional gs:// path to upload the JSON report to
+#   EVAL_ARGS       run_eval.py analyses to add after --judged-only
+#                   (default "--tnorm --prf"), e.g.
+#                   "--tnorm --anchor-promotion --face-quality-weight 0.25;0.5;1.0"
 set -euo pipefail
 
 : "${PROJECT:?set PROJECT}"
@@ -19,6 +22,7 @@ DERIVATIVES="${DERIVATIVES:-gs://${PROJECT}-derivatives}"
 UPLOADS_BUCKET="${UPLOADS_BUCKET:-${PROJECT}-uploads}"
 K="${K:-20}"
 REFS_PER_USER="${REFS_PER_USER:-1}"
+read -r -a EXTRA <<< "${EVAL_ARGS:---tnorm --prf}"
 OUT=/tmp/replay
 
 echo "==> Preparing labels + query selfies for $EVENT_ID"
@@ -31,14 +35,14 @@ python eval/prepare_replay.py \
   --refs-per-user "$REFS_PER_USER" \
   --k "$K"
 
-echo "==> Replaying with T-norm + PRF (judged-only)"
+echo "==> Replaying (judged-only ${EXTRA[*]})"
 python eval/run_eval.py \
   --store "$DERIVATIVES" \
   --event-id "$EVENT_ID" \
   --labels "$OUT/labels-$EVENT_ID.csv" \
   --queries "$OUT/queries" \
   --k "$K" \
-  --judged-only --tnorm --prf \
+  --judged-only "${EXTRA[@]}" \
   --report "$OUT/report.json"
 
 if [[ -n "${REPORT_GCS:-}" ]]; then
@@ -53,4 +57,4 @@ storage.Client().bucket(bucket).blob(path).upload_from_filename(src)
 print(f"report uploaded to {dst}")
 PY
 fi
-echo "==> Done. The threshold sweep above is the tuning output; pick MATCHER_NORM_THRESHOLD from the tnorm rows."
+echo "==> Done. Read the T-norm operating-point table: it scores the production threshold at each fusion weight."

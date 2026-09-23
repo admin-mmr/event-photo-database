@@ -168,6 +168,15 @@ Ordered fast/free → heavier. Each notes the constraint it targets:
 > feedback, so this is a precision-biased choice — watch the expander click-rate proxy;
 > the 4.0 default spans only two events → move to per-event thresholds (Item 8) as more
 > events clear the evidence bar. Rollback is `FINDME_TNORM=''` (no matcher redeploy).
+>
+> **UPDATE (2026-09-23): cutoff raised to 4.5.** Re-swept on three events with real
+> yolov8n person crops (`5ff5ff5c` / `ecd530b9` / `c97aff22`, 155 searchers). Pooled at
+> 0.85/0.15, z≥4.0 → 2,240 right / 212 wrong (P 0.914); z≥4.5 → 2,053 / 114 (P 0.947):
+> −8% right for −46% wrong. Fusion weights unchanged — at matched precision the outfit
+> weight was neutral on all three. `81a584f7` could not be re-swept: its voters' selfies
+> have mostly aged out (90 days from upload). Details + method: `matcher/eval/REPLAY_README.md`.
+> The default lives in `matcher/main.py` (an env override does not survive a deploy);
+> `SEARCH_ALGO_VERSION` bumped to `2026.09-tnorm45-multiref-prf`.
 
 Subtract `TNORM_ALPHA ×` each query's mean similarity to a background cohort of event
 faces before thresholding (`FACE_RECOGNITION_IMPROVEMENT_ANALYSIS.md §1.3`). Lets us

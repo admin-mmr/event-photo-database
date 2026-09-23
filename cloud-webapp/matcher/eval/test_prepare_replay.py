@@ -114,3 +114,35 @@ def test_prepare_reports_download_failures(tmp_path):
 def test_prepare_empty_when_no_feedback_for_event(tmp_path):
     summary = prepare(_feedback(), {}, _uploads(), "nonexistent", str(tmp_path), lambda *a: None)
     assert summary["labels"] == 0 and summary["queries_written"] == 0
+
+
+def test_prepare_falls_back_to_a_newer_selfie_when_the_preferred_one_is_gone(tmp_path):
+    # alice's this-event selfie (u-a2) has been deleted by the bucket lifecycle,
+    # but her older upload still exists — it is the same face, so use it.
+    def download(gcs_path: str, dest: str) -> None:
+        if gcs_path.endswith("u-a2.png"):
+            raise RuntimeError("404 No such object")
+        with open(dest, "wb") as f:
+            f.write(b"x")
+
+    summary = prepare(_feedback(), {}, _uploads(), EVENT, str(tmp_path), download, refs_per_user=1)
+    assert os.path.isfile(os.path.join(summary["queries_dir"], "alice", "u-a1.jpg"))
+    assert summary["users_with_refs"] == 2  # alice (fallback) + bob
+    assert summary["fallbacks"] == 1
+    assert summary["no_live_ref"] == []
+    assert len(summary["download_errors"]) == 1
+
+
+def test_prepare_reports_a_searcher_whose_selfies_are_all_gone(tmp_path):
+    def download(gcs_path: str, dest: str) -> None:
+        if "/bob/" in gcs_path:
+            raise RuntimeError("404 No such object")
+        with open(dest, "wb") as f:
+            f.write(b"x")
+
+    summary = prepare(_feedback(), {}, _uploads(), EVENT, str(tmp_path), download)
+    assert summary["no_live_ref"] == ["bob"]
+    assert summary["missing_refs"] == ["carol"]
+    assert summary["users_with_refs"] == 1
+    # No empty queries/bob/ — run_eval would treat it as a person with no query.
+    assert not os.path.isdir(os.path.join(summary["queries_dir"], "bob"))

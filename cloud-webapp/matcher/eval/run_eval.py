@@ -44,7 +44,24 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import fusion as fusion_mod  # noqa: E402
 
-WEIGHT_SWEEP = [(1.0, 0.0), (0.9, 0.1), (0.8, 0.2), (0.7, 0.3), (0.6, 0.4), (0.5, 0.5), (0.0, 1.0)]
+WEIGHT_SWEEP = [
+    (1.0, 0.0), (0.95, 0.05), (0.9, 0.1), (0.85, 0.15), (0.8, 0.2),
+    (0.7, 0.3), (0.6, 0.4), (0.5, 0.5), (0.0, 1.0),
+]  # 0.85/0.15 is production (fusion.DEFAULT_*_WEIGHT) — keep it in the grid
+
+# The --tnorm operating-point table: fusion weights × fixed z thresholds. The
+# adaptive threshold_sweep grid spans min..max of the observed scores, so its
+# points land wherever the data puts them and rarely on the value production
+# runs at (MATCHER_NORM_THRESHOLD, 4.5) — this table always includes it.
+DEFAULT_TNORM_WEIGHTS = "0.85:0.15;0.9:0.1;0.95:0.05;1.0:0.0"
+DEFAULT_TNORM_THRESHOLDS = "3.0;3.5;4.0;4.5;5.0;5.5;6.0"
+
+# Judged-mode evidence bar (EVAL_FEEDBACK_LOOP.md §3), counted over the people
+# the replay actually SCORED — not everyone who voted. A voter whose selfie has
+# expired contributes labels but no query, and counting them let a replay that
+# scored 8 of 102 people print PASS.
+MIN_JUDGED_PAIRS = 20
+MIN_JUDGED_USERS = 5
 
 # Default candidate windows for the capture-time-conditional sweep (Item 1):
 # (w_full_min, w_zero_min, floor). Bracket the plan's 45 min / 3 h default with a
@@ -293,6 +310,7 @@ def threshold_sweep(
     judged: bool = False,
     n_points: int = 11,
     weight_fn_for=None,
+    thresholds: list[float] | None = None,
 ) -> dict:
     """Precision/recall of the FUSED result *set* as the score threshold varies.
 
@@ -303,7 +321,8 @@ def threshold_sweep(
     THIS variant, so the raw and tnorm curves are each sampled across their own
     achievable range and compared shape-to-shape. In judged mode only confirmed
     (`truth`) / wrong (`negatives`) pairs count and recall is omitted (partial
-    labels, EVAL_FEEDBACK_LOOP.md)."""
+    labels, EVAL_FEEDBACK_LOOP.md). Pass `thresholds` to score fixed cutoffs
+    instead — e.g. the production MATCHER_NORM_THRESHOLD."""
     negatives = negatives or {}
     per_query: dict[str, list] = {}
     all_scores: list[float] = []
@@ -319,8 +338,9 @@ def threshold_sweep(
     if not all_scores:
         return {"weights": [w_face, w_person], "tnorm": tnorm, "points": []}
 
-    lo, hi = min(all_scores), max(all_scores)
-    thresholds = [lo] if hi == lo else [lo + (hi - lo) * i / (n_points - 1) for i in range(n_points)]
+    if thresholds is None:
+        lo, hi = min(all_scores), max(all_scores)
+        thresholds = [lo] if hi == lo else [lo + (hi - lo) * i / (n_points - 1) for i in range(n_points)]
 
     points = []
     for t in thresholds:
@@ -705,6 +725,51 @@ def fused_precision_at_k(
     return total / n if n else None
 
 
+def parse_weight_pairs(spec: str) -> list[tuple[float, float]]:
+    """'0.85:0.15;0.9:0.1' → [(0.85, 0.15), (0.9, 0.1)]."""
+    out = []
+    for part in spec.split(";"):
+        part = part.strip()
+        if part:
+            wf, _, wp = part.partition(":")
+            out.append((float(wf), float(wp)))
+    return out
+
+
+def parse_floats(spec: str) -> list[float]:
+    return [float(x) for x in spec.replace(",", ";").split(";") if x.strip()]
+
+
+def query_coverage(people: set[str], query_embeddings: dict) -> dict:
+    """How many labeled people the replay can actually score with a face query.
+    The rest are voters whose selfie is gone or unusable: they bring labels and
+    nothing else, so they must not count toward the evidence bar."""
+    usable = [p for p in people if (query_embeddings.get(p) or {}).get("face") is not None]
+    return {
+        "labeled": len(people),
+        "with_face_query": len(usable),
+        "fraction": (len(usable) / len(people)) if people else None,
+    }
+
+
+def operating_point_table(
+    event,
+    truth: dict[str, set[str]],
+    query_embeddings: dict,
+    weights: list[tuple[float, float]],
+    thresholds: list[float],
+    negatives: dict[str, set[str]] | None = None,
+    judged: bool = False,
+) -> list[dict]:
+    """T-normed fused result sets at fixed (weights × threshold) points — the
+    question a production change actually asks: at the threshold we run, what
+    does moving the outfit weight do to right vs wrong matches?"""
+    return [
+        threshold_sweep(event, truth, query_embeddings, wf, wp, True, negatives, judged, thresholds=thresholds)
+        for wf, wp in weights
+    ]
+
+
 def evaluate(
     event,
     truth: dict[str, set[str]],
@@ -790,10 +855,13 @@ def evaluate(
     target = 0.85 if judged else 0.8
     best_p = best["mean"]["precision"]
     report["best_fusion"] = {"w_face": best["w_face"], "w_person": best["w_person"], "mean": best["mean"]}
-    report["gate"] = {
-        "target_precision_at_k": target,
-        "passed": best_p is not None and best_p >= target,
-    }
+    gate = {"target_precision_at_k": target, "passed": best_p is not None and best_p >= target}
+    if judged:
+        face = report["per_mode"]["face"]
+        evidence = face.get("judged_pairs", 0) >= MIN_JUDGED_PAIRS and face["queries"] >= MIN_JUDGED_USERS
+        gate["evidence_met"] = evidence
+        gate["passed"] = gate["passed"] and evidence  # a number below the bar gates nothing
+    report["gate"] = gate
     return report
 
 
@@ -870,6 +938,26 @@ def main() -> int:
         "precision/recall-vs-threshold sweep for each, to pick MATCHER_NORM_THRESHOLD.",
     )
     parser.add_argument(
+        "--tnorm-weights",
+        default=DEFAULT_TNORM_WEIGHTS,
+        help="';'-separated w_face:w_person pairs for the --tnorm operating-point table "
+        f"(default '{DEFAULT_TNORM_WEIGHTS}').",
+    )
+    parser.add_argument(
+        "--tnorm-thresholds",
+        default=DEFAULT_TNORM_THRESHOLDS,
+        help="';'-separated fixed z thresholds for the --tnorm operating-point table "
+        f"(default '{DEFAULT_TNORM_THRESHOLDS}'; production MATCHER_NORM_THRESHOLD is 4.5).",
+    )
+    parser.add_argument(
+        "--min-query-coverage",
+        type=float,
+        default=0.5,
+        help="refuse to report (exit 2) when fewer than this fraction of labeled people have a "
+        "usable face query — the survivors are a biased sample (only recent searchers still "
+        "have a selfie). 0 disables. Default 0.5.",
+    )
+    parser.add_argument(
         "--prf",
         action="store_true",
         help="add a pseudo-relevance-feedback (§1.2) pass: fold --prf-fold of each "
@@ -944,7 +1032,20 @@ def main() -> int:
     if missing:
         print(f"WARNING: labeled people with no reference photos (skipped): {', '.join(missing)}")
 
+    cov = query_coverage(all_people, queries)
+    print(f"Query coverage: {cov['with_face_query']}/{cov['labeled']} labeled people have a usable face query")
+    if cov["fraction"] is not None and cov["fraction"] < args.min_query_coverage:
+        print(
+            f"ERROR: query coverage {cov['fraction']:.0%} is below --min-query-coverage "
+            f"{args.min_query_coverage:.0%}. The people left are not a representative sample, so no "
+            "number from this replay should drive a config change. (Selfies are deleted 90 days after "
+            "upload; replay a more recent event, or pass --min-query-coverage 0 to look anyway.)",
+            file=sys.stderr,
+        )
+        return 2
+
     report = evaluate(event, truth, queries, args.k, negatives=negatives, judged=args.judged_only)
+    report["query_coverage"] = cov
 
     def fmt(v: float | None) -> str:
         return f"{v:.3f}" if v is not None else "  n/a"
@@ -956,7 +1057,7 @@ def main() -> int:
     print("  fusion sweep:")
     for e in report["fusion_sweep"]:
         m = e["mean"]
-        print(f"    wF={e['w_face']:.1f} wP={e['w_person']:.1f}: P={fmt(m['precision'])}  R={fmt(m['recall'])}")
+        print(f"    wF={e['w_face']:.2f} wP={e['w_person']:.2f}: P={fmt(m['precision'])}  R={fmt(m['recall'])}")
     b = report["best_fusion"]
     gate = "PASS ✅" if report["gate"]["passed"] else "FAIL ❌"
     target = report["gate"]["target_precision_at_k"]
@@ -964,9 +1065,10 @@ def main() -> int:
 
     if args.judged_only:
         pairs = report["per_mode"]["face"].get("judged_pairs", 0)
-        users = len(all_people)
-        if pairs < 20 or users < 5:
-            print(f"  ⚠️  Below evidence bar ({pairs} judged pairs, {users} users; need ≥20 pairs / ≥5 users) — number not meaningful.")
+        users = report["per_mode"]["face"]["queries"]  # people actually scored, not everyone who voted
+        if not report["gate"]["evidence_met"]:
+            print(f"  ⚠️  Below evidence bar ({pairs} judged pairs, {users} scored users; need "
+                  f"≥{MIN_JUDGED_PAIRS} pairs / ≥{MIN_JUDGED_USERS} users) — number not meaningful, gate not passed.")
     else:
         # Retrieved-but-unlabeled photos: likely true hits missing from labels.csv.
         print("\n  Retrieved but unlabeled (face mode) — check these for missed labels:")
@@ -996,6 +1098,21 @@ def main() -> int:
             for pt in sweeps[name]["points"]:
                 print(f"    t={pt['threshold']:>8.4f}: P={fmt(pt['precision'])}  R={fmt(pt['recall'])}  (tp={pt['tp']} fp={pt['fp']})")
         print("  → pick MATCHER_NORM_THRESHOLD from the tnorm row that meets your precision target with the most recall.")
+
+        op_weights = parse_weight_pairs(args.tnorm_weights)
+        op_thresholds = parse_floats(args.tnorm_thresholds)
+        table = operating_point_table(event, truth, queries, op_weights, op_thresholds, negatives, args.judged_only)
+        report["tnorm_analysis"]["operating_points"] = table
+        print("\n=== T-norm operating points (fixed z threshold × fusion weights → P tp/fp) ===")
+        print("      t " + "".join(f"   wF={wf:.2f} wP={wp:.2f}   " for wf, wp in op_weights))
+        for i, t in enumerate(op_thresholds):
+            cells = []
+            for sweep in table:
+                pt = sweep["points"][i] if i < len(sweep["points"]) else None
+                cells.append(f"  P={fmt(pt['precision'])} {pt['tp']:>5}/{pt['fp']:<5}" if pt else f"  {'(no scores)':<21}")
+            print(f"  {t:>5.2f} " + "".join(cells))
+        print("  → compare columns at the production threshold (4.5): an outfit weight worth shipping keeps tp "
+              "while cutting fp.")
 
     if args.prf:
         prf = prf_evaluate(event, truth, queries, args.k, fold=args.prf_fold, tnorm=args.judged_only and False)

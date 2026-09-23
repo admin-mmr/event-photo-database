@@ -18,12 +18,17 @@ from run_eval import (  # noqa: E402
     ANCHOR_SWEEP_CFG,
     _fused_candidates,
     anchor_evaluate,
+    evaluate,
     face_quality_sweep,
     _mean_unit,
     _time_weight_fn,
     fused_precision_at_k,
+    operating_point_table,
+    parse_floats,
+    parse_weight_pairs,
     parse_windows,
     prf_evaluate,
+    query_coverage,
     threshold_sweep,
     time_conditional_sweep,
 )
@@ -331,3 +336,52 @@ def test_face_quality_sweep_flags_an_index_without_quality():
     assert out["coverage"]["with_quality"] == 0
     precisions = {r["precision"] for r in out["rows"]}
     assert len(precisions) == 1  # identical by construction
+
+
+# ── fixed-threshold operating points, coverage, evidence bar ────────────────────
+
+def test_threshold_sweep_scores_fixed_thresholds_verbatim():
+    event = _pr_event()
+    truth = {"alice": {"r1.jpg", "r2.jpg"}}
+    queries = {"alice": {"face": basis(0), "person": None}}
+    sweep = threshold_sweep(event, truth, queries, 1.0, 0.0, tnorm=False, thresholds=[0.5, 2.0])
+    assert [p["threshold"] for p in sweep["points"]] == [0.5, 2.0]
+    assert sweep["points"][0]["tp"] == 2      # both relevant photos clear 0.5 cosine
+    assert sweep["points"][1]["tp"] == 0      # nothing clears 2.0
+
+
+def test_operating_point_table_one_tnormed_sweep_per_weight_pair():
+    event = _pr_event()
+    truth = {"alice": {"r1.jpg", "r2.jpg"}}
+    queries = {"alice": {"face": basis(0), "person": None}}
+    table = operating_point_table(event, truth, queries, [(0.85, 0.15), (1.0, 0.0)], [1.0, 4.0])
+    assert [t["weights"] for t in table] == [[0.85, 0.15], [1.0, 0.0]]
+    assert all(t["tnorm"] for t in table)
+    assert all([p["threshold"] for p in t["points"]] == [1.0, 4.0] for t in table)
+
+
+def test_parsers():
+    assert parse_weight_pairs("0.85:0.15; 1.0:0.0;") == [(0.85, 0.15), (1.0, 0.0)]
+    assert parse_floats("3.0;4.0,4.5") == [3.0, 4.0, 4.5]
+
+
+def test_query_coverage_counts_only_people_with_a_face_query():
+    queries = {
+        "a": {"face": basis(0), "person": None},
+        "b": {"face": None, "person": basis(1)},  # outfit-only: no face query
+        "c": {"face": None, "person": None},      # selfie gone
+    }
+    cov = query_coverage({"a", "b", "c", "d"}, queries)
+    assert cov == {"labeled": 4, "with_face_query": 1, "fraction": 0.25}
+
+
+def test_judged_gate_fails_below_the_evidence_bar_even_at_perfect_precision():
+    # One scored person with perfect precision is not evidence. This is the
+    # replay that printed PASS for 8 of 102 voters.
+    event = _pr_event()
+    truth = {"alice": {"r1.jpg", "r2.jpg"}}
+    queries = {"alice": {"face": basis(0), "person": None}}
+    report = evaluate(event, truth, queries, 2, negatives={"alice": set()}, judged=True)
+    assert report["best_fusion"]["mean"]["precision"] == 1.0
+    assert report["gate"]["evidence_met"] is False
+    assert report["gate"]["passed"] is False
