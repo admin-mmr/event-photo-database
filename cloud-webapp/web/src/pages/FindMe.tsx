@@ -248,9 +248,10 @@ const STR = {
     bandLikely: 'Likely',
     bandPossible: 'Possible',
     reasonLabel: 'Who is this?',
+    reasonHint: 'Kept it for a friend, or it’s a group photo? Tap “✓ Me” to say so.',
     reasonMe: '✓ Me',
-    reasonFriend: '✓ A friend',
-    reasonGroup: '✓ Group photo',
+    reasonFriend: '✓ Friend',
+    reasonGroup: '✓ Group',
     seeMore: 'Too few photos? See more',
     seeMoreBusy: 'Looking…',
     seeMoreHint: 'Shows up to 20 less certain matches. Please mark each one.',
@@ -418,6 +419,7 @@ const STR = {
     bandLikely: '较可能',
     bandPossible: '可能匹配',
     reasonLabel: '照片中是谁？',
+    reasonHint: '是替朋友保存的，或是合影？点“✓ 是我”即可注明。',
     reasonMe: '✓ 是我',
     reasonFriend: '✓ 朋友',
     reasonGroup: '✓ 合影',
@@ -606,6 +608,9 @@ export function FindMe(): JSX.Element {
   // Why a confirmed photo was kept — only 'me' counts as a match of the
   // searcher; friend / group still keep the photo. Absent = 'me'.
   const [reasons, setReasons] = useState<Record<string, FeedbackReason>>({});
+  // The picker a kept photo turns into is easy to miss, so the first "That's
+  // me" of the visit says it can be changed — once, not on every tap.
+  const reasonHintShown = useRef(false);
   const [expanding, setExpanding] = useState<string | null>(null);
   // Hides the bulk-verdict nudge until the page or reference changes.
   const [bulkDismissed, setBulkDismissed] = useState(false);
@@ -1430,6 +1435,10 @@ export function FindMe(): JSX.Element {
   function handleConfirm(ref: Reference, photoId: string): void {
     setConfirmed((prev) => new Set(prev).add(photoId));
     void sendFeedback(photoId, 'confirmed', ref.runId, 'me').catch(() => undefined);
+    if (!reasonHintShown.current) {
+      reasonHintShown.current = true;
+      setStatus(t.reasonHint);
+    }
   }
 
   /** Re-tag a kept photo as a friend / group shot (or back to me). A new vote,
@@ -1475,17 +1484,25 @@ export function FindMe(): JSX.Element {
         </button>
       );
     }
+    // A bare <select> styled as the pill gave no sign it could be changed —
+    // every vote came back `me`. The caret and the tooltip are that sign.
     return (
-      <select
-        className={`${confirmedCls} reason-select`}
-        aria-label={t.reasonLabel}
-        value={reasons[photoId] ?? 'me'}
-        onChange={(e) => handleReason(ref, photoId, e.target.value as FeedbackReason)}
-      >
-        <option value="me">{t.reasonMe}</option>
-        <option value="friend">{t.reasonFriend}</option>
-        <option value="group">{t.reasonGroup}</option>
-      </select>
+      <span className="reason-picker">
+        <select
+          className={`${confirmedCls} reason-select`}
+          aria-label={t.reasonLabel}
+          title={t.reasonLabel}
+          value={reasons[photoId] ?? 'me'}
+          onChange={(e) => handleReason(ref, photoId, e.target.value as FeedbackReason)}
+        >
+          <option value="me">{t.reasonMe}</option>
+          <option value="friend">{t.reasonFriend}</option>
+          <option value="group">{t.reasonGroup}</option>
+        </select>
+        <span className="reason-caret" aria-hidden="true">
+          ▾
+        </span>
+      </span>
     );
   }
 

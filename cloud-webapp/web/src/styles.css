@@ -1591,13 +1591,48 @@ pre.error {
   font-weight: 600;
 }
 
-/* "That's me" once tapped: the same pill, as a picker (me / friend / group). */
-.reason-select {
+/* "That's me" once tapped: the same pill, as a picker (me / friend / group).
+   The caret is what tells a member it can still be changed; without it the
+   picker reads as a finished "✓ Me" badge. */
+.reason-picker {
+  position: relative;
+  display: inline-flex;
   min-width: 0;
+}
+
+.feedback-row .reason-picker {
+  flex: 2.5;
+}
+
+.reason-select {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  padding-left: 4px;
+  padding-right: 14px;
+  cursor: pointer;
   text-align: center;
   text-align-last: center;
   appearance: none;
   -webkit-appearance: none;
+}
+
+.reason-caret {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 12px;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.reason-select.confirmed + .reason-caret {
+  color: var(--success);
+}
+
+.reason-select.btn-primary + .reason-caret {
+  color: var(--on-primary);
 }
 
 /* The one "Too few photos? See more" step, under the results. */

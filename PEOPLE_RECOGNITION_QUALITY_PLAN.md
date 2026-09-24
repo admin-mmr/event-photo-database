@@ -472,6 +472,10 @@ tapping "That's me" the button becomes a picker. Votes store `reason` (omitted =
 Two consumers changed with it, because a wrong fold puts someone else's face into a query:
 PRF (`confirmedPhotoIdsForUser`) folds only `me` and only when it is the photo's **latest**
 vote, and `export_feedback_labels.py` keeps only the latest vote per (member, photo).
+*Fixed 2026-09-24:* the first live check found the picker undiscoverable — styled as the pill
+with its arrow removed and "Who is this?" only an aria-label, it read as a finished "✓ Me" badge,
+so all 3 votes came back `me`. It now shows a caret and a tooltip, and the first "That's me" of a
+visit says the pill can be changed. Watch the share of non-`me` reasons: ~0% means it is still missed.
 
 **Item 15b — A confidence badge that means something.** ✅ **Built 2026-09-23.** Since T-norm
 went live the badge read every result as "Strong · 99%": it mapped raw cosine through a fixed
