@@ -110,3 +110,22 @@ def test_tier_comes_through_from_the_vote():
         [{"uid": "u1", "eventId": "e", "photoId": "p1", "verdict": "confirmed", "reason": "me", "tier": "expanded"}]
     )
     assert rows[0]["tier"] == "expanded"
+
+
+def test_calibration_is_monotone_and_merges_thin_buckets():
+    from calibrate_display import isotonic_buckets, judged_points
+
+    runs = [{"id": "r", "algo": {"tnorm": True}, "scores": {"a": 4.6, "b": 4.7, "c": 6.2, "d": 6.3, "e": 9.0}}]
+    fb = [
+        {"uid": "u", "eventId": "e", "runId": "r", "photoId": "a", "verdict": "not_me"},
+        {"uid": "u", "eventId": "e", "runId": "r", "photoId": "b", "verdict": "confirmed"},
+        {"uid": "u", "eventId": "e", "runId": "r", "photoId": "c", "verdict": "confirmed"},
+        {"uid": "u", "eventId": "e", "runId": "r", "photoId": "d", "verdict": "confirmed", "reason": "friend"},
+        {"uid": "u", "eventId": "e", "runId": "r", "photoId": "e", "verdict": "not_me"},
+    ]
+    pts = judged_points(runs, fb)
+    assert sorted(pts) == [(4.6, 0), (4.7, 1), (6.2, 1), (9.0, 0)]  # friend tag excluded
+    table = isotonic_buckets(pts, min_bucket=1)
+    rates = [r for _, r, _ in table]
+    assert rates == sorted(rates)  # never falls as z rises
+    assert sum(n for _, _, n in table) == 4

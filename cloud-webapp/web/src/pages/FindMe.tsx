@@ -36,6 +36,8 @@ import {
   visibleResults,
   scoreBand,
   displayConfidence,
+  scaleOf,
+  type ScoreScale,
   faceAlertFor,
   bulkVoteTargets,
   shouldAskBeforeLeaving,
@@ -243,6 +245,7 @@ const STR = {
     selectedLightbox: '✓ Selected',
     select: 'Select',
     bandStrong: 'Strong',
+    bandLikely: 'Likely',
     bandPossible: 'Possible',
     reasonLabel: 'Who is this?',
     reasonMe: '✓ Me',
@@ -412,6 +415,7 @@ const STR = {
     selectedLightbox: '✓ 已选中',
     select: '选择',
     bandStrong: '高匹配',
+    bandLikely: '较可能',
     bandPossible: '可能匹配',
     reasonLabel: '照片中是谁？',
     reasonMe: '✓ 是我',
@@ -453,6 +457,8 @@ interface Reference {
   anchorSuggestion: AnchorSuggestion | null;
   /** Event photos this set was already anchored on (so we don't re-offer them). */
   anchoredWith: string[];
+  /** What this set's scores mean — cosine or T-norm z (see results.scaleOf). */
+  scale: ScoreScale;
   /** The server has a "see more" step for this run and it hasn't been used. */
   canExpand: boolean;
   /** "See more" was used: how many it added (0 = there was nothing close). */
@@ -688,6 +694,11 @@ export function FindMe(): JSX.Element {
   const canSavePhotos = canShareImageFiles();
 
   const activeRef = references.find((r) => r.id === activeId);
+  const scaleByPhoto = useMemo(() => {
+    const m = new Map<string, ScoreScale>();
+    for (const ref of references) for (const r of ref.results) if (!m.has(r.photoId)) m.set(r.photoId, ref.scale);
+    return m;
+  }, [references]);
   const isCombined = activeId === COMBINED || !activeRef;
 
   const visible = useMemo<MatchResult[]>(() => {
@@ -825,6 +836,7 @@ export function FindMe(): JSX.Element {
           anchorSuggestion: null,
           anchoredWith: [],
           origin: null,
+          scale: scaleOf(undefined, r.results.map((x) => x.score)),
           // Not offered after a reload: the cache doesn't know whether it was used.
           canExpand: false,
           expandedCount: null,
@@ -936,6 +948,7 @@ export function FindMe(): JSX.Element {
         hidden: new Set(),
         anchorSuggestion: res.anchorSuggestion ?? null,
         anchoredWith: res.anchorPhotoIds ?? [],
+        scale: scaleOf(res.algo, res.results.map((x) => x.score)),
         canExpand: res.canExpand === true && res.runId !== undefined,
         expandedCount: null,
         origin,
@@ -1473,6 +1486,30 @@ export function FindMe(): JSX.Element {
         <option value="friend">{t.reasonFriend}</option>
         <option value="group">{t.reasonGroup}</option>
       </select>
+    );
+  }
+
+  /**
+   * The confidence badge, read on the scale of the search that produced the
+   * result. The Combined tab mixes searches, so look the scale up by photo; a
+   * photo in several searches keeps the score of the best one (combineReferences),
+   * and in practice every search shares a scale anyway.
+   */
+  function scoreChip(r: MatchResult): JSX.Element {
+    const scale = scaleByPhoto.get(r.photoId) ?? activeRef?.scale ?? 'raw';
+    const band = r.tier === 'expanded' ? 'possible' : scoreBand(r.score, scale);
+    const label =
+      r.tier === 'expanded'
+        ? t.lessCertain
+        : band === 'strong'
+          ? t.bandStrong
+          : band === 'likely'
+            ? t.bandLikely
+            : t.bandPossible;
+    return (
+      <span className={`score-chip band-${band}`}>
+        {label} · {displayConfidence(r.score, scale)}%
+      </span>
     );
   }
 
@@ -2379,7 +2416,6 @@ export function FindMe(): JSX.Element {
               <div className="photo-grid">
                 {shown.map((r, i) => {
                   const checked = sel.isSelected(r.photoId);
-                  const band = scoreBand(r.score);
                   return (
                     <div key={r.photoId} className={`result-cell${checked ? ' selected' : ''}`}>
                       {/* C5: tapping the photo VIEWS it (lightbox); selection is
@@ -2391,10 +2427,7 @@ export function FindMe(): JSX.Element {
                       >
                         <img src={r.thumbUrl} alt="" loading="lazy" />
                         {/* C7: confidence band (the raw % stays as detail). */}
-                        <span className={`score-chip band-${r.tier === 'expanded' ? 'possible' : band}`}>
-                          {r.tier === 'expanded' ? t.lessCertain : band === 'strong' ? t.bandStrong : t.bandPossible} ·{' '}
-                          {displayConfidence(r.score)}%
-                        </span>
+                        {scoreChip(r)}
                       </button>
                       <button
                         className="select-box"
@@ -2431,17 +2464,11 @@ export function FindMe(): JSX.Element {
           {lightboxIndex !== null && shown[lightboxIndex] && (
             <Lightbox
               items={shown.map((r) => {
-                const band = scoreBand(r.score);
                 return {
                   key: r.photoId,
                   src: r.webUrl,
                   alt: '',
-                  badge: (
-                    <span className={`score-chip band-${r.tier === 'expanded' ? 'possible' : band}`}>
-                      {r.tier === 'expanded' ? t.lessCertain : band === 'strong' ? t.bandStrong : t.bandPossible} ·{' '}
-                      {displayConfidence(r.score)}%
-                    </span>
-                  ),
+                  badge: scoreChip(r),
                 };
               })}
               index={lightboxIndex}

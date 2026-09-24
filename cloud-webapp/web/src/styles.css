@@ -873,6 +873,10 @@ pre.error {
   background: rgba(4, 120, 87, 0.9);
 }
 
+.score-chip.band-likely {
+  background: rgba(3, 105, 161, 0.9);
+}
+
 .score-chip.band-possible {
   background: rgba(180, 83, 9, 0.9);
 }

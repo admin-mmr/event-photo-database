@@ -473,6 +473,16 @@ Two consumers changed with it, because a wrong fold puts someone else's face int
 PRF (`confirmedPhotoIdsForUser`) folds only `me` and only when it is the photo's **latest**
 vote, and `export_feedback_labels.py` keeps only the latest vote per (member, photo).
 
+**Item 15b — A confidence badge that means something.** ✅ **Built 2026-09-23.** Since T-norm
+went live the badge read every result as "Strong · 99%": it mapped raw cosine through a fixed
+curve, and a z of 4.5+ saturates it. The badge now reads each search on its own scale
+(`web/src/lib/results.ts` `scaleOf`), and for z it shows the **share of members who said "that's
+me" at that score**, fitted from 3,425 judged results by `matcher/eval/calibrate_display.py`
+(isotonic, re-run monthly under Item 17). Three bands instead of two: Strong ≥ 95%
+(z ≈ 6.1+), Likely 85–95%, Possible below (the 4.5 cutoff reads ≈ 63%). The fit is also
+independent evidence for the cutoff: at z 4.0–4.5 only **47%** of judged photos were the
+searcher, against 74% at 4.5–5.0 and 95%+ above 6.
+
 **Item 16 — Ask about the photos that are hard to call.** Point the vote prompt at results
 near the cutoff (and the "see more" band) instead of the obvious top matches; one vote there
 moves a cutoff decision more than twenty at the top.
