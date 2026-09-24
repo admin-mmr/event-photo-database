@@ -13,6 +13,8 @@ import type {
   SelfieFaceWarning,
   FeedbackBatchRequest,
   FeedbackBatchResponse,
+  FeedbackReason,
+  ExpandResultsResponse,
 } from '@cloud-webapp/shared';
 import { SelfieFaceReasonSchema, WEAK_SELFIE_SCORE } from '@cloud-webapp/shared';
 import {
@@ -236,13 +238,23 @@ const STR = {
     bulkLeavingPrefix: 'Before you move on —',
     bulkSkipAndGo: 'Skip, next page',
     bulkRecorded: (n: number) => `Recorded ${n} ${n === 1 ? 'photo' : 'photos'}.`,
-    meConfirmed: '✓ Me',
     thatsMe: "That's me",
     addAnotherPhotoBtn: '+ Add another photo',
     selectedLightbox: '✓ Selected',
     select: 'Select',
     bandStrong: 'Strong',
     bandPossible: 'Possible',
+    reasonLabel: 'Who is this?',
+    reasonMe: '✓ Me',
+    reasonFriend: '✓ A friend',
+    reasonGroup: '✓ Group photo',
+    seeMore: 'Too few photos? See more',
+    seeMoreBusy: 'Looking…',
+    seeMoreHint: 'Shows up to 20 less certain matches. Please mark each one.',
+    seeMoreNone: 'No more close matches for this photo.',
+    seeMoreAdded: (n: number) => `Added ${n} less certain ${n === 1 ? 'match' : 'matches'} at the end.`,
+    seeMoreFailed: 'Couldn’t load more matches — please try again.',
+    lessCertain: 'Less certain',
   },
   zh: {
     enterNameHint: '请填写姓名后继续。',
@@ -395,13 +407,23 @@ const STR = {
     bulkLeavingPrefix: '在离开本页前——',
     bulkSkipAndGo: '跳过，下一页',
     bulkRecorded: (n: number) => `已记录 ${n} 张照片。`,
-    meConfirmed: '✓ 是我',
     thatsMe: '是我',
     addAnotherPhotoBtn: '+ 添加另一张照片',
     selectedLightbox: '✓ 已选中',
     select: '选择',
     bandStrong: '高匹配',
     bandPossible: '可能匹配',
+    reasonLabel: '照片中是谁？',
+    reasonMe: '✓ 是我',
+    reasonFriend: '✓ 朋友',
+    reasonGroup: '✓ 合影',
+    seeMore: '照片太少？查看更多',
+    seeMoreBusy: '正在查找…',
+    seeMoreHint: '最多再显示 20 张把握较低的匹配，请逐一标记。',
+    seeMoreNone: '这张照片没有更多相近的匹配了。',
+    seeMoreAdded: (n: number) => `已在末尾添加 ${n} 张把握较低的匹配。`,
+    seeMoreFailed: '无法加载更多匹配，请重试。',
+    lessCertain: '把握较低',
   },
 };
 
@@ -431,6 +453,10 @@ interface Reference {
   anchorSuggestion: AnchorSuggestion | null;
   /** Event photos this set was already anchored on (so we don't re-offer them). */
   anchoredWith: string[];
+  /** The server has a "see more" step for this run and it hasn't been used. */
+  canExpand: boolean;
+  /** "See more" was used: how many it added (0 = there was nothing close). */
+  expandedCount: number | null;
   /** Null for a set restored from the session cache: the picked `File`s can't be
    *  serialized, so an anchored re-search isn't possible after a reload. */
   origin: Origin | null;
@@ -571,6 +597,10 @@ export function FindMe(): JSX.Element {
   const [faceAlert, setFaceAlert] = useState<FaceAlert | null>(null);
   const [activeId, setActiveId] = useState<string>(COMBINED);
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
+  // Why a confirmed photo was kept — only 'me' counts as a match of the
+  // searcher; friend / group still keep the photo. Absent = 'me'.
+  const [reasons, setReasons] = useState<Record<string, FeedbackReason>>({});
+  const [expanding, setExpanding] = useState<string | null>(null);
   // Hides the bulk-verdict nudge until the page or reference changes.
   const [bulkDismissed, setBulkDismissed] = useState(false);
   // Opt-in: also mark this page's UNticked results as "not me". Off by default —
@@ -790,7 +820,15 @@ export function FindMe(): JSX.Element {
       // A restored set has no query to re-run (see Reference.origin), so it also
       // carries no anchor suggestion — the button would have nothing to search with.
       setReferences(
-        cached.references.map((r) => ({ ...r, anchorSuggestion: null, anchoredWith: [], origin: null })),
+        cached.references.map((r) => ({
+          ...r,
+          anchorSuggestion: null,
+          anchoredWith: [],
+          origin: null,
+          // Not offered after a reload: the cache doesn't know whether it was used.
+          canExpand: false,
+          expandedCount: null,
+        })),
       );
       setActiveId(cached.activeId);
       setConfirmed(cached.confirmed);
@@ -898,6 +936,8 @@ export function FindMe(): JSX.Element {
         hidden: new Set(),
         anchorSuggestion: res.anchorSuggestion ?? null,
         anchoredWith: res.anchorPhotoIds ?? [],
+        canExpand: res.canExpand === true && res.runId !== undefined,
+        expandedCount: null,
         origin,
       },
     ]);
@@ -1347,12 +1387,14 @@ export function FindMe(): JSX.Element {
     photoId: string,
     verdict: 'not_me' | 'confirmed',
     runId?: string,
+    reason?: FeedbackReason,
   ): Promise<void> {
     const body: FeedbackRequest = {
       eventId,
       photoId,
       verdict,
       ...(runId !== undefined ? { runId } : {}),
+      ...(reason !== undefined ? { reason } : {}),
     };
     await apiPost('/api/feedback', body);
   }
@@ -1374,7 +1416,78 @@ export function FindMe(): JSX.Element {
 
   function handleConfirm(ref: Reference, photoId: string): void {
     setConfirmed((prev) => new Set(prev).add(photoId));
-    void sendFeedback(photoId, 'confirmed', ref.runId).catch(() => undefined);
+    void sendFeedback(photoId, 'confirmed', ref.runId, 'me').catch(() => undefined);
+  }
+
+  /** Re-tag a kept photo as a friend / group shot (or back to me). A new vote,
+   *  not an edit — votes are immutable and the latest one per photo wins. */
+  function handleReason(ref: Reference, photoId: string, reason: FeedbackReason): void {
+    setReasons((prev) => ({ ...prev, [photoId]: reason }));
+    void sendFeedback(photoId, 'confirmed', ref.runId, reason).catch(() => undefined);
+  }
+
+  /**
+   * "Too few photos? See more" — the one bounded step below the cutoff. The
+   * server decides which photos (at most 20, once per search); they are appended
+   * after the confident ones and badged, so nothing already shown moves.
+   */
+  async function handleSeeMore(ref: Reference): Promise<void> {
+    if (!ref.runId || expanding) return;
+    setExpanding(ref.id);
+    try {
+      const res = await apiPost<ExpandResultsResponse>(`/api/findme/runs/${ref.runId}/more`, {});
+      setReferences((prev) =>
+        prev.map((r) => {
+          if (r.id !== ref.id) return r;
+          const have = new Set(r.results.map((x) => x.photoId));
+          const added = res.results.filter((x) => !have.has(x.photoId));
+          return { ...r, results: [...r.results, ...added], canExpand: false, expandedCount: added.length };
+        }),
+      );
+      setStatus(res.results.length > 0 ? t.seeMoreAdded(res.results.length) : t.seeMoreNone);
+    } catch {
+      setError(t.seeMoreFailed);
+    } finally {
+      setExpanding(null);
+    }
+  }
+
+  /** "That's me" until tapped; then a picker, so a photo kept for a friend or a
+   *  group shot can say so instead of counting as a match of the searcher. */
+  function confirmControl(ref: Reference, photoId: string, cls: string, confirmedCls: string): JSX.Element {
+    if (!confirmed.has(photoId)) {
+      return (
+        <button className={cls} onClick={() => handleConfirm(ref, photoId)}>
+          {t.thatsMe}
+        </button>
+      );
+    }
+    return (
+      <select
+        className={`${confirmedCls} reason-select`}
+        aria-label={t.reasonLabel}
+        value={reasons[photoId] ?? 'me'}
+        onChange={(e) => handleReason(ref, photoId, e.target.value as FeedbackReason)}
+      >
+        <option value="me">{t.reasonMe}</option>
+        <option value="friend">{t.reasonFriend}</option>
+        <option value="group">{t.reasonGroup}</option>
+      </select>
+    );
+  }
+
+  /** The one "see more" step, offered on a single photo's tab while unused. */
+  function seeMoreControl(): JSX.Element | null {
+    if (isCombined || !activeRef?.canExpand) return null;
+    const busy = expanding === activeRef.id;
+    return (
+      <div className="see-more">
+        <button className="btn btn-light" disabled={busy} onClick={() => void handleSeeMore(activeRef)}>
+          {busy ? t.seeMoreBusy : t.seeMore}
+        </button>
+        <p className="muted">{t.seeMoreHint}</p>
+      </div>
+    );
   }
 
   /**
@@ -2150,7 +2263,9 @@ export function FindMe(): JSX.Element {
               {t.tryThe}{' '}
               <Link to={`/events/${eventId}`}>{t.fullGallery}</Link> {t.orAddAnother}
             </p>
-          ) : (
+          ) : null}
+          {visible.length === 0 && seeMoreControl()}
+          {visible.length === 0 ? null : (
             <>
               <div className="results-toolbar">
                 <p className="muted results-count">
@@ -2276,8 +2391,8 @@ export function FindMe(): JSX.Element {
                       >
                         <img src={r.thumbUrl} alt="" loading="lazy" />
                         {/* C7: confidence band (the raw % stays as detail). */}
-                        <span className={`score-chip band-${band}`}>
-                          {band === 'strong' ? t.bandStrong : t.bandPossible} ·{' '}
+                        <span className={`score-chip band-${r.tier === 'expanded' ? 'possible' : band}`}>
+                          {r.tier === 'expanded' ? t.lessCertain : band === 'strong' ? t.bandStrong : t.bandPossible} ·{' '}
                           {displayConfidence(r.score)}%
                         </span>
                       </button>
@@ -2297,12 +2412,7 @@ export function FindMe(): JSX.Element {
                           >
                             {t.notMe}
                           </button>
-                          <button
-                            className={`btn-feedback${confirmed.has(r.photoId) ? ' confirmed' : ''}`}
-                            onClick={() => handleConfirm(activeRef, r.photoId)}
-                          >
-                            {confirmed.has(r.photoId) ? t.meConfirmed : t.thatsMe}
-                          </button>
+                          {confirmControl(activeRef, r.photoId, 'btn-feedback', 'btn-feedback confirmed')}
                         </div>
                       )}
                     </div>
@@ -2310,6 +2420,7 @@ export function FindMe(): JSX.Element {
                 })}
               </div>
               <Pager page={page} pageCount={pageCount} onChange={requestPageChange} />
+              {seeMoreControl()}
             </>
           )}
 
@@ -2326,8 +2437,8 @@ export function FindMe(): JSX.Element {
                   src: r.webUrl,
                   alt: '',
                   badge: (
-                    <span className={`score-chip band-${band}`}>
-                      {band === 'strong' ? t.bandStrong : t.bandPossible} ·{' '}
+                    <span className={`score-chip band-${r.tier === 'expanded' ? 'possible' : band}`}>
+                      {r.tier === 'expanded' ? t.lessCertain : band === 'strong' ? t.bandStrong : t.bandPossible} ·{' '}
                       {displayConfidence(r.score)}%
                     </span>
                   ),
@@ -2354,12 +2465,7 @@ export function FindMe(): JSX.Element {
                         >
                           {t.notMe}
                         </button>
-                        <button
-                          className={`btn btn-sm ${confirmed.has(item.key) ? 'btn-primary' : 'btn-light'}`}
-                          onClick={() => handleConfirm(activeRef, item.key)}
-                        >
-                          {confirmed.has(item.key) ? t.meConfirmed : t.thatsMe}
-                        </button>
+                        {confirmControl(activeRef, item.key, 'btn btn-sm btn-light', 'btn btn-sm btn-primary')}
                       </>
                     )}
                   </>

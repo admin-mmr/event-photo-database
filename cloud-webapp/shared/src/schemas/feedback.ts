@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { SearchAlgoSchema } from './findme.js';
+import { MatchTierSchema, SearchAlgoSchema } from './findme.js';
 
 /**
  * Match feedback (dev plan §5A B7 / FR-15; PRD §7). A user marks a result as
@@ -12,12 +12,24 @@ import { SearchAlgoSchema } from './findme.js';
 export const FeedbackVerdictSchema = z.enum(['not_me', 'confirmed']);
 export type FeedbackVerdict = z.infer<typeof FeedbackVerdictSchema>;
 
+/**
+ * Why a "that's me" tag was made (EVAL_FEEDBACK_LOOP.md §4b). People keep photos
+ * of friends and group shots too; without the reason those tags were counted as
+ * confirmed matches of the SEARCHER, polluting judged precision. Only `me` enters
+ * the eval; `friend` / `group` still keep the photo for the user. Omitted = `me`
+ * (the default the UI starts on), so older clients and bulk votes are unchanged.
+ */
+export const FeedbackReasonSchema = z.enum(['me', 'friend', 'group']);
+export type FeedbackReason = z.infer<typeof FeedbackReasonSchema>;
+
 export const FeedbackRequestSchema = z.object({
   eventId: z.string().min(1),
   photoId: z.string().min(1),
   verdict: FeedbackVerdictSchema,
   /** The search run this result came from (SearchResponse.runId), if known. */
   runId: z.string().optional(),
+  /** Only meaningful with `confirmed`; ignored on `not_me`. */
+  reason: FeedbackReasonSchema.optional(),
 });
 export type FeedbackRequest = z.infer<typeof FeedbackRequestSchema>;
 
@@ -49,6 +61,7 @@ export const FeedbackBatchRequestSchema = z.object({
   photoIds: z.array(z.string().min(1)).min(1).max(MAX_FEEDBACK_BATCH),
   verdict: FeedbackVerdictSchema,
   runId: z.string().optional(),
+  reason: FeedbackReasonSchema.optional(),
 });
 export type FeedbackBatchRequest = z.infer<typeof FeedbackBatchRequestSchema>;
 
@@ -80,6 +93,11 @@ export const FeedbackItemSchema = z.object({
   searchVersion: z.string().nullable(),
   /** Full algorithm descriptor snapshot (knobs), when the run recorded one. */
   algo: SearchAlgoSchema.nullable(),
+  /** Why a `confirmed` tag was made; null on `not_me` and on older votes. */
+  reason: FeedbackReasonSchema.nullable().default(null),
+  /** Which band the voted photo was shown in, resolved from the run at vote
+   *  time; null when the run is unknown or the photo was in neither. */
+  tier: MatchTierSchema.nullable().default(null),
 });
 export type FeedbackItem = z.infer<typeof FeedbackItemSchema>;
 

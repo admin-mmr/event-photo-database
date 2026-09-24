@@ -1587,6 +1587,29 @@ pre.error {
   font-weight: 600;
 }
 
+/* "That's me" once tapped: the same pill, as a picker (me / friend / group). */
+.reason-select {
+  min-width: 0;
+  text-align: center;
+  text-align-last: center;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+/* The one "Too few photos? See more" step, under the results. */
+.see-more {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  margin: 16px 0 8px;
+  text-align: center;
+}
+
+.see-more .muted {
+  font-size: 12px;
+  margin: 0;
+}
+
 /* ── Reuse a previous selfie ──────────────────────────────────────────────── */
 
 .past-uploads {

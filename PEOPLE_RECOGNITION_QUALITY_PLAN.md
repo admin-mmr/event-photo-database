@@ -384,8 +384,120 @@ after a wasted round trip. A check that fails for any reason never blocks the se
 Constraint coverage: **bibs-not-always → 6** (+ face/burst fallback); **outfits-change →
 1, 10, 11**; **recall → 3, 4, 9, 11**; **precision/calibration → 2, 5, 8, 12**.
 
-**Next measurement (blocks turning either new knob up):** re-index one event with
-`FORCE_REINDEX=1` so per-face quality exists, then run
-`run_eval.py --judged-only --tnorm --anchor-promotion --face-quality-weight '0.25;0.5;1.0'`
-on `81a584f7` (91 users / 1516 pairs) and `34f3e38f`. Anchor precision gates Item 11's UI;
-the weight row that holds positives-in-top-K gates Item 5's `FACE_QUALITY_WEIGHT`.
+**Next measurement:** ~~re-index one event with `FORCE_REINDEX=1` so per-face quality
+exists, then sweep anchors + face quality on `81a584f7` and `34f3e38f`~~ — **done
+2026-09-23 on `5ff5ff5c` / `ecd530b9` / `c97aff22` instead** (`81a584f7`'s selfies had aged
+out). Anchors 39 right / 0 wrong; face quality inconclusive. See the September review below.
+
+---
+
+# September 2026 review — landscape refresh + member-feedback upgrades
+
+Researched 2026-09-23. Updates the July landscape (`FACE_RECOGNITION_IMPROVEMENT_ANALYSIS.md`
+§8) and turns the member-feedback gaps found in live data into Items 13–23. Licences below
+were checked on the source page that day; re-check before shipping anything.
+
+## Licensing comes first
+
+- **The `buffalo_l` pack we run in production (SCRFD `det_10g` + ArcFace `w600k_r50`) is,
+  per InsightFace's README, "available for non-commercial research purposes only"**, and
+  the README names `buffalo_l` as needing a licence via recognition-oss-pack@insightface.ai
+  (entry dated 2025-11-24). A free club service is non-commercial but is not research.
+  **Unresolved — a question for the club's board / legal adviser, not something code settles.**
+- The same problem runs through nearly every strong face model: weights inherit the terms of
+  their research-only training sets (WebFace, VGGFace2, MS1MV2, WIDER FACE for detectors).
+  **AdaFace's MIT covers its code only** — its weights "follow the license of the training
+  dataset". The only clean-data embedder found (HyperFace, synthetic, MIT) is far too weak.
+- **Newly off-limits:** CR-FIQA (CC BY-NC 4.0 — it was Item 5's named model), DEIMv2
+  (relicensed to a non-commercial "DEIMv2 License" in Aug 2026), LVFace (non-commercial),
+  DINOv3 (custom licence with field-of-use bans), MobileCLIP (research-only), KPR
+  (Hippocratic). InsightFace 2.0's new `raccoon` packs (Sept 2026) carry the same NC terms.
+
+## Model upgrades, ranked by value for cost
+
+| # | Upgrade | What it improves | Licence | CPU cost / notes |
+|---|---|---|---|---|
+| A | **Bib OCR on the torso below each detected face** — RapidOCR 3.9 (default model PP-OCRv6 small since 2026-06) + roster match | New near-certain signal, esp. no-face shots. Face-anchored crops skip training a bib detector (the pattern `race-lens` uses) | Apache-2.0 | Small ONNX; runs on torso crops only. Supersedes Item 6's "fine-tune a YOLO bib detector" |
+| B | **Tiny-face recall**: SCRFD at a larger input / SAHI tiling on big crowd photos; trial SCRFD_34G | Distant runners who get no face row today (SCRFD numbers are at 640px input) | No new model licence | Gate to large / few-detection photos (Item 4) |
+| C | **Outfit embedder A/B**: SigLIP 2 or PE-Core vs OSNet x0_25, in the replay | Outfit is now informative for ranking (0.94 person-only P@20) but neutral at the cutoff; a stronger embedder may change that. SigLIP 2 scored ~5× OSNet zero-shot in a Jan-2026 cross-domain ReID benchmark (arXiv 2601.20598) | Apache-2.0 | Heavier than OSNet — offline first. For OSNet itself use torchreid (`osnet_ain_x1_0`); **FastReID is dormant** |
+| D | **YOLO26n person detector** (Jan 2026) replacing YOLOv8n | 40.9 mAP, 2.4M params, 5.5 GFLOPs, NMS-free — smaller and better | AGPL-3.0 (fine for us) | Needs a full re-index of every event. D-FINE-N (Apache, COCO weights only) if a permissive detector is ever needed |
+| E | **eDifFIQA-T** per-face quality, replacing CR-FIQA for Item 5 | Weights blurry / side-on faces down | MIT code; trained on VGGFace2 | A few % of the embedder |
+| F | **AdaFace IR-50** (Item 7); ViT-KP-RPE offline only | Low-quality faces: TinyFace rank-1 KP-RPE 76.1 vs AdaFace IR-50 70.2 | Same research-only class as `buffalo_l` | ~1× (KP-RPE ~2–3×) |
+| G | **k-reciprocal re-ranking** of a search's candidates | Cheap precision gain, no training | Algorithm only | Milliseconds |
+
+Corrections to the July review: CR-FIQA's licence (above); AdaFace weights are not MIT;
+FastReID is dormant (use torchreid); "swapping the ReID backbone is low ROI" is only true for
+GPU-class models — SigLIP 2 / PE-Core are CPU-feasible and strong zero-shot. PP-OCRv6 is real
+(PaddleOCR 3.7.0, 2026-06-11), so the OCR pick stands.
+
+## Member feedback: what live data showed (2026-09-23)
+
+1,461 searches by 334 members, 5,741 votes.
+- Only **5.4%** of shown results get a vote — tuning rests on a thin, top-heavy sample.
+- Searches with any vote fell from **45% (June) to 22–29% (Aug–Sept)**.
+- **8.5%** of searches return nothing, invisible to tuning.
+- The §4b design in `EVAL_FEEDBACK_LOOP.md` — "see more", the reason tag, the tier — had
+  **never been built**; no vote carried a reason or tier.
+- Nothing below the cutoff was logged, so a cutoff could only ever be re-tested upward, and
+  replays depend on selfies that are **deleted 90 days after upload** (the July baseline event
+  `81a584f7` is no longer replayable).
+
+## Items 13–23 — member-feedback upgrades
+
+**Item 13 — Log the near-miss band (replay without selfies).** ✅ **Built 2026-09-23.** The
+matcher returns candidates up to 2.0 z under the cutoff (`MATCHER_NEAR_MISS_BAND_Z`, cap
+`MATCHER_NEAR_MISS_MAX` 200) with per-modality scores, plus the `cutoff` it applied; the api
+stores them on `match_runs.nearMisses` and the cutoff on `algo.cutoff`. Scores only — nothing
+biometric, and it lives exactly as long as the run (deleted with the user's data).
+`matcher/eval/rescore_logged_runs.py` re-fuses and re-gates every logged T-normed search at
+other weights/cutoffs with no selfies or models. A raised cutoff is scored exactly; photos a
+lowered cutoff admits were mostly never shown, so they are reported as **unjudged, never as
+wrong**. First run (669 runs / 5,101 pairs) agreed with the replay: 0.85/0.15 at z ≥ 4.5 →
+P 0.940.
+
+**Item 14 — "See more" (the recall proxy).** ✅ **Built 2026-09-23.**
+`POST /api/findme/runs/:runId/more` reveals ONE step below the cutoff from the stored band: at
+most `FINDME_EXPAND_MAX` (20) photos within `FINDME_EXPAND_STEP_Z` (0.5) of it, best first,
+never repeating a shown photo, once per run (the first call fixes the set on the run; later
+calls return the same photos). Owner-only; anyone else gets the same 404 as a missing run. The
+search response carries only `canExpand` — which photos stays server-side until asked, because
+every relaxation shows the searcher more photos of other people. The run records
+`canExpand` (denominator) and `expandedAt` (numerator) — **the "see more" rate is the recall
+signal**. Web: a "Too few photos? See more" button under a single photo's results (also on an
+empty result), added photos badged "Less certain".
+
+**Item 15 — Reason on "that's me" (me / friend / group).** ✅ **Built 2026-09-23.** After
+tapping "That's me" the button becomes a picker. Votes store `reason` (omitted = `me`) and a
+**server-derived** `tier` (`default` / `expanded`, from the run's own lists, never the client).
+Two consumers changed with it, because a wrong fold puts someone else's face into a query:
+PRF (`confirmedPhotoIdsForUser`) folds only `me` and only when it is the photo's **latest**
+vote, and `export_feedback_labels.py` keeps only the latest vote per (member, photo).
+
+**Item 16 — Ask about the photos that are hard to call.** Point the vote prompt at results
+near the cutoff (and the "see more" band) instead of the obvious top matches; one vote there
+moves a cutoff decision more than twenty at the top.
+
+**Item 17 — Monthly calibration job.** Cloud Scheduler (monthly, zero idle cost) → export →
+`rescore_logged_runs.py` + a replay of events whose voters still have selfies → report +
+proposed change to GCS. A person approves every change (guardrails §5).
+
+**Item 18 — Calibration dashboard.** Replace `/admin/metrics`' single precision number with,
+per event × `searchVersion`: judged P@20, vote participation, zero-result rate, "see more"
+rate, weak-selfie rate, as trends.
+
+**Item 19 — Per-event cutoffs (= Item 8).** At z 4.0 judged precision ran 0.78–0.94 across the
+three replayed events — enough spread to justify it, with the global value as fallback.
+
+**Item 20 — Live A/B by member.** Bucket by uid hash (e.g. cutoff 4.5 vs 5.0), each arm with its
+own version tag, so a change is measured in production, not only in replay.
+
+**Item 21 — Admin review queue.** Recall audits and disputed votes (Phase C of
+`HUMAN_REVIEW_LOOP_PLAN.md`): relabeling in `/admin/verdicts`, inter-reviewer agreement.
+
+**Item 22 — Satisfaction signal.** Downloads per search as a weak positive; one optional
+question after a download.
+
+**Item 23 — Housekeeping.** Derive `SEARCH_ALGO_VERSION` from the live config so it can't go
+stale (it sat unchanged for two months through the detector fix and anchors); stop copying the
+member's email onto every vote; confirm the Firestore TTL on `find_me_uploads` is configured
+(the runbook lists it as a manual step; the uploads bucket's 90-day lifecycle is set).

@@ -131,6 +131,15 @@ export const SearcherNameSchema = z
 
 // ── Search (POST /api/findme/search, multipart) ──────────────────────────────
 
+/**
+ * Where a result came from: the normal set above the cutoff, or the one bounded
+ * "see more" step just below it (EVAL_FEEDBACK_LOOP.md §4b). Recorded on each
+ * vote so eval can score the two bands separately — votes in the expanded band
+ * sit at the decision boundary, which is where a cutoff is actually tuned.
+ */
+export const MatchTierSchema = z.enum(['default', 'expanded']);
+export type MatchTier = z.infer<typeof MatchTierSchema>;
+
 export const MatchResultSchema = z.object({
   photoId: z.string(),
   /** Fused score (or single-signal score in face/person mode). */
@@ -139,6 +148,9 @@ export const MatchResultSchema = z.object({
   personScore: z.number().nullable(),
   thumbUrl: z.string(),
   webUrl: z.string(),
+  /** 'expanded' = revealed by "see more" (scored just under the cutoff).
+   *  Absent means a normal result above the cutoff. */
+  tier: MatchTierSchema.optional(),
 });
 export type MatchResult = z.infer<typeof MatchResultSchema>;
 
@@ -188,6 +200,10 @@ export const SearchAlgoSchema = z.object({
   /** Candidate-side face-quality weighting in force (matcher FACE_QUALITY_WEIGHT,
    *  Item 5). 0 = off, which is the default until the offline sweep sets it. */
   faceQualityWeight: z.number().default(0),
+  /** The score cutoff results were gated on (matcher MATCHER_NORM_THRESHOLD for
+   *  a T-normed search). Null for runs written before it was recorded, and for
+   *  face/person modes, which have no cutoff. */
+  cutoff: z.number().nullable().default(null),
 });
 export type SearchAlgo = z.infer<typeof SearchAlgoSchema>;
 
@@ -323,8 +339,25 @@ export const SearchResponseSchema = z.object({
    *  Optional: an older matcher revision simply doesn't report it. */
   referenceFaces: z.array(ReferenceFacesSchema).optional(),
   results: z.array(MatchResultSchema),
+  /** True when "see more" has photos to reveal for this run. Only the fact —
+   *  which photos stays server-side until the searcher asks (privacy bound:
+   *  every relaxation shows them more photos of other people). */
+  canExpand: z.boolean().default(false),
 });
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
+
+/**
+ * POST /api/findme/runs/:runId/more — the one bounded "see more" step. Returns
+ * only the photos NOT already in the run's results (the diff to append), each
+ * tagged `tier: 'expanded'`. Calling it again returns the same photos: there is
+ * exactly one step per search, never an unbounded loosening.
+ */
+export const ExpandResultsResponseSchema = z.object({
+  ok: z.literal(true),
+  runId: z.string(),
+  results: z.array(MatchResultSchema),
+});
+export type ExpandResultsResponse = z.infer<typeof ExpandResultsResponseSchema>;
 
 // ── Selfie quality check (POST /api/findme/selfie-check, multipart) ───────────
 

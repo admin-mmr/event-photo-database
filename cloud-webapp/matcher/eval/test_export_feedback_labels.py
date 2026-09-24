@@ -85,3 +85,28 @@ def test_judged_precision_empty():
     jp = judged_precision([])
     assert jp["precision"] is None
     assert jp["meaningful"] is False
+
+
+def test_latest_vote_per_photo_wins():
+    from export_feedback_labels import build_label_rows
+
+    fb = [
+        {"uid": "u1", "eventId": "e", "photoId": "p1", "verdict": "confirmed", "createdAt": "2026-09-01T10:00"},
+        {"uid": "u1", "eventId": "e", "photoId": "p1", "verdict": "not_me", "createdAt": "2026-09-01T10:05"},
+        {"uid": "u1", "eventId": "e", "photoId": "p2", "verdict": "confirmed", "createdAt": "2026-09-01T10:00"},
+        {"uid": "u1", "eventId": "e", "photoId": "p2", "verdict": "confirmed", "reason": "friend", "createdAt": "2026-09-01T10:06"},
+        {"uid": "u2", "eventId": "e", "photoId": "p1", "verdict": "confirmed", "createdAt": "2026-09-01T09:00"},
+    ]
+    rows = build_label_rows(fb)
+    got = sorted((r["uid"], r["photoId"], r["label"]) for r in rows)
+    # u1/p1 corrected to not_me; u1/p2 re-tagged as a friend → excluded; u2 is its own vote.
+    assert got == [("u1", "p1", "wrong"), ("u2", "p1", "confirmed")]
+
+
+def test_tier_comes_through_from_the_vote():
+    from export_feedback_labels import build_label_rows
+
+    rows = build_label_rows(
+        [{"uid": "u1", "eventId": "e", "photoId": "p1", "verdict": "confirmed", "reason": "me", "tier": "expanded"}]
+    )
+    assert rows[0]["tier"] == "expanded"

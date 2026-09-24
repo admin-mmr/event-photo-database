@@ -5,6 +5,7 @@
  *  POST /api/findme/selfie-check              multipart: grade picks before searching
  *  GET  /api/findme/uploads                   the user's past reference selfies
  *  POST /api/findme/uploads/:uploadId/search  reuse a stored selfie (D7/FR-10b)
+ *  POST /api/findme/runs/:runId/more          the one bounded "see more" step
  *
  * Fresh uploads are persisted to the uploads bucket + a `find_me_uploads`
  * record (with a 90/30-day expiry per PRD §8.4) so a signed-in member can reuse
@@ -24,8 +25,10 @@ import {
   SearchByUploadRequestSchema,
   SearcherNameSchema,
   SEARCH_ALGO_VERSION,
+  SearchAlgoSchema,
   type SearchResponse,
   type SearchAlgo,
+  type ExpandResultsResponse,
   type MatchResult,
   type ListReferencesResponse,
   type ReferenceUpload,
@@ -43,6 +46,7 @@ import { findmeSearchRateLimit } from '../middleware/rateLimit.js';
 import { requireRecaptcha } from '../middleware/recaptcha.js';
 import { matcherQualityCheck, matcherSearch } from '../services/matcherClient.js';
 import { confirmedPhotoIdsForUser } from '../services/feedback.js';
+import { expansionCandidates, parseNearMisses } from '../services/expandResults.js';
 import {
   signPhotoUrls,
   uploadReference,
@@ -329,7 +333,19 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
     numReferences: images.length,
     anchorCount: appliedAnchors.length,
     faceQualityWeight: match.faceQualityWeight ?? 0,
+    cutoff: match.cutoff ?? null,
   };
+
+  // Is there anything for "see more" to reveal? Computed now, from the band the
+  // matcher just returned, so the client learns only THAT there is more — the
+  // photos themselves stay on the run doc until the searcher asks.
+  const nearMisses = match.nearMisses ?? [];
+  const expandable = expansionCandidates(nearMisses, {
+    cutoff: algo.cutoff,
+    step: expandStep(algo.tnorm),
+    max: env.FINDME_EXPAND_MAX,
+    exclude: new Set(match.results.map((r) => r.photoId)),
+  });
 
   // Persist a minimal run record for the feedback loop (M4 / eval doc).
   let runId: string | undefined;
@@ -361,6 +377,19 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
       // next one on (photoId only — the metrics live in the response).
       anchorPhotoIds: appliedAnchors,
       anchorSuggestionPhotoId: anchorSuggestion?.photoId ?? null,
+      // Candidates just under the cutoff, with per-modality scores. Two jobs:
+      // "see more" reveals a slice of them, and a cutoff/weight change can be
+      // replayed against them from logs alone — the selfie is gone after 90
+      // days, these scores are not biometric and live as long as the run.
+      nearMisses: nearMisses.map((h) => ({
+        photoId: h.photoId,
+        score: h.score,
+        faceScore: h.faceScore,
+        personScore: h.personScore,
+      })),
+      // Denominator of the "see more" rate (the recall proxy): runs that
+      // offered it. `expandedAt` is set on the run when it is used.
+      canExpand: expandable.length > 0,
       createdAt: nowIso,
     });
     runId = ref.id;
@@ -390,9 +419,88 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
     anchorPhotoIds: appliedAnchors,
     ...(match.referenceFaces ? { referenceFaces: match.referenceFaces } : {}),
     results,
+    // Needs a run to expand from: without a stored band there is nothing to serve.
+    canExpand: runId !== undefined && expandable.length > 0,
   };
   res.json(body);
 }
+
+/** Width of the "see more" step, in the run's own score units. */
+function expandStep(tnorm: boolean): number {
+  return tnorm ? env.FINDME_EXPAND_STEP_Z : env.FINDME_EXPAND_STEP_RAW;
+}
+
+// ── "See more" ───────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/findme/runs/:runId/more — reveal the one bounded step below the
+ * cutoff for a search the caller ran (EVAL_FEEDBACK_LOOP.md §4b).
+ *
+ * Bounded three ways, because every relaxation shows the searcher more photos
+ * of other attendees: one step below the cutoff, at most FINDME_EXPAND_MAX
+ * photos, and ONCE per run — the first call fixes the set on the run doc and
+ * every later call returns that same set. Only the run's owner can expand it;
+ * anyone else gets the same 404 as a run that doesn't exist.
+ *
+ * The first call is also the recall-proxy log: `expandedAt` on the run, over
+ * the runs with `canExpand`, is the "see more" rate.
+ */
+findmeRouter.post('/findme/runs/:runId/more', requireAuth, async (req, res, next) => {
+  try {
+    const user = req.user!;
+    const runId = String(req.params.runId ?? '');
+    const ref = firestore().collection('match_runs').doc(runId);
+    const snap = await ref.get();
+    const run = snap.exists ? snap.data() : undefined;
+    if (!run || run.uid !== user.uid) {
+      res.status(404).json({ ok: false, error: 'not_found', message: 'Unknown search' });
+      return;
+    }
+    const eventId = String(run.eventId ?? '');
+    if (!isFindMeEnabledForEvent(eventId)) {
+      res.status(404).json({ ok: false, error: 'not_found', message: 'Unknown search' });
+      return;
+    }
+
+    const band = parseNearMisses(run.nearMisses);
+    const byId = new Map(band.map((h) => [h.photoId, h]));
+    let ids: string[];
+    if (Array.isArray(run.expandedPhotoIds)) {
+      ids = (run.expandedPhotoIds as unknown[]).filter((x): x is string => typeof x === 'string');
+    } else {
+      const algo = SearchAlgoSchema.safeParse(run.algo);
+      const tnorm = algo.success ? algo.data.tnorm : false;
+      const picked = expansionCandidates(band, {
+        cutoff: algo.success ? algo.data.cutoff : null,
+        step: expandStep(tnorm),
+        max: env.FINDME_EXPAND_MAX,
+        exclude: new Set(Array.isArray(run.resultPhotoIds) ? (run.resultPhotoIds as string[]) : []),
+      });
+      ids = picked.map((h) => h.photoId);
+      await ref.update({ expandedPhotoIds: ids, expandedAt: new Date().toISOString() });
+      logger.info({ kind: 'findme_expand', runId, eventId, uid: user.uid, count: ids.length }, 'Find Me see-more used');
+    }
+
+    const signed = await signPhotoUrls(eventId, ids);
+    const urlsById = new Map(signed.map((s) => [s.photoId, s]));
+    const results: MatchResult[] = ids.map((photoId) => {
+      const h = byId.get(photoId);
+      return {
+        photoId,
+        score: h?.score ?? 0,
+        faceScore: h?.faceScore ?? null,
+        personScore: h?.personScore ?? null,
+        thumbUrl: urlsById.get(photoId)?.thumbUrl ?? '',
+        webUrl: urlsById.get(photoId)?.webUrl ?? '',
+        tier: 'expanded',
+      };
+    });
+    const body: ExpandResultsResponse = { ok: true, runId, results };
+    res.json(body);
+  } catch (err) {
+    next(err);
+  }
+});
 
 // ── Fresh upload search ──────────────────────────────────────────────────────
 
