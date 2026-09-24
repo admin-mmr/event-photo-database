@@ -4,6 +4,8 @@ import {
   combineReferences,
   visibleResults,
   scoreBand,
+  scaleOf,
+  Z_CALIBRATION,
   bandLabel,
   STRONG_MATCH_THRESHOLD,
   displayConfidence,
@@ -81,7 +83,7 @@ describe('displayConfidence (calibrated %)', () => {
 
   it('is monotonic in the raw score', () => {
     const xs = [0.25, 0.35, 0.5, 0.6, 0.7, 0.85, 0.95];
-    const ys = xs.map(displayConfidence);
+    const ys = xs.map((x) => displayConfidence(x));
     for (let i = 1; i < ys.length; i += 1) {
       expect(ys[i]).toBeGreaterThanOrEqual(ys[i - 1]!);
     }
@@ -91,6 +93,40 @@ describe('displayConfidence (calibrated %)', () => {
     expect(displayConfidence(0)).toBeGreaterThanOrEqual(1);
     expect(displayConfidence(1)).toBeLessThanOrEqual(99);
     expect(displayConfidence(5)).toBeLessThanOrEqual(99);
+  });
+});
+
+describe('T-norm (z) scores', () => {
+  it('reads the scale from the search, or from the scores when restored', () => {
+    expect(scaleOf({ tnorm: true }, [0.5])).toBe('z');
+    expect(scaleOf({ tnorm: false }, [7])).toBe('raw');
+    expect(scaleOf(undefined, [4.6, 5.2])).toBe('z'); // a cosine can never exceed 1
+    expect(scaleOf(undefined, [0.61, 0.3])).toBe('raw');
+  });
+
+  it('no longer reads every shown result as "Strong · 99%"', () => {
+    // The bug: z ≥ 4.5 through the raw curve saturated at 99% / strong.
+    expect(displayConfidence(4.5, 'z')).toBeLessThan(99);
+    expect(scoreBand(4.5, 'z')).not.toBe('strong');
+  });
+
+  it('differentiates across the range results actually span', () => {
+    const shown = [4.5, 5.5, 7, 9, 12].map((z) => displayConfidence(z, 'z'));
+    expect(new Set(shown).size).toBeGreaterThan(2);
+    for (let i = 1; i < shown.length; i += 1) expect(shown[i]).toBeGreaterThanOrEqual(shown[i - 1]!);
+    expect(scoreBand(12, 'z')).toBe('strong');
+  });
+
+  it('holds the end values outside the fitted knots and stays within 1–99', () => {
+    const [firstZ, firstPct] = Z_CALIBRATION[0]!;
+    const [lastZ, lastPct] = Z_CALIBRATION[Z_CALIBRATION.length - 1]!;
+    expect(displayConfidence(firstZ - 3, 'z')).toBe(Math.max(1, firstPct));
+    expect(displayConfidence(lastZ + 30, 'z')).toBe(Math.min(99, lastPct));
+  });
+
+  it('keeps the raw-cosine behaviour for searches without T-norm', () => {
+    expect(displayConfidence(DISPLAY_MIDPOINT, 'raw')).toBe(50);
+    expect(scoreBand(STRONG_MATCH_THRESHOLD, 'raw')).toBe('strong');
   });
 });
 

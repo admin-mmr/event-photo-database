@@ -22,44 +22,102 @@ export function visibleResults(ref: ReferenceLike): MatchResult[] {
 
 /**
  * Score banding (dev plan §5B C7). A bare "51%" and "97%" both read as "a
- * match", so we bucket the fused score into a confidence band the eye can scan:
- * a high-confidence "Strong" vs a "Possible" worth a closer look in the
- * lightbox. The raw % stays available as detail. Threshold is a single tunable
- * constant — adjust against the eval harness, not by scattering magic numbers.
+ * match", so we bucket the fused score into a confidence band the eye can scan.
+ * Threshold constants are tunable — adjust against the eval harness, not by
+ * scattering magic numbers.
+ *
+ * Scores come in two SCALES, and must never be read with the other one's rules:
+ *  - 'raw': fused cosine similarity, at most 1.0 (T-norm off, the pre-July path).
+ *  - 'z':   T-normed, how many standard deviations a photo sits above the
+ *           event's crowd. Every result shown is at least the cutoff (4.5 as of
+ *           2026-09-23), so reading a z with the raw rules made EVERY result
+ *           "Strong · 99%" — the bug this scale split fixes.
  */
-export const STRONG_MATCH_THRESHOLD = 0.6;
+export type ScoreScale = 'raw' | 'z';
 
-export type ScoreBand = 'strong' | 'possible';
+/** The scale a search's scores are on. `algo.tnorm` says so when present; a
+ *  result restored from the session cache has no algo, so fall back to the
+ *  scores themselves — a fused cosine can never exceed 1.0 (weights sum to 1),
+ *  while every T-normed result is several units above it. */
+export function scaleOf(algo: { tnorm?: boolean } | null | undefined, scores: readonly number[]): ScoreScale {
+  if (algo && typeof algo.tnorm === 'boolean') return algo.tnorm ? 'z' : 'raw';
+  return scores.some((s) => s > 1.01) ? 'z' : 'raw';
+}
 
-export function scoreBand(score: number): ScoreBand {
+export const STRONG_MATCH_THRESHOLD = 0.6; // raw scale
+
+export type ScoreBand = 'strong' | 'likely' | 'possible';
+
+/**
+ * z scale: the badge % IS the evidence — the share of members who said "that's
+ * me" to results at that z, fitted from their votes by
+ * `matcher/eval/calibrate_display.py` (isotonic, so it never falls as z rises).
+ * Knots are [z, %]; between knots it interpolates, beyond them it holds the end
+ * value. Re-fit as votes accumulate (quality plan Item 17).
+ *
+ * Caveat: votes come from results members chose to judge, so this is judged
+ * precision, not a true probability over everything shown.
+ */
+// Fitted 2026-09-23 from 3,425 judged T-normed results (z >= 4.0). Read it as:
+// at z 4.4 about 57% of photos were the searcher, at z 6.1 about 95%.
+export const Z_CALIBRATION: ReadonlyArray<readonly [number, number]> = [
+  [4.12, 39], [4.36, 57], [4.77, 74], [5.13, 87], [5.38, 90],
+  [5.63, 92], [6.14, 95], [6.75, 96], [7.38, 97], [8.87, 98],
+];
+
+/** Band cut points on the calibrated % (z scale). With the 2026-09-23 fit:
+ *  Strong ≈ z 6.1+, Likely ≈ z 5.1–6.1, Possible from the cutoff (4.5 ≈ 63%). */
+export const STRONG_PCT = 95;
+export const LIKELY_PCT = 85;
+
+export function scoreBand(score: number, scale: ScoreScale = 'raw'): ScoreBand {
+  if (scale === 'z') {
+    const pct = displayConfidence(score, 'z');
+    return pct >= STRONG_PCT ? 'strong' : pct >= LIKELY_PCT ? 'likely' : 'possible';
+  }
   return score >= STRONG_MATCH_THRESHOLD ? 'strong' : 'possible';
 }
 
 export function bandLabel(band: ScoreBand): string {
-  return band === 'strong' ? 'Strong' : 'Possible';
+  return band === 'strong' ? 'Strong' : band === 'likely' ? 'Likely' : 'Possible';
 }
 
 /**
- * Calibrated display confidence (0–100) for a raw fused score.
+ * Display confidence (1–99) for a fused score on its own scale.
  *
- * The raw score is a cosine similarity, which tops out well below 1.0 even for
- * an unmistakable match — a correct face match commonly lands around 0.65–0.75,
- * which reads as a discouraging "65%" to a user who expects a percentage. This
- * maps the raw score through a logistic curve anchored so the matcher's report
- * threshold (0.25, the weakest score ever shown) reads as 50% and a "Strong"
- * match (>=0.6) reads as ~89%+, giving an intuitive number.
+ * raw: the cosine tops out well below 1.0 even for an unmistakable match (a
+ * correct face commonly lands around 0.65–0.75, a discouraging "65%"), so it is
+ * mapped through a logistic anchored so the old report threshold (0.25) reads as
+ * 50% and a "Strong" match (>=0.6) reads as ~89%+.
  *
- * IMPORTANT: this is presentation only. Ranking, selection, paging, banding and
- * the matcher's threshold all stay in RAW-score space — never feed a calibrated
- * value back into them, or the displayed % and the ordering/band could diverge.
- * Clamped to 1–99 so a match never claims an absolute 0% or 100%.
+ * z: interpolated from Z_CALIBRATION (see above).
+ *
+ * IMPORTANT: this is presentation only. Ranking, selection, paging and the
+ * matcher's threshold all stay in score space — never feed a displayed value
+ * back into them, or the displayed % and the ordering could diverge. Clamped to
+ * 1–99 so a match never claims an absolute 0% or 100%.
  */
 export const DISPLAY_MIDPOINT = 0.25; // raw score shown as 50%
 export const DISPLAY_STEEPNESS = 6; // curve sharpness around the midpoint
 
-export function displayConfidence(score: number): number {
-  const pct = 100 / (1 + Math.exp(-DISPLAY_STEEPNESS * (score - DISPLAY_MIDPOINT)));
+export function displayConfidence(score: number, scale: ScoreScale = 'raw'): number {
+  const pct = scale === 'z' ? interpolate(Z_CALIBRATION, score) : 100 / (1 + Math.exp(-DISPLAY_STEEPNESS * (score - DISPLAY_MIDPOINT)));
   return Math.round(Math.min(99, Math.max(1, pct)));
+}
+
+function interpolate(knots: ReadonlyArray<readonly [number, number]>, x: number): number {
+  const first = knots[0]!;
+  const last = knots[knots.length - 1]!;
+  if (x <= first[0]) return first[1];
+  if (x >= last[0]) return last[1];
+  for (let i = 1; i < knots.length; i += 1) {
+    const [x1, y1] = knots[i]!;
+    if (x <= x1) {
+      const [x0, y0] = knots[i - 1]!;
+      return y0 + ((y1 - y0) * (x - x0)) / (x1 - x0);
+    }
+  }
+  return last[1];
 }
 
 /**
