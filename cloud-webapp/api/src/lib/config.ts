@@ -203,8 +203,9 @@ const EnvSchema = z.object({
   // Uploads bucket: working copies of reference selfies, kept so a signed-in
   // member can reuse a past photo to search a new event (PRD D7/§6.1). Objects
   // live under `find_me_references/<uid>/<uploadId>.<ext>`. Retention is the
-  // PRD §8.4 tier (below); a Firestore TTL on `find_me_uploads.expiresAt` plus
-  // the M5.1 deletion job / a matching bucket lifecycle do the actual cleanup.
+  // PRD §8.4 tier (below), enforced by the daily retention sweep
+  // (services/referenceRetention.ts) — NOT a Firestore TTL, which would delete
+  // the record and strand the object. The bucket's 90-day lifecycle is a backstop.
   UPLOADS_BUCKET: z.string().default('mmr-data-pipeline-uploads'),
   REFERENCE_RETENTION_DAYS_ADULT: z.coerce.number().int().positive().default(90),
   REFERENCE_RETENTION_DAYS_MINOR: z.coerce.number().int().positive().default(30),

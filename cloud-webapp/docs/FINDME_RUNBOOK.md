@@ -374,19 +374,25 @@ limit so a busy event doesn't flood the inbox.
 
 **Automatic retention** (PRD §8.4 — 90 days adult / 30 days minor):
 
-- Firestore TTL on `find_me_uploads.expiresAt` and `rate_limits.expireAt`
-  (enable once with `gcloud firestore fields ttls update …`).
-- A matching **object-lifecycle rule on the uploads bucket** removes the GCS
-  bytes — the TTL only deletes the Firestore record. Use the **90-day reuse
-  tier**, *not* the old 7-day working-copy rule (it would delete reusable
-  references).
+- The **`findme-reference-retention`** scheduler (daily) applies
+  `POST /api/admin/findme/retention/sweep`, which deletes each expired selfie's
+  GCS object and then its `find_me_uploads` record
+  (`api/src/services/referenceRetention.ts`). Dry run unless `apply: true`;
+  super_admin or machine token only. Manual wrapper:
+  `infra/scripts/sweep-expired-selfies.sh [--apply]`.
+- Expiry is the **earlier** of the record's `expiresAt` and its tier applied to
+  `createdAt`, so an old record stamped under a longer policy is still held to
+  the current one.
+- **No Firestore TTL on `find_me_uploads`** — it would delete the record and
+  strand the selfie, with nothing left pointing at it. (`expiresAt` is a string,
+  so a TTL would not fire anyway.) `rate_limits.expireAt` is a Timestamp and
+  does use a TTL.
+- The uploads bucket's flat 90-day **object-lifecycle rule** stays as the
+  backstop; use the 90-day reuse tier, *not* the old 7-day working-copy rule.
 
-> ⚠️ **Open gap:** the coordinated M5.1 retention/deletion Job is **not built
-> yet**, and there is **no admin "delete another user's data" endpoint**
+> ⚠️ **Still open:** there is **no admin "delete another user's data" endpoint**
 > (`deleteAllUserData` is uid-scoped only; M5.2 deferred the admin variant).
-> Until M5.1 lands, rely on the TTLs + bucket lifecycle for routine cleanup, and
-> handle an operator-initiated erasure by running the user-scoped cascade. Track
-> this as a launch caveat.
+> Handle an operator-initiated erasure by running the user-scoped cascade.
 
 ---
 

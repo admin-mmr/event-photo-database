@@ -403,6 +403,31 @@
   request timeout no matter how few objects it holds.
   The api runs at **1Gi** for the same reason (see deploy-api.sh).
 
+## Find-Me selfie retention — a sweep, never a TTL
+
+- **Stored reference selfies are kept 90 days (adult) / 30 days (minor), PRD §8.4,
+  and the daily `findme-reference-retention` scheduler is the only thing that
+  enforces the 30.** It applies `POST /api/admin/findme/retention/sweep`
+  (`api/src/services/referenceRetention.ts`); manual wrapper
+  `./cloud-webapp/infra/scripts/sweep-expired-selfies.sh [--apply]`, scheduler via
+  `provision-reference-retention-scheduler.sh`.
+- **Why it exists:** until 2026-09-24 nothing did. The uploads bucket's lifecycle
+  is a flat 90 days and the Firestore TTL in the old runbook was never enabled, so
+  **241 minors' selfies were found past their 30-day tier** (466 of 800 records
+  past expiry).
+- Keep these:
+  - **Object first, then record.** The record is the only pointer to the object;
+    a failed object delete keeps the record so the next run retries. A missing
+    object is success (the bucket rule often got there first for adults).
+  - **Never enable a Firestore TTL on `find_me_uploads`.** It deletes only the
+    record and strands the selfie. It also cannot fire: `expiresAt` is an ISO
+    string and a TTL needs a Timestamp. (`rate_limits.expireAt` IS a Timestamp,
+    so a TTL is right there.)
+  - **Expiry = the EARLIER of `expiresAt` and the tier on `createdAt`**, so a
+    record stamped under a longer policy is still held to the current one.
+  - Dry run unless `apply: true`; `allowCronOrSuperAdmin` (cross-user deletion);
+    deadline-bounded with `remaining` for a re-call.
+
 ## Monitoring the Cloud Run indexer job
 
 - **Tail logs live** (closest to `tail -f`) with the Logging API:

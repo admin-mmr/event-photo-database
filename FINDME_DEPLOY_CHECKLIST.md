@@ -81,22 +81,32 @@ V4 signing of reference URLs reuses the SA's existing
 `serviceAccountTokenCreator`-on-itself binding (already present for the
 derivatives bucket) — no extra grant needed.
 
-## 4. Firestore TTL policies (one-time, operational)
+## 4. Retention: the selfie sweep, plus a TTL on rate_limits (one-time, operational)
 
-So counters and reference records self-delete:
+**Stored selfies are deleted by the retention sweep, not by a TTL.** PRD §8.4 keeps
+a reference 90 days for an adult and 30 for a minor. The daily scheduler deletes
+the GCS object first, then the `find_me_uploads` record:
 
 ```bash
-gcloud firestore fields ttls update expireAt \
-  --collection-group=rate_limits --project=mmr-data-pipeline --enable-ttl
-
-gcloud firestore fields ttls update expiresAt \
-  --collection-group=find_me_uploads --project=mmr-data-pipeline --enable-ttl
+SYNC_TRIGGER_TOKEN="$(gcloud secrets versions access latest --secret=SYNC_TRIGGER_TOKEN --project=mmr-data-pipeline)" ./cloud-webapp/infra/scripts/provision-reference-retention-scheduler.sh mmr-data-pipeline
 ```
 
-Add a matching **object-lifecycle rule** on the uploads bucket so the GCS bytes
-are removed too (the Firestore TTL only deletes the record). Use the
-**90/30-day reuse tier — do NOT apply the old 7-day working-copy rule**, it
-would delete reusable references. Example (90-day delete):
+Manual run (dry run first, then `--apply`):
+
+```bash
+./cloud-webapp/infra/scripts/sweep-expired-selfies.sh
+```
+
+**Do NOT enable a Firestore TTL on `find_me_uploads`.** A TTL deletes only the
+record, which would leave a minor's selfie in the bucket until day 90 with nothing
+pointing at it. (It also would not fire: `expiresAt` is an ISO string, and a TTL
+only acts on a Timestamp field.) Until 2026-09-24 this section said to enable
+one; it was never applied, and 241 minors' selfies were found past their 30-day
+tier.
+
+The uploads bucket keeps its flat **90-day lifecycle rule** as the backstop for
+adults — do NOT apply the old 7-day working-copy rule, it would delete reusable
+references:
 
 ```bash
 cat > /tmp/uploads-lifecycle.json <<'JSON'
@@ -106,7 +116,11 @@ gcloud storage buckets update gs://mmr-data-pipeline-uploads \
   --lifecycle-file=/tmp/uploads-lifecycle.json
 ```
 
-(Or wait for the M5.1 deletion job, which is still open.)
+The rate-limit counters DO use a TTL — `expireAt` is a real Timestamp there:
+
+```bash
+gcloud firestore fields ttls update expireAt --collection-group=rate_limits --project=mmr-data-pipeline --enable-ttl
+```
 
 ## 5. reCAPTCHA Enterprise (optional, recommended)
 
