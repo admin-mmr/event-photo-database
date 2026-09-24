@@ -1,202 +1,248 @@
-# How to Apply for Google Cloud Platform (GCP) Nonprofit Credits
+# Applying for the Google Cloud Nonprofit Credit — MMR Runbook
 
-A step-by-step guide for nonprofit organizations applying for Google Cloud credits through the Google for Nonprofits program.
+**Who this is for:** whoever holds `admin@mmrunners.org` and is the billing admin on
+Google Cloud billing account `01D3C2-F2FE89-551428`.
 
-Last updated: May 2026
-
----
-
-## What You Get
-
-Through Google for Nonprofits, eligible organizations can access:
-
-- **Google Cloud Free Tier**: Always-free monthly usage of products like Compute Engine, Cloud Storage, and BigQuery (within set limits).
-- **Google Cloud free credits**: A one-time Free Trial credit (currently $300, valid for 90 days) for any new Google Cloud billing account, plus additional nonprofit-specific credits when requested.
-- **Google Workspace for Nonprofits**: Free Gmail, Drive, Docs, Meet on your custom domain.
-- **Google Ad Grants**: Up to $10,000/month in Google Search text ads.
-- **Google Maps Platform**: $250/month in Maps credit, with the ability to request more.
-- **YouTube Nonprofit Program**: Link Anywhere Cards, fundraising tools, and creator resources.
-
-> Note: Credit amounts and program structure are set by Google and change periodically. Always confirm current amounts on the official Google for Nonprofits site before budgeting.
+**Last updated:** 2026-09-21. Supersedes the generic May-2026 version of this file,
+which was templated from another organization and is now wrong in two ways: it named
+**TechSoup** as the validation partner (Google routes nonprofit verification through
+**Goodstack** as of 2026), and it never stated the actual Cloud credit amount.
 
 ---
 
-## Before You Begin: Eligibility Checklist
+## Why we are doing this
 
-You must meet ALL of these requirements:
+The `mmr-data-pipeline` project (race-photo gallery, FindMe search, indexer) runs at a
+few dollars a month when nothing goes wrong, and **every dollar is paid at list price**:
+the billing export (checked 2026-09-22) shows no promotional or trial credit on the
+account — only the standard Cloud Run free-tier discount. (`AZURE_MIGRATION_DEV_PLAN.md`
+describes the stack as riding temporary credits; if it ever did, they are gone.) The
+Google for Nonprofits program grants **up to $10,000/year** in Cloud credits, which is
+roughly $833/month against a workload that costs ~$3 in a quiet month and ~$12–28 in a
+busy event month. If MMR qualifies, this takes the Cloud bill to zero without changing a
+line of code.
 
-1. **Hold valid nonprofit status** in your country.
-   - In the U.S.: 501(c)(3) registered with the IRS.
-   - In other countries: equivalent charitable registration.
-2. **Be verified through TechSoup** (or its country-specific partner). This is the validation gate Google uses for most countries.
-3. **Agree to Google's required certifications** regarding non-discrimination.
-4. **NOT be on the ineligible list**, which includes: governmental entities/organizations, hospitals and healthcare organizations, schools/academic institutions/universities (Google for Education is separate), and churches/places of worship engaged in religious activities (though their philanthropic arms may qualify).
-5. **Be located in a supported country** (65+ countries currently supported).
+Two things to understand before you start:
 
-Confirm eligibility here: https://support.google.com/nonprofits/answer/3215869
-
----
-
-## Step 1: Get a TechSoup Validation Token
-
-If your organization is not already TechSoup-validated, this is the first step.
-
-1. Go to https://www.techsoup.org and click **Register**.
-2. Create an account using your organization's official email address (e.g., `it@youth4am.org`).
-3. Complete the organization profile. You will be asked to provide:
-   - Legal organization name (must match your IRS/charity-registry records).
-   - EIN or tax/charity registration number.
-   - Mailing address and primary contact.
-4. Submit for validation. TechSoup will verify your nonprofit status. **This typically takes 2 to 14 business days.**
-5. Once validated, locate your **TechSoup Validation Token** in your TechSoup account dashboard. You'll need it for Step 2.
-
-Outside the U.S., TechSoup routes you to its local partner (e.g., TechSoup Canada, TechSoup Asia, Stifter-helfen in Germany). Follow the same process there.
+- **Google Workspace for Nonprofits is a separate, free benefit.** Our `@mmrunners.org`
+  mailboxes do not consume any of the $10,000. Getting the Cloud credit does not change
+  anything about email.
+- **The credit is a ceiling, not a blank cheque.** It is an annual allocation that does
+  not roll over, and it stops applying the moment it runs out. Keep the budget alerts in
+  Step 5 regardless — a misconfiguration can burn credit just as easily as cash.
 
 ---
 
-## Step 2: Sign Up for Google for Nonprofits
+## ⚠️ Step 0 — Settle the eligibility question first
 
-1. Go to https://www.google.com/nonprofits and click **Get started**.
-2. Sign in with your organization's primary Google account.
-   - **Best practice**: use an admin account on your nonprofit's own domain (e.g., `it@youth4am.org`), not a personal Gmail address. If you do not yet have a domain-based Google account, sign up for Google Workspace for Nonprofits during this step.
-3. Enter your organization's details: legal name, address, EIN/registration number, website, and mission summary.
-4. Provide your **TechSoup Validation Token** from Step 1.
-5. Agree to the Google for Nonprofits Additional Terms of Service and the non-discrimination certifications.
-6. Submit the application.
+**Do not skip this.** Everything below is wasted effort if the answer is no, and for a
+running club the answer is genuinely uncertain.
 
-**Review time**: Google typically responds within 2 to 14 business days. You'll receive an email at the address you registered with. Check spam if you don't see it.
+Google for Nonprofits requires **501(c)(3)** status in the US. Many running and
+athletic clubs are incorporated as **501(c)(7) social clubs** instead, or as a plain
+state non-profit corporation with no federal exemption at all. **501(c)(7) does not
+qualify.** A 501(c)(3) with a sports/youth-athletics or charitable mission does.
 
----
+**What to do:** find MMR's IRS determination letter, or look the club up in the IRS
+Tax Exempt Organization Search at <https://apps.irs.gov/app/eos/> by name or EIN. The
+subsection code is printed there.
 
-## Step 3: Create a Google Cloud Billing Account
+| What you find | What it means |
+|---|---|
+| **501(c)(3)** | Proceed to Step 1. |
+| **501(c)(7)** or other subsection | Not eligible. Stop here and read "If MMR does not qualify" at the bottom — the Azure path is probably the answer. |
+| No federal exemption / can't find it | Not eligible today. Talk to the board before spending more time. |
 
-You need a Cloud billing account before any credits can be applied. Even though credits will offset charges, Google requires a valid billing account on file.
-
-1. Go to https://console.cloud.google.com and sign in with the **same Google account** you used to apply for Google for Nonprofits.
-2. In the left menu, navigate to **Billing**.
-3. Click **Create Billing Account**.
-4. Choose **Individual** or **Business** (select Business and enter your nonprofit's information).
-5. Enter a payment method. A credit card or bank account is required even for free-trial usage. You will not be charged unless you exceed free-tier limits or credits run out.
-6. Accept the Google Cloud Free Trial terms if offered. The Free Trial gives you **$300 in credit for 90 days** and converts to a paid account only if you actively upgrade.
-7. Note your **Billing Account ID** (format: `XXXXXX-XXXXXX-XXXXXX`). You'll need it in Step 5.
+Also confirm MMR is not in an excluded category (government body, hospital, school,
+or a place of worship). A running club is not, so this is normally a formality.
 
 ---
 
-## Step 4: Wait for Google for Nonprofits Approval
+## Step 1 — Find out how much of this is already done
 
-You cannot proceed until your Google for Nonprofits application is approved.
+This is the step that saves you weeks. MMR already has `@mmrunners.org` Google
+accounts, which means the club may **already be enrolled in Google for Nonprofits**
+for Workspace. If so, you skip verification entirely and go straight to Step 4, which
+takes about three business days instead of three weeks.
 
-- Watch for the confirmation email from Google.
-- Sign in at https://www.google.com/nonprofits/account/u/0/ to see your enrollment dashboard.
-- Once approved, your dashboard will show the available products (Workspace, Ad Grants, YouTube Nonprofit, Maps Platform, and Cloud).
+1. Sign in at <https://www.google.com/nonprofits/account/> as `admin@mmrunners.org`.
+2. Look at what you see:
 
----
+| What the page shows | Where to go next |
+|---|---|
+| An enrollment dashboard listing products (Workspace, Ad Grants, YouTube, Maps, Cloud) | **Already enrolled.** Skip to **Step 4**. |
+| A "Get started" prompt / no account | Not enrolled. Continue to **Step 2**. |
+| "Pending review" | Verification is already in flight. Wait for the email, then Step 4. |
 
-## Step 5: Activate Google Cloud Credits
-
-After Google for Nonprofits approval:
-
-1. Go to https://www.google.com/nonprofits/account/ and sign in.
-2. In the products list, find **Google Cloud** and click **Get Started** (or **Activate**).
-3. You may be prompted to confirm the Cloud Billing Account from Step 3. Select it.
-4. Submit any additional information requested (organization details, intended use case, expected monthly usage).
-5. Provide a brief justification:
-   - What workloads you plan to run (e.g., website hosting, donor database, data analytics, AI/ML for program evaluation).
-   - Estimated monthly Cloud spend.
-   - How the work supports your nonprofit's mission.
-6. Submit. Google typically responds in **3 business days** with the credits applied directly to your billing account.
-
-You can verify credits arrived by going to:
-**Cloud Console → Billing → [Your Account] → Credits**
+While you are signed in, also note whether **Google Cloud** already appears as an
+activated product. If it does, the credit may already be granted and simply not
+applied to the right billing account — go to Step 5 and check.
 
 ---
 
-## Step 6: Set Up Cost Controls (Strongly Recommended)
+## Step 2 — Get verified by Goodstack
 
-Credits are finite. To avoid an unexpected bill if usage exceeds the credit, set up budgets and alerts immediately.
+Only if Step 1 said "not enrolled".
 
-1. In Cloud Console, go to **Billing → Budgets & alerts**.
-2. Click **Create Budget**.
-3. Set the budget amount equal to your credit balance (or lower).
-4. Set alert thresholds at 50%, 90%, and 100%.
-5. Add your email and any team emails that should be notified.
-6. Save.
+1. Go to <https://www.google.com/nonprofits> and click **Get started** (top right).
+2. Sign in as `admin@mmrunners.org`. **Do not use a personal Gmail address** — a
+   personal address is one of the most common rejection reasons.
+3. Complete the account request form. Have ready:
+   - MMR's **legal** organization name, exactly as it appears on the IRS
+     determination letter. A mismatch here is the single most common failure.
+   - **EIN**.
+   - Registered mailing address and a phone number.
+   - Website (`mmrunners.org`) and a short, concrete mission statement. Write
+     something specific about what the club actually does — vague mission text gets
+     applications bounced.
+4. Submit. Google passes your details to Goodstack automatically; you do not file
+   separately with them.
+5. **Watch for mail from `verifications@mail.goodstack.org`, and check spam.**
+   Goodstack routinely asks for a supporting document (usually the IRS determination
+   letter). The clock stops until you reply, so watch for this.
 
-You may also want to:
-- Set spending caps on App Engine or specific APIs.
-- Disable billing entirely on test projects when not in use.
-- Use **Quotas** (IAM & Admin → Quotas) to cap individual service usage.
-
-Documentation: https://cloud.google.com/billing/docs/how-to/budgets
-
----
-
-## Step 7: (Optional) Request Additional Credits
-
-The standard nonprofit credit is one allocation per organization. If you need more, you can:
-
-- **Apply for Google Cloud Research Credits** (if doing research): https://cloud.google.com/edu/researchers
-- **Talk to a Google Cloud nonprofit specialist** through the Google for Nonprofits help center: https://support.google.com/nonprofits/gethelp
-- **Engage a Google Cloud Partner** that works with nonprofits. Many partners can sponsor additional credits or discounted services.
-
-For **Google Maps Platform credits beyond the $250/month default**:
-1. Sign in to your Google for Nonprofits account.
-2. Under **Google Maps Platform credits**, click **Get Started**.
-3. Provide:
-   - Organization address, phone, and domain.
-   - Whether your Maps usage will be on a public site, a restricted-access site, or both.
-   - Justification for additional credit beyond $250/month.
-4. Google reviews in roughly 3 business days.
+**Timeline:** most requests are reviewed in **3–5 business days**.
 
 ---
 
-## Common Reasons Applications Are Rejected
+## Step 3 — Wait for the Google for Nonprofits approval email
 
-- The EIN or charity number on the Google application doesn't match TechSoup records (typo, name mismatch).
-- The applying email is a personal Gmail address rather than an organizational address.
-- The organization falls into an ineligible category (school, hospital, governmental).
-- The organization's mission information is too vague — write a clear, concrete summary.
-- A duplicate Google for Nonprofits account already exists for the org. Search support and consolidate.
-
-If rejected, the email will state the reason. You can correct and re-submit.
+Nothing to do but respond quickly to any Goodstack request. When approved, the
+dashboard at <https://www.google.com/nonprofits/account/> lists the available products.
 
 ---
 
-## Timeline Summary
+## Step 4 — Request the Cloud credit and attach it to our billing account
 
-| Step | Typical Time |
-|------|--------------|
-| TechSoup validation | 2 to 14 business days |
-| Google for Nonprofits review | 2 to 14 business days |
-| Cloud Billing setup | Same day |
-| Cloud credit activation (post-approval) | About 3 business days |
-| **Total end-to-end** | **2 to 4 weeks** in most cases |
+Enrollment alone does **not** grant Cloud credits. This is a separate request, and it
+is the step people miss.
+
+1. From <https://www.google.com/nonprofits/account/>, find **Google Cloud** in the
+   products list and click **Get started** / **Activate**.
+2. You will be asked which Cloud billing account to attach the credit to. Choose
+   **`01D3C2-F2FE89-551428`** — the account that already pays for `mmr-data-pipeline`.
+   Attaching the credit to a new, empty billing account is a real and easy mistake; the
+   credit then sits somewhere harmless while the bill keeps arriving.
+3. Provide the justification. Keep it concrete and true — something close to:
+
+   > MMR Runners operates a free race-photo service for club members and event
+   > participants. Google Cloud runs the photo pipeline: Cloud Storage for images,
+   > Cloud Run for indexing and face-matching search, and Firestore for the catalogue.
+   > Spend is about $3 per month in quiet months and $12–30 in event months,
+   > growing with event volume (August 2026: $30).
+
+4. Submit. Credits are typically applied in about **3 business days**.
+
+Reference: <https://support.google.com/nonprofits/answer/16245748>
 
 ---
 
-## Key Links
+## Step 5 — Verify the credit actually landed
 
-- Google for Nonprofits home: https://www.google.com/nonprofits
-- Sign up: https://www.google.com/nonprofits/account/u/0/signup
-- Eligibility requirements: https://support.google.com/nonprofits/answer/3215869
-- About Google Cloud Credits: https://support.google.com/nonprofits/answer/16245748
-- TechSoup: https://www.techsoup.org
-- Google Cloud Console: https://console.cloud.google.com
-- Google Cloud Free Tier details: https://cloud.google.com/free
-- Google for Nonprofits help: https://support.google.com/nonprofits
-- Maps Platform public programs: https://developers.google.com/maps/billing-and-pricing/public-programs
+Do not trust the approval email alone — confirm against the billing account.
+
+In the Console: **Billing → `01D3C2-F2FE89-551428` → Credits**. You want to see a
+nonprofit credit with a balance and an expiry date.
+
+Or from the terminal, once `gcloud auth login` is current:
+
+```bash
+gcloud billing accounts describe 01D3C2-F2FE89-551428
+```
+
+Then confirm the credit is actually offsetting charges by opening
+**Billing → Reports**, grouping by **Credit type**, and checking that the current
+month shows the credit applied against the `mmr-data-pipeline` line — not just sitting
+on the account.
 
 ---
 
-## Quick Checklist
+## Step 6 — Fix the budget guardrails while you are in there
 
-- [ ] Confirmed organization meets eligibility (nonprofit status, supported country, not in excluded categories)
-- [ ] Registered with TechSoup and received Validation Token
-- [ ] Created Google for Nonprofits account using organizational email
-- [ ] Submitted Google for Nonprofits application with TechSoup token
-- [ ] Created Google Cloud billing account
-- [ ] Received Google for Nonprofits approval email
-- [ ] Activated Google Cloud credits via the Nonprofits dashboard
-- [ ] Verified credits appear under Billing → Credits in Cloud Console
-- [ ] Set up budgets and alerts to avoid overage
-- [ ] (Optional) Applied for additional Maps Platform or research credits if needed
+The credit removes the bill, not the risk: a runaway job burns credit silently and the
+first symptom is the credit running out in month seven. Our July cost report found two
+real defects here that are still open — fix them now.
+
+- **Production has a hand-edited $20/month budget scoped to the whole billing account,
+  but `infra/scripts/provision-budget-guardrails.sh` creates a $10 budget scoped to one
+  project.** Re-running the script would not reproduce production. Reconcile the two so
+  the script is the source of truth (open item **O5** in
+  `billing-analysis/GCP_COST_REPORT_2026.md`).
+- Set alert thresholds at **50% / 85% / 100%**, emailing `admin@mmrunners.org`.
+- Once the credit is on, **raise the budget to something meaningful against the credit**
+  (say $100/month) — a $20 alarm that fires every month becomes noise you learn to
+  ignore, which is worse than no alarm.
+
+Also still open from the same report, and worth clearing in the same sitting:
+
+- ~~**O3**~~ — ✅ done 2026-09-22: the Artifact Registry cleanup policy was taken out of
+  dry-run after confirming every live job and service runs the newest version of its image.
+
+---
+
+## What the credit does and does not cover
+
+- **Covers:** essentially all standard Google Cloud SKUs — Cloud Run, Cloud Storage,
+  Firestore, Firebase Hosting, Artifact Registry, Cloud Build. That is our entire stack.
+- **Does not cover:** Google Workspace (already free for us under Workspace for
+  Nonprofits), Google Maps Platform beyond its own separate $250/month nonprofit credit,
+  and third-party Marketplace purchases.
+- **Does not roll over.** It is an annual allocation. Unused credit is not banked.
+
+---
+
+## Common reasons applications get rejected
+
+- Legal name or EIN on the Google form does not match the IRS record — a typo or an
+  informal club name instead of the registered one.
+- Applied from a personal Gmail address instead of `admin@mmrunners.org`.
+- Organization is 501(c)(7) or otherwise not 501(c)(3) — see Step 0.
+- Mission description too vague to assess.
+- A duplicate Google for Nonprofits account already exists for MMR under someone's
+  older address. If you suspect this, search
+  <https://support.google.com/nonprofits/gethelp> and ask them to consolidate rather
+  than filing a second application.
+
+A rejection email states the reason. Most are correctable and you can re-submit.
+
+---
+
+## If MMR does not qualify
+
+This is a realistic outcome for a running club, and there is already a planned answer:
+the **Microsoft nonprofit grant ($2,000/year, recurring)** described in
+`AZURE_MIGRATION_DEV_PLAN.md`, which that document says covers the projected workload
+about 80× over, against existing Azure spend of ~$65/month. Note that Microsoft's grant
+has its own eligibility rules, so confirm them before committing to the migration on
+cost grounds alone.
+
+In the meantime, the technical savings stand on their own and do not depend on any
+credit — see the cost work tracked in `billing-analysis/GCP_COST_REPORT_2026.md`.
+
+---
+
+## Checklist
+
+- [ ] **Step 0** — Confirmed MMR is a **501(c)(3)** via the IRS Tax Exempt Organization Search
+- [ ] Located the IRS determination letter (Goodstack will likely ask for it)
+- [ ] **Step 1** — Checked whether MMR is already enrolled in Google for Nonprofits
+- [ ] **Step 2** — Submitted the account request as `admin@mmrunners.org` with the exact legal name + EIN
+- [ ] Replied to any request from `verifications@mail.goodstack.org` (check spam)
+- [ ] **Step 3** — Received the Google for Nonprofits approval email
+- [ ] **Step 4** — Requested the Cloud credit and attached it to billing account `01D3C2-F2FE89-551428`
+- [ ] **Step 5** — Confirmed the credit appears under Billing → Credits **and** is offsetting charges in Billing → Reports
+- [ ] **Step 6** — Reconciled the $10 vs $20 budget defect (O5) and set 50/85/100% alerts
+- [x] **Step 6** — Took the Artifact Registry cleanup policy out of dry-run (O3) — done 2026-09-22
+
+---
+
+## Key links
+
+- Google for Nonprofits: <https://www.google.com/nonprofits>
+- Your enrollment dashboard: <https://www.google.com/nonprofits/account/>
+- About Google Cloud credits: <https://support.google.com/nonprofits/answer/16245748>
+- Getting verified by Goodstack: <https://support.google.com/nonprofits/answer/12016036>
+- Eligibility requirements: <https://support.google.com/nonprofits/answer/3215869>
+- IRS Tax Exempt Organization Search: <https://apps.irs.gov/app/eos/>
+- Nonprofits help / consolidate a duplicate account: <https://support.google.com/nonprofits/gethelp>
+- Budgets and alerts: <https://cloud.google.com/billing/docs/how-to/budgets>

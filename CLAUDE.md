@@ -93,6 +93,23 @@
 
   Symptom of missing CORS: Save-to-Photos / Download-ZIP fail in the browser
   console with a CORS error while the signed URL itself opens fine in a new tab.
+- **Signed URLs moved the egress, they did not remove it.** Since the fix above,
+  originals bill as **Cloud Storage** internet egress ("Download Worldwide
+  Destinations"), which has no meaningful free tier — Aug 2026 was $20 of a $30
+  bill, from this bucket, on two event days. Firebase Hosting egress now reads
+  near zero, so a watch on Hosting alone will look perfect while the real meter
+  bills. Watch GCS egress on the derivatives bucket instead.
+- **The mobile gallery lightbox must never download an original just to display
+  it** (`web/src/lib/lightboxSave.ts`). It shows the ≤1600px `web` copy; an
+  original is fetched only for a save (selected photos, or a tapped lightbox
+  "Save to Photos", which is two taps on mobile for exactly this reason).
+- **The derivatives bucket runs Autoclass with an ARCHIVE floor** — unread
+  objects go to Coldline at 90 days and Archive at 365, with no retrieval fees.
+  It was hand-set; the record is now:
+
+  ```bash
+  ./cloud-webapp/infra/scripts/provision-derivatives-storage-class.sh mmr-data-pipeline
+  ```
 
 ## Stranded derivatives — the indexer sweeps them now; a script cleans the backlog
 
@@ -746,8 +763,9 @@
   whose original is missing is SKIPPED and recorded, never guessed at.
   - **But outfit-tagger is NOT why `photos/orig/` exists, and must not be
     mistaken for its only consumer.** `signOrigUrl` serves it to users —
-    `download.ts` signs it for "Save to Photos", the full-res lightbox and the
-    bulk-ZIP — which is the whole Hosting-egress fix above. A cost review of the
+    `download.ts` signs it for "Save to Photos" (batch, and the lightbox's
+    two-tap save) and the bulk-ZIP — which is the whole Hosting-egress fix
+    above. (The lightbox no longer *displays* originals; see `lightboxSave.ts`.) A cost review of the
     derivatives bucket read this section, concluded `orig/` was outfit-tagger
     scratch space, and came within one confirmation of deleting 109 GiB that the
     gallery depends on. `signOrigUrl` does NOT check the object exists, so the
