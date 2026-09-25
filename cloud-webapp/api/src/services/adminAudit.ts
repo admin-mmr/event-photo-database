@@ -18,7 +18,9 @@ export type AdminAuditAction =
   | 'findme_reproduce'
   /** Verdict-batch review (routes/adminVerdicts.ts) — also exposes selfies. */
   | 'verdict_batch_list'
-  | 'verdict_batch_view';
+  | 'verdict_batch_view'
+  /** Retention sweep of expired reference selfies (services/referenceRetention.ts). */
+  | 'findme_retention_sweep';
 
 export interface AdminAuditEntry {
   adminUid: string;

@@ -19,6 +19,13 @@
 #   ./infra/scripts/reindex-all.sh ev123 ev456     # only these event IDs
 #   DRY_RUN=1 ./infra/scripts/reindex-all.sh       # list what would run, do nothing
 #   YES=1     ./infra/scripts/reindex-all.sh       # skip the confirmation prompt
+#   FORCE=1   ./infra/scripts/reindex-all.sh ev123 # full re-embed (FORCE_REINDEX=1)
+#
+# FORCE=1 is needed when the store is wrong but its version tag is not — e.g. the
+# events embedded with face-expanded outfit crops under a '+yolov8n+' tag
+# (audit-person-crops.sh flags them as TAG-LIES). The md5+version reuse check
+# would hit on every photo and keep the bad rows. Force also bypasses the api's
+# in-flight guard, which is safe here only because events run one at a time.
 #
 # Auth: needs `gcloud` logged in. It uses your gcloud token to list events from
 # Firestore, and reads the trigger token (SYNC_TRIGGER_TOKEN) from the deployed
@@ -38,6 +45,8 @@ POLL_EVERY="${POLL_EVERY:-15}"      # seconds between status checks
 POLL_TIMEOUT="${POLL_TIMEOUT:-1800}" # max seconds to wait per event
 SLEEP_BETWEEN="${SLEEP_BETWEEN:-5}"  # pause between events
 DRY_RUN="${DRY_RUN:-0}"
+FORCE="${FORCE:-0}"
+if [[ "$FORCE" == "1" ]]; then TRIGGER_BODY='{"force":true}'; else TRIGGER_BODY='{}'; fi
 
 for bin in gcloud curl python3; do
   command -v "$bin" >/dev/null 2>&1 || { echo "ERROR: '$bin' not found on PATH" >&2; exit 1; }
@@ -158,7 +167,7 @@ for id in "${EVENTS[@]}"; do
     -X POST "$API_BASE/api/events/$id/index" \
     -H "X-Sync-Token: $SYNC_TOKEN" \
     -H "Content-Type: application/json" \
-    -d '{}' || echo "000")"
+    -d "$TRIGGER_BODY" || echo "000")"
 
   err="$(python3 -c 'import sys,json
 try: print(json.load(open(sys.argv[1])).get("error",""))

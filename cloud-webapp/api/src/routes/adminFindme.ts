@@ -4,6 +4,8 @@
  *   GET  /api/admin/findme/uploads                      list selfies (cross-user)
  *   GET  /api/admin/findme/uploads/:uploadId/image      302 → signed selfie URL
  *   POST /api/admin/findme/uploads/:uploadId/reproduce  re-run the stored selfie
+ *   POST /api/admin/findme/retention/sweep              delete expired selfies
+ *                                                       (dry run unless apply)
  *
  * This is the ONLY path that exposes another user's reference selfie. Every
  * route is gated by requireAuth + requireAdmin and writes an `admin_audit`
@@ -26,11 +28,13 @@ import {
 
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
+import { allowCronOrSuperAdmin } from '../middleware/cronAuth.js';
 import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
 import { matcherSearch } from '../services/matcherClient.js';
 import { signPhotoUrls, signReferenceUrl, readReference } from '../services/gcsService.js';
 import { getReference, listAllReferences, type AdminReferenceFilter } from '../services/references.js';
 import { recordAdminAudit } from '../services/adminAudit.js';
+import { sweepExpiredReferences } from '../services/referenceRetention.js';
 
 export const adminFindmeRouter = Router();
 
@@ -210,3 +214,33 @@ adminFindmeRouter.post(
     }
   },
 );
+
+/**
+ * POST /api/admin/findme/retention/sweep — delete reference selfies past their
+ * PRD §8.4 retention (90 days adult / 30 minor): the object, then the record.
+ *
+ * DRY RUN unless the body says `apply: true` (truthy-but-not-`true` does not
+ * write). Deadline-bounded: a response with `remaining > 0` is finished by
+ * calling again. The daily `findme-reference-retention` scheduler applies it;
+ * `infra/scripts/sweep-expired-selfies.sh` is the manual wrapper.
+ *
+ * `allowCronOrSuperAdmin`: it deletes other people's data across every club.
+ */
+adminFindmeRouter.post('/admin/findme/retention/sweep', allowCronOrSuperAdmin, async (req, res, next) => {
+  try {
+    const apply = (req.body as { apply?: unknown } | undefined)?.apply === true;
+    const result = await sweepExpiredReferences({ apply });
+    logger.info({ ...result }, 'findme retention sweep');
+    if (apply && (result.deleted > 0 || result.failed > 0)) {
+      await recordAdminAudit({
+        adminUid: req.user?.uid ?? 'system',
+        adminEmail: req.user?.email ?? null,
+        action: 'findme_retention_sweep',
+        details: { ...result },
+      });
+    }
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    next(err);
+  }
+});
