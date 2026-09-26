@@ -2,8 +2,24 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
+
+import pytest
+
 import drive
 from drive import DriveClient, FOLDER_MIME, SHORTCUT_MIME
+
+
+def _fake_token_endpoint(token: str):
+    """Stand in for the OAuth token exchange the non-key signers finish with."""
+
+    @contextlib.contextmanager
+    def fake_urlopen(url, data=None):  # noqa: ARG001
+        yield io.BytesIO(json.dumps({"access_token": token}).encode())
+
+    return fake_urlopen
 
 
 def _img(fid: str, name: str) -> dict:
@@ -91,3 +107,101 @@ def test_skip_folder_match_is_case_insensitive(monkeypatch):
     }
     got = _client_for(tree).list_images("root")
     assert [f["id"] for f in got] == ["a"]
+
+
+# --- DWD signer selection (AZ1: the indexer must authenticate off GCP too) ---
+
+
+def _reset_key_cache(monkeypatch):
+    """The parsed key is cached module-wide; each test starts from unset."""
+    monkeypatch.setattr(drive, "_SA_KEY_CACHE", drive._UNSET, raising=False)
+
+
+def _fake_key(email: str = "indexer-runtime@mmr-data-pipeline.iam.gserviceaccount.com") -> str:
+    import json as _json
+
+    return _json.dumps({"client_email": email, "private_key": "-----BEGIN PRIVATE KEY-----\nx\n"})
+
+
+def test_no_key_keeps_the_gcp_signer_chain(monkeypatch):
+    """With GOOGLE_SA_KEY_JSON unset, every GCP run must behave exactly as before."""
+    _reset_key_cache(monkeypatch)
+    monkeypatch.delenv("GOOGLE_SA_KEY_JSON", raising=False)
+    calls: list[str] = []
+    monkeypatch.setattr(drive, "_sign_jwt_iam", lambda sa, claims: calls.append("iam") or "jwt")
+    monkeypatch.setattr(
+        drive,
+        "_dwd_token_from_key",
+        lambda *a, **k: pytest.fail("key signer must not run without a key"),
+    )
+    monkeypatch.setattr(drive.urllib.request, "urlopen", _fake_token_endpoint("tok-gcp"))
+
+    assert drive.dwd_token() == "tok-gcp"
+    assert calls == ["iam"]
+
+
+def test_key_present_signs_locally_and_skips_iam(monkeypatch):
+    _reset_key_cache(monkeypatch)
+    monkeypatch.setenv("GOOGLE_SA_KEY_JSON", _fake_key())
+    monkeypatch.setattr(
+        drive, "_sign_jwt_iam", lambda *a, **k: pytest.fail("must not call IAM when a key is set")
+    )
+    monkeypatch.setattr(
+        drive,
+        "_sign_jwt_gcloud",
+        lambda *a, **k: pytest.fail("must not shell out to gcloud when a key is set"),
+    )
+    seen: dict = {}
+
+    def fake_from_key(key, subject, scope):
+        seen.update(email=key["client_email"], subject=subject, scope=scope)
+        return "tok-azure"
+
+    monkeypatch.setattr(drive, "_dwd_token_from_key", fake_from_key)
+
+    assert drive.dwd_token(subject="admin@mmrunners.org") == "tok-azure"
+    assert seen["subject"] == "admin@mmrunners.org"
+    assert seen["scope"] == drive.SCOPE
+
+
+def test_key_path_carries_the_write_scope_through(monkeypatch):
+    """CAPTURE_TIME_RENAME needs SCOPE_RW; the key path must not pin read-only."""
+    _reset_key_cache(monkeypatch)
+    monkeypatch.setenv("GOOGLE_SA_KEY_JSON", _fake_key())
+    seen: dict = {}
+    monkeypatch.setattr(
+        drive,
+        "_dwd_token_from_key",
+        lambda key, subject, scope: seen.update(scope=scope) or "tok",
+    )
+
+    drive.dwd_token(scope=drive.SCOPE_RW)
+    assert seen["scope"] == drive.SCOPE_RW
+
+
+def test_malformed_key_fails_loudly(monkeypatch):
+    """A bad key must raise here, not fall through to a gcloud that isn't installed."""
+    _reset_key_cache(monkeypatch)
+    monkeypatch.setenv("GOOGLE_SA_KEY_JSON", "{not json")
+    monkeypatch.setattr(
+        drive, "_sign_jwt_gcloud", lambda *a, **k: pytest.fail("must not reach the gcloud fallback")
+    )
+    with pytest.raises(RuntimeError, match="not valid JSON"):
+        drive.dwd_token()
+
+
+def test_key_missing_required_fields_is_rejected(monkeypatch):
+    _reset_key_cache(monkeypatch)
+    monkeypatch.setenv("GOOGLE_SA_KEY_JSON", '{"client_email": "a@b.com"}')
+    with pytest.raises(RuntimeError, match="client_email \\+ private_key"):
+        drive.dwd_token()
+
+
+def test_blank_key_is_treated_as_absent(monkeypatch):
+    """An env var set to "" (a common Key Vault / Container Apps artefact) is not a key."""
+    _reset_key_cache(monkeypatch)
+    monkeypatch.setenv("GOOGLE_SA_KEY_JSON", "   ")
+    monkeypatch.setattr(drive, "_sign_jwt_iam", lambda sa, claims: "jwt")
+    monkeypatch.setattr(drive.urllib.request, "urlopen", _fake_token_endpoint("tok-gcp"))
+
+    assert drive.dwd_token() == "tok-gcp"
