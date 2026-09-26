@@ -3,7 +3,8 @@
 **Project:** 湘舍动公益文件系统 (Event Photo Database)
 **Prepared for:** IT Department, Youth4AM / mmrunners
 **Date:** June 21, 2026
-**Status:** Draft for review
+**Status:** Draft for review  → **DELIVERED (G0–G6). Historical: read for the decisions (D1–D6) and the
+feature-by-feature map, not for status. Outstanding work is in `ROADMAP.md`.**
 **Builds on:** `cloud-webapp/` (live), `gas-app/` (current control plane), `azure-webapp/` (migration target), `Azure_Migration_Plan.docx`, `FACE_MATCHING_DEV_PLAN.md`, `STORAGE_AND_DATABASE_OPTIONS.md`
 
 ---
@@ -194,56 +195,24 @@ Each milestone is independently deployable. Roughly **30–45 dev-days** for one
 
 ---
 
-## 4A. Consolidated outstanding work (pulled from all active plans)
+## 4A. Consolidated outstanding work — MOVED
 
-This is the single roadmap. Besides the gas-app migration (G0–G6 above), these are the *already-planned-but-unfinished* items scattered across the other docs. Status legend matches `FACE_MATCHING_DEV_PLAN.md`: ✅ done/live · 🟢 code-complete, not deployed · 🟡 partial · ⬜ to do.
+**This section used to be the single roadmap. It is now in
+[`ROADMAP.md`](ROADMAP.md), and the tables that were here have been deleted
+rather than left to rot.**
 
-### 4A.1 Find Me — deploy the code-complete backlog (source: `FACE_MATCHING_DEV_PLAN.md` §5A, `FINDME_DEPLOY_CHECKLIST.md`)
-All of B1–B8 are 🟢 **code-complete but not deployed** — one deploy (api + web + gas-app `clasp push`) plus a B6 indexer re-run away from live.
+They had become actively misleading: the B1–B8 Find-Me backlog they listed as
+"code-complete, not deployed" shipped in June, the `GET /api/metrics` and
+`POST /api/telemetry` "placeholders" are both implemented
+(`api/src/routes/{metrics,telemetry}.ts`), the automated-indexing and
+capture-time work is live, and the Azure remainder was re-scoped by
+`AZURE_MIGRATION_DEV_PLAN.md` decision D1. Anything still genuinely open moved
+to `ROADMAP.md` verified against the running system.
 
-| Item | Status | What |
-|---|---|---|
-| B1 original-res ZIP download | 🟢 | `download.ts` zip of `orig` derivatives |
-| B2 selection UI | 🟢 | `selection.ts`/`useSelection`/`SelectBar` |
-| B3 switch active selfie | 🟢 | per-selfie result sets in `FindMe.tsx` |
-| B4 Gallery back-nav | 🟢 | breadcrumb + event header |
-| B5 real event names | 🟢 | indexer backfills `events.name` from Drive |
-| B6 content-hash dedup | 🟢 | md5 de-dup; **needs indexer re-run** `{"force":true}` |
-| B7 wrong-match feedback | 🟢 | `feedback.ts` + per-result buttons |
-| B8 instant metadata sync | 🟢 | gas-app `triggerMetadataSync()` → `POST /api/admin/sync` |
-
-### 4A.2 Find Me — remaining milestones M4–M6 (source: `FACE_MATCHING_DEV_PLAN.md`, `FACE_MATCHING_FEATURE_PRD.md`, `EVAL_FEEDBACK_LOOP.md`)
-
-| Item | Status | Where it lands |
-|---|---|---|
-| M4 — ZH localization | 🟢 (web) | **Web UI fully bilingual** (`English · 中文`), public + admin pages + nav. Not deployed. Remaining: email templates (`api/.../emailTemplates.ts`) still EN-only. See 2026-06-22 status note above. |
-| M4.4 — eval feedback loop wiring (export → `run_eval.py --judged-only`) | 🟡 | after B7 deploy |
-| M5.3 — per-user rate limits (download/original) | 🟡 | cloud-webapp gap, see 4A.4 |
-| M5.x — reCAPTCHA Enterprise setup (keys/env) | 🟡 | deploy step |
-| M5.6 — minor/guardian attestation legal review | ⬜ | needs legal, not eng |
-| M6 — polish/observability | ⬜ | after cutover |
-
-### 4A.3 Indexing & capture-time — deploy + harden (source: `AUTOMATED_INDEXING_HANDOFF.md`, `CAPTURE_TIME_SORT_DESIGN.md`, `CLAUDE.md` indexer notes)
-
-| Item | Status | What |
-|---|---|---|
-| Commit + push automated-indexing work; create `SYNC_TRIGGER_TOKEN` secret; verify | 🟢→deploy | end-of-batch + 10-min scan triggers |
-| Capture-time sort: backfill `takenAt` on indexed events + deploy | 🟢→deploy | `infra/scripts/backfill-capture-time` |
-| Incremental checkpointing (resume killed runs) | ⬜ | from `CLAUDE.md` indexer notes |
-| Task-sharding / polling-UI for large events | ⬜ | follow-up |
-
-### 4A.4 cloud-webapp known gaps (source: cloud-webapp code scan)
-
-| Item | Status | What |
-|---|---|---|
-| `GET /api/metrics` implementation | 🟡 placeholder | wire to G5.2 reporting |
-| `POST /api/telemetry` client error capture | 🟡 placeholder | client error reporting |
-| Per-user (not shared) rate limits for download/original | 🟡 | M5.3 |
-
-### 4A.5 Azure migration remainder (~60%) — see §5 and `AZURE_MIGRATION_PROGRESS.md`
-Infra scripts done (✅); remaining is code porting (⬜): Firestore→Cosmos *cache*, GCS→Blob (api/indexer/matcher), rules→middleware, indexer-trigger API, bootstrap + Key Vault secrets, deploy + smoke-test, `--min-replicas=0` audit, README/ARCHITECTURE/DEPLOYMENT prose update, Azure CI/CD with Entra federation. **Note:** with D2 (Sheet stays SSOT), the Cosmos work shrinks to caches only.
-
----
+G0–G6 above are **delivered**: cloud-webapp has been the sole writer of the Sheet
+SSOT since 2026-07-18 (`CUTOVER_RUNBOOK.md` Phases A–D signed off). The
+remaining Phase E chores — the unpushed `gas-app-final` tag, archiving the
+`gas-app/` tree — are in `ROADMAP.md` §4.
 
 ## 5. Azure follow-on (after cloud-webapp is feature-complete)
 
