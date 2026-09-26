@@ -28,6 +28,7 @@ import {
   SearchAlgoSchema,
   type SearchResponse,
   type SearchAlgo,
+  type SearchConfig,
   type ExpandResultsResponse,
   type MatchResult,
   type ListReferencesResponse,
@@ -39,6 +40,7 @@ import {
 
 import { env, isFindMeEnabledForEvent } from '../lib/config.js';
 import { firestore } from '../lib/firestore.js';
+import { deriveSearchVersion } from '../services/searchVersion.js';
 import { logger } from '../lib/logger.js';
 import type { AuthedUser } from '../middleware/auth.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -325,8 +327,22 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
   // read as "no anchors, no quality weighting" rather than failing the search.
   const appliedAnchors = match.anchorPhotoIds ?? [];
   const anchorSuggestion = match.anchorSuggestion ?? null;
+  // What the matcher reports it ran with. The version tag is derived from this
+  // (services/searchVersion.ts), so a ranking change can't hide behind a stale tag.
+  const config: SearchConfig = {
+    modelVersion: match.modelVersion ?? null,
+    indexModelVersion: match.indexModelVersion ?? null,
+    tnorm: match.normalized === true,
+    cutoff: match.cutoff ?? null,
+    wFace: match.fusion?.wFace ?? null,
+    wPerson: match.fusion?.wPerson ?? null,
+    timeConditional: match.fusion ? match.fusion.timeConditional : null,
+    faceQualityWeight: match.faceQualityWeight ?? 0,
+    anchorPersonMode: match.anchorPersonMode ?? null,
+  };
   const algo: SearchAlgo = {
-    version: SEARCH_ALGO_VERSION,
+    version: deriveSearchVersion(SEARCH_ALGO_VERSION, config),
+    config,
     tnorm: match.normalized === true,
     prf: prfPhotoIds.length > 0,
     prfCount: prfPhotoIds.length,

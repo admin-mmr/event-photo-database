@@ -80,6 +80,8 @@ describe('POST /api/feedback (B7)', () => {
       verdict: 'not_me',
       runId: 'run-7',
     });
+    // Item 23: the uid identifies the member; no copy of their email per vote.
+    expect(added[0]!.doc).not.toHaveProperty('email');
   });
 
   it('accepts a confirmed vote without a runId', async () => {

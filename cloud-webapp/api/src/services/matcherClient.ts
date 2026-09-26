@@ -40,6 +40,19 @@ export interface MatcherAnchorSuggestion {
   qualityKnown: boolean;
 }
 
+export interface MatcherFusionConfig {
+  wFace: number;
+  wPerson: number;
+  timeConditional: boolean;
+}
+
+function parseFusion(v: unknown): MatcherFusionConfig | null {
+  if (!v || typeof v !== 'object') return null;
+  const f = v as Record<string, unknown>;
+  if (typeof f.wFace !== 'number' || typeof f.wPerson !== 'number') return null;
+  return { wFace: f.wFace, wPerson: f.wPerson, timeConditional: f.timeConditional === true };
+}
+
 export type MatcherSearchResult =
   | {
       ok: true;
@@ -57,6 +70,13 @@ export type MatcherSearchResult =
       anchorSuggestion?: MatcherAnchorSuggestion | null;
       /** Candidate-side quality weighting the matcher applied (0 = off). */
       faceQualityWeight?: number;
+      /** The event store's model version (its person-crop geometry). Differs
+       *  per event, and is part of what a search ran — see searchVersion.ts. */
+      indexModelVersion?: string | null;
+      /** Fusion weights actually used; null outside fused mode, absent from a
+       *  matcher that predates the field. */
+      fusion?: MatcherFusionConfig | null;
+      anchorPersonMode?: string | null;
       /** Per-reference-selfie face census (see shared ReferenceFaces). Absent
        *  when the deployed matcher predates the field. */
       referenceFaces?: ReferenceFaces[];
@@ -243,6 +263,9 @@ export async function matcherSearch(opts: {
     anchorPhotoIds: Array.isArray(body.anchorPhotoIds) ? (body.anchorPhotoIds as string[]) : [],
     anchorSuggestion: (body.anchorSuggestion as MatcherAnchorSuggestion | null) ?? null,
     faceQualityWeight: typeof body.faceQualityWeight === 'number' ? body.faceQualityWeight : 0,
+    indexModelVersion: typeof body.indexModelVersion === 'string' ? body.indexModelVersion : null,
+    fusion: parseFusion(body.fusion),
+    anchorPersonMode: typeof body.anchorPersonMode === 'string' ? body.anchorPersonMode : null,
     ...(referenceFaces ? { referenceFaces } : {}),
     results: (body.results as MatcherSearchHit[]) ?? [],
     cutoff: typeof body.cutoff === 'number' ? body.cutoff : null,

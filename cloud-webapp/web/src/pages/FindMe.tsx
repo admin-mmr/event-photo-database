@@ -40,6 +40,7 @@ import {
   type ScoreScale,
   faceAlertFor,
   bulkVoteTargets,
+  isHardToCall,
   shouldAskBeforeLeaving,
   type FaceAlert,
 } from '../lib/results.js';
@@ -230,6 +231,11 @@ const STR = {
     bulkAsk: (n: number) =>
       `${n} more on this page — are they all you?`,
     bulkAllMe: 'All me',
+    bulkHardNote: (n: number) =>
+      ` ${n} less certain ${n === 1 ? 'one is' : 'ones are'} left out — please mark ${n === 1 ? 'it' : 'each'} yourself.`,
+    bulkAskOnlyHard: (n: number) =>
+      `${n} less certain ${n === 1 ? 'photo' : 'photos'} on this page ${n === 1 ? 'is' : 'are'} unmarked. Is ${n === 1 ? 'it' : 'each one'} you? These votes help us the most.`,
+    askThis: 'Is this you?',
     bulkAllNotMe: 'All not me',
     bulkAskSelected: (sel: number, rest: number) =>
       `You've ticked ${sel} on this page${rest > 0 ? ` and left ${rest} unticked` : ''}. Mark the ticked ones as you?`,
@@ -402,6 +408,9 @@ const STR = {
     notMe: '不是我',
     bulkAsk: (n: number) => `本页还有 ${n} 张——都是您吗？`,
     bulkAllMe: '全部是我',
+    bulkHardNote: (n: number) => ` 其中 ${n} 张把握较低的不包括在内，请逐张标记。`,
+    bulkAskOnlyHard: (n: number) => `本页还有 ${n} 张把握较低的照片未标记，是您吗？这些标记对我们帮助最大。`,
+    askThis: '这是您吗？',
     bulkAllNotMe: '全部不是我',
     bulkAskSelected: (sel: number, rest: number) =>
       `本页已勾选 ${sel} 张${rest > 0 ? `，未勾选 ${rest} 张` : ''}。将勾选的标注为您本人？`,
@@ -732,6 +741,22 @@ export function FindMe(): JSX.Element {
     [shown, confirmed],
   );
   const votedOnPage = shown.length - unvotedOnPage.length;
+  // Hard-to-call results on this page (Item 16): asked about one by one, never
+  // swept into a blanket verdict. Read on the scale of the search that produced
+  // each result, like the badge.
+  const hardOnPage = useMemo(() => {
+    const out = new Set<string>();
+    for (const r of shown) {
+      const scale = scaleByPhoto.get(r.photoId) ?? activeRef?.scale ?? 'raw';
+      if (isHardToCall(r, scale)) out.add(r.photoId);
+    }
+    return out;
+  }, [shown, scaleByPhoto, activeRef]);
+  const blanketOnPage = useMemo(
+    () => unvotedOnPage.filter((id) => !hardOnPage.has(id)),
+    [unvotedOnPage, hardOnPage],
+  );
+  const hardUnvotedOnPage = unvotedOnPage.length - blanketOnPage.length;
   // Offer the bulk verdict once they've judged a few and there is a worthwhile
   // remainder — not before (nothing to generalize from) and not after (nothing
   // left to apply it to). Per-reference only: feedback is attached to a runId,
@@ -754,6 +779,13 @@ export function FindMe(): JSX.Element {
     () => unvotedOnPage.filter((id) => sel.isSelected(id)).length,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [unvotedOnPage, selectedKey],
+  );
+  // What "the rest aren't me" would label: unticked, unjudged, and not
+  // hard-to-call — those are asked about one by one (Item 16).
+  const restCount = useMemo(
+    () => blanketOnPage.filter((id) => !sel.isSelected(id)).length,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [blanketOnPage, selectedKey],
   );
 
   const showBulkPrompt =
@@ -1600,7 +1632,7 @@ export function FindMe(): JSX.Element {
    * keeps the request inside MAX_FEEDBACK_BATCH by construction.
    */
   function handleBulkVote(ref: Reference, verdict: 'not_me' | 'confirmed'): void {
-    runBulk(submitVotes(ref, unvotedOnPage, verdict));
+    runBulk(submitVotes(ref, blanketOnPage, verdict));
   }
 
   /**
@@ -1620,6 +1652,7 @@ export function FindMe(): JSX.Element {
       pageIds,
       confirmed,
       sel.isSelected,
+      (id) => hardOnPage.has(id),
     );
     const work =
       mode === 'selected-only'
@@ -2351,7 +2384,11 @@ export function FindMe(): JSX.Element {
                     {leaving && <strong>{t.bulkLeavingPrefix} </strong>}
                     {selectedUnvotedCount > 0
                       ? t.bulkAskSelected(selectedUnvotedCount, unvotedOnPage.length - selectedUnvotedCount)
-                      : t.bulkAsk(unvotedOnPage.length)}
+                      : blanketOnPage.length > 0
+                        ? t.bulkAsk(blanketOnPage.length)
+                        : t.bulkAskOnlyHard(hardUnvotedOnPage)}
+                    {selectedUnvotedCount === 0 && blanketOnPage.length > 0 && hardUnvotedOnPage > 0 &&
+                      t.bulkHardNote(hardUnvotedOnPage)}
                   </span>
                   <div className="bulk-vote-actions">
                     {selectedUnvotedCount > 0 ? (
@@ -2361,14 +2398,14 @@ export function FindMe(): JSX.Element {
                          is an opt-in, because people download in batches and a
                          half-finished selection says nothing about what's left. */
                       <>
-                        {unvotedOnPage.length > selectedUnvotedCount && (
+                        {restCount > 0 && (
                           <label className="bulk-rest">
                             <input
                               type="checkbox"
                               checked={restNotMe}
                               onChange={(e) => setRestNotMe(e.target.checked)}
                             />
-                            <span>{t.bulkRestNotMe(unvotedOnPage.length - selectedUnvotedCount)}</span>
+                            <span>{t.bulkRestNotMe(restCount)}</span>
                           </label>
                         )}
                         <button
@@ -2383,7 +2420,7 @@ export function FindMe(): JSX.Element {
                           {t.bulkSelectedAreMe(selectedUnvotedCount)}
                         </button>
                       </>
-                    ) : (
+                    ) : blanketOnPage.length > 0 ? (
                       <>
                         <button
                           className="btn btn-sm btn-light"
@@ -2398,7 +2435,7 @@ export function FindMe(): JSX.Element {
                           {t.bulkAllNotMe}
                         </button>
                       </>
-                    )}
+                    ) : null}
                     <button
                       className="btn-inline-link"
                       onClick={() => {
@@ -2433,8 +2470,13 @@ export function FindMe(): JSX.Element {
               <div className="photo-grid">
                 {shown.map((r, i) => {
                   const checked = sel.isSelected(r.photoId);
+                  const ask =
+                    !isCombined && Boolean(activeRef) && hardOnPage.has(r.photoId) && !confirmed.has(r.photoId);
                   return (
-                    <div key={r.photoId} className={`result-cell${checked ? ' selected' : ''}`}>
+                    <div
+                      key={r.photoId}
+                      className={`result-cell${checked ? ' selected' : ''}${ask ? ' ask' : ''}`}
+                    >
                       {/* C5: tapping the photo VIEWS it (lightbox); selection is
                           the separate checkbox so the two don't collide. */}
                       <button
@@ -2454,6 +2496,7 @@ export function FindMe(): JSX.Element {
                       >
                         {checked ? '✓' : ''}
                       </button>
+                      {ask && <p className="ask-label">{t.askThis}</p>}
                       {!isCombined && activeRef && (
                         <div className="feedback-row">
                           <button

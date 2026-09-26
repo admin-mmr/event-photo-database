@@ -78,6 +78,19 @@ export function scoreBand(score: number, scale: ScoreScale = 'raw'): ScoreBand {
   return score >= STRONG_MATCH_THRESHOLD ? 'strong' : 'possible';
 }
 
+/**
+ * A result the member should judge one by one (quality plan Item 16): its badge
+ * says Possible, or it came from "see more". These are the photos a cutoff
+ * decision turns on — at z 4.0–4.5 only ~47% of judged photos were the searcher,
+ * against 95%+ at z 6 — so one careful vote here moves the calibration more than
+ * twenty on the obvious top matches. That is also why a blanket "all me / all
+ * not me" must skip them: a verdict the member didn't look at is noise exactly
+ * where the signal is scarcest.
+ */
+export function isHardToCall(r: { score: number; tier?: string | null | undefined }, scale: ScoreScale): boolean {
+  return r.tier === 'expanded' || scoreBand(r.score, scale) === 'possible';
+}
+
 export function bandLabel(band: ScoreBand): string {
   return band === 'strong' ? 'Strong' : band === 'likely' ? 'Likely' : 'Possible';
 }
@@ -199,18 +212,25 @@ export function faceAlertFor(
  *  - never a photo the user already judged (`confirmed`; a "not me" has already
  *    left the visible list, so it cannot appear here);
  *  - `selected` mirrors the download ticks, which are a per-photo judgement the
- *    user already made, and `rest` is everything else still unjudged.
+ *    user already made, and `rest` is everything else still unjudged;
+ *  - a hard-to-call photo (`isHard`, see `isHardToCall`) is never swept into a
+ *    blanket verdict: it stays out of `rest` and out of `blanket` (the set "All
+ *    me / All not me" labels) and is listed in `hard` for a one-by-one ask. A
+ *    TICK on one is still a per-photo judgement, so it stays in `selected`.
  */
 export function bulkVoteTargets(
   shownIds: readonly string[],
   confirmed: ReadonlySet<string>,
   isSelected: (id: string) => boolean,
-): { unvoted: string[]; selected: string[]; rest: string[] } {
+  isHard: (id: string) => boolean = () => false,
+): { unvoted: string[]; selected: string[]; rest: string[]; blanket: string[]; hard: string[] } {
   const unvoted = shownIds.filter((id) => !confirmed.has(id));
   return {
     unvoted,
     selected: unvoted.filter(isSelected),
-    rest: unvoted.filter((id) => !isSelected(id)),
+    rest: unvoted.filter((id) => !isSelected(id) && !isHard(id)),
+    blanket: unvoted.filter((id) => !isHard(id)),
+    hard: unvoted.filter((id) => isHard(id) && !isSelected(id)),
   };
 }
 

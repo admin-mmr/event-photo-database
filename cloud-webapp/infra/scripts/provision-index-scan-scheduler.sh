@@ -63,6 +63,12 @@ if [[ -z "${OIDC_SA:-}" ]]; then
     --location="$REGION" --project="$PROJECT_ID" \
     --format='value(httpTarget.oidcToken.serviceAccountEmail)' 2>/dev/null || true)"
 fi
+# findme-drive-sync predates OIDC and carries none (it still works: the api is
+# publicly invokable), so fall back to the api's own runtime SA, which every
+# other scheduler job uses and which holds run.invoker on the service.
+if [[ -z "$OIDC_SA" ]]; then
+  OIDC_SA="api-runtime@${PROJECT_ID}.iam.gserviceaccount.com"
+fi
 if [[ -z "$OIDC_SA" ]]; then
   echo "ERROR: no OIDC service account found." >&2
   echo "  The daily-sync job 'findme-drive-sync' has no OIDC token set, so there's" >&2

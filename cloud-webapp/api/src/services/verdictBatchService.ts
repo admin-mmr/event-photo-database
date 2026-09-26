@@ -27,6 +27,7 @@ import {
 
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
+import { emailsForUids, uidForEmail } from './accountEmails.js';
 import { signReferenceUrl, signThumbUrls } from './gcsService.js';
 import { getReference, listReferencesForUidRaw, type ReferenceRecord } from './references.js';
 
@@ -290,8 +291,11 @@ export async function listVerdictBatches(
   if (filter.eventId) rows = rows.filter((r) => r.eventId === filter.eventId);
   if (filter.uid) rows = rows.filter((r) => r.uid === filter.uid);
   if (filter.email) {
+    // Newer votes carry no email (Item 23), so match the account's uid as well
+    // as the copy older votes still hold.
     const wanted = filter.email.toLowerCase();
-    rows = rows.filter((r) => (r.email ?? '').toLowerCase() === wanted);
+    const uid = await uidForEmail(filter.email);
+    rows = rows.filter((r) => (uid !== null && r.uid === uid) || (r.email ?? '').toLowerCase() === wanted);
   }
 
   const unattributed = rows.filter((r) => !r.runId).length;
@@ -318,7 +322,16 @@ export async function listVerdictBatches(
   const batches = await Promise.all(
     ordered.map(async (g) => buildHeader(g.runId, g.votes, await loadRun(g.runId), cache)),
   );
-  return { batches, unattributed, capped };
+  return { batches: await withEmails(batches), unattributed, capped };
+}
+
+/** Fill in the searcher's email where the votes carried none (every vote cast
+ *  since Item 23), from Firebase Auth — one lookup for the whole page. */
+async function withEmails<T extends { uid: string; email: string | null }>(headers: T[]): Promise<T[]> {
+  const missing = headers.filter((h) => !h.email && h.uid).map((h) => h.uid);
+  if (missing.length === 0) return headers;
+  const emails = await emailsForUids(missing);
+  return headers.map((h) => (h.email ? h : { ...h, email: emails.get(h.uid) ?? null }));
 }
 
 /**
@@ -337,7 +350,8 @@ export async function getVerdictBatch(runId: string): Promise<VerdictBatchDetail
   if (rows.length === 0 && !run) return null;
 
   const cache: ReferenceCache = new Map();
-  const header = await buildHeader(runId, rows, run, cache);
+  const built = await buildHeader(runId, rows, run, cache);
+  const header = (await withEmails([built]))[0] ?? built;
 
   // Ordered by the run's own ranking so the admin reads the verdicts in the
   // order the searcher saw the results; unranked photos (score-less/older runs)

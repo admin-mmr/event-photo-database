@@ -823,6 +823,25 @@ class TestSearch:
         assert near["pA.jpg"]["faceScore"] is not None  # per-modality scores come along
         assert not near.keys() & {r["photoId"] for r in body["results"]}
 
+    def test_reports_the_fusion_config_it_ran(self, client, monkeypatch, seeded_store):
+        # The api derives its search-version tag from these, so they must be the
+        # values fusion actually used — including a per-request override.
+        self._env(monkeypatch, seeded_store)
+        set_bundle(make_bundle(basis(0), basis(1)))
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "ev1", "w_person": "0.3", "w_face": "0.7"},
+        )
+        body = resp.get_json()
+        assert body["fusion"] == {"wFace": 0.7, "wPerson": 0.3, "timeConditional": False}
+        assert body["anchorPersonMode"] == main_mod.ANCHOR_PERSON_MODE
+
+        resp = client.post(
+            "/search",
+            data={"file": (io.BytesIO(jpeg_bytes()), "x.jpg"), "event_id": "ev1", "mode": "face"},
+        )
+        assert resp.get_json()["fusion"] is None  # no fusion ran
+
     def test_near_miss_band_floor_and_cap(self, client, monkeypatch, seeded_store):
         self._env(monkeypatch, seeded_store)
         set_bundle(make_bundle(basis(0), basis(1)))
