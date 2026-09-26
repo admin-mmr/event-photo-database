@@ -12,6 +12,14 @@ Check current per-event judged P@20 from the raw votes (no replay) any time with
 ~/.venvs/findme-eval/bin/python eval/export_feedback_labels.py --project mmr-data-pipeline --out-dir /tmp/labels
 ```
 
+## The monthly report does the no-selfie part for you
+
+`monthly_calibration.py` runs as the `findme-calibration` job on the 1st of each month and
+writes `gs://mmr-data-pipeline-derivatives/eval/calibration/<date>.md`: the badge re-fit, the
+cutoff re-score below, per-event judged precision, and which events to replay. Read that first;
+it proposes, it never applies. Run it by hand with
+`gcloud run jobs execute findme-calibration --region=us-central1 --project=mmr-data-pipeline --wait`.
+
 ## First try it without selfies: `rescore_logged_runs.py`
 
 Every search since 2026-09-23 logs its candidates' face/outfit z-scores, including the

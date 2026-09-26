@@ -1,0 +1,17 @@
+# Dockerfile.calibration — the monthly Find-Me calibration report (quality plan
+# Item 17), run as the `findme-calibration` Cloud Run JOB. Not a service.
+#
+# Logs only: it reads match_runs / match_feedback from Firestore and writes a
+# report to the derivatives bucket. No models, no selfies, so it needs none of
+# the matcher's weights or native libs — just the two Google clients and the
+# eval scripts (which are standard-library Python).
+#
+# Build context is cloud-webapp/matcher/ so matcher/.dockerignore applies: tests
+# and the biometric eval data dirs (eval/queries, eval/labels) stay out.
+FROM python:3.12-slim
+
+WORKDIR /app
+RUN pip install --no-cache-dir google-cloud-firestore google-cloud-storage
+COPY eval/*.py eval/
+
+ENTRYPOINT ["python", "/app/eval/monthly_calibration.py"]

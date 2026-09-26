@@ -495,9 +495,17 @@ the prompt says how many were left out. A download tick on one still counts as "
 per-photo judgement. Measure it by the share of votes in the Possible band and the "see more"
 tier before vs after (baseline: 5.4% of shown results judged, top-heavy).
 
-**Item 17 — Monthly calibration job.** Cloud Scheduler (monthly, zero idle cost) → export →
-`rescore_logged_runs.py` + a replay of events whose voters still have selfies → report +
-proposed change to GCS. A person approves every change (guardrails §5).
+**Item 17 — Monthly calibration job.** ✅ **Built 2026-09-26.** `eval/monthly_calibration.py`
+runs as the `findme-calibration` Cloud Run job (`deploy-calibration-job.sh`), started on the 1st
+by `findme-calibration-monthly` (`provision-calibration-scheduler.sh`), and writes
+`gs://<project>-derivatives/eval/calibration/<date>.{json,md}`. Logs only — no selfies, no
+models: last-30-day engagement (incl. Item 16's hard-to-call vote share), judged precision per
+event under the newest generation, the badge re-fit vs the knots in production (proposed only on
+≥ 5-point drift), and a cutoff re-score around the live cutoff (a RAISE is proposed when judged
+precision misses 0.85 with ≥ 100 pairs; a lowering is never proposed, only noted for a replay).
+The full replay stays manual — the report lists the events with the most recent voters and the
+`run-replay-job.sh` command. It applies nothing. First run (2026-09-26, local): no proposals;
+P at 4.5 = 0.940 over 2,439 judged pairs; 25.8% of recent votes on hard-to-call photos.
 
 **Item 18 — Calibration dashboard.** Replace `/admin/metrics`' single precision number with,
 per event × `searchVersion`: judged P@20, vote participation, zero-result rate, "see more"

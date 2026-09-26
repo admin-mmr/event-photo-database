@@ -58,6 +58,8 @@ export type ScoreBand = 'strong' | 'likely' | 'possible';
  * Caveat: votes come from results members chose to judge, so this is judged
  * precision, not a true probability over everything shown.
  */
+// COPIED in matcher/eval/monthly_calibration.py (CURRENT_Z_CALIBRATION), which the
+// monthly report compares the votes against; a test pins the two — change both.
 // Fitted 2026-09-23 from 3,425 judged T-normed results (z >= 4.0). Read it as:
 // at z 4.4 about 57% of photos were the searcher, at z 6.1 about 95%.
 export const Z_CALIBRATION: ReadonlyArray<readonly [number, number]> = [
