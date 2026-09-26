@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
+import { SEARCH_ALGO_VERSION } from '@cloud-webapp/shared';
 import type { Request, Response, NextFunction } from 'express';
 
 // ── mocks (must precede the server import) ──────────────────────────────────
@@ -199,6 +200,41 @@ describe('POST /api/findme/search', () => {
     });
     // The captured name is recorded on the consent doc too.
     expect(consents[0]?.data).toMatchObject({ name: 'Test Runner', isGuest: false });
+  });
+
+  it('derives the version tag from the config the matcher ran, so a config change moves it', async () => {
+    const base = {
+      ok: true,
+      eventId: 'ev1',
+      mode: 'fused',
+      modelVersion: 'scrfd10g+yolov8n+arcface_r50+osnet_x0_25@m1',
+      indexModelVersion: 'scrfd10g+yolov8n+arcface_r50+osnet_x0_25@m1',
+      normalized: true,
+      cutoff: 4.5,
+      fusion: { wFace: 0.85, wPerson: 0.15, timeConditional: false },
+      anchorPersonMode: 'replace',
+      results: [{ photoId: 'p1', score: 6.1, faceScore: 6.5, personScore: 3.9 }],
+    };
+    matcherSearch.mockResolvedValue(base);
+    const a = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(a.body.algo.version).toMatch(new RegExp(`^${SEARCH_ALGO_VERSION.replace(/[.]/g, '\\.')}\\+[0-9a-f]{8}$`));
+    expect(a.body.algo.config).toMatchObject({ wFace: 0.85, wPerson: 0.15, cutoff: 4.5, tnorm: true });
+
+    // Same config → same tag; a different cutoff or index geometry → a new one.
+    const again = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(again.body.algo.version).toBe(a.body.algo.version);
+    matcherSearch.mockResolvedValue({ ...base, cutoff: 5.0 });
+    const raised = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(raised.body.algo.version).not.toBe(a.body.algo.version);
+    matcherSearch.mockResolvedValue({ ...base, indexModelVersion: 'scrfd10g+faceexpand+arcface_r50+osnet_x0_25@m1' });
+    const oldStore = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(oldStore.body.algo.version).not.toBe(a.body.algo.version);
+
+    // An older matcher that reports none of it still searches fine.
+    matcherSearch.mockResolvedValue({ ok: true, eventId: 'ev1', mode: 'fused', results: [] });
+    const legacy = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(legacy.status).toBe(200);
+    expect(legacy.body.algo.config).toMatchObject({ wFace: null, indexModelVersion: null });
   });
 
   it('stores the near-miss band and the cutoff, and only says THAT more exists', async () => {

@@ -1635,6 +1635,21 @@ pre.error {
   color: var(--on-primary);
 }
 
+/* Item 16: a hard-to-call result the member hasn't judged — the vote that
+   helps calibration most, so it is asked for on the card itself. */
+.result-cell.ask {
+  box-shadow: 0 0 0 2px var(--warn);
+  border-radius: var(--r-sm);
+}
+
+.ask-label {
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--warn);
+}
+
 /* The one "Too few photos? See more" step, under the results. */
 .see-more {
   display: grid;

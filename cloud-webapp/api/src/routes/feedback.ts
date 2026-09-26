@@ -33,6 +33,7 @@ import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
 import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
+import { emailsForUids } from '../services/accountEmails.js';
 
 export const feedbackRouter = Router();
 
@@ -104,9 +105,10 @@ feedbackRouter.post('/feedback', requireAuth, async (req, res, next) => {
     const run = await resolveRun(runId);
     const { searchVersion, algo } = run;
 
+    // No email copy: the uid identifies the member, and the admin screens look
+    // the address up from Firebase Auth when they need it (accountEmails.ts).
     const ref = await firestore().collection('match_feedback').add({
       uid: user.uid,
-      email: user.email ?? null,
       eventId,
       photoId,
       verdict,
@@ -168,7 +170,6 @@ feedbackRouter.post('/feedback/batch', requireAuth, async (req, res, next) => {
     const createdAt = new Date().toISOString();
     const row = {
       uid: user.uid,
-      email: user.email ?? null,
       eventId,
       verdict,
       reason: reasonFor(verdict, reason),
@@ -241,6 +242,12 @@ feedbackRouter.get('/admin/feedback', requireAuth, attachRole, requireAnyAdmin, 
     });
     if (eventId) items = items.filter((i) => i.eventId === eventId);
     if (verdict) items = items.filter((i) => i.verdict === verdict);
+    // Votes cast since Item 23 carry no email; look those up for display.
+    const missing = items.filter((i) => !i.email).map((i) => i.uid);
+    if (missing.length) {
+      const emails = await emailsForUids(missing);
+      items = items.map((i) => (i.email ? i : { ...i, email: emails.get(i.uid) ?? null }));
+    }
 
     const counts = {
       not_me: items.filter((i) => i.verdict === 'not_me').length,

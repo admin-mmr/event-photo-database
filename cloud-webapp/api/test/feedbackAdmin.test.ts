@@ -46,6 +46,12 @@ vi.mock('../src/lib/firestore.js', () => ({
   }),
 }));
 
+const emailsForUids = vi.fn(async (_uids: string[]) => new Map([['u4', 'new@x']]));
+vi.mock('../src/services/accountEmails.js', () => ({
+  emailsForUids: (uids: string[]) => emailsForUids(uids),
+  uidForEmail: async () => null,
+}));
+
 const { buildServer } = await import('../src/server.js');
 
 const ADMIN = JSON.stringify({ uid: 'a1', email: 'admin@mmrunners.org', emailVerified: true });
@@ -81,6 +87,16 @@ describe('GET /api/admin/feedback (M4.4)', () => {
     expect(res.body.counts).toEqual({ not_me: 2, confirmed: 1 });
     expect(res.body.items.map((i: { feedbackId: string }) => i.feedbackId)).toEqual(['f2', 'f3', 'f1']);
     expect(res.body.items[0]).toMatchObject({ eventId: 'ev1', verdict: 'confirmed', runId: null });
+  });
+
+  it('looks up the email for votes that no longer carry one, and only those', async () => {
+    rows.push({ id: 'f4', data: { eventId: 'ev1', photoId: 'p4', verdict: 'confirmed', runId: 'r4', uid: 'u4', createdAt: '2026-06-13T00:00:00.000Z' } });
+    emailsForUids.mockClear();
+    const res = await request(app).get('/api/admin/feedback').set('x-test-user', ADMIN);
+    expect(res.status).toBe(200);
+    const byId = Object.fromEntries(res.body.items.map((i: { feedbackId: string; email: string | null }) => [i.feedbackId, i.email]));
+    expect(byId).toMatchObject({ f4: 'new@x', f1: 'a@x' });
+    expect(emailsForUids).toHaveBeenCalledWith(['u4']);
   });
 
   it('filters by eventId', async () => {

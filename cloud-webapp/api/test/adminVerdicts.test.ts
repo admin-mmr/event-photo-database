@@ -71,6 +71,12 @@ vi.mock('../src/services/gcsService.js', () => ({
     ids.map((photoId) => ({ photoId, thumbUrl: `t/${eventId}/${photoId}` })),
 }));
 
+// u2's votes carry no email (cast after Item 23) — the account lookup supplies it.
+vi.mock('../src/services/accountEmails.js', () => ({
+  emailsForUids: async (uids: string[]) => new Map(uids.includes('u2') ? [['u2', 'second@x']] : []),
+  uidForEmail: async (email: string) => (email.toLowerCase() === 'second@x' ? 'u2' : null),
+}));
+
 const { buildServer } = await import('../src/server.js');
 
 const ADMIN = JSON.stringify({ uid: 'a1', email: 'admin@mmrunners.org', emailVerified: true });
@@ -282,6 +288,14 @@ describe('admin verdict-batch review', () => {
         .set('x-test-user', ADMIN);
       expect(res.body.total).toBe(1);
       expect(res.body.batches[0].runId).toBe('run-1');
+    });
+
+    it('finds and shows a searcher whose votes carry no email, via their account', async () => {
+      const res = await request(app)
+        .get('/api/admin/verdict-batches?email=Second@X')
+        .set('x-test-user', ADMIN);
+      expect(res.body.total).toBe(1);
+      expect(res.body.batches[0]).toMatchObject({ runId: 'run-2', email: 'second@x' });
     });
 
     it('clamps the page size and audits the access', async () => {

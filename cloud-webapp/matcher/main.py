@@ -679,6 +679,10 @@ def search():
     # there is nothing "just below" to report.
     cutoff: float | None = None
     near_misses: list[dict] = []
+    # The fusion weights this search actually used (fused mode only), so the api
+    # can derive its search-version tag from what ran rather than from a
+    # hand-bumped constant that sat unchanged through two ranking changes.
+    fusion_cfg: dict | None = None
     if mode == "face":
         ranked = [{"photoId": h["photoId"], "score": h["score"], "faceScore": h["score"], "personScore": None} for h in face_hits]
     elif mode == "person":
@@ -709,10 +713,16 @@ def search():
         band = NEAR_MISS_BAND_Z if normalize else NEAR_MISS_BAND_RAW
         # Fuse down to the band floor, then split at the real cutoff: everything
         # at or above it is a result exactly as before, the rest is the band.
+        w_face = float(request.form.get("w_face", fusion_mod.DEFAULT_FACE_WEIGHT))
+        fusion_cfg = {
+            "wFace": w_face,
+            "wPerson": w_person,
+            "timeConditional": person_weight_fn is not None,
+        }
         fused = fusion_mod.fuse(
             face_hits,
             person_hits,
-            w_face=float(request.form.get("w_face", fusion_mod.DEFAULT_FACE_WEIGHT)),
+            w_face=w_face,
             w_person=w_person,
             threshold=cutoff - band,
             top_k=None,
@@ -740,6 +750,8 @@ def search():
                 event, results, face_hits, normalize, {*anchors_applied, *prf_ids}
             ),
             "faceQualityWeight": FACE_QUALITY_WEIGHT,
+            "fusion": fusion_cfg,
+            "anchorPersonMode": ANCHOR_PERSON_MODE,
             "results": results,
             # The cutoff `results` were gated on (null for face/person modes), so
             # a stored run says what it was judged against even after a retune.

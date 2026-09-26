@@ -171,8 +171,31 @@ export type MatchResult = z.infer<typeof MatchResultSchema>;
  * also the first tag after real yolov8n person crops and anchor suggestions
  * went live, neither of which bumped it). Filter an export with
  * `--search-version 2026.09` to measure only votes cast at the new cutoff.
+ *
+ * Since 2026-09 (quality plan Item 23) this is only the GENERATION: the stored
+ * `algo.version` is `<generation>+<fingerprint>`, where the fingerprint hashes
+ * the config the search actually ran with (`algo.config`: model + index
+ * geometry, T-norm, cutoff, fusion weights, …; see api `searchVersion.ts`).
+ * A config change now changes the tag by itself, so it can never go stale the
+ * way this constant did for two months. The prefix filter above still works.
  */
 export const SEARCH_ALGO_VERSION = '2026.09-tnorm45-multiref-prf';
+
+/** What `algo.version`'s fingerprint is derived from. Every field is what the
+ *  MATCHER reported applying, never what the api asked for; null = not reported
+ *  (an older matcher, or a mode where the knob does not apply). */
+export const SearchConfigSchema = z.object({
+  modelVersion: z.string().nullable(),
+  indexModelVersion: z.string().nullable(),
+  tnorm: z.boolean(),
+  cutoff: z.number().nullable(),
+  wFace: z.number().nullable(),
+  wPerson: z.number().nullable(),
+  timeConditional: z.boolean().nullable(),
+  faceQualityWeight: z.number(),
+  anchorPersonMode: z.string().nullable(),
+});
+export type SearchConfig = z.infer<typeof SearchConfigSchema>;
 
 /**
  * Descriptor of the retrieval algorithm that produced a set of results. The
@@ -204,8 +227,13 @@ export const SearchAlgoSchema = z.object({
    *  a T-normed search). Null for runs written before it was recorded, and for
    *  face/person modes, which have no cutoff. */
   cutoff: z.number().nullable().default(null),
+  /** The ranking config the search ran with, as reported by the matcher; the
+   *  `+fingerprint` on `version` is a hash of exactly this. Absent on runs
+   *  written before the fingerprint existed. */
+  config: SearchConfigSchema.optional(),
 });
 export type SearchAlgo = z.infer<typeof SearchAlgoSchema>;
+
 
 /**
  * The result this search nominates as a better reference than the selfie: a

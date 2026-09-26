@@ -25,10 +25,13 @@ grant() {  # grant SA_NAME ROLE...
   done
 }
 
-echo "==> api-runtime: Firestore, Cloud SQL, Storage, Secrets, invoke matcher, Pub/Sub publish"
+echo "==> api-runtime: Firestore, Cloud SQL, Storage, Secrets, invoke matcher, Pub/Sub publish, read Auth users"
+# firebaseauth.viewer: the admin review screens look a member's email up by uid
+# (services/accountEmails.ts) now that votes no longer store a copy of it.
 grant api-runtime \
   roles/datastore.user roles/cloudsql.client roles/storage.objectAdmin \
-  roles/secretmanager.secretAccessor roles/run.invoker roles/pubsub.publisher
+  roles/secretmanager.secretAccessor roles/run.invoker roles/pubsub.publisher \
+  roles/firebaseauth.viewer
 
 echo "==> matcher-runtime: Cloud SQL, read uploads, secrets"
 grant matcher-runtime \

@@ -12,6 +12,7 @@ import {
   DISPLAY_MIDPOINT,
   faceAlertFor,
   bulkVoteTargets,
+  isHardToCall,
   shouldAskBeforeLeaving,
 } from './results.js';
 
@@ -201,6 +202,31 @@ describe('faceAlertFor (selfie warnings)', () => {
   });
 });
 
+describe('isHardToCall (Item 16: ask one by one)', () => {
+  it('flags a Possible z score and any "see more" result, not a Likely/Strong one', () => {
+    expect(isHardToCall({ score: 4.6 }, 'z')).toBe(true);
+    expect(isHardToCall({ score: 5.5 }, 'z')).toBe(false);
+    expect(isHardToCall({ score: 7.0 }, 'z')).toBe(false);
+    expect(isHardToCall({ score: 9.0, tier: 'expanded' }, 'z')).toBe(true);
+  });
+});
+
+describe('bulkVoteTargets with hard-to-call photos', () => {
+  it('keeps them out of blanket verdicts and the rest, but a tick still counts', () => {
+    const hard = new Set(['h1', 'h2']);
+    const t = bulkVoteTargets(['a', 'h1', 'b', 'h2'], new Set(), (id) => id === 'h2', (id) => hard.has(id));
+    expect(t.blanket).toEqual(['a', 'b']);
+    expect(t.rest).toEqual(['a', 'b']);
+    expect(t.selected).toEqual(['h2']);
+    expect(t.hard).toEqual(['h1']);
+  });
+
+  it('behaves exactly as before when nothing is hard', () => {
+    const t = bulkVoteTargets(['a', 'b'], new Set(['b']), () => false);
+    expect(t).toMatchObject({ unvoted: ['a'], rest: ['a'], blanket: ['a'], hard: [] });
+  });
+});
+
 describe('bulkVoteTargets (what a bulk verdict would label)', () => {
   const shown = ['a', 'b', 'c', 'd'];
 
@@ -239,7 +265,7 @@ describe('bulkVoteTargets (what a bulk verdict would label)', () => {
 
   it('is empty when the page is fully judged', () => {
     const t = bulkVoteTargets(shown, new Set(shown), () => true);
-    expect(t).toEqual({ unvoted: [], selected: [], rest: [] });
+    expect(t).toEqual({ unvoted: [], selected: [], rest: [], blanket: [], hard: [] });
   });
 
   it('only ever covers the page it was given', () => {

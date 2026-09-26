@@ -487,9 +487,13 @@ me" at that score**, fitted from 3,425 judged results by `matcher/eval/calibrate
 independent evidence for the cutoff: at z 4.0–4.5 only **47%** of judged photos were the
 searcher, against 74% at 4.5–5.0 and 95%+ above 6.
 
-**Item 16 — Ask about the photos that are hard to call.** Point the vote prompt at results
-near the cutoff (and the "see more" band) instead of the obvious top matches; one vote there
-moves a cutoff decision more than twenty at the top.
+**Item 16 — Ask about the photos that are hard to call.** ✅ **Built 2026-09-26.** A result
+is hard to call when its badge says Possible (calibrated < 85%, ≈ z < 5.1) or it came from
+"see more" (`isHardToCall`, `web/src/lib/results.ts`). Unjudged ones get an "Is this you?" ask on
+the card itself, and blanket verdicts ("All me / All not me", "the rest aren't me") skip them —
+the prompt says how many were left out. A download tick on one still counts as "me": it is a
+per-photo judgement. Measure it by the share of votes in the Possible band and the "see more"
+tier before vs after (baseline: 5.4% of shown results judged, top-heavy).
 
 **Item 17 — Monthly calibration job.** Cloud Scheduler (monthly, zero idle cost) → export →
 `rescore_logged_runs.py` + a replay of events whose voters still have selfies → report +
@@ -511,7 +515,12 @@ own version tag, so a change is measured in production, not only in replay.
 **Item 22 — Satisfaction signal.** Downloads per search as a weak positive; one optional
 question after a download.
 
-**Item 23 — Housekeeping.** Derive `SEARCH_ALGO_VERSION` from the live config so it can't go
-stale (it sat unchanged for two months through the detector fix and anchors); stop copying the
-member's email onto every vote; confirm the Firestore TTL on `find_me_uploads` is configured
-(the runbook lists it as a manual step; the uploads bucket's 90-day lifecycle is set).
+**Item 23 — Housekeeping.** ✅ **Done 2026-09-26.**
+- `algo.version` is now `<SEARCH_ALGO_VERSION>+<8-hex fingerprint>` of the config the matcher
+  REPORTS running (`algo.config`: model + per-event index geometry, T-norm, cutoff, fusion
+  weights, time-conditional, face-quality weight, anchor mode; api `services/searchVersion.ts`).
+  The constant is only the generation now; `--search-version 2026.09` prefix filters still work.
+- New votes carry no email; admin screens resolve it by uid (`services/accountEmails.ts`,
+  needs `roles/firebaseauth.viewer` on `api-runtime@`, granted 2026-09-26).
+- The TTL check found retention was never enforced: 241 minors' selfies past their 30-day tier.
+  Fixed by a daily sweep, not a TTL (PR #80; see CLAUDE.md "Find-Me selfie retention").
