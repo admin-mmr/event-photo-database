@@ -532,6 +532,15 @@
   (`/api/admin/duplicates/drain`, ~every 2 min —
   `provision-duplicates-drain-scheduler.sh`; backstop for the duplicate-removal
   queue, see the duplicate-file removal section above).
+- **`findme-calibration-monthly`** (1st of the month — `provision-calibration-scheduler.sh`)
+  is the odd one out: it starts the `findme-calibration` Cloud Run **job**
+  (`deploy-calibration-job.sh`, quality plan Item 17) through the Run Admin API
+  (`…/jobs/findme-calibration:run`), so it uses an **OAuth** token, not OIDC, and
+  `api-runtime@` holds `run.invoker` on that job only. The job reads logs (no
+  selfies, no models) and writes a report to
+  `gs://<project>-derivatives/eval/calibration/`; it proposes, it never applies.
+  Its copy of the badge knots (`CURRENT_Z_CALIBRATION`) is pinned to
+  `web/src/lib/results.ts` by a test — change both together.
 - **Every job needs an OIDC token, not just the header.** Cloud Run IAM runs
   before the app's `X-Sync-Token` gate, so a job without
   `--oidc-service-account-email=api-runtime@mmr-data-pipeline.iam.gserviceaccount.com`
