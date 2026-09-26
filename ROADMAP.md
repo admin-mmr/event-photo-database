@@ -1,10 +1,18 @@
 # ROADMAP.md — the one live list of outstanding work
 
-**Updated 2026-08-06.** This file replaces `GAS_MIGRATION_DEV_PLAN.md` §4A as the
-single consolidated roadmap. Every line below was checked against the running
-system (Cloud Run services + schedulers, deployed env vars, the code) rather than
-copied from a plan's own status banner — several plans still claim work is
-"pending deploy" that shipped weeks ago.
+**Written 2026-08-06 · re-verified 2026-09-26 against `main`.** This file replaces
+`GAS_MIGRATION_DEV_PLAN.md` §4A as the single consolidated roadmap. Every line
+below was checked against the running system (Cloud Run services + schedulers,
+deployed env vars, GCS manifests, the code) rather than copied from a plan's own
+status banner — several plans still claim work is "pending deploy" that shipped
+weeks ago.
+
+> **Seven weeks passed between writing this and merging it, and four of its
+> claims expired in that window** — the re-index landed, the cutoff moved, the
+> billing export was enabled, and a licensing question opened that outranks
+> everything in §1. They are corrected below, and the fact that they expired at
+> all is the argument for keeping ONE list instead of thirty banners. Re-verify
+> before trusting any date-stamped number here.
 
 **How to use it:** this file says *what is left and who owns it*. The owning plan
 says *how*. `CLAUDE.md` holds the invariants you must not break while doing it —
@@ -17,51 +25,70 @@ behaviour.
 
 | Plane | State |
 |---|---|
-| **Control plane** (users, clubs, events, links, email, audit, duplicates, reporting, partner API) | **Delivered.** G0–G6 built in `cloud-webapp/`; gas-app writes frozen 2026-07-18 and cloud-webapp has been the single writer since. All six Cloud Scheduler jobs are `ENABLED`. |
+| **Control plane** (users, clubs, events, links, email, audit, duplicates, reporting, partner API) | **Delivered.** G0–G6 built in `cloud-webapp/`; gas-app writes frozen 2026-07-18 and cloud-webapp has been the single writer since. All **seven** Cloud Scheduler jobs are `ENABLED` (`findme-reference-retention` joined them in #80). |
 | **Photo plane** (volunteer upload → Drive → indexer → gallery) | **Live.** Async Cloud Tasks upload queue, managed folders (`MANAGED_FOLDERS_ENABLED=true` in prod), capture-time sort, duplicate-file removal queue, event deletion, upload recovery. |
-| **Find-Me** (face + outfit search) | **Live**, and the active workstream is *quality*, not features. T-norm on by default (threshold z≥4.0); anchor promotion, per-face quality metadata and the pick-time selfie check all shipped. |
+| **Find-Me** (face + outfit search) | **Live**, and the active workstream is *quality*, not features. T-norm on by default at **z ≥ 4.5** (raised from 4.0 in #75); anchor promotion, per-face quality metadata, the pick-time selfie check, near-miss logging, "see more" and the 90/30-day selfie retention sweep have all shipped. |
 | **Video → running stills** | **Research + Phase 0 harness only.** The go/no-go gate is undecided because the frames were never judged. |
 | **Azure** | **Dormant.** Strategy decision D1 (adapters inside `cloud-webapp/`) has not been executed, and the `azure-webapp/` fork holds a rotted copy of the app source. |
 | **gas-app** | Deprecated, frozen, still in the tree. Phase E retirement steps are not done. |
 
 ---
 
-## 1. Find-Me match quality — one measurement blocks most of it
+## 1. Find-Me match quality — licensing first, then the unswept knobs
 
 Owner: [PEOPLE_RECOGNITION_QUALITY_PLAN.md](PEOPLE_RECOGNITION_QUALITY_PLAN.md)
-(per-item status banners are maintained there) · latest session detail:
+— Items 1–12, the **September 2026 review**, and Items 13–23, with per-item
+status banners maintained there. Earlier session detail:
 [FINDME_SELFIE_QUALITY_HANDOFF.md](FINDME_SELFIE_QUALITY_HANDOFF.md).
 
-**1.1 The blocking decision: re-index the 8 stale events.**
-`audit-person-crops.sh` exits 1 — 8 of 10 indexed events have person ("outfit")
-embeddings built from face-box expansion while the matcher now queries with the
-real YOLOv8 detector, so the outfit half of every fused search on those events
-compares mismatched geometry. Nightly runs will never fix it: the version tag
-lied, so the md5+version reuse check hits. Only `FORCE_REINDEX=1` per event does,
-and outfit-tagger events must then be re-prepared (they key on
-`sourceModelVersion`). Cost is a full re-embed of ~9,500 photos.
+**1.1 The open question that outranks the rest: model licensing.**
+The `buffalo_l` pack in production (SCRFD `det_10g` + ArcFace `w600k_r50`) is,
+per InsightFace's README, **"available for non-commercial research purposes
+only"**, and names `buffalo_l` as needing a licence. A free club service is
+non-commercial but it is not research. **Unresolved, and not something code
+settles** — it is a question for the board or a legal adviser. Nearly every
+strong face model inherits research-only training-set terms; CR-FIQA (Item 5's
+named model), LVFace, DEIMv2, DINOv3 and MobileCLIP are all off-limits on the
+same grounds. See the "September 2026 review" in the quality plan for the full
+licence audit and the permissive alternatives (RapidOCR, SigLIP 2, YOLO26n,
+eDifFIQA-T). Until this is answered, treat any embedder swap as blocked on the
+same question rather than on engineering.
 
-**1.2 Then the judged sweep**, which gates three knobs at once:
+**1.2 Done since this file was written — do not re-plan these.**
+- **The stale-geometry re-index landed.** All events now carry real YOLOv8
+  person detections; spot-checked 2026-09-26, `81a584f7` and `34f3e38f` manifests
+  both read `…+yolov8n+…@m1`, and the tag is now *derived* from what actually
+  loaded, so it can be believed. The earlier "8 of 10 events are face-expand"
+  blocker is closed.
+- **The cutoff moved to z ≥ 4.5** (#75), which is the matcher's code default now;
+  no env override is set on the live service.
+- **Near-miss logging (Item 13) and "see more" (Item 14) shipped**, so a replay no
+  longer needs stored selfies — `matcher/eval/rescore_logged_runs.py` re-fuses and
+  re-gates logged runs at other weights and cutoffs. First run: 669 runs / 5,101
+  pairs, 0.85/0.15 at z ≥ 4.5 → P 0.940.
 
-```bash
-python cloud-webapp/matcher/eval/run_eval.py --judged-only --tnorm --anchor-promotion --face-quality-weight '0.25;0.5;1.0'
-```
+**1.3 The judged sweep this file originally prescribed cannot be run as written.** It named `81a584f7`
+(91 users / 1,516 pairs) as the baseline event, and **its selfies are gone** — the
+90-day retention now actually deletes them, so that event is no longer
+replayable. Use `rescore_logged_runs.py` on logged runs instead, or pick a recent
+event whose selfies are still inside the window. This is the shape of the trap
+worth remembering: an eval that depends on retained personal data has an
+expiry date, and the retention fix (correctly) shortened it.
 
-Run it on `81a584f7` (91 users / 1,516 pairs) and `34f3e38f`. It decides
-`FACE_QUALITY_WEIGHT` (Item 5, currently **0.0** = off), the anchor-promotion UI
-defaults (Item 11), and per-event thresholds (Item 8).
+**1.4 Still provisional, still unswept** — all flagged in code, none backed by
+data: `WEAK_SELFIE_SCORE = 0.65` (`shared/schemas/findme.ts`),
+`REJECTS_BEFORE_HELP = 3` (`web/pages/FindMe.tsx`), `FACE_QUALITY_WEIGHT = 0.0`
+(verified still `0` in `matcher/main.py`), and `FUSION_TIME_CONDITIONAL`
+(Item 1 — implemented, swept, *inconclusive*; needs real upload-time EXIF anchors
+and a same-day multi-outfit event before more spend).
 
-**1.3 Provisional constants waiting on that sweep** — all flagged in code, none
-backed by data: `WEAK_SELFIE_SCORE = 0.65` (`shared/schemas/findme.ts`),
-`REJECTS_BEFORE_HELP = 3` (`web/pages/FindMe.tsx`), `FACE_QUALITY_WEIGHT = 0.0`,
-and `FUSION_TIME_CONDITIONAL` (Item 1 — implemented, swept, *inconclusive*; needs
-real upload-time EXIF anchors and a same-day multi-outfit event before more spend).
+**1.5 Not started** (quality plan Items): 4 SAHI tiled detection · 6 bib signal
+(the September review supersedes its "fine-tune a YOLO bib detector" with
+RapidOCR on torso crops below each detected face) · 7 AdaFace A/B (blocked on
+§1.1) · 8 per-event thresholds · 9 identity clustering + cluster-confirm HITL ·
+10 GEFF appearance gallery. Item 5 needs a new model: CR-FIQA is CC BY-NC.
 
-**1.4 Not started** (quality plan Items): 4 SAHI tiled detection · 6 bib signal ·
-7 AdaFace A/B · 8 per-event thresholds · 9 identity clustering + cluster-confirm
-HITL · 10 GEFF appearance gallery.
-
-**1.5 Loose ends from the selfie work:** single-page result sets never hit the
+**1.6 Loose ends from the selfie work:** single-page result sets never hit the
 page-turn judging checkpoint (no page turn to intercept — a "leaving results"
 trigger is a deliberate separate decision); the
 `infra/monitoring/selfie-stuck-alert-policy.json` policy is written but not
@@ -88,9 +115,9 @@ first; Phases 1–4 stay blocked until the gate passes.
 
 | Item | Where | Note |
 |---|---|---|
-| **Stranded-derivative backlog** | `infra/scripts/sweep-stranded-derivatives.sh` | Measured 2026-08-05: 3,663 objects / 7.44 GiB across two events, all byte-identical duplicates that lost canonical status. The indexer sweeps *new* departures now (#71) but nothing will ever look at the backlog. Re-run the dry run, then `--apply`. |
-| **Billing export not enabled** | GCP billing → BigQuery | No cost question is answerable from the CLI until this exists. `billing-analysis/GCP_COST_REPORT_2026.md` is the last hand-built snapshot. |
-| **image-convert service is not deployed** | `cloud-run/` + `api/src/services/imageConvertClient.ts` | Only `event-photo-api`, `matcher` and `outfit-tagger` run. So non-JPEG managed-folder entries always take the shortcut fallback. Decide: deploy it, or delete the client and the `cloud-run/` tree. |
+| **Stranded-derivative backlog** | `infra/scripts/sweep-stranded-derivatives.sh` | Measured 2026-08-05: 3,663 objects / 7.44 GiB across two events, all byte-identical duplicates that lost canonical status. The indexer sweeps *new* departures now (#71) but nothing will ever look at the backlog. Re-run the dry run before applying — the figure is from 2026-08-05 and the bucket has since been put on Autoclass with an Archive floor, so both the object set and what deleting it saves have moved. |
+| ~~Billing export not enabled~~ | GCP billing → BigQuery | **Done** — verified 2026-09-26: `billing_export` (detailed + standard, day-partitioned) and a FOCUS export exist, so cost questions are now answerable from the CLI. `billing-analysis/GCP_COST_REPORT_2026.md` is the older hand-built snapshot. |
+| **image-convert service is not deployed** | `cloud-run/` + `api/src/services/imageConvertClient.ts` | Still true 2026-09-26: only `event-photo-api`, `matcher` and `outfit-tagger` run. So non-JPEG managed-folder entries always take the shortcut fallback. Decide: deploy it, or delete the client and the `cloud-run/` tree. |
 | **Indexer incremental checkpointing** | `indexer/job.py` | The store + manifest are written only at the END of a run, so a killed run makes zero progress. The largest event measures **55.6 min** (6,914 photos, 8 vCPU); this is the one structural gap left in the indexer, and it is also **the cleanest way out of the Azure blocker in §5.1** — worth doing on GCP either way. |
 | **Email templates are EN-only** | `api/src/services/emailTemplates.ts` | The web app is fully bilingual (EN · 中文); the transactional + digest emails are not. |
 | **Minor/guardian attestation wording** | `routes/findme.ts`, `FindMe.tsx` | Gate is enforced server-side; the wording is still pending legal review (PRD D8 / M5.6). Not an engineering task. |
@@ -146,7 +173,10 @@ repo already runs, so there is nothing to reconcile there.
 **What flows the other way** — trailhead has three things this repo lacks:
 
 - Bib OCR + the MySQL roster = exactly the "roster-matched" half of quality-plan
-  **Item 6 (bib signal)**, which is unstarted here. `photo-manager/` was deleted
+  **Item 6 (bib signal)**, which is unstarted here. The September 2026 review
+  independently picked the same shape — OCR on the torso below each detected face
+  — but names **RapidOCR** (Apache-2.0) over trailhead's EasyOCR, so take the
+  crop/scoring logic and re-point the engine. `photo-manager/` was deleted
   from trailhead on 2026-08-08 (branch `claude/remove-photo-manager`); the useful
   part survives at `git show e6f2583:photo-manager/src/modules/bib_ocr.py` — 310
   lines, EasyOCR on torso crops with a prominence score to elect the primary bib,
@@ -323,6 +353,8 @@ guesses):
 [CUTOVER_RUNBOOK.md](CUTOVER_RUNBOOK.md) ·
 [AUTOMATED_INDEXING_RUNBOOK.md](AUTOMATED_INDEXING_RUNBOOK.md) ·
 [FACE_MATCHING_SETUP_RUNBOOK.md](FACE_MATCHING_SETUP_RUNBOOK.md) ·
+[FINDME_DEPLOY_CHECKLIST.md](FINDME_DEPLOY_CHECKLIST.md) (its §4 carries the
+retention rules — read it before touching a TTL) ·
 [SETUP_NOTES.md](SETUP_NOTES.md) ·
 [cloud-webapp/UPLOAD_WORKER_RUNBOOK.md](cloud-webapp/UPLOAD_WORKER_RUNBOOK.md) ·
 [cloud-webapp/docs/FINDME_RUNBOOK.md](cloud-webapp/docs/FINDME_RUNBOOK.md) ·
