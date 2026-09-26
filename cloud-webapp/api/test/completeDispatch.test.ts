@@ -22,6 +22,7 @@ vi.mock('../src/services/volunteerUploadService.js', () => ({
 vi.mock('../src/services/uploadDispatch.js', () => ({
   isUploadDispatchConfigured,
   enqueueProcessBatchTask,
+  processBatchTaskId: (batchId: string, chunk = 0) => (chunk > 0 ? `${batchId}-c${chunk}` : batchId),
 }));
 vi.mock('../src/services/uploadBatchService.js', () => ({
   initUploadBatch,

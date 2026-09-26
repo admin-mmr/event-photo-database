@@ -36,6 +36,8 @@ import { logger } from '../lib/logger.js';
 import { firestore } from '../lib/firestore.js';
 import { objectStore } from '../lib/storage.js';
 import { enqueueProcessBatchTask, isUploadDispatchConfigured } from './uploadDispatch.js';
+import { updateUploadBatch } from './uploadBatchService.js';
+import { objectCostMs } from './uploadCostModel.js';
 
 /**
  * Staged objects per dispatched task. The worker gets the full 1800s window, and
@@ -49,34 +51,22 @@ const DEFAULT_CHUNK = 400;
 const MAX_DISPATCH = 5000;
 
 /**
- * Cost model for one chunk, used BOTH to space dispatches apart and to tell the
- * operator how long the run will take.
- *
- * WHY SPACING EXISTS: Cloud Run packs concurrent requests onto ONE instance
- * (`--concurrency`), and every in-flight copy buffers a whole file. The first
- * live recovery dispatched all 10 chunks at once, they landed together, and the
- * container was OOM-killed — 503s, and the tasks had to be forced through by
+ * WHY DISPATCHES ARE SPACED: Cloud Run packs concurrent requests onto ONE
+ * instance (`--concurrency`), and every in-flight copy buffers a whole file. The
+ * first live recovery dispatched all 10 chunks at once, they landed together, and
+ * the container was OOM-killed — 503s, and the tasks had to be forced through by
  * hand one at a time. Spacing keeps roughly one chunk in flight, which is what
  * the copy path is sized for. Finishing early just leaves the instance idle
  * until the next chunk is due, which costs nothing on a scale-to-zero service.
  *
- * WHY IT COUNTS BYTES, NOT JUST OBJECTS: the first version charged a flat
- * ~1.2s per object. That is about right for a 4 MB photo and wildly wrong for
- * video — a real run of 5 MP4s totalling 8.8 GB was estimated at "~1 minute"
- * and took 21.6. Under-estimating is not cosmetic: it also under-spaces the
- * dispatches, which is exactly what caused the OOM.
- *
- * The constants come from that run: 8.8 GB moved in 1,295s ≈ 6.8 MB/s through
- * GCS → worker → Drive, so 6 MB/s is a slightly conservative throughput, and
- * 1.2s covers the per-object overhead (metadata read, md5 claim, Drive create,
- * the shared Drive pacing gate).
+ * The spacing is costed in BYTES as well as objects (see uploadCostModel.ts): a
+ * flat per-object estimate once called 8.8 GB of video "~1 minute" when it took
+ * 21.6, and under-estimating also under-spaces the dispatches — the OOM again.
  */
-const PER_OBJECT_MS = 1_200;
-const THROUGHPUT_BYTES_PER_SEC = 6 * 1024 * 1024;
 
 /**
  * Byte ceiling for one chunk, so a chunk cannot outlive the 1800s request
- * timeout however few objects it holds. At the throughput above, 6 GiB is ~1,000s
+ * timeout however few objects it holds. At uploadCostModel's 6 MB/s, 6 GiB is ~1,000s
  * — comfortable headroom. Without this, `DEFAULT_CHUNK` (400) objects of video
  * would be a single task needing hours, and the worker would be killed mid-batch:
  * the original bug, reintroduced by the recovery tool.
@@ -85,8 +75,7 @@ const MAX_CHUNK_BYTES = 6 * 1024 * 1024 * 1024;
 
 /** Wall-clock a chunk should take: fixed per-object cost + transfer time. */
 function chunkCostMs(objs: ReadonlyArray<StagedObject>): number {
-  const bytes = objs.reduce((n, o) => n + o.size, 0);
-  return objs.length * PER_OBJECT_MS + (bytes / THROUGHPUT_BYTES_PER_SEC) * 1000;
+  return objs.reduce((ms, o) => ms + objectCostMs(o.size), 0);
 }
 
 /**
@@ -146,22 +135,42 @@ export interface RecoveryDispatch {
   notDispatched: number;
   /** Roughly how long the staggered run takes end to end. */
   estimatedMinutes: number;
+  /**
+   * Offset (ms from now) at which the last dispatched chunk is due to finish —
+   * `startDelayMs` plus this run's spacing. A caller recovering several events
+   * passes it on as the next event's `startDelayMs`, so their chunks queue behind
+   * each other instead of landing on one instance together.
+   */
+  scheduledThroughMs: number;
   warnings: string[];
 }
 
-interface StagedObject {
+export interface StagedObject {
   name: string;
   md5Hex: string;
   size: number;
+  eventId: string;
   batchId: string;
   linkId: string;
   clubName: string;
   photographerName: string;
+  /** ISO creation time, or '' when the provider reports none (= unknown age). */
+  createdAt: string;
 }
+
+const STAGED_ROOT = 'volunteer_uploads/';
 
 /** Every staged object for an event, with the metadata the copy path needs. */
 async function listStaged(eventId: string): Promise<StagedObject[]> {
-  const prefix = `volunteer_uploads/${eventId}/`;
+  return listStagedUnder(`${STAGED_ROOT}${eventId}/`);
+}
+
+/** Every staged object in the bucket, across all events (the recovery sweep). */
+export async function listAllStaged(): Promise<StagedObject[]> {
+  return listStagedUnder(STAGED_ROOT);
+}
+
+async function listStagedUnder(prefix: string): Promise<StagedObject[]> {
   const objects = await objectStore().list(env.VOLUNTEER_STAGING_BUCKET, { prefix });
   const out: StagedObject[] = [];
   for (const o of objects) {
@@ -170,18 +179,20 @@ async function listStaged(eventId: string): Promise<StagedObject[]> {
     // half-stamped object still groups with its siblings. (On Azure the custom
     // metadata is client-supplied — see `UploadSession.clientStampsMetadata` —
     // which makes preferring the api-chosen key the right default there too.)
-    const batchId = o.key.split('/')[2] ?? '';
-    if (!batchId) continue;
+    const [, eventId = '', batchId = ''] = o.key.split('/');
+    if (!eventId || !batchId) continue;
     out.push({
       name: o.key,
       // '' = the provider reports no hash. Treated as "still owed a copy" by
       // strandedObjects, never as "already done".
       md5Hex: o.metadata.md5Hex,
       size: o.metadata.size,
+      eventId,
       batchId,
       linkId: custom.linkId ?? '',
       clubName: custom.clubName ?? '',
       photographerName: (custom.photographerName ?? '').trim(),
+      createdAt: o.metadata.createdAt,
     });
   }
   return out;
@@ -204,7 +215,7 @@ async function hashesInDrive(eventId: string): Promise<Set<string>> {
 }
 
 /** Objects still owed a Drive copy, newest-path-last for stable output. */
-async function strandedObjects(eventId: string): Promise<{ all: StagedObject[]; stranded: StagedObject[] }> {
+export async function strandedObjects(eventId: string): Promise<{ all: StagedObject[]; stranded: StagedObject[] }> {
   const [all, inDrive] = await Promise.all([listStaged(eventId), hashesInDrive(eventId)]);
   // An object with no md5 cannot be matched — treat it as stranded and let the
   // worker's name+size fallback decide. Unknown must not read as "already done".
@@ -258,7 +269,21 @@ export async function scanStagedRecovery(eventId: string): Promise<RecoveryScan>
  */
 export async function dispatchStagedRecovery(
   eventId: string,
-  opts: { apply?: boolean; chunkSize?: number; batchIds?: ReadonlyArray<string> | undefined } = {},
+  opts: {
+    apply?: boolean;
+    chunkSize?: number;
+    batchIds?: ReadonlyArray<string> | undefined;
+    /**
+     * Distinguishes this run's task names. Cloud Tasks refuses to reuse a name
+     * for a while after its task ran, and `enqueueProcessBatchTask` reads that
+     * refusal as "already queued" — so without a tag, recovering the same batch
+     * twice in that window silently dispatches nothing. The hourly sweep passes
+     * one; a one-off admin run need not.
+     */
+    runTag?: string;
+    /** Delay before the first chunk is due; see `scheduledThroughMs`. */
+    startDelayMs?: number;
+  } = {},
 ): Promise<RecoveryDispatch> {
   const apply = opts.apply === true;
   const chunk = opts.chunkSize && opts.chunkSize > 0 ? Math.min(opts.chunkSize, 1000) : DEFAULT_CHUNK;
@@ -272,6 +297,7 @@ export async function dispatchStagedRecovery(
     batches: 0,
     notDispatched: 0,
     estimatedMinutes: 0,
+    scheduledThroughMs: opts.startDelayMs ?? 0,
     warnings: [],
   };
 
@@ -296,6 +322,7 @@ export async function dispatchStagedRecovery(
   // have finished rather than all firing at once. Also the run's duration
   // estimate, which is why it accrues on a dry run too.
   let plannedMs = 0;
+  const startDelayMs = opts.startDelayMs ?? 0;
   for (const [batchId, objs] of byBatch) {
     const linkId = objs.find((o) => o.linkId)?.linkId ?? '';
     if (!linkId) {
@@ -308,6 +335,7 @@ export async function dispatchStagedRecovery(
 
     const chunks = buildChunks(objs, chunk);
     let done = 0;
+    let dispatchedForBatch = 0;
     for (const [n, slice] of chunks.entries()) {
       if (slice.length > budget) {
         result.notDispatched += objs.length - done;
@@ -330,7 +358,7 @@ export async function dispatchStagedRecovery(
       // A recovery-specific batchId keeps the volunteer's original status doc
       // intact AND gives the Cloud Tasks item a name that cannot collide with
       // the original dispatch (whose task may still be known to the queue).
-      const recoveryBatchId = `${batchId}-rec${n + 1}`;
+      const recoveryBatchId = opts.runTag ? `${batchId}-rec${opts.runTag}-${n + 1}` : `${batchId}-rec${n + 1}`;
       try {
         await enqueueProcessBatchTask(
           {
@@ -339,9 +367,10 @@ export async function dispatchStagedRecovery(
             objectNames: slice.map((o) => o.name),
           },
           // Spread the chunks out so they do not all land on one instance.
-          { scheduleTime: new Date(Date.now() + plannedMs).toISOString() },
+          { scheduleTime: new Date(Date.now() + startDelayMs + plannedMs).toISOString() },
         );
         plannedMs += cost;
+        dispatchedForBatch += 1;
       } catch (err) {
         result.tasks -= 1;
         result.objects -= slice.length;
@@ -349,8 +378,12 @@ export async function dispatchStagedRecovery(
         result.warnings.push(`Batch ${batchId} chunk ${n + 1}: dispatch failed — ${String(err)}`);
       }
     }
+    // Stamp the volunteer's ORIGINAL batch doc, so the hourly sweep leaves this
+    // batch alone while the (spaced-out) recovery is still working through it.
+    if (dispatchedForBatch > 0) await updateUploadBatch(batchId, { lastRecoveryAt: new Date().toISOString() });
     if (budget === 0) break;
   }
+  result.scheduledThroughMs = startDelayMs + plannedMs;
 
   // Rounded, not ceilinged: ceil turned 2.0003 minutes into "3", and an estimate
   // that rounds up on a rounding artefact reads as sloppy. Any non-empty run

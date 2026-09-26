@@ -407,6 +407,57 @@
   `MAX_CHUNK_BYTES` (6 GiB ≈ 1,000s) so one task cannot outlive the 1800s
   request timeout no matter how few objects it holds.
   The api runs at **1Gi** for the same reason (see deploy-api.sh).
+  The cost model now lives in `services/uploadCostModel.ts`, shared with the
+  worker's own chunking (below) — one model, so the two cannot disagree.
+
+## The upload worker chunks every batch, and an hourly sweep re-sends leftovers
+
+- **A batch used to be copied in ONE Cloud Tasks request**, one photo at a time
+  (~2.5s each, measured). A 663-photo batch on 2026-09-19 took 1,685s — 94% of the
+  1800s window, which is both Cloud Tasks' maximum and the api's `--timeout` — so
+  a session much past ~700 photos was killed mid-copy on every attempt: the
+  2026-07-27 failure mode, reached by batch size instead of a bad deploy.
+- **Now the worker stops at 300 objects or 15 minutes of estimated work**
+  (`WORKER_CHUNK_*` in routes/volunteerUpload.ts), whichever comes first, and
+  enqueues the rest as `chunk + 1` BEFORE answering. A failed hand-off 500s, so
+  Cloud Tasks retries the chunk — a chain can stall visibly, never end silently.
+  The first object always runs, so a lone huge video still gets a chunk.
+  Rules to keep if you touch it:
+  - **Chunks of one batch never overlap.** That is what lets them share the one
+    Drive folder (`batchFolderName` on the batch doc) and read-modify-write the
+    `chunks` tally map. Do not fan chunks out in parallel without replacing both.
+  - **Only chunk 0 calls `initUploadBatch`** — a continuation re-initialising
+    zeroes the earlier chunks' totals.
+  - **Once-per-BATCH work waits for the last chunk**: the indexer trigger, the
+    Upload_Log row, the terminal phase and the managed-folder rebuild. Triggering
+    the indexer per chunk would start a fresh 8-vCPU run per ~300 photos; the
+    10-minute `findme-index-scan` picks up earlier chunks' photos meanwhile.
+  - **Task ids:** chunk 0 is the bare `batchId` (so a double `/complete` still
+    dedups); a continuation is `<batchId>-c<n>` (`processBatchTaskId`), because
+    Cloud Tasks refuses to reuse a name for a while after its task ran.
+- **`POST /api/admin/upload-recovery-sweep`** (hourly,
+  `provision-upload-recovery-scheduler.sh`) re-dispatches stranded objects in
+  every event through the existing recovery tool. The one rule that matters:
+  **never race a live batch** — recovery copies under its own batch id into its
+  own folder, so re-sending a batch whose chain is alive splits the session. The
+  batch doc's `pendingTask` names the task that owns it; the sweep asks Cloud
+  Tasks whether it still exists (`processBatchTaskExists`), and an unanswerable
+  question (lookup failed, unknown object age) always reads as "leave it for next
+  hour". Finished batches settle 45 min first (past the 35-min stale-claim
+  reclaim, or the re-sent copy is just skipped again), recovered ones cool down
+  6h, and objects with no batch doc wait 6h (the volunteer may still be uploading).
+  Rules are in `judgeBatch`, fully unit-tested.
+- **Recovery task names now carry a run tag** from the sweep
+  (`<batchId>-rec<tag>-<n>`): without it, recovering the same batch twice within
+  Cloud Tasks' name-reuse window read as "already queued" and dispatched nothing.
+- **Photos stranded over 24h email `ADMIN_EMAILS`**, at most every 12h (state in
+  `ops_state/upload_recovery_sweep`), and log an ERROR on every run. Needs
+  `EMAIL_ENABLED=true` to actually send.
+- ⚠️ **Still open (not in this change):** the live `upload-process` queue runs at
+  `maxConcurrentDispatches: 1000` while UPLOAD_WORKER_RUNBOOK.md says 1. Neither is
+  right for a marathon: 1 serialises every photographer's upload (~14h for 20k
+  photos); 1000 lets a burst pack ~80 batches, each buffering a whole file, onto
+  one 1Gi instance. Pick a middle value (~4–6) and fix the runbook to match.
 
 ## Find-Me selfie retention — a sweep, never a TTL
 

@@ -133,6 +133,8 @@ export const ProcessBatchRequestSchema = z
     linkId: z.string().min(1).optional(),
     batchId: z.string().min(1),
     objectNames: z.array(z.string().min(1)).min(1),
+    /** Chunk index within the batch; omitted = 0 (the first). */
+    chunk: z.number().int().min(0).optional(),
   })
   .refine((v) => Boolean(v.token) || Boolean(v.linkId), {
     message: 'either token or linkId is required',

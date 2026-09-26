@@ -38,8 +38,22 @@ import {
   enqueueStagedBatch,
   UploadLinkError,
 } from '../services/volunteerUploadService.js';
-import { getUploadBatch, initUploadBatch } from '../services/uploadBatchService.js';
-import { isUploadDispatchConfigured, enqueueProcessBatchTask } from '../services/uploadDispatch.js';
+import { getUploadBatch, initUploadBatch, updateUploadBatch } from '../services/uploadBatchService.js';
+import {
+  isUploadDispatchConfigured,
+  enqueueProcessBatchTask,
+  processBatchTaskId,
+} from '../services/uploadDispatch.js';
+
+/**
+ * Per-task limits for the background worker, so one Cloud Tasks request never
+ * approaches the 1800s window (Cloud Tasks' own maximum, and the api's Cloud Run
+ * --timeout). 300 photos at the measured ~2.5s each is ~12.5 minutes; the
+ * 15-minute budget additionally stops a chunk of large videos early. The rest of
+ * the batch continues in a follow-on task.
+ */
+const WORKER_CHUNK_MAX_FILES = 300;
+const WORKER_CHUNK_BUDGET_MS = 15 * 60_000;
 
 export const volunteerUploadRouter = Router();
 
@@ -164,6 +178,8 @@ volunteerUploadRouter.post('/volunteer/upload/complete', async (req, res, next) 
       await initUploadBatch(batchId, link.eventId, link.linkId, objectNames.length, 'received');
       try {
         await enqueueProcessBatchTask({ token, batchId, objectNames });
+        // Which task owns the batch, for the recovery sweep's liveness check.
+        await updateUploadBatch(batchId, { pendingTask: processBatchTaskId(batchId) });
         const queued: CompleteUploadResponse = {
           ok: true,
           batchId,
@@ -271,13 +287,43 @@ volunteerUploadRouter.post('/internal/process-batch', async (req, res, next) => 
       res.status(400).json({ ok: false, error: 'bad_request', message: parsed.error.message });
       return;
     }
-    const { token, linkId, batchId, objectNames } = parsed.data;
+    const { token, linkId, batchId, objectNames, chunk = 0 } = parsed.data;
     // `linkId` is the admin recovery path (staged objects carry linkId, not the
     // token). Both are equally gated by the machine token checked above.
     const link = token ? await validateUploadLink(token) : await loadUploadLinkById(String(linkId));
-    const result = await enqueueStagedBatch(link, batchId, objectNames);
+    // Chunk only when a continuation can actually be dispatched; otherwise run
+    // the batch in one piece as before (the limits exist for the Cloud Tasks
+    // deadline, which a direct call is not under).
+    const chunked = isUploadDispatchConfigured();
+    const result = await enqueueStagedBatch(
+      link,
+      batchId,
+      objectNames,
+      chunked ? { chunk, maxFiles: WORKER_CHUNK_MAX_FILES, budgetMs: WORKER_CHUNK_BUDGET_MS } : { chunk },
+    );
+    if (result.remaining.length > 0) {
+      // Hand the rest on BEFORE answering. If this throws, the 500 makes Cloud
+      // Tasks retry THIS chunk, which re-skips what it already copied and tries
+      // the hand-off again — so a chain can stall visibly (a retrying task), but
+      // never end silently with photos left behind.
+      const next = chunk + 1;
+      await enqueueProcessBatchTask({
+        ...(token ? { token } : { linkId: String(linkId) }),
+        batchId,
+        objectNames: result.remaining,
+        chunk: next,
+      });
+      await updateUploadBatch(batchId, { pendingTask: processBatchTaskId(batchId, next) });
+    }
     logger.info(
-      { eventId: link.eventId, batchId, copied: result.copied, skipped: result.skippedDuplicates },
+      {
+        eventId: link.eventId,
+        batchId,
+        chunk,
+        copied: result.copied,
+        skipped: result.skippedDuplicates,
+        remaining: result.remaining.length,
+      },
       'worker processed staged batch',
     );
     res.json({ ok: true, ...result });

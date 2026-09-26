@@ -55,6 +55,7 @@ interface RawMetadata {
   contentType?: string | undefined;
   md5Hash?: string | null | undefined;
   metadata?: Record<string, string | number | boolean | undefined> | undefined;
+  timeCreated?: string | undefined;
 }
 
 function normalize(raw: RawMetadata | undefined): ObjectMetadata {
@@ -67,7 +68,15 @@ function normalize(raw: RawMetadata | undefined): ObjectMetadata {
     contentType: raw?.contentType || 'application/octet-stream',
     md5Hex: md5ToHex(raw?.md5Hash),
     custom,
+    createdAt: isoOrEmpty(raw?.timeCreated),
   };
+}
+
+/** A provider timestamp as ISO-8601, or `''` when missing or unparseable. */
+function isoOrEmpty(value: string | undefined): string {
+  if (!value) return '';
+  const t = Date.parse(value);
+  return Number.isNaN(t) ? '' : new Date(t).toISOString();
 }
 
 /** A 404 from the storage client, which this adapter treats as "absent". */

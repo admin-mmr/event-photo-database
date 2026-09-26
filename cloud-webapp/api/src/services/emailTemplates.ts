@@ -78,3 +78,33 @@ export function dailyDigest(lines: DigestLine[], sinceIso: string): EmailContent
     text: `Admin changes since ${sinceIso}:\n${textItems}${linkBlock('/admin/audit').text}`,
   };
 }
+
+export interface StrandedUploadLine {
+  eventId: string;
+  /** Stranded objects older than the alert threshold. */
+  objects: number;
+}
+
+/**
+ * The upload-recovery sweep's alert: volunteer photos have sat in staging past
+ * the point the hourly re-dispatch should have cleared them. Carries only ids
+ * and counts the app generated itself, so there is nothing to escape.
+ */
+export function uploadsStranded(lines: StrandedUploadLine[], oldestHours: number, lifecycleDays: number): EmailContent {
+  const total = lines.reduce((n, l) => n + l.objects, 0);
+  const subject = `${APP}: ${total} volunteer photo${total === 1 ? '' : 's'} not reaching Drive`;
+  const why =
+    `${total} uploaded photo${total === 1 ? ' has' : 's have'} been waiting in staging for over a day ` +
+    `(oldest: ${oldestHours}h). The hourly sweep keeps re-sending them, so something is failing the copy. ` +
+    `The staging bucket deletes uploads ${lifecycleDays} days after they arrive.`;
+  const how =
+    'Report what is owed with GET /api/admin/upload-recovery/<eventId>, or run ' +
+    './cloud-webapp/infra/scripts/recover-staged-uploads.sh <eventId>, and check the api logs for ' +
+    '"staged object copy to Drive failed".';
+  const rows = lines.map((l) => `<li><code>${l.eventId}</code> — ${l.objects}</li>`).join('');
+  return {
+    subject,
+    html: wrap('Volunteer photos not reaching Drive', `<p>${why}</p><ul>${rows}</ul><p>${how}</p>`, '/admin/events'),
+    text: `${why}\n\n${lines.map((l) => `- ${l.eventId}: ${l.objects}`).join('\n')}\n\n${how}${linkBlock('/admin/events').text}`,
+  };
+}

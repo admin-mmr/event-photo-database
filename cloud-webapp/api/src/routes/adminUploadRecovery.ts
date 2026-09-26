@@ -3,6 +3,7 @@
  *
  *   GET  /api/admin/upload-recovery/:eventId  — read-only report of what is owed
  *   POST /api/admin/upload-recovery/:eventId  — dry run, or dispatch the copies
+ *   POST /api/admin/upload-recovery-sweep     — every event, hourly (Cloud Scheduler)
  *
  * The POST is a DRY RUN unless the body says `apply: true` (the resync-names /
  * duplicate-removal convention). Applying only LISTS staging and creates Cloud
@@ -21,10 +22,11 @@ import { Router } from 'express';
 
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
-import { allowCronOrAdmin } from '../middleware/cronAuth.js';
+import { allowCronOrAdmin, allowCronOrSuperAdmin } from '../middleware/cronAuth.js';
 import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
 import { recordAudit } from '../services/auditStore.js';
 import { dispatchStagedRecovery, scanStagedRecovery } from '../services/uploadRecoveryService.js';
+import { sweepStagedUploads } from '../services/uploadRecoverySweep.js';
 import { actor, handleStoreError, masterSheetId } from './adminShared.js';
 
 export const adminUploadRecoveryRouter = Router();
@@ -89,6 +91,44 @@ adminUploadRecoveryRouter.post('/admin/upload-recovery/:eventId', allowCronOrAdm
     }
 
     logger.info({ eventId, apply, objects: out.objects, tasks: out.tasks, by: actor(req) }, 'upload recovery run');
+    res.status(apply ? 202 : 200).json({ ok: true, ...out });
+  } catch (err) {
+    if (handleStoreError(err, res)) return;
+    next(err);
+  }
+});
+
+/**
+ * POST /api/admin/upload-recovery-sweep — Body: { apply? }.
+ *
+ * The hourly backstop (infra/scripts/provision-upload-recovery-scheduler.sh):
+ * re-dispatches stranded photos in every event, leaving any batch that is still
+ * being worked on alone, and emails the super-admins when photos stay stranded
+ * past a day. See services/uploadRecoverySweep.ts for the rules.
+ *
+ * Its own path, not `/upload-recovery/sweep`, so it can never be mistaken for the
+ * per-event route with an eventId of "sweep". Super-admin (or the machine token)
+ * because it acts across every club's events.
+ */
+adminUploadRecoveryRouter.post('/admin/upload-recovery-sweep', allowCronOrSuperAdmin, async (req, res, next) => {
+  try {
+    const apply = (req.body as { apply?: unknown } | undefined)?.apply === true;
+    const sid = apply ? masterSheetId(res) : '';
+    if (apply && !sid) return;
+
+    const out = await sweepStagedUploads({ apply });
+
+    if (apply && sid && out.dispatched.objects > 0) {
+      await recordAudit(sid, {
+        actorEmail: actor(req),
+        action: 'UPLOAD_RECOVERY_SWEEP',
+        resourceType: 'other',
+        resourceId: 'volunteer_uploads',
+        details: { ...out.dispatched, overdue: out.overdue.objects },
+        reason: 'hourly re-dispatch of volunteer uploads stranded in staging',
+        ip: req.ip ?? '',
+      });
+    }
     res.status(apply ? 202 : 200).json({ ok: true, ...out });
   } catch (err) {
     if (handleStoreError(err, res)) return;

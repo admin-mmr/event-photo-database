@@ -25,6 +25,8 @@ interface Blob {
    *  browser committed (Azure stores only what the writer supplied). */
   contentMD5?: Uint8Array | undefined;
   metadata: Record<string, string>;
+  /** Stamped by the service on every commit, as Azure's `createdOn` is. */
+  createdOn: Date;
 }
 
 /** A 404 shaped like the SDK's `RestError`, which is what `sdkOps` keys off. */
@@ -66,6 +68,7 @@ export class FakeBlobService implements BlobOps {
       contentType: b.contentType,
       contentMD5: b.contentMD5,
       metadata: { ...b.metadata },
+      createdOn: b.createdOn,
     };
   }
 
@@ -83,6 +86,7 @@ export class FakeBlobService implements BlobOps {
       contentType: opts.contentType,
       contentMD5: new Uint8Array(createHash('md5').update(body).digest()),
       metadata: {},
+      createdOn: new Date(),
     });
   }
 
@@ -102,6 +106,7 @@ export class FakeBlobService implements BlobOps {
           contentType: b.contentType,
           contentMD5: b.contentMD5,
           metadata: { ...b.metadata },
+          createdOn: b.createdOn,
         },
       }));
     return limit === undefined ? all : all.slice(0, limit);
@@ -137,6 +142,7 @@ export class FakeBlobService implements BlobOps {
       contentType: opts.contentType ?? 'application/octet-stream',
       contentMD5: hex === '' ? undefined : new Uint8Array(Buffer.from(hex, 'hex')),
       metadata: { ...(opts.custom ?? {}) },
+      createdOn: new Date(),
     });
   }
 

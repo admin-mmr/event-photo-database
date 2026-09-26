@@ -60,6 +60,19 @@ export function runObjectStoreContract(label: string, makeHarness: () => ObjectS
       });
     });
 
+    it('reports when the object was created, as ISO-8601', async () => {
+      // The upload-recovery sweep ages staged objects by this to leave a
+      // volunteer's still-running session alone; '' would read as "too young".
+      const h = makeHarness();
+      const before = Date.now();
+      h.seed(B, 'a.jpg', { body: 'hello' });
+      const createdAt = (await h.store.head(B, 'a.jpg'))?.createdAt ?? '';
+      expect(createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      expect(Date.parse(createdAt)).toBeGreaterThanOrEqual(before - 1000);
+      const listed = await h.store.list(B, { prefix: '' });
+      expect(listed[0]?.metadata.createdAt).toBe(createdAt);
+    });
+
     it('reports an absent hash as the empty string, not a fake one', async () => {
       // '' means UNKNOWN. enqueueStagedBatch falls back to the name+size dedup
       // key on it; treating unknown as "no match" is what loses photos.

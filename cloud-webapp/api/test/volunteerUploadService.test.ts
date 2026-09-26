@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { FakeObjectStore } from './helpers/fakeObjectStore.js';
@@ -15,6 +17,8 @@ const sheetData: Record<string, string[][]> = {};
 // Per-range read counter so a test can assert the service caches the tab
 // instead of re-reading it on every validateUploadLink call.
 const sheetReads: Record<string, number> = {};
+// Rows appended to the Upload_Log tab, so a chunked batch can be held to ONE row.
+const uploadLogRows: unknown[][] = [];
 vi.mock('../src/services/sheetsService.js', () => ({
   getSheetValues: async (_spreadsheetId: string, range: string) => {
     sheetReads[range] = (sheetReads[range] ?? 0) + 1;
@@ -23,8 +27,10 @@ vi.mock('../src/services/sheetsService.js', () => ({
   // The Upload_Log append (appendUploadLog → appendSheetValues) runs after a
   // batch is copied to Drive. Stubbed so the best-effort logging path succeeds
   // quietly instead of hitting its non-fatal catch on a missing mock export.
-  appendSheetValues: async (_spreadsheetId: string, _range: string, rows: unknown[][]) =>
-    rows.length,
+  appendSheetValues: async (_spreadsheetId: string, _range: string, rows: unknown[][]) => {
+    uploadLogRows.push(...rows);
+    return rows.length;
+  },
 }));
 
 const eventDocs: Record<string, Record<string, unknown> | undefined> = {};
@@ -252,6 +258,7 @@ beforeEach(() => {
   appPropFiles.clear();
   appPropLookups.length = 0;
   failUploadsFor.clear();
+  uploadLogRows.length = 0;
 
   sheetData[LINKS_RANGE] = [
     ['LINK_ID', 'EVENT_ID', 'CLUB_NAME', 'TOKEN', '', '', '', 'REVOKED_AT', '', '', 'TAG'],
@@ -916,5 +923,94 @@ describe('enqueueStagedBatch retry safety', () => {
     // query would be pure per-file cost on every upload.
     expect(appPropLookups).toEqual([]);
     expect(driveUploads).toHaveLength(1);
+  });
+});
+
+// ── enqueueStagedBatch, chunked for the worker ─────────────────────────────
+
+describe('enqueueStagedBatch — chunked so a batch never outlives the 1800s window', () => {
+  /** Stage `n` distinct photos for one batch; returns their names in order. */
+  function stageBatch(batchId: string, n: number): string[] {
+    const names: string[] = [];
+    for (let i = 1; i <= n; i += 1) {
+      const name = `vol/ev1/${batchId}/u${i}.jpg`;
+      stageObj(name, {
+        size: 100 + i,
+        contentType: 'image/jpeg',
+        md5Hash: createHash('md5').update(`${batchId}-${i}`).digest('base64'),
+        metadata: { originalName: `p${i}.jpg`, photographerName: 'Jane Doe' },
+      });
+      names.push(name);
+    }
+    return names;
+  }
+
+  it('stops at maxFiles and hands back the rest, in order, without closing the batch', async () => {
+    const link = await validateUploadLink('tok-good');
+    const names = stageBatch('bc', 5);
+
+    const res = await enqueueStagedBatch(link, 'bc', names, { maxFiles: 2 });
+
+    expect(res.copied).toBe(2);
+    expect(res.remaining).toEqual(names.slice(2));
+    expect(driveUploads.map((u) => u.name)).toEqual(['ClubA_JaneDoe_p1.jpg', 'ClubA_JaneDoe_p2.jpg']);
+    // Everything once-per-batch waits for the last chunk.
+    expect(indexTriggers).toEqual([]);
+    expect(uploadLogRows).toHaveLength(0);
+    expect(batchDocs.get('bc')).toMatchObject({ phase: 'saving', total: 5, copied: 2 });
+    // The rest is untouched in staging for the continuation.
+    for (const name of names.slice(2)) expect(storage.has(STAGING_BUCKET, name)).toBe(true);
+  });
+
+  it('continues in the SAME batch folder and closes the batch once, with batch-wide totals', async () => {
+    const link = await validateUploadLink('tok-good');
+    const names = stageBatch('bc', 5);
+
+    const first = await enqueueStagedBatch(link, 'bc', names, { maxFiles: 2 });
+    const second = await enqueueStagedBatch(link, 'bc', first.remaining, { chunk: 1, maxFiles: 2 });
+    // A continuation must not re-initialise: `total` is still the whole session.
+    expect(batchDocs.get('bc')).toMatchObject({ phase: 'saving', total: 5, copied: 4 });
+    const third = await enqueueStagedBatch(link, 'bc', second.remaining, { chunk: 2, maxFiles: 2 });
+
+    expect(third.remaining).toEqual([]);
+    expect(driveUploads).toHaveLength(5);
+    // One Drive folder for the whole session — the name chunk 0 recorded.
+    expect(new Set(driveUploads.map((u) => u.folderId)).size).toBe(1);
+    const batchFolders = folderCreates.filter((f) => /^\d{8}-\d{6}_/.test(f.name));
+    expect(new Set(batchFolders.map((f) => f.name)).size).toBe(1);
+    // Indexer and Upload_Log fire once, for the batch — not once per chunk.
+    expect(indexTriggers).toEqual(['ev1']);
+    expect(uploadLogRows).toHaveLength(1);
+    expect(uploadLogRows[0]?.[6]).toBe(5); // fileCount
+    expect(batchDocs.get('bc')).toMatchObject({
+      phase: 'indexing',
+      total: 5,
+      copied: 5,
+      failed: 0,
+      pendingTask: '',
+    });
+  });
+
+  it('always copies the first object, even with no time budget left', async () => {
+    // What guarantees progress: a single 10 GiB video still gets a chunk of its own.
+    const link = await validateUploadLink('tok-good');
+    const names = stageBatch('bb', 3);
+
+    const res = await enqueueStagedBatch(link, 'bb', names, { budgetMs: 0 });
+
+    expect(res.copied).toBe(1);
+    expect(res.remaining).toEqual(names.slice(1));
+  });
+
+  it('leaves a batch run in one piece exactly as before (no chunk tallies)', async () => {
+    const link = await validateUploadLink('tok-good');
+    const names = stageBatch('b1p', 3);
+
+    const res = await enqueueStagedBatch(link, 'b1p', names);
+
+    expect(res).toMatchObject({ copied: 3, remaining: [] });
+    expect(batchDocs.get('b1p')?.chunks).toBeUndefined();
+    expect(indexTriggers).toEqual(['ev1']);
+    expect(uploadLogRows).toHaveLength(1);
   });
 });

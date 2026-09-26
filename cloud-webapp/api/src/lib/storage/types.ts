@@ -45,6 +45,13 @@ export interface ObjectMetadata {
   md5Hex: string;
   /** User-defined metadata stamped when the object was created. */
   custom: Record<string, string>;
+  /**
+   * ISO-8601 time the object was created (GCS `timeCreated`, Azure `createdOn`),
+   * or `''` when the provider reports none (= unknown, never "just now"). The
+   * upload-recovery sweep uses it to leave a volunteer's still-running session
+   * alone, so an unknown age must be treated as too young to touch.
+   */
+  createdAt: string;
 }
 
 /** One object from a prefix listing. */

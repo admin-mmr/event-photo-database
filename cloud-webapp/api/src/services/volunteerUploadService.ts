@@ -45,7 +45,8 @@ import {
 } from './uploadDedupService.js';
 import { triggerIndexJob } from './indexerJob.js';
 import { appendUploadLog } from './uploadLogService.js';
-import { getUploadBatch, initUploadBatch, updateUploadBatch } from './uploadBatchService.js';
+import { getUploadBatch, initUploadBatch, recordChunkTally, updateUploadBatch } from './uploadBatchService.js';
+import { objectCostMs } from './uploadCostModel.js';
 import { buildCreditedFileName } from '../lib/creditedFileName.js';
 import { tryRebuildSpecialFoldersForBatch } from './specialFoldersService.js';
 import { tryRebuildPublicFolderIndex } from './publicFolderIndexService.js';
@@ -325,6 +326,37 @@ export interface BatchResult {
   skippedDuplicates: number;
   /** Credited filenames skipped as duplicates (same length as skippedDuplicates). */
   skippedDuplicateNames: string[];
+  /**
+   * Objects this call stopped short of because it hit `maxFiles` or `budgetMs`,
+   * in their original order. The caller hands them to a continuation; `[]` when
+   * the batch is finished (always, when no limit was passed).
+   */
+  remaining: string[];
+}
+
+/**
+ * Limits for one worker call, so a batch never outlives the 1800s Cloud Tasks /
+ * Cloud Run window. Before these, the worker copied a whole batch in one request
+ * at ~2.5s a photo: a 663-photo batch on 2026-09-19 took 1,685s, so anything
+ * much past ~700 photos was killed mid-copy on every attempt — the 2026-07-27
+ * failure mode, reached by batch size instead of a bad timeout. Omit both for the
+ * inline /complete path, which runs a batch in one piece as before.
+ */
+export interface StagedBatchOptions {
+  /**
+   * Index of this chunk within its batch. 0 (the default) is the first, and
+   * initialises the status doc; a continuation (> 0) must not, or it would reset
+   * the running totals the earlier chunks recorded.
+   */
+  chunk?: number;
+  /** Process at most this many objects, then return the rest as `remaining`. */
+  maxFiles?: number;
+  /**
+   * Do not START an object whose estimated copy (uploadCostModel) would end more
+   * than this many ms after the call began. The first object always runs, so a
+   * single huge video still makes progress in a chunk of its own.
+   */
+  budgetMs?: number;
 }
 
 /**
@@ -398,8 +430,12 @@ export async function enqueueStagedBatch(
   link: ValidatedLink,
   batchId: string,
   objectNames: string[],
+  opts: StagedBatchOptions = {},
 ): Promise<BatchResult> {
-  if (objectNames.length === 0) return { copied: 0, skippedDuplicates: 0, skippedDuplicateNames: [] };
+  if (objectNames.length === 0) return { copied: 0, skippedDuplicates: 0, skippedDuplicateNames: [], remaining: [] };
+  const startedAt = Date.now();
+  const chunk = opts.chunk ?? 0;
+  const maxFiles = opts.maxFiles ?? Number.POSITIVE_INFINITY;
 
   // Read what a previous attempt at THIS batch got done, before re-initialising.
   // A Cloud Tasks retry reuses the batchId, so the folder it already created is
@@ -412,8 +448,10 @@ export async function enqueueStagedBatch(
   }
 
   // Make the batch observable (UPLOAD_ASYNC_QUEUE_DESIGN.md step 1). Best-effort:
-  // status writes must never fail an upload whose bytes are already staged.
-  await initUploadBatch(batchId, link.eventId, link.linkId, objectNames.length);
+  // status writes must never fail an upload whose bytes are already staged. Only
+  // the first chunk initialises: it is handed the whole batch, so its `total` is
+  // right, and a continuation re-initialising would zero the earlier chunks' work.
+  if (chunk === 0) await initUploadBatch(batchId, link.eventId, link.linkId, objectNames.length);
 
   const folderId = await resolveEventFolderId(link.eventId);
   const store = objectStore();
@@ -472,7 +510,12 @@ export async function enqueueStagedBatch(
   let skippedDuplicates = 0;
   let failed = 0;
   const skippedDuplicateNames: string[] = [];
-  for (const objectName of objectNames) {
+  let remaining: string[] = [];
+  for (const [i, objectName] of objectNames.entries()) {
+    if (i >= maxFiles) {
+      remaining = objectNames.slice(i);
+      break;
+    }
     // Set once we hold an atomic claim, so a failed copy hands it back rather
     // than barring the file from ever being uploaded again.
     let claim: ClaimInput | null = null;
@@ -488,6 +531,12 @@ export async function enqueueStagedBatch(
       if (!size) {
         logger.warn({ eventId: link.eventId, batchId, objectName }, 'staged object is empty, skipping');
         continue;
+      }
+      // Stop BEFORE claiming, so the continuation starts on a clean object. Never
+      // on the first one: that is what guarantees every chunk makes progress.
+      if (i > 0 && opts.budgetMs !== undefined && Date.now() - startedAt + objectCostMs(size) > opts.budgetMs) {
+        remaining = objectNames.slice(i);
+        break;
       }
       const custom = meta.custom;
       const originalName = (custom.originalName || objectName.split('/').pop() || objectName).trim();
@@ -651,20 +700,50 @@ export async function enqueueStagedBatch(
     }
   }
 
-  if (copied > 0) {
+  // A chunk that stopped early hands the rest to a continuation; everything
+  // below that is once-per-BATCH (indexer trigger, Upload_Log row, terminal
+  // phase, managed-folder rebuild) waits for the last chunk and uses batch-wide
+  // totals. A batch run in one piece (chunk 0, nothing remaining) skips the
+  // tally and behaves exactly as before.
+  const finished = remaining.length === 0;
+  const own = { copied, copiedBytes, skippedDuplicates, skippedDuplicateNames, failed };
+  const totals = chunk === 0 && finished ? own : await recordChunkTally(batchId, chunk, own);
+  // A continuation that copied nothing never resolved the folder; keep the name
+  // the earlier chunks recorded instead of blanking it.
+  const folderName = batchFolderName || priorBatchFolderName;
+
+  if (!finished) {
+    // Photos this chunk landed are picked up by the scheduled index-scan (every
+    // 10 min). Triggering the indexer per chunk would start a fresh 8-vCPU run
+    // for every ~300 photos of a large session.
+    await updateUploadBatch(batchId, {
+      phase: 'saving',
+      copied: totals.copied,
+      skippedDuplicates: totals.skippedDuplicates,
+      skippedDuplicateNames: totals.skippedDuplicateNames,
+      failed: totals.failed,
+    });
+    logger.info(
+      { eventId: link.eventId, batchId, chunk, copied, remaining: remaining.length, elapsedMs: Date.now() - startedAt },
+      'volunteer batch chunk copied; continuing',
+    );
+    return { copied, skippedDuplicates, skippedDuplicateNames, remaining };
+  }
+
+  if (totals.copied > 0) {
     try {
       const { execution } = await triggerIndexJob(link.eventId);
       logger.info(
-        { eventId: link.eventId, batchId, copied, skippedDuplicates, execution },
+        { eventId: link.eventId, batchId, copied: totals.copied, skippedDuplicates: totals.skippedDuplicates, execution },
         'volunteer batch copied to Drive; indexer triggered',
       );
     } catch (err) {
       // Files are safely in Drive; the next scheduled/manual scan will index them.
-      logger.error({ err, eventId: link.eventId, batchId, copied }, 'index trigger failed after Drive copy');
+      logger.error({ err, eventId: link.eventId, batchId, copied: totals.copied }, 'index trigger failed after Drive copy');
     }
   } else {
     logger.warn(
-      { eventId: link.eventId, batchId, requested: objectNames.length, skippedDuplicates },
+      { eventId: link.eventId, batchId, requested: objectNames.length, skippedDuplicates: totals.skippedDuplicates },
       'volunteer batch: no files copied',
     );
   }
@@ -673,15 +752,16 @@ export async function enqueueStagedBatch(
   // cloud webapp populates the same analytics surface as the legacy gas-app.
   // Best-effort: the files are already in Drive, so a failed log row must not
   // fail the upload. Logged for an all-duplicate batch too (copied === 0), with
-  // empty batch-folder fields since no folder was created in that case.
+  // empty batch-folder fields since no folder was created in that case. ONE row
+  // per session, however many chunks it took.
   await appendUploadLog({
     eventId: link.eventId,
     clubName: link.clubName,
-    batchFolderName,
+    batchFolderName: folderName,
     batchFolderId: batchFolderId ?? '',
-    fileCount: copied,
-    totalSizeMb: copiedBytes / (1024 * 1024),
-    skippedDuplicates,
+    fileCount: totals.copied,
+    totalSizeMb: totals.copiedBytes / (1024 * 1024),
+    skippedDuplicates: totals.skippedDuplicates,
     source: 'link',
     linkId: link.linkId,
   });
@@ -691,12 +771,13 @@ export async function enqueueStagedBatch(
   // When the copy moves to a background worker (step 3), the worker owns these
   // transitions and can additionally flip to `ready` when the index run finishes.
   await updateUploadBatch(batchId, {
-    phase: copied > 0 ? 'indexing' : 'done',
-    copied,
-    skippedDuplicates,
-    skippedDuplicateNames,
-    failed,
-    batchFolderName,
+    phase: totals.copied > 0 ? 'indexing' : 'done',
+    copied: totals.copied,
+    skippedDuplicates: totals.skippedDuplicates,
+    skippedDuplicateNames: totals.skippedDuplicateNames,
+    failed: totals.failed,
+    batchFolderName: folderName,
+    pendingTask: '',
   });
 
   // Managed folders (gas-app migration): scoped, inline rebuild of THIS batch's
@@ -705,7 +786,7 @@ export async function enqueueStagedBatch(
   // to one club/tag + the event's photo buckets (cheap) and every Drive call is
   // paced by driveRateLimit. Full-event rebuilds run on the index-scan schedule,
   // never here. Only runs when ≥1 file actually landed.
-  if (copied > 0 && env.MANAGED_FOLDERS_ENABLED === 'true') {
+  if (totals.copied > 0 && env.MANAGED_FOLDERS_ENABLED === 'true') {
     try {
       await tryRebuildSpecialFoldersForBatch(link.eventId, link.clubName, link.tag);
       await tryRebuildPublicFolderIndex();
@@ -714,5 +795,5 @@ export async function enqueueStagedBatch(
     }
   }
 
-  return { copied, skippedDuplicates, skippedDuplicateNames };
+  return { copied, skippedDuplicates, skippedDuplicateNames, remaining };
 }

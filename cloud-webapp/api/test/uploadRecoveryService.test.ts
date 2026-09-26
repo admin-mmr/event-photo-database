@@ -27,6 +27,14 @@ vi.mock('../src/services/uploadDispatch.js', () => ({
   isUploadDispatchConfigured: () => isUploadDispatchConfigured(),
 }));
 
+// Batch-doc writes recovery makes (the lastRecoveryAt stamp the sweep reads).
+const batchUpdates: Array<{ batchId: string; patch: Record<string, unknown> }> = [];
+vi.mock('../src/services/uploadBatchService.js', () => ({
+  updateUploadBatch: async (batchId: string, patch: Record<string, unknown>) => {
+    batchUpdates.push({ batchId, patch });
+  },
+}));
+
 /** contentHash values the photo index holds for the event (i.e. already in Drive). */
 let indexHashes: string[] = [];
 vi.mock('../src/lib/firestore.js', () => ({
@@ -275,5 +283,53 @@ describe('dispatchStagedRecovery', () => {
     expect(out.tasks).toBe(0);
     expect(out.notDispatched).toBe(1);
     expect(out.warnings.join(' ')).toContain('queue down');
+  });
+});
+
+describe('dispatchStagedRecovery — what the hourly sweep relies on', () => {
+  beforeEach(() => {
+    enqueueProcessBatchTask.mockReset().mockResolvedValue(undefined);
+    indexHashes = [];
+    batchUpdates.length = 0;
+  });
+
+  it('gives every run its own task names, so a second recovery of a batch is not dropped as a duplicate', async () => {
+    stage([obj('b1', 'a'), obj('b1', 'b')]);
+
+    await dispatchStagedRecovery(EV, { apply: true, runTag: '20261101t0920' });
+
+    const payload = enqueueProcessBatchTask.mock.calls[0]?.[0] as { batchId: string };
+    expect(payload.batchId).toBe('b1-rec20261101t0920-1');
+  });
+
+  it('keeps the old names for a one-off admin run', async () => {
+    stage([obj('b1', 'a')]);
+    await dispatchStagedRecovery(EV, { apply: true });
+    expect((enqueueProcessBatchTask.mock.calls[0]?.[0] as { batchId: string }).batchId).toBe('b1-rec1');
+  });
+
+  it('starts after startDelayMs and reports where its schedule ends', async () => {
+    stage([obj('b1', 'a', { size: 6 * 1024 * 1024 })]);
+    const before = Date.now();
+
+    const out = await dispatchStagedRecovery(EV, { apply: true, startDelayMs: 60_000 });
+
+    const opts = enqueueProcessBatchTask.mock.calls[0]?.[1] as { scheduleTime: string };
+    expect(Date.parse(opts.scheduleTime)).toBeGreaterThanOrEqual(before + 60_000);
+    // 1.2s overhead + 1s transfer for a 6 MiB object, after the 60s offset.
+    expect(out.scheduledThroughMs).toBe(60_000 + 2_200);
+  });
+
+  it("stamps the volunteer's ORIGINAL batch doc when it dispatches", async () => {
+    stage([obj('b1', 'a'), obj('b2', 'c')]);
+    await dispatchStagedRecovery(EV, { apply: true, batchIds: ['b1'] });
+    expect(batchUpdates.map((u) => u.batchId)).toEqual(['b1']);
+    expect(batchUpdates[0]?.patch.lastRecoveryAt).toEqual(expect.any(String));
+  });
+
+  it('stamps nothing on a dry run', async () => {
+    stage([obj('b1', 'a')]);
+    await dispatchStagedRecovery(EV, {});
+    expect(batchUpdates).toEqual([]);
   });
 });

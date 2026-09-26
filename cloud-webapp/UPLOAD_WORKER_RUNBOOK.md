@@ -37,6 +37,12 @@ The Firestore claim in `uploadDedupService` is what actually makes this safe;
 serialising the queue keeps concurrent workers from racing on Drive folder
 creation as well, and costs nothing (a batch is minutes of I/O, not CPU).
 
+> ⚠️ **The live queue does not match this.** On 2026-09-26 `upload-process` ran at
+> `maxConcurrentDispatches: 1000`. Since batches are now chunked (see CLAUDE.md,
+> "The upload worker chunks every batch"), 1 would serialise every photographer's
+> upload behind every other one; 1000 lets a burst OOM an instance. A middle value
+> (~4–6) is the intended fix — it has not been applied yet.
+
 ## 3. Let the api runtime enqueue tasks
 
 The api runs as `api-runtime@`. It needs to create tasks on the queue:

@@ -36,8 +36,34 @@ export interface UploadBatchDoc {
   failed: number;
   batchFolderName: string;
   error?: string;
+  /**
+   * Per-chunk tallies for a batch the worker splits across Cloud Tasks (see
+   * `enqueueStagedBatch`'s `chunk` option), keyed by chunk index. Each chunk
+   * overwrites only its own entry, so a retried chunk replaces its tally rather
+   * than adding to it; the batch's `copied`/`skippedDuplicates`/`failed` are the
+   * sum. Absent for a batch that ran in one piece.
+   */
+  chunks?: Record<string, BatchChunkTally>;
+  /**
+   * Cloud Tasks task that currently owns this batch (the original dispatch, or
+   * the continuation of a chunked batch); `''` once the last chunk finished.
+   * The recovery sweep asks the queue whether it still exists, which is how it
+   * tells a batch still being worked on from one whose chain died.
+   */
+  pendingTask?: string;
+  /** When the recovery sweep last re-dispatched this batch's stranded objects. */
+  lastRecoveryAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** What one chunk of a batch did. */
+export interface BatchChunkTally {
+  copied: number;
+  copiedBytes: number;
+  skippedDuplicates: number;
+  skippedDuplicateNames: string[];
+  failed: number;
 }
 
 /**
@@ -101,4 +127,43 @@ export async function updateUploadBatch(
 export async function getUploadBatch(batchId: string): Promise<UploadBatchDoc | null> {
   const snap = await firestore().collection(COLLECTION).doc(batchId).get();
   return snap.exists ? (snap.data() as UploadBatchDoc) : null;
+}
+
+/**
+ * Record what chunk `chunk` of a batch did and return the batch-wide totals.
+ *
+ * Read-modify-write of the whole `chunks` map rather than a nested-field merge:
+ * the Cosmos port and the test double both treat a merge as shallow, and chunks
+ * of one batch never overlap (each continuation is enqueued only after its
+ * predecessor finished), so there is no concurrent writer to race. Best-effort
+ * like every other status write: on failure the caller still gets this chunk's
+ * own tally, which under-reports rather than failing an upload whose bytes are
+ * safely in Drive.
+ */
+export async function recordChunkTally(
+  batchId: string,
+  chunk: number,
+  tally: BatchChunkTally,
+): Promise<BatchChunkTally> {
+  try {
+    const chunks = { ...((await getUploadBatch(batchId))?.chunks ?? {}), [String(chunk)]: tally };
+    await updateUploadBatch(batchId, { chunks });
+    return sumChunkTallies(Object.values(chunks));
+  } catch (err) {
+    logger.warn({ err, batchId, chunk }, 'upload batch chunk tally failed (non-fatal)');
+    return tally;
+  }
+}
+
+/** Batch-wide totals across chunk tallies. */
+export function sumChunkTallies(tallies: ReadonlyArray<BatchChunkTally>): BatchChunkTally {
+  const out: BatchChunkTally = { copied: 0, copiedBytes: 0, skippedDuplicates: 0, skippedDuplicateNames: [], failed: 0 };
+  for (const t of tallies) {
+    out.copied += t.copied;
+    out.copiedBytes += t.copiedBytes;
+    out.skippedDuplicates += t.skippedDuplicates;
+    out.skippedDuplicateNames.push(...t.skippedDuplicateNames);
+    out.failed += t.failed;
+  }
+  return out;
 }
