@@ -2,12 +2,15 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link as RouterLink, useParams } from 'react-router-dom';
 import type {
   ClubRecord,
+  GetEventResponse,
   LinkRecord,
   LinkResponse,
   ListClubsResponse,
   ListLinksResponse,
 } from '@cloud-webapp/shared';
 import { apiGet, apiPost, ApiError } from '../lib/api.js';
+import { eventLabel } from '../lib/eventLabel.js';
+import { buildLinksMessage } from '../lib/linksMessage.js';
 import { useStrings } from '../lib/i18n.js';
 
 const STR = {
@@ -36,6 +39,11 @@ const STR = {
     copyUrl: 'Copy URL',
     rotate: 'Rotate',
     revoke: 'Revoke',
+    shareTitle: 'Share message',
+    shareHint: 'Bilingual (中文 + English) text with every active link and how to use Find Me — paste it into the group chat.',
+    generateMessage: 'Generate message',
+    copyMessage: 'Copy message',
+    messageLabel: 'Share message text',
   },
   zh: {
     couldNotLoad: '无法加载链接。',
@@ -62,6 +70,11 @@ const STR = {
     copyUrl: '复制链接',
     rotate: '轮换',
     revoke: '吊销',
+    shareTitle: '分享文案',
+    shareHint: '中英双语文案，包含所有有效的上传链接和人脸识别使用说明，可直接粘贴到群里。',
+    generateMessage: '生成文案',
+    copyMessage: '复制文案',
+    messageLabel: '分享文案内容',
   },
 };
 
@@ -80,6 +93,9 @@ export function AdminLinks(): JSX.Element {
   const { eventId = '' } = useParams();
   const [links, setLinks] = useState<LinkRecord[] | null>(null);
   const [clubs, setClubs] = useState<ClubRecord[]>([]);
+  const [clubNames, setClubNames] = useState<Map<string, string>>(new Map());
+  const [eventName, setEventName] = useState('');
+  const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -97,8 +113,16 @@ export function AdminLinks(): JSX.Element {
       try {
         const c = await apiGet<ListClubsResponse>('/api/admin/clubs');
         setClubs(c.clubs.filter((x) => x.status === 'active'));
+        // All clubs, not just active: a link can outlive its club's status.
+        setClubNames(new Map(c.clubs.map((x) => [x.normalizedName, x.displayName || x.normalizedName])));
       } catch {
         /* non-fatal */
+      }
+      try {
+        const ev = await apiGet<GetEventResponse>(`/api/events/${encodeURIComponent(eventId)}`);
+        setEventName(eventLabel({ name: ev.event.name, date: ev.event.date, id: eventId, hasPhotos: true }));
+      } catch {
+        /* non-fatal — the message falls back to a short id */
       }
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) setForbidden(true);
@@ -115,6 +139,9 @@ export function AdminLinks(): JSX.Element {
     setError(null);
     try {
       await fn();
+      // A rotate/revoke/new link changes the tokens; drop a message built
+      // from the old ones rather than let it be copied.
+      setMessage(null);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : t.actionFailed);
@@ -136,13 +163,30 @@ export function AdminLinks(): JSX.Element {
   }
 
   async function copy(token: string): Promise<void> {
+    await copyText(uploadUrl(token), token);
+  }
+
+  async function copyText(text: string, key: string): Promise<void> {
     try {
-      await navigator.clipboard.writeText(uploadUrl(token));
-      setCopied(token);
+      await navigator.clipboard.writeText(text);
+      setCopied(key);
       setTimeout(() => setCopied(null), 1500);
     } catch {
       setError(t.couldNotCopy);
     }
+  }
+
+  function generateMessage(): void {
+    if (!links) return;
+    setMessage(
+      buildLinksMessage({
+        eventName: eventName || eventLabel({ id: eventId, hasPhotos: true }),
+        eventId,
+        origin: window.location.origin,
+        links,
+        clubDisplayNames: clubNames,
+      }),
+    );
   }
 
   if (forbidden) {
@@ -244,6 +288,33 @@ export function AdminLinks(): JSX.Element {
             </tbody>
           </table>
         </div>
+      )}
+
+      {links !== null && (
+        <section className="links-share">
+          <h3>{t.shareTitle}</h3>
+          <p className="muted">{t.shareHint}</p>
+          <div className="feedback-filters">
+            <button className="btn btn-primary btn-sm" onClick={generateMessage} disabled={busy}>
+              {t.generateMessage}
+            </button>
+            {message !== null && (
+              <button className="btn btn-light btn-sm" onClick={() => void copyText(message, 'message')}>
+                {copied === 'message' ? t.copied : t.copyMessage}
+              </button>
+            )}
+          </div>
+          {message !== null && (
+            <textarea
+              className="feedback-input links-share-text"
+              aria-label={t.messageLabel}
+              readOnly
+              rows={18}
+              value={message}
+              onFocus={(e) => e.currentTarget.select()}
+            />
+          )}
+        </section>
       )}
     </div>
   );

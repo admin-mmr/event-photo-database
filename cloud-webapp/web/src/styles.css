@@ -1892,6 +1892,20 @@ pre.error {
   color: inherit;
 }
 
+/* Upload-links page: the generated bilingual share message. */
+.links-share {
+  margin-top: 24px;
+}
+.links-share-text {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  resize: vertical;
+}
+
 /* ── Tables — portrait-first stacked cards, classic at ≥768px ─────────────────
    Phones are held vertically, so a wide table must NOT scroll sideways. On the
    phone each row collapses into a labelled card: the `thead` is hidden and each
