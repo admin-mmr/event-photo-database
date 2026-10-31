@@ -119,14 +119,21 @@ gcloud builds submit "$REPO_ROOT" \
   --config="$CLOUDBUILD_CONFIG"
 
 echo "==> Deploying Cloud Run Job $JOB"
+# 32Gi / 24h (the Cloud Run Jobs GA max) since the NYC Marathon (2026-11-01,
+# up to 500k photos). The run holds every face + person vector of the event in
+# memory and writes the store only at the END, so a run that outlives its task
+# timeout persists nothing and loops forever: at ~124 photos/min on 8 vCPU, the
+# old 2h cap topped out near 15k new photos per run. 32Gi (the max at 8 vCPU)
+# covers ~500k photos. Memory bills per second of a run only, so small events
+# cost a few cents more, not an idle charge.
 gcloud run jobs deploy "$JOB" \
   --image="$IMAGE" \
   --region="$REGION" \
   --project="$PROJECT_ID" \
   --service-account="indexer-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
-  --memory=12Gi \
+  --memory=32Gi \
   --cpu=8 \
-  --task-timeout=7200 \
+  --task-timeout=86400 \
   --max-retries=1 \
   --parallelism=1 \
   --set-env-vars="DERIVATIVES_ROOT=gs://${PROJECT_ID}-derivatives,DWD_SA=indexer-runtime@${PROJECT_ID}.iam.gserviceaccount.com,INDEX_CONCURRENCY=8"

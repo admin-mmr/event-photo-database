@@ -130,15 +130,19 @@ gcloud run deploy "$SERVICE" \
   --platform=managed \
   --service-account="api-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
   --port=8080 \
-  --memory=1Gi \
-  --cpu=1 \
-  --max-instances=10 \
+  --memory=4Gi \
+  --cpu=2 \
+  --max-instances=20 \
   --min-instances=0 \
   --concurrency=80 \
   --timeout=1800 \
   --update-env-vars="$ENV_VARS" \
   --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_API_KEY=RECAPTCHA_KEY:latest"
-# Memory: 1Gi. 512Mi OOM-killed the container 9 times in 3 days (twice during a
+# Memory: 4Gi / 2 vCPU / max 20 since the NYC Marathon (2026-11-01): with the
+#   upload queue running batches concurrently, each batch also holds a listing
+#   of the whole event's Drive files (~1 KB/file) for its duplicate check, so a
+#   100k+-photo event needs far more than the old figure below.
+#   Was 1Gi: 512Mi OOM-killed the container 9 times in 3 days (twice during a
 #   live volunteer upload window on 2026-07-27) — the upload worker buffers a
 #   whole photo (~4 MB) per in-flight copy and Cloud Run packs up to
 #   --concurrency requests onto one instance. A kill mid-batch strands claims and

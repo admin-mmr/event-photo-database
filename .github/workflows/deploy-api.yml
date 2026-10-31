@@ -102,7 +102,14 @@ jobs:
           # (the service still scales to zero), so this does not affect idle cost.
           # Raise it here, not with a manual `gcloud run services update`, which
           # the next deploy would silently revert.
-          API_MEMORY: "1Gi"
+          #
+          # 4Gi / 2 vCPU / max 20 since the NYC Marathon (2026-11-01, up to 500k
+          # photos): the upload queue now runs 10 batches at once, and every
+          # batch holds a listing of the WHOLE event's Drive files for its
+          # duplicate check (~1 KB/file in the heap) on top of its in-flight
+          # photo buffers — at 100k+ photos that is ~100 MB per batch, and Cloud
+          # Run packs concurrent batches onto one instance. Still scale-to-zero.
+          API_MEMORY: "4Gi"
         run: |
           UPLOAD_WORKER_URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)')"
           OUTFIT_ENV=""
@@ -114,8 +121,8 @@ jobs:
             --platform=managed \
             --port=8080 \
             --memory="${API_MEMORY}" \
-            --cpu=1 \
-            --max-instances=10 \
+            --cpu=2 \
+            --max-instances=20 \
             --min-instances=0 \
             --concurrency=80 \
             --timeout="${API_TIMEOUT_SECONDS}" \

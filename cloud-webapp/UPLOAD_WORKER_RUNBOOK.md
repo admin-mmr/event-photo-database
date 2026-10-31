@@ -24,8 +24,20 @@ an atomic per-file claim across batches), so retries are safe.
 
 ```
 gcloud tasks queues update upload-process --location=us-central1 --project=mmr-data-pipeline \
-  --max-attempts=5 --max-dispatches-per-second=5 --max-concurrent-dispatches=1
+  --max-attempts=10 --min-backoff=30s --max-backoff=3600s \
+  --max-dispatches-per-second=5 --max-concurrent-dispatches=10
 ```
+
+> **Updated 2026-10-31 (NYC Marathon prep): concurrency is 10, not 1.** The
+> live queue had in fact drifted to the Cloud Tasks default of **1000** — the
+> `1` below was never applied. One batch at a time is ~0.45 photos/s (≈40k/day),
+> a third of what Drive will accept from one account (750 GB/day ≈ 120k photos),
+> so a big event would take weeks. 1000 is the other failure: Cloud Run packs
+> the batches onto one api instance and OOM-kills it. 10 is set by
+> `infra/scripts/event-scale.sh`. The cost of >1 is the folder race described
+> below — two batches can each create a same-named Club/tag folder. That is
+> cosmetic (the indexer recurses, the gallery reads Firestore); the per-file
+> claim is what prevents duplicate *photos*, and it is atomic across batches.
 
 `--max-concurrent-dispatches=1` is not optional in spirit, even though gcloud
 treats it as such: without it the queue keeps the Cloud Tasks default of 1000,
