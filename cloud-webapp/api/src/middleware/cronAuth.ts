@@ -20,7 +20,7 @@ import type { Request, Response, NextFunction } from 'express';
 
 import { env } from '../lib/config.js';
 import { requireAuth } from './auth.js';
-import { attachRole, requireAnyAdmin, requireSuperAdmin } from './rbac.js';
+import { attachRole, requireAnyAdmin, requireOwner, requireSuperAdmin } from './rbac.js';
 
 /** Constant-time compare of the provided token against SYNC_TRIGGER_TOKEN.
  *  Hashing both sides first keeps the comparison length-independent. */
@@ -48,11 +48,11 @@ export function allowCronOrAdmin(req: Request, res: Response, next: NextFunction
 }
 
 /**
- * Same shape as `allowCronOrAdmin`, but a human caller must be a SUPER admin.
- * For actions that are destructive and cross-club, where "any admin" is too wide
- * — event deletion (routes/adminEvents.ts) is the case this exists for. The
- * machine token still passes: it is only held by our own schedulers and shell
- * tooling, and it already carries whole-fleet authority.
+ * Same shape as `allowCronOrAdmin`, but a human caller must be a SUPER admin
+ * (or owner). For actions that are destructive and cross-club, where "any admin"
+ * is too wide — e.g. the selfie retention sweep. The machine token still passes:
+ * it is only held by our own schedulers and shell tooling, and it already
+ * carries whole-fleet authority.
  */
 export function allowCronOrSuperAdmin(req: Request, res: Response, next: NextFunction): void {
   if (validCronToken(req.header('x-sync-token'))) {
@@ -61,5 +61,21 @@ export function allowCronOrSuperAdmin(req: Request, res: Response, next: NextFun
   }
   requireAuth(req, res, () => {
     void attachRole(req, res, () => requireSuperAdmin(req, res, next));
+  });
+}
+
+/**
+ * Same shape again, but a human caller must be the OWNER — event deletion
+ * (routes/adminEvents.ts) is the case this exists for: it is the one action
+ * that retires a whole event across every club, so it sits above super_admin.
+ * The machine token still passes, for infra/scripts/delete-event.sh.
+ */
+export function allowCronOrOwner(req: Request, res: Response, next: NextFunction): void {
+  if (validCronToken(req.header('x-sync-token'))) {
+    next();
+    return;
+  }
+  requireAuth(req, res, () => {
+    void attachRole(req, res, () => requireOwner(req, res, next));
   });
 }

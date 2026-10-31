@@ -42,7 +42,7 @@ const STR = {
     cancel: 'Cancel',
     couldNotPreview: 'Could not check what this event holds.',
     couldNotDelete: 'Could not delete the event.',
-    superAdminOnly: 'Deleting an event is super-admin only.',
+    ownerOnly: 'Deleting an event is limited to the owner account.',
     finishRun: 'Not finished — run the delete again to remove the rest.',
   },
   zh: {
@@ -75,21 +75,21 @@ const STR = {
     cancel: '取消',
     couldNotPreview: '无法检查该活动包含的内容。',
     couldNotDelete: '无法删除活动。',
-    superAdminOnly: '删除活动仅限超级管理员。',
+    ownerOnly: '删除活动仅限所有者账户。',
     finishRun: '尚未完成——请再次执行删除以清除剩余内容。',
   },
 };
 
 interface AdminEventsProps {
-  /** Deleting is super-admin only server-side; hide the control for everyone
-   *  else rather than offering a button that can only 403. */
-  isSuperAdmin?: boolean;
+  /** Deleting is owner-only server-side; hide the control for everyone else
+   *  (super_admins included) rather than offering a button that can only 403. */
+  canDelete?: boolean;
 }
 
 /**
  * Events admin (dev plan G3.1/G3.3). Create an event (provisions a Drive folder
- * + Sheet row server-side), jump to its upload-link management, and — for
- * super_admins — delete it. Layout reuses the responsive `feedback-filters`
+ * + Sheet row server-side), jump to its upload-link management, and — for the
+ * owner — delete it. Layout reuses the responsive `feedback-filters`
  * (wraps) + `table-wrap` (scrolls) classes so it works on a phone.
  *
  * The delete is deliberately two steps: the first click only PREVIEWS (a
@@ -97,7 +97,7 @@ interface AdminEventsProps {
  * name typed in. Same contract as the API, which refuses an apply whose
  * `confirmName` doesn't match.
  */
-export function AdminEvents({ isSuperAdmin = false }: AdminEventsProps): JSX.Element {
+export function AdminEvents({ canDelete = false }: AdminEventsProps): JSX.Element {
   const t = useStrings(STR);
   const [events, setEvents] = useState<EventSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -157,7 +157,7 @@ export function AdminEvents({ isSuperAdmin = false }: AdminEventsProps): JSX.Ele
       );
       setPending(preview);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 403) setNotice(t.superAdminOnly);
+      if (e instanceof ApiError && e.status === 403) setNotice(t.ownerOnly);
       else setNotice(e instanceof Error ? e.message : t.couldNotPreview);
     } finally {
       setDeleteBusyId(null);
@@ -184,7 +184,7 @@ export function AdminEvents({ isSuperAdmin = false }: AdminEventsProps): JSX.Ele
       setConfirmText(out.derivativesRemaining ? confirmText : '');
       await load();
     } catch (e) {
-      if (e instanceof ApiError && e.status === 403) setNotice(t.superAdminOnly);
+      if (e instanceof ApiError && e.status === 403) setNotice(t.ownerOnly);
       else setNotice(e instanceof Error ? e.message : t.couldNotDelete);
     } finally {
       setDeleteBusyId(null);
@@ -285,7 +285,7 @@ export function AdminEvents({ isSuperAdmin = false }: AdminEventsProps): JSX.Ele
                 <th>{t.colDate}</th>
                 <th>{t.colIndex}</th>
                 <th>{t.colLinks}</th>
-                {isSuperAdmin && <th>{t.colDelete}</th>}
+                {canDelete && <th>{t.colDelete}</th>}
               </tr>
             </thead>
             <tbody>
@@ -299,7 +299,7 @@ export function AdminEvents({ isSuperAdmin = false }: AdminEventsProps): JSX.Ele
                       {t.manageLinks}
                     </Link>
                   </td>
-                  {isSuperAdmin && (
+                  {canDelete && (
                     <td data-label={t.colDelete}>
                       <button
                         className="btn btn-danger btn-sm"

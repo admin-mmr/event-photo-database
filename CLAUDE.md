@@ -329,16 +329,21 @@
 - **The tool:** `GET /api/admin/events/:eventId/delete-preview` reports the
   inventory; `POST /api/admin/events/:eventId/delete` is a dry run by default and,
   with `apply: true`, does the work. Admin UI: the Delete column on
-  `/admin/events` (super_admins only) previews first and needs the event's name
+  `/admin/events` (owner only) previews first and needs the event's name
   typed in. Shell wrapper `./cloud-webapp/infra/scripts/delete-event.sh [--apply]
   <event-id …>`.
 - Non-negotiables baked in — keep them if you touch it:
   - **DRY RUN unless the body says `apply: true`**, and an apply must carry
     `confirmName` matching the event's name (or its id). The route rejects a
     mismatch with 400 `confirm_mismatch` before anything is touched.
-  - **`allowCronOrSuperAdmin`, not `allowCronOrAdmin`.** Deleting an event is
-    cross-club by nature (it holds every club's photos), so a club_admin must not
-    be able to do it. The machine token still passes, for the shell script.
+  - **`allowCronOrOwner` (and `requireOwner` on the preview) — not even
+    super_admin.** Deleting an event is cross-club by nature (it holds every
+    club's photos). `owner` is a class above super_admin, granted ONLY from the
+    `OWNER_EMAILS` env allowlist (default `admin@mmrunners.org`) and never from a
+    Users row — the Sheet is world-viewable and super_admins edit it, so a Sheet
+    `owner` cell would be self-promotion. Keep `isUserRole` rejecting `owner`, and
+    keep `RoleSchema` (assignable roles) without it. The machine token still
+    passes, for the shell script.
   - **STAGED UPLOADS ARE NEVER DELETED** — only counted and warned about. A staged
     object can be the only copy of a photo that never reached Drive; deleting those
     is what destroyed volunteer photos on 2026-07-27/28. The staging bucket's

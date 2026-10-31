@@ -1,6 +1,7 @@
 /**
  * /api/admin/events/:id/delete — the guards around a destructive route:
- *   (1) super_admin only for humans, machine token accepted (shell tooling),
+ *   (1) owner only for humans (not even super_admin), machine token accepted
+ *       (shell tooling),
  *   (2) nothing is deleted unless the body says `apply: true`,
  *   (3) an apply must NAME the event (confirmName), so a mis-clicked row can't
  *       take a live gallery down,
@@ -29,10 +30,12 @@ vi.mock('../src/middleware/rbac.js', () => {
   const deny = (res: Response) => res.status(403).json({ ok: false, error: 'forbidden' });
   return {
     attachRole: (_req: Request, _res: Response, next: NextFunction) => next(),
+    requireOwner: (req: Request, res: Response, next: NextFunction) =>
+      req.user?.role === 'owner' ? next() : deny(res),
     requireSuperAdmin: (req: Request, res: Response, next: NextFunction) =>
-      req.user?.role === 'super_admin' ? next() : deny(res),
+      req.user?.role === 'owner' || req.user?.role === 'super_admin' ? next() : deny(res),
     requireAnyAdmin: (req: Request, res: Response, next: NextFunction) =>
-      req.user?.role === 'super_admin' || req.user?.role === 'club_admin' ? next() : deny(res),
+      ['owner', 'super_admin', 'club_admin'].includes(req.user?.role as string) ? next() : deny(res),
     requireRole:
       (...roles: string[]) =>
       (req: Request, res: Response, next: NextFunction) =>
@@ -118,6 +121,7 @@ vi.mock('../src/services/eventStore.js', () => ({
 
 const { buildServer } = await import('../src/server.js');
 
+const OWNER = JSON.stringify({ uid: 'o', email: 'admin@mmrunners.org', emailVerified: true, role: 'owner', clubId: '' });
 const SUPER = JSON.stringify({ uid: 's', email: 'boss@x.org', emailVerified: true, role: 'super_admin', clubId: '' });
 const CLUB = JSON.stringify({ uid: 'c', email: 'lead@blue.org', emailVerified: true, role: 'club_admin', clubId: 'Blue' });
 const MEMBER = JSON.stringify({ uid: 'm', email: 'm@x.org', emailVerified: true });
@@ -134,13 +138,15 @@ describe('event delete route', () => {
     recordAudit.mockClear();
   });
 
-  it('is super-admin only: a club_admin and a member are both forbidden', async () => {
-    for (const user of [CLUB, MEMBER]) {
+  it('is owner only: a super_admin, a club_admin and a member are all forbidden', async () => {
+    for (const user of [SUPER, CLUB, MEMBER]) {
       // eslint-disable-next-line no-await-in-loop
       const res = await request(app).post(DELETE_URL).set('x-test-user', user).send({});
       expect(res.status).toBe(403);
+      // eslint-disable-next-line no-await-in-loop
+      expect((await request(app).get('/api/admin/events/ev1/delete-preview').set('x-test-user', user)).status).toBe(403);
     }
-    expect((await request(app).get('/api/admin/events/ev1/delete-preview').set('x-test-user', CLUB)).status).toBe(403);
+    expect((await request(app).get('/api/admin/events/ev1/delete-preview').set('x-test-user', OWNER)).status).toBe(200);
     expect(deleteEvent).not.toHaveBeenCalled();
   });
 
@@ -158,7 +164,7 @@ describe('event delete route', () => {
   it('dry runs when apply is absent or false', async () => {
     for (const body of [{}, { apply: false }]) {
       // eslint-disable-next-line no-await-in-loop
-      const res = await request(app).post(DELETE_URL).set('x-test-user', SUPER).send(body);
+      const res = await request(app).post(DELETE_URL).set('x-test-user', OWNER).send(body);
       expect(res.status).toBe(200);
       expect(res.body.apply).toBe(false);
     }
@@ -169,7 +175,7 @@ describe('event delete route', () => {
   it('rejects a truthy-but-not-boolean apply instead of treating it as an apply', async () => {
     for (const body of [{ apply: 'yes' }, { apply: 1 }, { apply: 'true' }]) {
       // eslint-disable-next-line no-await-in-loop
-      const res = await request(app).post(DELETE_URL).set('x-test-user', SUPER).send(body);
+      const res = await request(app).post(DELETE_URL).set('x-test-user', OWNER).send(body);
       expect(res.status).toBe(400);
     }
     expect(deleteEvent).not.toHaveBeenCalled();
@@ -178,7 +184,7 @@ describe('event delete route', () => {
   it('refuses an apply without a matching confirmName', async () => {
     for (const body of [{ apply: true }, { apply: true, confirmName: '' }, { apply: true, confirmName: 'Test1' }]) {
       // eslint-disable-next-line no-await-in-loop
-      const res = await request(app).post(DELETE_URL).set('x-test-user', SUPER).send(body);
+      const res = await request(app).post(DELETE_URL).set('x-test-user', OWNER).send(body);
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('confirm_mismatch');
     }
@@ -190,7 +196,7 @@ describe('event delete route', () => {
       deleteEvent.mockClear();
       recordAudit.mockClear();
       // eslint-disable-next-line no-await-in-loop
-      const res = await request(app).post(DELETE_URL).set('x-test-user', SUPER).send({ apply: true, confirmName });
+      const res = await request(app).post(DELETE_URL).set('x-test-user', OWNER).send({ apply: true, confirmName });
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({ apply: true, driveFolderTrashed: true, deleteId: 'del-1' });
       expect(deleteEvent).toHaveBeenCalledTimes(1);
@@ -200,21 +206,21 @@ describe('event delete route', () => {
 
   it('confirms a nameless event by id only', async () => {
     identity = { eventId: 'ev1', name: '' };
-    const bad = await request(app).post(DELETE_URL).set('x-test-user', SUPER).send({ apply: true, confirmName: 'Test' });
+    const bad = await request(app).post(DELETE_URL).set('x-test-user', OWNER).send({ apply: true, confirmName: 'Test' });
     expect(bad.status).toBe(400);
-    const ok = await request(app).post(DELETE_URL).set('x-test-user', SUPER).send({ apply: true, confirmName: 'ev1' });
+    const ok = await request(app).post(DELETE_URL).set('x-test-user', OWNER).send({ apply: true, confirmName: 'ev1' });
     expect(ok.status).toBe(200);
   });
 
   it('404s an unknown event without calling the delete', async () => {
     identity = null;
-    const res = await request(app).post(DELETE_URL).set('x-test-user', SUPER).send({ apply: true, confirmName: 'ev1' });
+    const res = await request(app).post(DELETE_URL).set('x-test-user', OWNER).send({ apply: true, confirmName: 'ev1' });
     expect(res.status).toBe(404);
     expect(deleteEvent).not.toHaveBeenCalled();
   });
 
   it('preview is read-only and returns the inventory', async () => {
-    const res = await request(app).get('/api/admin/events/ev1/delete-preview').set('x-test-user', SUPER);
+    const res = await request(app).get('/api/admin/events/ev1/delete-preview').set('x-test-user', OWNER);
     expect(res.status).toBe(200);
     expect(res.body.inventory).toMatchObject({ links: 5, activeLinks: 5 });
     expect(deleteEvent).not.toHaveBeenCalled();

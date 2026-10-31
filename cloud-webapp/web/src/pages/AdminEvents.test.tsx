@@ -81,10 +81,10 @@ function mockApi(opts?: { applied?: unknown }): ReturnType<typeof vi.fn> {
   return calls;
 }
 
-const renderPage = (isSuperAdmin = true): void => {
+const renderPage = (canDelete = true): void => {
   render(
     <MemoryRouter>
-      <AdminEvents isSuperAdmin={isSuperAdmin} />
+      <AdminEvents canDelete={canDelete} />
     </MemoryRouter>,
   );
 };
@@ -97,7 +97,7 @@ beforeEach(() => {
 });
 
 describe('<AdminEvents /> delete', () => {
-  it('offers no delete control to a non-super-admin', async () => {
+  it('offers no delete control to anyone but the owner', async () => {
     mockApi();
     renderPage(false);
     await screen.findByText('Real Race');

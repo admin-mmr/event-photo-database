@@ -13,7 +13,7 @@
  *
  * Auth: `requireSuperAdmin`, not `requireAnyAdmin`. An event holds every club's
  * photos, so an event-wide query is cross-club by nature — the same reasoning
- * that makes event deletion super-admin-only. Confining a club_admin would mean
+ * that keeps event deletion away from club_admins. Confining a club_admin would mean
  * resolving each hit's club before returning it; until that exists, the narrow
  * gate is the honest one rather than a scope check that half works.
  *

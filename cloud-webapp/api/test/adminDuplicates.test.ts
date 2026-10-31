@@ -31,6 +31,8 @@ vi.mock('../src/middleware/rbac.js', () => ({
     req.user?.role === 'super_admin' || req.user?.role === 'club_admin'
       ? next()
       : res.status(403).json({ ok: false, error: 'forbidden' }),
+  requireOwner: (req: Request, res: Response, next: NextFunction) =>
+    req.user?.role === 'owner' ? next() : res.status(403).json({ ok: false, error: 'forbidden' }),
   requireSuperAdmin: (_req: Request, _res: Response, next: NextFunction) => next(),
   requireRole: () => (_req: Request, _res: Response, next: NextFunction) => next(),
   requireClubScope: () => (_req: Request, _res: Response, next: NextFunction) => next(),

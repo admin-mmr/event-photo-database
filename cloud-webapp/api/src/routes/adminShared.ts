@@ -8,7 +8,7 @@ import type { Request, Response } from 'express';
 import { ZodError } from 'zod';
 
 import { env } from '../lib/config.js';
-import { UserRole } from '../lib/roles.js';
+import { UserRole, isGlobalAdmin } from '../lib/roles.js';
 import { ClubStoreError } from '../services/clubStore.js';
 import { DeletedFilesError } from '../services/deletedFilesStore.js';
 import { EventStoreError } from '../services/eventStore.js';
@@ -62,12 +62,12 @@ export function handleStoreError(err: unknown, res: Response): boolean {
 
 /**
  * Effective club scope for a request: a club_admin is pinned to their own club;
- * a super_admin sees everything unless masquerading (X-Masquerade-Club header,
- * honored ONLY for super_admins). Returns undefined for "all clubs"; the
+ * an owner or super_admin sees everything unless masquerading (X-Masquerade-Club
+ * header, honored ONLY for those two). Returns undefined for "all clubs"; the
  * sentinel '__none__' means "no club" (a roleless/over-scoped caller sees none).
  */
 export function effectiveClubScope(req: Request): string | undefined {
-  if (req.user?.role === UserRole.SUPER_ADMIN) {
+  if (isGlobalAdmin(req.user?.role)) {
     const m = req.header('X-Masquerade-Club');
     return m && m.trim() ? m.trim() : undefined;
   }

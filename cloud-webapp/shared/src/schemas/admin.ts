@@ -7,8 +7,17 @@ import { z } from 'zod';
  * what gas-app writes into the Users/Clubs tabs.
  */
 
+/** Roles that can be ASSIGNED (stored in the Users sheet, set via the users API). */
 export const RoleSchema = z.enum(['super_admin', 'club_admin', 'api_client']);
 export type Role = z.infer<typeof RoleSchema>;
+
+/**
+ * Roles a session can RESOLVE to: the assignable ones plus `owner` (super_admin
+ * + delete events), which comes only from the api's OWNER_EMAILS env allowlist
+ * and so is deliberately absent from RoleSchema — no API call can grant it.
+ */
+export const SessionRoleSchema = z.enum(['owner', ...RoleSchema.options]);
+export type SessionRole = z.infer<typeof SessionRoleSchema>;
 
 export const StatusSchema = z.enum(['active', 'inactive']);
 export type Status = z.infer<typeof StatusSchema>;
@@ -25,7 +34,7 @@ export const MeResponseSchema = z.object({
   ok: z.literal(true),
   email: z.string().nullable(),
   emailVerified: z.boolean(),
-  role: RoleSchema.nullable(),
+  role: SessionRoleSchema.nullable(),
   /** Club normalizedName for a club_admin; '' otherwise. */
   clubId: z.string().default(''),
 });

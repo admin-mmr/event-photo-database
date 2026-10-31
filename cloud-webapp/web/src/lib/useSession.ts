@@ -12,12 +12,12 @@
 
 import { useEffect, useState } from 'react';
 import type { User } from 'firebase/auth';
-import type { MeResponse, Role } from '@cloud-webapp/shared';
+import type { MeResponse, SessionRole } from '@cloud-webapp/shared';
 import { apiGet } from './api.js';
 
 export interface Session {
   /** Control-plane role, or null for a member / guest with no role. */
-  role: Role | null;
+  role: SessionRole | null;
   /** Club normalizedName for a club_admin; '' otherwise. */
   clubId: string;
   /** True while /api/me is in flight (false once resolved or skipped). */

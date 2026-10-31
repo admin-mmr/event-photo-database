@@ -35,7 +35,7 @@ import { describe, it, expect } from 'vitest';
 process.env.NODE_ENV = 'test';
 
 const { buildServer } = await import('../src/server.js');
-const { requireAnyAdmin, requireSuperAdmin } = await import('../src/middleware/rbac.js');
+const { requireAnyAdmin, requireOwner, requireSuperAdmin } = await import('../src/middleware/rbac.js');
 
 // ── route-table introspection ────────────────────────────────────────────────
 
@@ -110,11 +110,12 @@ const AUTHENTICATORS = new Set([
   'requireAuth', // Firebase ID token → a signed-in member
   'allowCronOrAdmin', // X-Sync-Token (machine) OR an admin session
   'allowCronOrSuperAdmin', // X-Sync-Token (machine) OR a super_admin session
+  'allowCronOrOwner', // X-Sync-Token (machine) OR the owner session
   'requirePartner', // partner API key
 ]);
 
 /** Middleware that establishes the caller may act on the CONTROL PLANE. */
-const ADMIN_GUARDS = new Set(['requireRoleGuard', 'allowCronOrAdmin', 'allowCronOrSuperAdmin']);
+const ADMIN_GUARDS = new Set(['requireRoleGuard', 'allowCronOrAdmin', 'allowCronOrSuperAdmin', 'allowCronOrOwner']);
 
 /**
  * Routes that are deliberately reachable without a Firebase session, each with
@@ -215,8 +216,8 @@ describe('the control plane is admin-only', () => {
   });
 
   it('keeps super_admin-only the routes that are cross-club by nature', () => {
-    // Deleting an event touches every club's photos in it, and the audit log and
-    // user/club administration are org-wide. A club_admin must not reach these.
+    // The audit log and user/club administration are org-wide. A club_admin must
+    // not reach these. (Event deletion sits one class higher — see below.)
     // Named routes, not a pattern: this is a product decision per route.
     //
     // Asserted by function IDENTITY, because requireAnyAdmin and
@@ -228,7 +229,6 @@ describe('the control plane is admin-only', () => {
       'POST /api/admin/users',
       'PATCH /api/admin/users/:email',
       'POST /api/admin/clubs',
-      'GET /api/admin/events/:eventId/delete-preview',
       'POST /api/admin/masquerade/start',
       'POST /api/admin/masquerade/end',
     ];
@@ -240,10 +240,28 @@ describe('the control plane is admin-only', () => {
     }
   });
 
-  it('is the only place super_admin-only-ness is decided — the two guards differ', () => {
-    // Guards against a refactor that aliased one to the other, which would make
+  it('keeps event deletion OWNER-only — a super_admin may see every club but not delete', () => {
+    // Deleting an event retires every club's photos in it, so it sits above
+    // super_admin: only the OWNER_EMAILS account (admin@mmrunners.org) or the
+    // machine token (delete-event.sh).
+    const preview = routes.find((x) => key(x) === 'GET /api/admin/events/:eventId/delete-preview');
+    expect(preview, 'delete-preview renamed or removed?').toBeDefined();
+    expect(preview!.handles).toContain(requireOwner);
+    expect(preview!.handles).not.toContain(requireSuperAdmin);
+    expect(preview!.handles).not.toContain(requireAnyAdmin);
+
+    const del = routes.find((x) => key(x) === 'POST /api/admin/events/:eventId/delete');
+    expect(del, 'delete renamed or removed?').toBeDefined();
+    expect(del!.guards).toContain('allowCronOrOwner');
+    expect(del!.guards).not.toContain('allowCronOrSuperAdmin');
+    expect(del!.guards).not.toContain('allowCronOrAdmin');
+  });
+
+  it('is the only place super_admin-only-ness is decided — the guards differ', () => {
+    // Guards against a refactor that aliased one to another, which would make
     // every assertion above vacuously true.
     expect(requireSuperAdmin).not.toBe(requireAnyAdmin);
+    expect(requireOwner).not.toBe(requireSuperAdmin);
   });
 });
 
