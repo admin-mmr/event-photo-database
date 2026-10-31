@@ -251,7 +251,7 @@ describe('events routes', () => {
     it('picks up an event whose in-flight state has gone stale', async () => {
       fakeDb.events.set('ev1', {
         driveFolderId: 'f',
-        indexState: { status: 'queued', updatedAt: new Date(Date.now() - 45 * 60 * 1000).toISOString() },
+        indexState: { status: 'queued', updatedAt: new Date(Date.now() - 90 * 60 * 1000).toISOString() },
       });
       const res = await request(app).post('/api/admin/index-scan').set('X-Sync-Token', 'cron-secret');
       expect(res.status).toBe(200);

@@ -362,6 +362,41 @@
     on a header-less tab it anchors at row 1, or the first row would be left
     uncleared and then duplicated.
 
+## Big events (NYC Marathon, 2026-11-01): what bounds throughput
+
+- **Google Drive, not GCP, is the ceiling.** Every copy is written as ONE
+  account (`DWD_SUBJECT`, admin@mmrunners.org), and Google caps an account at
+  **750 GB/day** of uploads + copies ≈ **120k photos/day** at the measured
+  ~6 MB/photo. No Cloud Run sizing changes that. Once the cap trips, copies
+  fail and the photos stay safe in staging — re-dispatch them the next day with
+  `recover-staged-uploads.sh`. That is why the staging lifecycle goes to 30 days
+  for a big event.
+- **`./cloud-webapp/infra/scripts/event-scale.sh up|down|status`** holds every
+  temporary knob (queue concurrency, staging lifecycle, managed folders off,
+  per-link upload limit, matcher warm window, budget alert). The matcher's
+  `min-instances=1` there is the documented exception to the zero-idle-cost
+  policy: a scheduled warm window, removed by `down`.
+- **The upload worker must not start the indexer while a run is in flight**
+  (`services/indexTrigger.ts`, a transactional claim on `indexState`). It used to
+  trigger after every batch; with batches running concurrently that stacks 8-vCPU
+  executions on one event, all embedding the same photos and racing to write one
+  manifest. A skipped trigger is picked up by the next index-scan tick.
+- **`STALE_INDEX_MS` is 60 min** (`lib/indexState.ts`, shared by index-scan,
+  "Index now" and the worker). The indexer only heartbeats inside its embedding
+  loop; at 100k+ photos the un-beaten stretches around it (Drive listing, store
+  load, Firestore upserts, store write) can pass 30 min, and a live run mistaken
+  for dead gets a second execution stacked on it.
+- **No reCAPTCHA on `/volunteer/upload/session`.** It is called once per FILE and
+  reCAPTCHA bills per assessment (~$1/1k past 100k/month): ~$400 for 500k photos,
+  and a fast bulk uploader is the pattern that scores low. The link token + the
+  per-link rate limit guard that route.
+- **Still unsolved at this scale** (post-event work, see ROADMAP): the indexer
+  writes its store only at the end (24h task timeout ≈ 180k NEW photos per run);
+  the matcher scores every crop per search (~10–15 s at 500k photos in one
+  event); each upload batch lists the whole event in Drive for its duplicate
+  check; the gallery waits on Drive. The real fix is to build the gallery from
+  the staged GCS bytes and make Drive the archive.
+
 ## Recovering volunteer uploads stranded in staging
 
 - **"Photo missing from the gallery" is usually NOT a lost upload.** The path is
@@ -876,8 +911,10 @@
 ## Indexer speed vs. free tier
 
 - **Embedding is CPU-bound ONNX**, so throughput scales ~linearly with vCPUs.
-  `deploy-indexer.sh` now defaults to `--cpu=8 --memory=12Gi` and
-  `INDEX_CONCURRENCY=8` (was 4 / 8 GiB / 4). For a one-off bigger/faster run
+  `deploy-indexer.sh` now defaults to `--cpu=8 --memory=32Gi --task-timeout=86400`
+  and `INDEX_CONCURRENCY=8` (was 4 / 8 GiB / 4, then 12 GiB / 2h until the NYC
+  Marathon — memory scales with the event's total photos, not the new ones,
+  because the whole store is held and rewritten each run). For a one-off bigger/faster run
   without redeploying, override at execute time:
 
   ```bash
@@ -893,7 +930,8 @@
   runs/month stay free (memory/450k GiB-s is the binding constraint). The trap:
   raising memory without a matching runtime drop (e.g. if a run is I/O-bound on
   Drive) just burns more GiB-seconds — so raise CPU/`INDEX_CONCURRENCY` freely
-  but keep memory only as high as needed to avoid OOM (12 GiB at concurrency 8).
+  but keep memory only as high as needed to avoid OOM (12 GiB sufficed for a
+  7k-photo event; 32 GiB is for 100k+).
 - **GPU is never free.** An L4 is ~$0.000187/sec (~$0.67/hr) on top of CPU+memory
   and isn't covered by any free tier; reserve it for events large enough to
   justify a few cents each. Jobs bill the full instance lifetime (model load +

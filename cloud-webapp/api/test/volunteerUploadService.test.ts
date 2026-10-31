@@ -28,6 +28,14 @@ vi.mock('../src/services/sheetsService.js', () => ({
 }));
 
 const eventDocs: Record<string, Record<string, unknown> | undefined> = {};
+// `set(..., { merge: true })` on an event doc, one level deep — enough for the
+// guarded indexer trigger's `indexState` claim (indexTrigger.ts).
+function mergeEventDoc(id: string, data: Record<string, unknown>): void {
+  const prev = eventDocs[id] ?? {};
+  const prevState = (prev.indexState ?? {}) as Record<string, unknown>;
+  const nextState = data.indexState as Record<string, unknown> | undefined;
+  eventDocs[id] = { ...prev, ...data, ...(nextState ? { indexState: { ...prevState, ...nextState } } : {}) };
+}
 // Backing store for the `upload_dedup` claim collection. `create()` rejects with
 // the gRPC ALREADY_EXISTS code when the doc is present, exactly as Firestore
 // does — that atomicity is the whole point of the claim, so the double has to
@@ -74,7 +82,12 @@ vi.mock('../src/lib/firestore.js', () => ({
       }
       if (name !== 'events') throw new Error(`unexpected collection ${name}`);
       return {
-        doc: (id: string) => ({ get: async () => ({ data: () => eventDocs[id] }) }),
+        doc: (id: string) => ({
+          __col: 'events',
+          __id: id,
+          get: async () => ({ data: () => eventDocs[id] }),
+          set: async (data: Record<string, unknown>) => mergeEventDoc(id, data),
+        }),
       };
     },
     // The stale-claim reclaim reads the existing claim in a transaction. Modelled
@@ -83,10 +96,11 @@ vi.mock('../src/lib/firestore.js', () => ({
     // catch, which would give the right answer for the wrong reason.
     runTransaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> =>
       fn({
-        get: async (ref: { __id: string }) => ({
-          exists: dedupDocs.has(ref.__id),
-          data: () => dedupDocs.get(ref.__id),
-        }),
+        get: async (ref: { __col?: string; __id: string }) =>
+          ref.__col === 'events'
+            ? { exists: eventDocs[ref.__id] !== undefined, data: () => eventDocs[ref.__id] }
+            : { exists: dedupDocs.has(ref.__id), data: () => dedupDocs.get(ref.__id) },
+        set: (ref: { __id: string }, data: Record<string, unknown>) => mergeEventDoc(ref.__id, data),
         update: (ref: { __id: string }, patch: Record<string, unknown>) =>
           void dedupDocs.set(ref.__id, { ...dedupDocs.get(ref.__id), ...patch }),
       }),
@@ -390,6 +404,44 @@ describe('validateUploadLink', () => {
 });
 
 // ── enqueueStagedBatch ──────────────────────────────────────────────────────
+
+describe('enqueueStagedBatch indexer trigger guard', () => {
+  const stageOne = (batch: string, n: number): string => {
+    const name = `vol/ev1/${batch}/u${n}.jpg`;
+    stageObj(name, { size: 100 + n, contentType: 'image/jpeg', metadata: { originalName: `r-${batch}-${n}.jpg` } });
+    return name;
+  };
+
+  // Concurrent batches used to stack one indexer execution each on the same
+  // event (all re-embedding the same photos, racing to write one manifest).
+  it('starts one run, then leaves the rest to index-scan while it is in flight', async () => {
+    const link = await validateUploadLink('tok-good');
+
+    await enqueueStagedBatch(link, 'g1', [stageOne('g1', 1)]);
+    expect(indexTriggers).toEqual(['ev1']);
+    expect((eventDocs['ev1']?.indexState as Record<string, unknown>)?.status).toBe('queued');
+
+    await enqueueStagedBatch(link, 'g2', [stageOne('g2', 2)]);
+    expect(indexTriggers).toEqual(['ev1']); // still one — the second batch was skipped
+  });
+
+  it('triggers again once the previous run is done', async () => {
+    const link = await validateUploadLink('tok-good');
+    eventDocs['ev1'] = { ...eventDocs['ev1'], indexState: { status: 'done', updatedAt: new Date().toISOString() } };
+
+    await enqueueStagedBatch(link, 'g3', [stageOne('g3', 3)]);
+    expect(indexTriggers).toEqual(['ev1']);
+  });
+
+  it('does not believe an in-flight state older than the stale window', async () => {
+    const link = await validateUploadLink('tok-good');
+    const longAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    eventDocs['ev1'] = { ...eventDocs['ev1'], indexState: { status: 'running', updatedAt: longAgo } };
+
+    await enqueueStagedBatch(link, 'g4', [stageOne('g4', 4)]);
+    expect(indexTriggers).toEqual(['ev1']);
+  });
+});
 
 describe('enqueueStagedBatch', () => {
   it('copies into the Event/Club/tag/batch hierarchy with credited names, deletes staged, triggers once', async () => {

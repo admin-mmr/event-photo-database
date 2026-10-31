@@ -109,15 +109,22 @@ gcloud run deploy "$SERVICE" \
   --service-account="matcher-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
   --no-allow-unauthenticated \
   --port=8080 \
-  --memory=2Gi \
-  --cpu=2 \
-  --max-instances=3 \
+  --memory=16Gi \
+  --cpu=4 \
+  --max-instances=10 \
   --min-instances=0 \
   --concurrency=4 \
-  --timeout=120 \
+  --timeout=300 \
   --set-env-vars="EMBEDDINGS_ROOT=gs://${PROJECT_ID}-derivatives"
 # min-instances=0 keeps steady-state cost at $0; raise to 1 before event
-# weekends / demos to avoid the model-load cold start (dev plan §8).
+# weekends / demos to avoid the model-load cold start (dev plan §8) — use
+# `event-scale.sh up|down`, which does exactly that and nothing permanent.
+# 16Gi / 4 vCPU / max 10 / 300s since the NYC Marathon (2026-11-01): each
+# instance holds a whole event's vectors + manifest in memory (~22 KB/photo on
+# disk, ~2x that while loading), so a 100k-photo event needs ~5 GB and the old
+# 2Gi could not load anything past ~20k photos. Bills only while serving.
+# NOTE: gunicorn's own --timeout (Dockerfile, 120s) still caps a single
+# request; a first search of a very large event can exceed it while loading.
 
 URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)')"
 READY="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" \

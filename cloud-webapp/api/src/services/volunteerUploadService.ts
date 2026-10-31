@@ -43,7 +43,7 @@ import {
   type ClaimInput,
   type ClaimResult,
 } from './uploadDedupService.js';
-import { triggerIndexJob } from './indexerJob.js';
+import { triggerIndexJobUnlessInFlight } from './indexTrigger.js';
 import { appendUploadLog } from './uploadLogService.js';
 import { getUploadBatch, initUploadBatch, updateUploadBatch } from './uploadBatchService.js';
 import { buildCreditedFileName } from '../lib/creditedFileName.js';
@@ -653,10 +653,14 @@ export async function enqueueStagedBatch(
 
   if (copied > 0) {
     try {
-      const { execution } = await triggerIndexJob(link.eventId);
+      // Guarded: concurrent batches must not stack executions on one event.
+      // A skipped trigger is picked up by the next index-scan tick.
+      const result = await triggerIndexJobUnlessInFlight(link.eventId);
       logger.info(
-        { eventId: link.eventId, batchId, copied, skippedDuplicates, execution },
-        'volunteer batch copied to Drive; indexer triggered',
+        { eventId: link.eventId, batchId, copied, skippedDuplicates, ...result },
+        result.triggered
+          ? 'volunteer batch copied to Drive; indexer triggered'
+          : 'volunteer batch copied to Drive; indexer already running (index-scan will pick these up)',
       );
     } catch (err) {
       // Files are safely in Drive; the next scheduled/manual scan will index them.

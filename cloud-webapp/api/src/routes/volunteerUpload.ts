@@ -29,7 +29,6 @@ import {
 
 import { logger } from '../lib/logger.js';
 import { volunteerUploadRateLimit } from '../middleware/rateLimit.js';
-import { requireRecaptcha } from '../middleware/recaptcha.js';
 import { validCronToken } from '../middleware/cronAuth.js';
 import {
   validateUploadLink,
@@ -66,10 +65,16 @@ function linkErrorStatus(code: UploadLinkError['code']): number {
  * for every file so they group into one receipt. We accept it from the body
  * (falling back to a fresh one) rather than minting per file.
  */
+// No reCAPTCHA here, deliberately. This route is called once PER FILE, and
+// reCAPTCHA bills per assessment: a 500k-photo event (NYC Marathon,
+// 2026-11-01) would have been ~500k assessments ≈ $400, and a volunteer
+// uploading thousands of frames fast is exactly the pattern that scores low,
+// so a legitimate batch could be 403'd partway through. The secret per-link
+// token (checked below) plus the per-link rate limit already guard the bucket.
+// The web client still sends `X-Recaptcha-Token`; it is simply ignored.
 volunteerUploadRouter.post(
   '/volunteer/upload/session',
   volunteerUploadRateLimit(),
-  requireRecaptcha('volunteer_upload'),
   async (req, res, next) => {
   try {
     const parsed = CreateUploadSessionRequestSchema.safeParse(req.body ?? {});
