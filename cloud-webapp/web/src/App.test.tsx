@@ -86,7 +86,7 @@ describe('<App />', () => {
 
   // ── Role-aware navigation (driven by GET /api/me) ─────────────────────────
 
-  function stubFetchWithRole(role: 'super_admin' | 'club_admin' | null): void {
+  function stubFetchWithRole(role: 'owner' | 'super_admin' | 'club_admin' | null): void {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string | URL | Request) => {
@@ -119,6 +119,14 @@ describe('<App />', () => {
     // …plus the any-admin items and the everyone items.
     expect(screen.getByRole('link', { name: 'Users' })).toBeTruthy();
     expect(screen.getByRole('link', { name: /^Galleries$/ })).toBeTruthy();
+  });
+
+  it('shows the owner every super_admin menu item too', async () => {
+    authState.user = { email: 'admin@mmrunners.org' } as User;
+    stubFetchWithRole('owner');
+    render(<App />);
+    expect(await screen.findByRole('link', { name: 'Audit' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Users' })).toBeTruthy();
   });
 
   it('shows club-scoped items to a club_admin but hides super-only ones', async () => {

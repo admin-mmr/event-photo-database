@@ -7,12 +7,13 @@
  * Audited (EVENT_CREATED). Listing/reading events stays in routes/events.ts.
  *
  * Delete flow: `GET …/delete-preview` (inventory) and `POST …/delete` (dry run
- * unless `apply: true`), both super-admin-only — see eventDeletionService.ts for
+ * unless `apply: true`), both owner-only — see eventDeletionService.ts for
  * what happens to each of the five stores an event lives in. Audited
  * (EVENT_DELETED).
  *
  * RBAC: any admin may create an event (a club_admin needs one before generating
- * their club's upload links). DELETING is super_admin only: it is cross-club by
+ * their club's upload links). DELETING is owner only (a class above super_admin,
+ * granted only to admin@mmrunners.org via OWNER_EMAILS): it is cross-club by
  * nature (an event holds every club's photos) and it is the one control-plane
  * action that removes rather than appends. The Sheet is SSOT; the reconciler keeps
  * the cache in sync on its normal schedule regardless of the direct upsert here.
@@ -30,8 +31,8 @@ import { env } from '../lib/config.js';
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
-import { allowCronOrSuperAdmin } from '../middleware/cronAuth.js';
-import { attachRole, requireAnyAdmin, requireSuperAdmin } from '../middleware/rbac.js';
+import { allowCronOrOwner } from '../middleware/cronAuth.js';
+import { attachRole, requireAnyAdmin, requireOwner } from '../middleware/rbac.js';
 import { recordAudit } from '../services/auditStore.js';
 import { DRIVE_SCOPE_READWRITE, getDriveToken, getOrCreateSubfolder } from '../services/driveService.js';
 import { optedInAmong } from '../services/emailPrefsStore.js';
@@ -145,7 +146,7 @@ adminEventsRouter.get(
   '/admin/events/:eventId/delete-preview',
   requireAuth,
   attachRole,
-  requireSuperAdmin,
+  requireOwner,
   async (req, res, next) => {
     try {
       const sid = masterSheetId(res);
@@ -181,10 +182,10 @@ adminEventsRouter.get(
  * Answers 200 even when parts failed — `warnings` and `derivativesRemaining` say
  * what is left, and re-running is safe (every step is idempotent).
  *
- * Auth: `allowCronOrSuperAdmin`, so infra/scripts/delete-event.sh can run it with
- * the machine token while human callers must be super_admins.
+ * Auth: `allowCronOrOwner`, so infra/scripts/delete-event.sh can run it with
+ * the machine token while human callers must be the owner.
  */
-adminEventsRouter.post('/admin/events/:eventId/delete', allowCronOrSuperAdmin, async (req, res, next) => {
+adminEventsRouter.post('/admin/events/:eventId/delete', allowCronOrOwner, async (req, res, next) => {
   try {
     const sid = masterSheetId(res);
     if (!sid) return;

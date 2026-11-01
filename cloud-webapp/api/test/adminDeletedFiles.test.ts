@@ -19,6 +19,8 @@ vi.mock('../src/middleware/rbac.js', () => {
   const deny = (res: Response) => res.status(403).json({ ok: false, error: 'forbidden' });
   return {
     attachRole: (_req: Request, _res: Response, next: NextFunction) => next(),
+    requireOwner: (req: Request, res: Response, next: NextFunction) =>
+      req.user?.role === 'owner' ? next() : res.status(403).json({ ok: false, error: 'forbidden' }),
     requireSuperAdmin: (req: Request, res: Response, next: NextFunction) =>
       req.user?.role === 'super_admin' ? next() : deny(res),
     requireAnyAdmin: (req: Request, res: Response, next: NextFunction) =>
@@ -30,6 +32,7 @@ vi.mock('../src/middleware/rbac.js', () => {
 vi.mock('../src/middleware/cronAuth.js', () => ({
   allowCronOrAdmin: (_req: Request, _res: Response, next: NextFunction) => next(),
   allowCronOrSuperAdmin: (_req: Request, _res: Response, next: NextFunction) => next(),
+  allowCronOrOwner: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
 
 const recordAudit = vi.fn(async (..._a: unknown[]) => undefined);

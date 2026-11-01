@@ -5,7 +5,8 @@
  * Roles resolve from the Users sheet (SSOT, via userStore's TTL cache). A
  * bootstrap allowlist (env.ADMIN_EMAILS) is always treated as super_admin so the
  * org can never lock itself out before any Users rows exist — same allowlist the
- * legacy requireAdmin uses.
+ * legacy requireAdmin uses. The `owner` class comes ONLY from env.OWNER_EMAILS
+ * (see roles.ts for why the Sheet can never grant it).
  *
  * Because the Sheet has no row-level security, this middleware is the ONLY guard
  * on Sheet writes — every control-plane write route must sit behind requireRole
@@ -16,11 +17,18 @@ import type { Request, Response, NextFunction } from 'express';
 
 import { env } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
-import { UserRole, UserStatus, type UserRole as Role } from '../lib/roles.js';
+import { UserRole, UserStatus, isGlobalAdmin, isUserRole, type UserRole as Role } from '../lib/roles.js';
 import { getUserByEmail } from '../services/userStore.js';
 
+const emailList = (raw: string): string[] =>
+  raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+
 function bootstrapAdmins(): string[] {
-  return env.ADMIN_EMAILS.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return emailList(env.ADMIN_EMAILS);
+}
+
+function owners(): string[] {
+  return emailList(env.OWNER_EMAILS);
 }
 
 /**
@@ -28,11 +36,17 @@ function bootstrapAdmins(): string[] {
  * Never rejects on its own — gating is done by requireRole / requireClubScope —
  * so routes that only need authentication can run this harmlessly.
  *
- * Resolution order: bootstrap allowlist → active Users row → none.
+ * Resolution order: owner allowlist → bootstrap allowlist → active Users row → none.
  */
 export async function attachRole(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const email = req.user?.email?.toLowerCase();
   if (!email) {
+    next();
+    return;
+  }
+  if (owners().includes(email)) {
+    req.user!.role = UserRole.OWNER;
+    req.user!.clubId = '';
     next();
     return;
   }
@@ -45,7 +59,9 @@ export async function attachRole(req: Request, _res: Response, next: NextFunctio
   if (env.MASTER_SPREADSHEET_ID) {
     try {
       const user = await getUserByEmail(env.MASTER_SPREADSHEET_ID, email);
-      if (user && user.status === UserStatus.ACTIVE) {
+      // isUserRole: a Users row can never carry owner (or any unknown string),
+      // even if someone types it into the Sheet by hand.
+      if (user && user.status === UserStatus.ACTIVE && isUserRole(user.role)) {
         req.user!.role = user.role;
         req.user!.clubId = user.clubId;
       }
@@ -74,14 +90,19 @@ export function requireRole(...roles: Role[]) {
   };
 }
 
-/** Convenience: super_admin only. */
-export const requireSuperAdmin = requireRole(UserRole.SUPER_ADMIN);
-/** Convenience: any admin (super_admin or club_admin). */
-export const requireAnyAdmin = requireRole(UserRole.SUPER_ADMIN, UserRole.CLUB_ADMIN);
+// Classes nest: owner ⊇ super_admin ⊇ club_admin. Each guard lists every class
+// above it, so an owner passes anything a super_admin can.
+
+/** Convenience: owner only — event deletion. */
+export const requireOwner = requireRole(UserRole.OWNER);
+/** Convenience: super_admin (or owner). */
+export const requireSuperAdmin = requireRole(UserRole.OWNER, UserRole.SUPER_ADMIN);
+/** Convenience: any admin (owner, super_admin or club_admin). */
+export const requireAnyAdmin = requireRole(UserRole.OWNER, UserRole.SUPER_ADMIN, UserRole.CLUB_ADMIN);
 
 /**
- * Enforce club scope on a route that targets a specific club's data. super_admin
- * passes for any club; a club_admin passes only for their own `clubId`. Must run
+ * Enforce club scope on a route that targets a specific club's data. An owner or
+ * super_admin passes for any club; a club_admin passes only for their own `clubId`. Must run
  * after attachRole (and typically requireAnyAdmin).
  *
  * `getClubId` extracts the target club (normalizedName) from the request — e.g.
@@ -92,7 +113,7 @@ export function requireClubScope(getClubId: (req: Request) => string | undefined
   // Named for the same reason as requireRole's guard.
   return function requireClubScopeGuard(req: Request, res: Response, next: NextFunction): void {
     const role = req.user?.role;
-    if (role === UserRole.SUPER_ADMIN) {
+    if (isGlobalAdmin(role)) {
       next();
       return;
     }

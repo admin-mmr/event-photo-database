@@ -12,7 +12,7 @@
 
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
-import { UserRole, UserStatus, isUserRole, type UserRole as Role, type UserStatus as Status } from '../lib/roles.js';
+import { UserRole, UserStatus, isUserRole, type StoredRole as Role, type UserStatus as Status } from '../lib/roles.js';
 import { appendSheetValues, updateSheetValues } from './sheetsService.js';
 import { cell, readTab, rowRange, withTabLock } from './sheetTable.js';
 

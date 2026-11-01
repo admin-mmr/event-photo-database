@@ -202,11 +202,13 @@ export function App(): JSX.Element {
   const headerRef = useRef<HTMLElement>(null);
   const t = useStrings(STR);
   const isGuest = Boolean(user?.isAnonymous);
-  // Control-plane role drives which menu items appear (super_admin → all;
-  // club_admin → the pages the API lets them open; member/guest → none).
+  // Control-plane role drives which menu items appear (owner / super_admin →
+  // all; club_admin → the pages the API lets them open; member/guest → none).
+  // owner is super_admin plus event deletion.
   const { role } = useSession(user);
-  const isSuperAdmin = role === 'super_admin';
-  const isAdmin = role === 'super_admin' || role === 'club_admin';
+  const isOwner = role === 'owner';
+  const isSuperAdmin = isOwner || role === 'super_admin';
+  const isAdmin = isSuperAdmin || role === 'club_admin';
   const closeMenu = (): void => setMenuOpen(false);
   const guestNameOk = guestName.trim().length > 0;
 
@@ -439,7 +441,7 @@ export function App(): JSX.Element {
           <Route path="/admin/clubs" element={isGuest ? <Navigate to="/" replace /> : <AdminClubs />} />
           <Route
             path="/admin/events"
-            element={isGuest ? <Navigate to="/" replace /> : <AdminEvents isSuperAdmin={isSuperAdmin} />}
+            element={isGuest ? <Navigate to="/" replace /> : <AdminEvents canDelete={isOwner} />}
           />
           <Route
             path="/admin/events/:eventId/links"

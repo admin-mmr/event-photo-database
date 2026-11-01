@@ -76,6 +76,9 @@ const EnvSchema = z.object({
 
   // Admin allowlist for the "Index event" trigger (comma-separated emails).
   ADMIN_EMAILS: z.string().default('admin@mmrunners.org'),
+  // The `owner` class (comma-separated emails): super_admin + delete events.
+  // Env-only on purpose — never granted from the world-viewable Users sheet.
+  OWNER_EMAILS: z.string().default('admin@mmrunners.org'),
 
   // Keyless DWD for Drive reads (runbook §G1): the DWD-enabled SA we sign
   // JWTs for, and the Workspace user it impersonates.

@@ -22,6 +22,8 @@ vi.mock('../src/middleware/rbac.js', () => {
   const pass = (_req: Request, _res: Response, next: NextFunction) => next();
   return {
     attachRole: pass,
+    requireOwner: (req: Request, res: Response, next: NextFunction) =>
+      req.user?.role === 'owner' ? next() : res.status(403).json({ ok: false, error: 'forbidden' }),
     requireSuperAdmin: pass,
     requireAnyAdmin: pass,
     requireRole: () => pass,
