@@ -601,7 +601,7 @@ export async function enqueueStagedBatch(
   let failed = 0;
   // The signed-in uploader, from the first file that recorded one (a session is
   // one page, so every file that has it agrees).
-  let uploadedBy = '';
+  let uploaderEmail = '';
   const skippedDuplicateNames: string[] = [];
   for (const objectName of objectNames) {
     // Set once we hold an atomic claim, so a failed copy hands it back rather
@@ -621,7 +621,7 @@ export async function enqueueStagedBatch(
         continue;
       }
       const custom = meta.custom;
-      uploadedBy ||= custom.uploaderEmail ?? '';
+      uploaderEmail ||= custom.uploaderEmail ?? '';
       const originalName = (custom.originalName || objectName.split('/').pop() || objectName).trim();
       const contentType = meta.contentType;
 
@@ -814,7 +814,8 @@ export async function enqueueStagedBatch(
   await appendUploadLog({
     eventId: link.eventId,
     clubName: link.clubName,
-    uploadedBy,
+    // uploadedBy stays EMPTY on purpose: the master Sheet is world-viewable, so
+    // the uploader's email is kept in Firestore (the batch docs) only.
     batchFolderName,
     batchFolderId: batchFolderId ?? '',
     fileCount: copied,
@@ -835,7 +836,7 @@ export async function enqueueStagedBatch(
     skippedDuplicateNames,
     failed,
     batchFolderName,
-    ...(uploadedBy ? { uploaderEmail: uploadedBy } : {}),
+    ...(uploaderEmail ? { uploaderEmail } : {}),
   });
 
   // Managed folders (gas-app migration): scoped, inline rebuild of THIS batch's

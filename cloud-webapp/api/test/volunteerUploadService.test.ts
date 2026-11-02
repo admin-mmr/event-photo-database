@@ -1070,7 +1070,7 @@ describe('chunked sessions copy into ONE folder', () => {
     expect(batchDocs.get('s1')).not.toHaveProperty('uploaderEmail'); // signed out
   });
 
-  it('records the signed-in uploader on the session doc, the chunk doc and Upload_Log', async () => {
+  it('records the signed-in uploader in Firestore, but never in the world-viewable Sheet', async () => {
     const link = await validateUploadLink('tok-good');
     const meta = { originalName: 'a.jpg', photographerName: 'Danny Zeng', uploaderEmail: 'danny@example.org', uploaderUid: 'u9' };
     stageObj('vol/ev1/s3/u1.jpg', { size: 10, contentType: 'image/jpeg', metadata: meta });
@@ -1081,8 +1081,10 @@ describe('chunked sessions copy into ONE folder', () => {
 
     expect(batchDocs.get('s3')).toMatchObject({ uploaderEmail: 'danny@example.org' });
     expect(batchDocs.get('s3-pa')).toMatchObject({ uploaderEmail: 'danny@example.org' });
-    // Upload_Log column D is uploadedBy (gas-app column order).
-    expect(sheetAppends.at(-1)?.[3]).toBe('danny@example.org');
+    // Upload_Log column D is uploadedBy (gas-app column order). The Sheet is
+    // world-viewable, so an email must not reach it anywhere in the row.
+    expect(sheetAppends.at(-1)?.[3]).toBe('');
+    expect(JSON.stringify(sheetAppends)).not.toContain('danny@example.org');
   });
 
   it('every seeded chunk copies into the session folder, not one of its own', async () => {

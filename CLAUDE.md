@@ -443,7 +443,9 @@
   - The same goes for WHO uploaded: a signed-in uploader's verified email is
     stamped per file at `/session` (the one call that always carries the login —
     the pagehide `/complete` beacon cannot send headers) and flows to the session
-    doc and `Upload_Log.uploadedBy`. Attribution only: `optionalUser` never
+    and chunk docs in Firestore ONLY. **Never write it to `Upload_Log.uploadedBy`**
+    (or anywhere in the Sheet): the Sheet is world-viewable, and Sheets shares a
+    whole spreadsheet, not a tab. Attribution only: `optionalUser` never
     rejects, and on Azure the client stamps metadata itself, so never authorize
     on it. Uploads before 2026-11-02 recorded no uploader at all. A blank
     `photographerName` is legitimate (the field is optional) and falls back to
