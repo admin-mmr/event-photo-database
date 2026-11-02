@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import type {
   ListPhotosResponse,
+  GalleryFolder,
   GalleryPhoto,
   GetEventResponse,
   PhotoWebUrlResponse,
@@ -28,6 +29,7 @@ import { Lightbox } from '../components/Lightbox.js';
 import { lightboxSaveState, lightboxSrc, originalsNeeded } from '../lib/lightboxSave.js';
 import { PageSizeSelect } from '../components/PageSizeSelect.js';
 import { SortSelect } from '../components/SortSelect.js';
+import { FolderFilter } from '../components/FolderFilter.js';
 import { LoadMore } from '../components/LoadMore.js';
 import { useStrings } from '../lib/i18n.js';
 
@@ -86,6 +88,8 @@ const STR = {
     loadingPhotos: 'Loading photos…',
     noPhotos:
       'No photos indexed for this event yet — ask an admin to run indexing.',
+    noPhotosFiltered: 'No photos for this club / tag.',
+    showAll: 'Show all photos',
     selectHintSave:
       'Tap photos to select them, then “Save to Photos” to add them straight to your camera roll.',
     selectHintDownload:
@@ -146,6 +150,8 @@ const STR = {
     deleteFailedNote: (failed: number) => `${failed} 张照片无法删除。`,
     loadingPhotos: '正在加载照片…',
     noPhotos: '本次活动尚未建立照片索引，请联系管理员运行索引。',
+    noPhotosFiltered: '该俱乐部 / 标签下暂无照片。',
+    showAll: '显示全部照片',
     selectHintSave:
       '点按照片进行选择，然后点「保存到相册」即可直接存入相册。',
     selectHintDownload: '点按照片进行选择，然后保存或下载原图。',
@@ -271,6 +277,29 @@ export function Gallery(): JSX.Element {
   // Sort order (Newest first / Oldest first / By name). Persisted; changing it
   // re-fires the reset effect below (via loadPage's deps) to reload from page 1.
   const { sort, setSort } = useSortMode();
+  // Club / club+tag filter (browsing only — Find Me stays event-wide). Lives in
+  // the URL (`?club=&tag=`) so a club can share a link to just its photos;
+  // absent = all clubs, all tags. A tag is only meaningful within a club.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const club = searchParams.get('club') ?? '';
+  const tag = club ? (searchParams.get('tag') ?? '') : '';
+  const [folders, setFolders] = useState<GalleryFolder[]>([]);
+  const setFolderFilter = useCallback(
+    (nextClub: string, nextTag: string): void => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (nextClub) next.set('club', nextClub);
+          else next.delete('club');
+          if (nextClub && nextTag) next.set('tag', nextTag);
+          else next.delete('tag');
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
 
   // Mobile browsers (Web Share L2) can hand image files to the native share
   // sheet → iOS "Save N Images to Photos". On desktop this is false and ZIP
@@ -319,11 +348,14 @@ export function Gallery(): JSX.Element {
   const loadPage = useCallback(
     async (cursor: string | null): Promise<void> => {
       const params = new URLSearchParams({ limit: String(pageSize), sort });
+      if (club) params.set('club', club);
+      if (tag) params.set('tag', tag);
       if (cursor) params.set('cursor', cursor);
       const r = await apiGet<ListPhotosResponse>(
         `/api/events/${encodeURIComponent(eventId)}/photos?${params.toString()}`,
       );
       setEventName(r.eventName ?? '');
+      setFolders(r.folders ?? []);
       setNextCursor(r.nextCursor ?? null);
       setPhotos((prev) => {
         if (cursor === null || prev === null) return r.photos;
@@ -332,7 +364,7 @@ export function Gallery(): JSX.Element {
         return [...prev, ...r.photos.filter((p) => !seen.has(p.photoId))];
       });
     },
-    [eventId, pageSize, sort],
+    [eventId, pageSize, sort, club, tag],
   );
 
   // First page on mount / event change. Reset paging state first.
@@ -353,6 +385,12 @@ export function Gallery(): JSX.Element {
     setOrigUrls({});
     loadPage(null).catch((e: ApiError | Error) => setError(e.message));
   }, [eventId, loadPage]);
+
+  // A new event's folder menus come with its first page; don't show the last
+  // event's meanwhile. (A filter change keeps them — same event, same menus.)
+  useEffect(() => {
+    setFolders([]);
+  }, [eventId]);
 
   // Fetch the event name on its own (cheap, no photo signing) so the title
   // shows immediately instead of reading "Untitled event" until the slower
@@ -833,6 +871,7 @@ export function Gallery(): JSX.Element {
       <div className="gallery-header">
         <h2>{title}</h2>
         <div className="gallery-actions">
+          <FolderFilter folders={folders} club={club} tag={tag} onChange={setFolderFilter} />
           <SortSelect value={sort} onChange={setSort} />
           <PageSizeSelect value={pageSize} onChange={setPageSize} />
           <button
@@ -942,7 +981,17 @@ export function Gallery(): JSX.Element {
         </div>
       )}
       {photos === null && !error && <p className="muted">{t.loadingPhotos}</p>}
-      {photos?.length === 0 && <p className="muted">{t.noPhotos}</p>}
+      {photos?.length === 0 &&
+        (club ? (
+          <p className="muted">
+            {t.noPhotosFiltered}{' '}
+            <button className="btn btn-light btn-sm" onClick={() => setFolderFilter('', '')}>
+              {t.showAll}
+            </button>
+          </p>
+        ) : (
+          <p className="muted">{t.noPhotos}</p>
+        ))}
 
       {selectMode && list.length > 0 && (
         <>

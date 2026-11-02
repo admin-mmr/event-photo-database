@@ -172,6 +172,17 @@ def test_upserts_never_write_back_system_properties(meta, db):
     assert not [k for k in written if k.startswith("_")]
 
 
+# ── set_gallery_folders ──────────────────────────────────────────────────────
+
+def test_set_gallery_folders_replaces_the_list_and_keeps_other_fields(meta, db):
+    db.containers["events"].seed("e1", {"name": "Regatta", "galleryFolders": [
+        {"clubName": "Old", "tag": "ALL", "count": 9}]})
+    meta.set_gallery_folders("e1", [{"clubName": "MMR", "tag": "10K", "count": 3}])
+    body = db.containers["events"].get("e1", "e1")
+    assert body["name"] == "Regatta"
+    assert body["galleryFolders"] == [{"clubName": "MMR", "tag": "10K", "count": 3}]
+
+
 # ── set_event_name_if_empty ──────────────────────────────────────────────────
 
 def test_sets_the_name_when_empty(meta, db):

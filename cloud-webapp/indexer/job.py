@@ -131,6 +131,10 @@ class FirestoreMeta:
         self._db.collection("events").document(event_id).set({"name": name}, merge=True)
         return True
 
+    def set_gallery_folders(self, event_id: str, folders: list[dict]) -> None:
+        self._db.collection("events").document(event_id).set(
+            {"galleryFolders": folders}, merge=True)
+
     def upsert_photo(self, photo_id: str, doc: dict) -> None:
         self._db.collection("photos").document(photo_id).set(doc, merge=True)
 
@@ -262,6 +266,9 @@ class CosmosMeta:
         self._merge_write("events", event_id, {"name": name}, event_id)
         return True
 
+    def set_gallery_folders(self, event_id: str, folders: list[dict]) -> None:
+        self._merge_write("events", event_id, {"galleryFolders": folders}, event_id)
+
     def upsert_photo(self, photo_id: str, doc: dict) -> None:
         event_id = str(doc.get("eventId") or "")
         if not event_id:
@@ -349,6 +356,39 @@ def _face_quality_meta(q: dict | None) -> dict:
     if q.get("blur") is not None:
         out["blur"] = round(float(q["blur"]), 1)
     return out
+
+
+def folder_scope(rel_path: str) -> tuple[str, str]:
+    """The (clubName, tag) a photo was uploaded under, read off its Drive path.
+
+    A volunteer upload lands at `Club/tag/<batch folder>/<file>`
+    (`ensureBatchFolderPath` in volunteerUploadService.ts; a link always has a
+    club, and an untagged link files under `ALL`). That is what the gallery's
+    club/tag filter keys on. Anything shallower is a file an organizer placed by
+    hand: its first folder still names a club, but a lone second folder may as
+    well be a batch folder as a tag, so it gets no tag rather than a guessed one.
+    A file at the event root has neither, and shows only under "All".
+    """
+    folders = rel_path.split("/")[:-1]
+    club = folders[0] if folders else ""
+    tag = folders[1] if len(folders) >= 3 else ""
+    return club, tag
+
+
+def gallery_folders(photos_map: dict) -> list[dict]:
+    """Per-(club, tag) photo counts for the gallery's filter menus.
+
+    Counted over the canonical photos only, so the numbers match what the
+    gallery lists: a byte-identical copy uploaded under a second club collapses
+    into the first in relPath order and is counted (and filtered) there.
+    """
+    counts: dict[tuple[str, str], int] = {}
+    for row in photos_map.values():
+        club = row.get("clubName") or ""
+        if club:
+            key = (club, row.get("tag") or "")
+            counts[key] = counts.get(key, 0) + 1
+    return [{"clubName": c, "tag": t, "count": n} for (c, t), n in sorted(counts.items())]
 
 
 def _write_store(blobs, event_id: str, manifest: dict,
@@ -603,6 +643,8 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
             except Exception as exc:  # noqa: BLE001
                 log.warning("rename SKIP %s (%s): %s", f["name"], pid, exc)
 
+        club, tag = folder_scope(f["relPath"])
+
         if unchanged and pid in prev_rows:
             for meta, vec in prev_rows[pid]["face"]:
                 faces_meta.append(meta), faces_vecs.append(vec)
@@ -622,6 +664,14 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
             if pid in rename_to:
                 carried = {**carried, "name": f["name"], "relPath": f["relPath"]}
                 patch.update({"name": f["name"], "relPath": f["relPath"]})
+            # Club/tag backfill for photos indexed before the gallery filter
+            # existed, and a refresh for a photo moved to another club's folder
+            # in Drive (same bytes, new path). Compared rather than "if missing"
+            # so a move is caught; idempotent once the stored values match.
+            if carried.get("clubName") != club or carried.get("tag") != tag:
+                scope = {"relPath": f["relPath"], "clubName": club, "tag": tag}
+                carried = {**carried, **scope}
+                patch.update(scope)
             if patch:
                 fs.upsert_photo(pid, patch)
             photos_map[pid] = carried
@@ -646,6 +696,7 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
         dup_n = len(dup_map.get(pid, []))
         taken_at, taken_src, _sub = taken[pid]
         photos_map[pid] = {"md5": md5, "name": f["name"], "relPath": f["relPath"],
+                           "clubName": club, "tag": tag,
                            "mimeType": f["mimeType"], "modifiedTime": f.get("modifiedTime", ""),
                            "contentHash": md5, "duplicateCount": dup_n,
                            "takenAt": taken_at, "takenAtSource": taken_src,
@@ -655,6 +706,8 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
         fs.upsert_photo(pid, {
             "eventId": cfg.event_id, "driveFileId": pid, "name": f["name"],
             "relPath": f["relPath"], "mimeType": f["mimeType"], "md5": md5,
+            # The upload's club/tag folder (folder_scope) — the gallery filter.
+            "clubName": club, "tag": tag,
             # contentHash mirrors md5 (Drive's byte checksum); surfaced so the
             # gallery can defensively de-dupe at list time (B6).
             "contentHash": md5, "duplicateCount": dup_n,
@@ -703,6 +756,13 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
         "duplicates": dup_map,
     }
     _write_store(blobs, cfg.event_id, manifest, faces, persons)
+
+    # The gallery's club/tag menus. Best-effort: the store is already written, and
+    # a failed write only leaves the menus at the previous run's counts.
+    try:
+        fs.set_gallery_folders(cfg.event_id, gallery_folders(photos_map))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("galleryFolders write failed (non-fatal): %s", exc)
 
     summary = {"eventId": cfg.event_id, "photoCount": len(photos_map),
                "faces": len(faces_meta), "persons": len(persons_meta),

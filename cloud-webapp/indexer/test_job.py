@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from blobs import BlobStore
-from job import EMB_DIR, FILES, MANIFEST, Config, run
+from job import EMB_DIR, FILES, MANIFEST, Config, folder_scope, run
 
 MODEL_V = "test-model@1"
 DIM = 8
@@ -58,6 +58,7 @@ class FakeFS:
         self.events = events or {}
         self.photos: dict[str, dict] = {}
         self.states: list[dict] = []
+        self.gallery_folders: list[dict] | None = None
 
     def get_event(self, event_id):
         return self.events.get(event_id)
@@ -71,6 +72,9 @@ class FakeFS:
             return False
         ev["name"] = name
         return True
+
+    def set_gallery_folders(self, event_id, folders):
+        self.gallery_folders = folders
 
     def upsert_photo(self, photo_id, doc):
         self.photos[photo_id] = {**self.photos.get(photo_id, {}), **doc}
@@ -535,3 +539,76 @@ def test_main_records_failed_when_setup_dies(monkeypatch, tmp_path):
     assert job.main() == 1
     assert fs.states[-1]["status"] == "failed"
     assert fs.states[-1]["error"]  # the reason, so an admin needn't read job logs
+
+
+# ── gallery club/tag filter ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("rel, expected", [
+    ("MMR/10K/20261101-0900_Ann/a.jpg", ("MMR", "10K")),
+    ("MMR/ALL/20261101-0900_Ann/sub/a.jpg", ("MMR", "ALL")),
+    # A hand-placed file: a lone second folder may be a batch, so no tag.
+    ("MMR/20261101-0900_Ann/a.jpg", ("MMR", "")),
+    ("MMR/a.jpg", ("MMR", "")),
+    ("a.jpg", ("", "")),
+])
+def test_folder_scope(rel, expected):
+    assert folder_scope(rel) == expected
+
+
+def test_photos_carry_club_and_tag_and_event_gets_folder_counts(tmp_path):
+    def at(rel, md5, color):
+        return {**drive_file(rel.rsplit("/", 1)[-1], md5, _png(color)), "relPath": rel}
+
+    drive = FakeDrive({
+        "f1": at("MMR/10K/b1/a.png", "m1", (200, 50, 50)),
+        "f2": at("MMR/10K/b1/b.png", "m2", (50, 200, 50)),
+        "f3": at("MMR/5K/b2/c.png", "m3", (50, 50, 200)),
+        "f4": at("Harriers/ALL/b3/d.png", "m4", (90, 90, 90)),
+        "f5": at("loose.png", "m5", (10, 120, 10)),
+    })
+    fs = FakeFS(events={"ev1": {"driveFolderId": "folder123"}})
+    _run(drive, fs, BlobStore(str(tmp_path)))
+
+    assert (fs.photos["f1"]["clubName"], fs.photos["f1"]["tag"]) == ("MMR", "10K")
+    assert (fs.photos["f4"]["clubName"], fs.photos["f4"]["tag"]) == ("Harriers", "ALL")
+    assert (fs.photos["f5"]["clubName"], fs.photos["f5"]["tag"]) == ("", "")
+    # Sorted, and a root-level photo is in no club's menu.
+    assert fs.gallery_folders == [
+        {"clubName": "Harriers", "tag": "ALL", "count": 1},
+        {"clubName": "MMR", "tag": "10K", "count": 2},
+        {"clubName": "MMR", "tag": "5K", "count": 1},
+    ]
+
+
+def test_reused_photo_is_backfilled_and_follows_a_move(env):
+    drive, fs, blobs = env
+    _run(drive, fs, blobs)
+    # Simulate a photo indexed before the filter existed: no club/tag stored.
+    for doc in fs.photos.values():
+        doc.pop("clubName"), doc.pop("tag")
+    manifest = json.loads(blobs.read(f"ev1/{EMB_DIR}/{MANIFEST}"))
+    for row in manifest["photos"].values():
+        row.pop("clubName"), row.pop("tag")
+    blobs.write(f"ev1/{EMB_DIR}/{MANIFEST}", json.dumps(manifest).encode())
+    # ...and one of them has since been moved into a club folder in Drive.
+    drive.files["f1"]["relPath"] = "MMR/10K/b1/a.png"
+    drive.downloads.clear()
+
+    summary = _run(drive, fs, blobs)
+    assert summary["reused"] == 2 and drive.downloads == []  # no re-embed
+    assert fs.photos["f1"]["clubName"] == "MMR" and fs.photos["f1"]["tag"] == "10K"
+    assert fs.photos["f1"]["relPath"] == "MMR/10K/b1/a.png"
+    assert fs.photos["f2"]["clubName"] == "" and fs.photos["f2"]["tag"] == ""
+    assert fs.gallery_folders == [{"clubName": "MMR", "tag": "10K", "count": 1}]
+
+
+def test_gallery_folders_write_failure_does_not_fail_the_run(env):
+    drive, fs, blobs = env
+
+    def boom(event_id, folders):
+        raise RuntimeError("firestore down")
+
+    fs.set_gallery_folders = boom
+    _run(drive, fs, blobs)
+    assert fs.states[-1]["status"] == "done"
