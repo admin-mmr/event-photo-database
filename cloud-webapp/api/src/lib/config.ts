@@ -262,6 +262,21 @@ const EnvSchema = z.object({
   // of 50 and lock the user out for the rest of the day. Generous limit + own
   // bucket so a normal multi-photo save never trips it.
   ORIGINAL_FETCH_LIMIT: z.coerce.number().int().min(0).default(500),
+  // Per-IP limits for GUESTS only (middleware/rateLimit.ts guestIpRateLimit).
+  // The per-uid limits above don't bind a guest: anonymous sign-in mints a
+  // fresh uid — a fresh quota — whenever a script likes. Google-signed-in
+  // users are exempt (their uid is fixed, lib/signIn.ts). Keyed on the client
+  // IP from lib/clientIp.ts, never req.ip (forgeable). Defaults are ~10× the
+  // per-uid budgets because race-venue Wi-Fi and carrier NAT put many real
+  // attendees behind one IP. 0 disables a bucket.
+  //   GUEST_IP_LIMIT_MODE  shadow (default) — count and log over-limit
+  //                        requests, never block; enforce — 429; off — skip.
+  // Enforce is an owner decision made from shadow-mode logs, like reCAPTCHA.
+  GUEST_IP_LIMIT_MODE: z.enum(['off', 'shadow', 'enforce']).default('shadow'),
+  FINDME_SEARCH_IP_LIMIT: z.coerce.number().int().min(0).default(300),
+  FINDME_SEARCH_IP_WINDOW_SEC: z.coerce.number().int().positive().default(3600),
+  DOWNLOAD_IP_LIMIT_PER_DAY: z.coerce.number().int().min(0).default(500),
+  ORIGINAL_FETCH_IP_LIMIT: z.coerce.number().int().min(0).default(5000),
   // Client-error reports per window, keyed by uid (POST /api/client-errors).
   // Each accepted report becomes an ERROR log line, which the Cloud Monitoring
   // alert policy turns into an email — so this bucket caps how many alert-worthy

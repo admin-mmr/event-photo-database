@@ -69,6 +69,10 @@ the $30 August bill (see `CLAUDE.md`). Uploads are guarded by the link token.
 
 ## 3. Production steps for the owner (approve each one separately)
 
+**Status:** steps 1 and 3 done 2026-11-02 (PR #94 live; secret v4, revision
+`event-photo-api-00131-njd`; self-check passed, first guest verdict scored).
+Step 2 skipped (optional). Steps 4–5 pending.
+
 > **Order matters.** Cloud Run reads a `:latest` secret **each time an instance
 > starts**, not at deploy time. The code running now **enforces** a 0.5
 > threshold and 403s requests with no token. If the key is fixed before the
@@ -149,7 +153,7 @@ change; check the official page before relying on a figure.
 | # | Option | Cost | Friction for attendees | Effort | Verdict |
 |---|---|---|---|---|---|
 | 1 | **reCAPTCHA Enterprise per action** (fix + shadow → enforce, this PR) | 10k assessments/month free; billing is already on, so past that the old tiers were about $8 flat up to 100k, then about $1 per 1k. Our gated volume is about 1k/day on peak event days, about 0 otherwise. | None (invisible); a few blocked if the score is wrong | Done | **Do now.** Already wired in; it needed only the key and a safe rollout. |
-| 2 | **Per-IP rate limits as well as per-uid**, on sign and search (`rateLimit.ts` `keyFn` already supports it) | Free (one Firestore write per request, as now) | Shared IPs: race-day venue Wi-Fi and carrier NAT can put many people behind one IP, so set the limit about 10× the per-uid one, and log it in shadow mode first | Small | **Do next.** It closes the "new anonymous uid = new quota" hole, which reCAPTCHA scores alone don't. |
+| 2 | **Per-IP rate limits for guests, on top of per-uid**, on sign and search | Free (one Firestore write per guest request) | Shared IPs: race-day venue Wi-Fi and carrier NAT can put many people behind one IP, so the limits are about 10× the per-uid ones, Google-signed-in users are exempt, and it starts in shadow mode | Small | **Built (shadow) — see §6.** It closes the "new anonymous uid = new quota" hole, which reCAPTCHA scores alone don't. |
 | 3 | **Abuse signals from logs**: signed originals per uid/IP per hour, plus a budget alert on GCS egress from the derivatives bucket | Free (log-based metrics this small fit the free allotment) | None | Small | **Do next.** Egress is the real cost. Watch the meter that bills, not Hosting (`CLAUDE.md`). |
 | 4 | **Firebase App Check (reCAPTCHA Enterprise provider)** on every `/api/**` call, checked with `firebase-admin` `getAppCheck().verifyToken()` | Each token refresh is one assessment, from the same free 10k (default TTL 1h, refreshed at about half the TTL), so about 2 per hour per active tab. Server-side checking is a local JWT check and free. | None | Medium (web init, api middleware, shadow mode first) | **Later.** It covers *every* route, including gallery listing, but a token can be replayed for its whole TTL. It adds to the per-action check on search/download rather than replacing it. Free-tier figures are for billing-enabled projects; without billing, only 4 score levels are available. |
 | 5 | **Cloudflare Turnstile** in place of reCAPTCHA | Free, no per-assessment quota | None (managed/invisible); fewer ad-blocker failures than Google's script, and more privacy-friendly | Medium (web widget + server `siteverify` + CSP) | **Keep as the fallback.** Switch only if assessment volume outgrows the free tier or `missing_token` turns out to be high. The model is the same, so the shadow/enforce rollout carries over. |
@@ -185,3 +189,72 @@ reCAPTCHA Enterprise provider, TTL and billing
 (<https://firebase.google.com/docs/app-check/web/recaptcha-enterprise-provider>);
 Cloud Armor pricing (<https://cloud.google.com/armor/pricing>); Cloud Run secrets
 resolved at instance startup (<https://cloud.google.com/run/docs/configuring/secrets>).
+
+## 6. Per-IP limits for guests
+
+**What it does.** Find-Me search, selfie-check, ZIP download and original-signing
+now also count **guest** requests per client IP. Google-signed-in users are exempt,
+the same allowlist as reCAPTCHA (`lib/signIn.ts`). The limit runs after the per-uid
+limit and *before* reCAPTCHA, so in enforce mode an over-limit guest never costs a
+billed assessment.
+
+| Bucket | Default per IP | Per-uid limit it backs up |
+|---|---|---|
+| `findme_search_ip` (search, search-by-upload, selfie-check) | 300 / hour | 20 / minute |
+| `download_ip` (ZIP) | 500 / day | 50 / day |
+| `original_fetch_ip` (sign + single original) | 5,000 / day | 500 / day |
+
+`GUEST_IP_LIMIT_MODE` is `shadow` (default), `enforce` or `off`. In shadow mode an
+over-limit request is logged as `guest ip limit` (`ipLimit.{bucket, outcome, key,
+via}`) and let through. Like reCAPTCHA, the mode and limits are sent by
+`deploy-api.sh` only when exported.
+
+**The IP has to be one a bot can't forge, and `req.ip` is not.** With `trust
+proxy` on, `req.ip` is the *leftmost* `X-Forwarded-For` entry. A forged-header
+probe through Hosting on 2026-11-02 showed:
+
+- Hosting **replaces** a client's `X-Forwarded-For` and `Fastly-Client-IP`, so
+  Hosting traffic arrives as `<client>, <Google front end>`.
+- The api's `*.run.app` URL is public too. Called directly, Cloud Run only
+  **appends** the caller, so the leftmost entry is whatever the bot sent: a fresh
+  "IP", and so a fresh quota, on every request.
+
+`lib/clientIp.ts` therefore reads from the right. If the last hop is a Google
+front end, the client is the hop before it; otherwise the last hop *is* the
+caller. "Google front end" means goog.json **minus** cloud.json
+(`lib/googleFrontEndRanges.ts`). Without the subtraction, a bot on a Google Cloud
+VM would be trusted to name its own client. IPv6 is keyed by /64.
+
+**Keep the range list fresh.** If Hosting starts arriving from a Google range
+the list lacks, every visitor would share the front end's IP as their "client".
+In shadow mode that only skews counts; in enforce mode it would 429 real people
+in bulk. Two guards:
+
+- A front end that looks like the client is never counted.
+- A Hosting-marked request with an unrecognised last hop logs ERROR
+  `alert: client_ip_unrecognized_hop`, at most once per instance per hour, and
+  the live ERROR alert emails it.
+
+Fix: `./infra/scripts/refresh-google-front-end-ranges.sh`, review the diff, then
+redeploy.
+
+**Owner steps (each needs approval):**
+
+1. Merge and deploy. Shadow mode is the default, so nothing is blocked.
+2. After an event, read the over-limit lines:
+
+   ```bash
+   gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="event-photo-api" AND jsonPayload.message="guest ip limit"' --project=mmr-data-pipeline --freshness=7d --limit=500 --format='table(timestamp, jsonPayload.ipLimit.bucket, jsonPayload.ipLimit.key, jsonPayload.ipLimit.via)'
+   ```
+
+   None, or only obvious scrapers → ready to enforce. A venue IP showing up →
+   raise that bucket's limit first.
+3. Enforce, with a one-command rollback (`GUEST_IP_LIMIT_MODE=shadow`):
+
+   ```bash
+   gcloud run services update event-photo-api --region=us-central1 --project=mmr-data-pipeline --update-env-vars=GUEST_IP_LIMIT_MODE=enforce
+   ```
+
+**Residual risk.** A request relayed by a non-Cloud Google service that lets
+the caller set headers (e.g. Apps Script `UrlFetchApp`) can still choose its
+key. That costs a bot real Google quota per request, and reCAPTCHA still applies.

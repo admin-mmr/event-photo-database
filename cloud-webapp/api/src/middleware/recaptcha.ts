@@ -16,20 +16,16 @@
  * distribution can be read straight out of Cloud Logging — see
  * BOT_PROTECTION_PLAN.md for the queries.
  *
- * Only GUESTS are checked. A user signed in with a provider on
- * SKIP_CHECK_PROVIDERS skips the assessment (no cost, no false-positive 403):
- * a bot can mint anonymous guests at will — each a fresh per-uid quota, which
- * is the hole reCAPTCHA covers — but cannot mass-create Google accounts, and a
- * real account's fixed uid makes the per-uid rate limits bind. It is an
- * ALLOWLIST on purpose: a sign-in method added later (e.g. email/password,
- * whose accounts ARE cheap to mass-create) stays checked until someone decides
- * otherwise. Must run after requireAuth so `req.user` is populated.
+ * Only GUESTS are checked. A user with a verified sign-in (`hasVerifiedSignIn`
+ * in lib/signIn.ts — Google, an allowlist) skips the assessment: no cost,
+ * no false-positive 403. Must run after requireAuth so `req.user` is populated.
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 
 import { env } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
+import { hasVerifiedSignIn } from '../lib/signIn.js';
 import { isRecaptchaConfigured, verifyRecaptcha, type RecaptchaResult } from '../services/recaptcha.js';
 
 function extractToken(req: Request): string | undefined {
@@ -40,14 +36,6 @@ function extractToken(req: Request): string | undefined {
     return body.recaptchaToken;
   }
   return undefined;
-}
-
-/** Sign-in providers whose users skip the check (see header). */
-const SKIP_CHECK_PROVIDERS: ReadonlySet<string> = new Set(['google.com']);
-
-export function skipsRecaptcha(req: Request): boolean {
-  const provider = req.user?.signInProvider;
-  return provider !== undefined && SKIP_CHECK_PROVIDERS.has(provider);
 }
 
 /**
@@ -76,7 +64,7 @@ export function requireRecaptcha(action: string): RequestHandler {
       return;
     }
     const mode = env.RECAPTCHA_MODE;
-    if (skipsRecaptcha(req)) {
+    if (hasVerifiedSignIn(req)) {
       logger.info(
         {
           recaptcha: { action, mode, outcome: 'skipped_signed_in', reason: req.user?.signInProvider },

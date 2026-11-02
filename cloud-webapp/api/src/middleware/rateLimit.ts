@@ -21,7 +21,9 @@ import type { DocumentStore } from '../lib/db/types.js';
 
 import { firestore } from '../lib/firestore.js';
 import { env, isTest } from '../lib/config.js';
+import { clientIp, rateLimitKeyForIp } from '../lib/clientIp.js';
 import { logger } from '../lib/logger.js';
+import { hasVerifiedSignIn } from '../lib/signIn.js';
 
 export interface RateLimitDecision {
   readonly allowed: boolean;
@@ -183,3 +185,134 @@ export const volunteerUploadRateLimit = (): RequestHandler =>
       return typeof token === 'string' && token.length > 0 ? `tok:${token}` : req.ip || 'anon';
     },
   });
+
+// ── Per-IP limits for guests ─────────────────────────────────────────────────
+
+export type GuestIpLimitMode = 'off' | 'shadow' | 'enforce';
+
+export type GuestIpLimitOutcome =
+  | { readonly kind: 'skip'; readonly reason: 'off' | 'disabled' | 'verified_sign_in' | 'no_trusted_ip' }
+  | {
+      readonly kind: 'allow' | 'would_block' | 'block';
+      readonly key: string;
+      readonly via: 'hosting' | 'direct' | 'local';
+      readonly decision: RateLimitDecision;
+    };
+
+/**
+ * Decides one guest per-IP check. Exported (and free of Express response
+ * handling) so it can be tested against the in-memory store; the middleware
+ * below is a no-op under NODE_ENV=test like every other limiter here.
+ *
+ * Never limits on an IP it cannot trust: `clientIp` returns `suspect` when the
+ * address it would use is itself a Google front end (a stale range list), and
+ * counting that would lump every Hosting visitor into one bucket.
+ */
+export async function decideGuestIpLimit(
+  db: DocumentStore,
+  req: Request,
+  opts: { bucket: string; limit: number; windowSec: number; mode: GuestIpLimitMode },
+  now: number = Date.now(),
+): Promise<GuestIpLimitOutcome> {
+  if (opts.mode === 'off') return { kind: 'skip', reason: 'off' };
+  if (opts.limit <= 0) return { kind: 'skip', reason: 'disabled' };
+  if (hasVerifiedSignIn(req)) return { kind: 'skip', reason: 'verified_sign_in' };
+  const resolved = clientIp(req);
+  noteFrontEndHop(req, resolved);
+  if (!resolved.ip) return { kind: 'skip', reason: 'no_trusted_ip' };
+
+  const key = `ip:${rateLimitKeyForIp(resolved.ip)}`;
+  const decision = await consumeRateLimit(db, opts.bucket, key, opts.limit, opts.windowSec, now);
+  const kind = decision.allowed ? 'allow' : opts.mode === 'enforce' ? 'block' : 'would_block';
+  return { kind, key, via: resolved.via, decision };
+}
+
+/**
+ * Loud, throttled signal that the Google front-end range list is stale. A
+ * request that carries Firebase Hosting's own header but whose last hop we
+ * don't recognise means Hosting moved to a range lib/googleFrontEndRanges.ts
+ * lacks — and then every Hosting visitor shares the front end's IP as their
+ * "client". In shadow mode that only skews counts; in enforce it would 429
+ * real attendees en masse. ERROR (the live alert policy emails), at most once
+ * per instance per hour. Fix: infra/scripts/refresh-google-front-end-ranges.sh.
+ * (The header is forgeable, so this is a signal only — it never changes a
+ * decision.)
+ */
+let lastHopWarnAt = 0;
+function noteFrontEndHop(req: Request, resolved: ReturnType<typeof clientIp>): void {
+  const viaHosting = req.headers['x-firebase-hosting-channel'] !== undefined;
+  const stale = resolved.suspect === true || (viaHosting && resolved.via === 'direct');
+  if (!stale || Date.now() - lastHopWarnAt < 3600_000) return;
+  lastHopWarnAt = Date.now();
+  logger.error(
+    { alert: 'client_ip_unrecognized_hop', via: resolved.via, suspect: resolved.suspect === true },
+    'clientIp: unrecognized Google front-end hop — per-IP guest limits may be miscounting; ' +
+      'run infra/scripts/refresh-google-front-end-ranges.sh',
+  );
+}
+
+/**
+ * Per-IP limit for GUESTS on top of a per-uid limit. Place AFTER requireAuth
+ * (needs `req.user` to exempt verified sign-ins) and BEFORE requireRecaptcha,
+ * so an over-limit guest in enforce mode never costs a billed assessment.
+ * Mode is read per request from env, so a `gcloud run services update` flips it.
+ * Over-limit requests are logged as `guest ip limit` with the IP key — that log
+ * is what an owner reads to decide whether to enforce.
+ */
+export function guestIpRateLimit(opts: { bucket: string; limit: number; windowSec: number }): RequestHandler {
+  return async function guestIpRateLimitMiddleware(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    if (isTest) {
+      next();
+      return;
+    }
+    const out = await decideGuestIpLimit(firestore(), req, { ...opts, mode: env.GUEST_IP_LIMIT_MODE });
+    if (out.kind === 'skip' || out.kind === 'allow') {
+      next();
+      return;
+    }
+    logger.warn(
+      {
+        ipLimit: {
+          bucket: opts.bucket,
+          mode: env.GUEST_IP_LIMIT_MODE,
+          outcome: out.kind === 'block' ? 'blocked' : 'would_block',
+          key: out.key,
+          via: out.via,
+          limit: out.decision.limit,
+          windowSec: opts.windowSec,
+        },
+        uid: req.user?.uid,
+      },
+      'guest ip limit',
+    );
+    if (out.kind === 'would_block') {
+      next();
+      return;
+    }
+    res.setHeader('Retry-After', String(out.decision.resetSec));
+    res.status(429).json({
+      ok: false,
+      error: 'rate_limited',
+      message:
+        `Too many requests from your network — please try again in ${humanizeRetry(out.decision.resetSec)}, ` +
+        'or sign in with Google.',
+    });
+  };
+}
+
+export const findmeSearchIpRateLimit = (): RequestHandler =>
+  guestIpRateLimit({
+    bucket: 'findme_search_ip',
+    limit: env.FINDME_SEARCH_IP_LIMIT,
+    windowSec: env.FINDME_SEARCH_IP_WINDOW_SEC,
+  });
+
+export const downloadIpRateLimit = (): RequestHandler =>
+  guestIpRateLimit({ bucket: 'download_ip', limit: env.DOWNLOAD_IP_LIMIT_PER_DAY, windowSec: 24 * 60 * 60 });
+
+export const originalFetchIpRateLimit = (): RequestHandler =>
+  guestIpRateLimit({ bucket: 'original_fetch_ip', limit: env.ORIGINAL_FETCH_IP_LIMIT, windowSec: 24 * 60 * 60 });

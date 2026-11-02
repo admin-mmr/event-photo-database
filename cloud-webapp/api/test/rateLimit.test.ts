@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { DocumentStore } from '../src/lib/db/types.js';
 import { fakeStore, type FakeStore } from './helpers/fakeDb.js';
 
-import { consumeRateLimit, humanizeRetry } from '../src/middleware/rateLimit.js';
+import { consumeRateLimit, decideGuestIpLimit, humanizeRetry } from '../src/middleware/rateLimit.js';
 
 /** The shared in-memory DocumentStore (see helpers/fakeDb.ts) — no bespoke
  *  double here, so these assertions hold for any adapter that satisfies the
@@ -73,5 +73,71 @@ describe('consumeRateLimit', () => {
     });
     const d = await consumeRateLimit(db, 'b', 'u1', 1, 60, NOW);
     expect(d.allowed).toBe(true);
+  });
+});
+
+describe('decideGuestIpLimit', () => {
+  const GFE = '66.102.8.7';
+  const opts = (mode: 'off' | 'shadow' | 'enforce', limit = 2) => ({ bucket: 'findme_search_ip', limit, windowSec: 3600, mode });
+  function guest(xff: string, signInProvider?: string) {
+    return {
+      headers: { 'x-forwarded-for': xff },
+      socket: {},
+      user: { uid: `u-${Math.random()}`, ...(signInProvider ? { signInProvider } : {}) },
+    } as never;
+  }
+
+  it('off: skips without touching the store', async () => {
+    const { db, txCount } = makeDb();
+    expect(await decideGuestIpLimit(db, guest(`198.51.100.4, ${GFE}`), opts('off'), NOW)).toEqual({ kind: 'skip', reason: 'off' });
+    expect(txCount()).toBe(0);
+  });
+
+  it('a Google-signed-in user is exempt (fixed uid — the per-uid limit binds)', async () => {
+    const { db, txCount } = makeDb();
+    const out = await decideGuestIpLimit(db, guest(`198.51.100.4, ${GFE}`, 'google.com'), opts('enforce'), NOW);
+    expect(out).toEqual({ kind: 'skip', reason: 'verified_sign_in' });
+    expect(txCount()).toBe(0);
+  });
+
+  it('never limits on an untrusted IP (a front end posing as the client)', async () => {
+    const { db } = makeDb();
+    const out = await decideGuestIpLimit(db, guest(`74.125.210.5, ${GFE}`), opts('enforce'), NOW);
+    expect(out).toEqual({ kind: 'skip', reason: 'no_trusted_ip' });
+  });
+
+  // The point of the per-IP limit: each request below is a NEW anonymous uid
+  // (a fresh per-uid quota), but they all come from one network.
+  it('shadow: fresh guest uids from one IP are counted together, over-limit is would_block', async () => {
+    const { db } = makeDb();
+    const kinds = [];
+    for (let i = 0; i < 3; i++) kinds.push((await decideGuestIpLimit(db, guest(`198.51.100.4, ${GFE}`), opts('shadow'), NOW)).kind);
+    expect(kinds).toEqual(['allow', 'allow', 'would_block']);
+  });
+
+  it('enforce: over-limit is block', async () => {
+    const { db } = makeDb();
+    let last;
+    for (let i = 0; i < 3; i++) last = await decideGuestIpLimit(db, guest(`198.51.100.4, ${GFE}`, 'anonymous'), opts('enforce'), NOW);
+    expect(last).toMatchObject({ kind: 'block', key: 'ip:198.51.100.4', via: 'hosting' });
+  });
+
+  it('direct to run.app, rotating a forged X-Forwarded-For does not get a fresh quota', async () => {
+    const { db } = makeDb();
+    const kinds = [];
+    for (const forged of ['203.0.113.1', '203.0.113.2', '203.0.113.3']) {
+      kinds.push((await decideGuestIpLimit(db, guest(`${forged}, 198.51.100.9`), opts('enforce'), NOW)).kind);
+    }
+    expect(kinds).toEqual(['allow', 'allow', 'block']);
+  });
+
+  it('different networks have separate budgets; one IPv6 /64 shares one', async () => {
+    const { db } = makeDb();
+    await decideGuestIpLimit(db, guest(`198.51.100.4, ${GFE}`), opts('enforce', 1), NOW);
+    const other = await decideGuestIpLimit(db, guest(`198.51.100.5, ${GFE}`), opts('enforce', 1), NOW);
+    expect(other.kind).toBe('allow');
+    await decideGuestIpLimit(db, guest(`2001:db8:1:2::1, ${GFE}`), opts('enforce', 1), NOW);
+    const sameSlash64 = await decideGuestIpLimit(db, guest(`2001:db8:1:2::99, ${GFE}`), opts('enforce', 1), NOW);
+    expect(sameSlash64).toMatchObject({ kind: 'block', key: 'ip:2001:db8:1:2::/64' });
   });
 });

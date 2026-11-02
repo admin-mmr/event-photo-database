@@ -30,7 +30,12 @@ import { DownloadRequestSchema, type DownloadSignResponse } from '@cloud-webapp/
 import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth } from '../middleware/auth.js';
-import { downloadRateLimit, originalFetchRateLimit } from '../middleware/rateLimit.js';
+import {
+  downloadIpRateLimit,
+  downloadRateLimit,
+  originalFetchIpRateLimit,
+  originalFetchRateLimit,
+} from '../middleware/rateLimit.js';
 import { requireRecaptcha } from '../middleware/recaptcha.js';
 import { origExtForMime, signOrigUrl } from '../services/gcsService.js';
 
@@ -135,6 +140,7 @@ downloadRouter.post(
   '/events/:id/download',
   requireAuth,
   downloadRateLimit(),
+  downloadIpRateLimit(),
   requireRecaptcha('download'),
   signSelectionHandler('zip download signed'),
 );
@@ -153,6 +159,7 @@ downloadRouter.post(
   '/events/:id/originals/sign',
   requireAuth,
   originalFetchRateLimit(),
+  originalFetchIpRateLimit(),
   requireRecaptcha('download'),
   signSelectionHandler('originals signed'),
 );
@@ -198,6 +205,7 @@ downloadRouter.get(
   '/events/:id/photos/:photoId/original',
   requireAuth,
   originalFetchRateLimit(),
+  originalFetchIpRateLimit(),
   async (req, res, next) => {
     try {
       const eventId = String(req.params.id);

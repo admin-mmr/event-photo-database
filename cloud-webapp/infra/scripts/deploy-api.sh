@@ -87,6 +87,12 @@ ENV_VARS="${ENV_VARS},FINDME_SEARCH_LIMIT=${FINDME_SEARCH_LIMIT:-20}"
 ENV_VARS="${ENV_VARS},FINDME_SEARCH_WINDOW_SEC=${FINDME_SEARCH_WINDOW_SEC:-60}"
 ENV_VARS="${ENV_VARS},DOWNLOAD_LIMIT_PER_DAY=${DOWNLOAD_LIMIT_PER_DAY:-50}"
 ENV_VARS="${ENV_VARS},ORIGINAL_FETCH_LIMIT=${ORIGINAL_FETCH_LIMIT:-500}"
+# Per-IP limits for guests (BOT_PROTECTION_PLAN.md). Like RECAPTCHA_MODE, these
+# are only sent when exported, so a redeploy never flips GUEST_IP_LIMIT_MODE to
+# enforce or resets a limit the owner tuned. Unset → code defaults (shadow).
+for v in GUEST_IP_LIMIT_MODE FINDME_SEARCH_IP_LIMIT FINDME_SEARCH_IP_WINDOW_SEC DOWNLOAD_IP_LIMIT_PER_DAY ORIGINAL_FETCH_IP_LIMIT; do
+  if [[ -n "${!v:-}" ]]; then ENV_VARS="${ENV_VARS},${v}=${!v}"; fi
+done
 
 # reCAPTCHA Enterprise (services/recaptcha.ts). The gate runs only when all of
 # RECAPTCHA_PROJECT_ID + _SITE_KEY + _API_KEY are non-empty. PROJECT_ID and the

@@ -518,11 +518,21 @@
     version changes running behaviour as instances recycle, with no deploy. Fixing
     the key while enforce-mode code is live would have started 403ing real users.
   - The API key travels in `X-Goog-Api-Key`, never `?key=` (URLs get logged).
-  - **Only guests are checked; the skip is an ALLOWLIST** (`SKIP_CHECK_PROVIDERS`
-    = `google.com`, from the token's `sign_in_provider`). Anonymous guests can be
-    minted at will (fresh uid = fresh rate-limit quota); Google accounts can't.
-    Never add a provider whose accounts are cheap to create (email/password) —
-    it turns the skip into a bypass.
+  - **Only guests are checked; the skip is an ALLOWLIST** (`hasVerifiedSignIn`
+    in `lib/signIn.ts` = `google.com`, from the token's `sign_in_provider`).
+    Anonymous guests can be minted at will (fresh uid = fresh rate-limit quota);
+    Google accounts can't. Never add a provider whose accounts are cheap to
+    create (email/password) — it turns the skip into a bypass. The per-IP guest
+    limits (`guestIpRateLimit`, `GUEST_IP_LIMIT_MODE`, shadow by default) use
+    the same helper.
+  - **Never key anything abuse-related on `req.ip`.** With `trust proxy` it is
+    the leftmost X-Forwarded-For, and `*.run.app` is public, so a direct caller
+    forges it per request. Use `lib/clientIp.ts` (right-to-left: the client is
+    the hop before a Google front end, else the last hop). "Front end" =
+    goog.json MINUS cloud.json — a GCE VM is in goog.json too. Regenerate
+    `googleFrontEndRanges.ts` with `refresh-google-front-end-ranges.sh` when an
+    ERROR `client_ip_unrecognized_hop` fires; a stale list makes every Hosting
+    visitor share one IP.
   - Uploads stay WITHOUT reCAPTCHA (per-file cost; see `routes/volunteerUpload.ts`).
 
 ## Gallery club / tag filter — read off the Drive path
