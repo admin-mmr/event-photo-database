@@ -25,7 +25,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
 import { signThumbUrls, signPhotoUrl, deletePhotoDerivatives } from '../services/gcsService.js';
 import { trashFile } from '../services/driveService.js';
-import { triggerIndexJob } from '../services/indexerJob.js';
+import { triggerIndexJobUnlessInFlight } from '../services/indexTrigger.js';
 import { releaseClaimsForDriveFile } from '../services/uploadDedupService.js';
 
 export const galleryRouter = Router();
@@ -287,6 +287,13 @@ galleryRouter.get('/events/:id/photos/:photoId/web', requireAuth, async (req, re
  * Per-photo failures are collected (not fatal) so one bad id doesn't abort the
  * batch. The re-index is best-effort — the photos are already gone from the
  * gallery, and the scheduled change-scan would catch the Drive change anyway.
+ *
+ * The re-index goes through the guarded trigger, never `triggerIndexJob`
+ * directly: on a big event day index-scan keeps a run going, and starting a
+ * second execution on the same event stacks two runs racing to write one
+ * manifest. When one is already in flight we skip (`reindex: null`,
+ * `reindexSkipped: 'already_running'`) — that run, or the next index-scan tick,
+ * sees the trashed originals gone from Drive.
  */
 galleryRouter.post('/events/:id/photos/delete', requireAuth, attachRole, requireAnyAdmin, async (req, res, next) => {
   try {
@@ -342,28 +349,31 @@ galleryRouter.post('/events/:id/photos/delete', requireAuth, attachRole, require
     }
 
     // 4. Refresh Find Me by re-indexing (best-effort; non-fatal on error).
+    // The guarded trigger claims the slot and stamps `queued` itself.
     let reindex: string | null = null;
+    let reindexSkipped: 'already_running' | undefined;
     if (deleted.length > 0 && eventDoc.data()?.driveFolderId) {
       try {
-        const { execution } = await triggerIndexJob(eventId);
-        reindex = execution;
-        await firestore()
-          .collection('events')
-          .doc(eventId)
-          .set(
-            { indexState: { status: 'queued', updatedAt: new Date().toISOString() } },
-            { merge: true },
-          );
+        const result = await triggerIndexJobUnlessInFlight(eventId);
+        if (result.triggered) reindex = result.execution;
+        else reindexSkipped = result.reason;
       } catch (err) {
         logger.warn({ err, eventId }, 'admin delete: reindex trigger failed (non-fatal)');
       }
     }
 
     logger.info(
-      { eventId, deleted: deleted.length, failed: failed.length, by: req.user?.email },
+      { eventId, deleted: deleted.length, failed: failed.length, reindexSkipped, by: req.user?.email },
       'admin photo delete',
     );
-    const body: DeletePhotosResponse = { ok: true, eventId, deleted, failed, reindex };
+    const body: DeletePhotosResponse = {
+      ok: true,
+      eventId,
+      deleted,
+      failed,
+      reindex,
+      ...(reindexSkipped ? { reindexSkipped } : {}),
+    };
     res.json(body);
   } catch (err) {
     next(err);
