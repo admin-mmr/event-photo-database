@@ -98,6 +98,17 @@ export const FeedbackItemSchema = z.object({
   /** Which band the voted photo was shown in, resolved from the run at vote
    *  time; null when the run is unknown or the photo was in neither. */
   tier: MatchTierSchema.nullable().default(null),
+  // ── Display-only, resolved by the admin queue at read time ──────────────────
+  // None of these are stored on the vote; they let an admin judge a row without
+  // copying ids into another tool. All degrade to null rather than failing.
+  /** Signed thumbnail of the voted-on photo. */
+  thumbUrl: z.string().nullable().default(null),
+  /** The event's display name, when its record still exists. */
+  eventName: z.string().nullable().default(null),
+  /** 1-based position of the photo in its run's result list. */
+  rank: z.number().nullable().default(null),
+  /** The matcher's (fused) score for the photo in its run. */
+  score: z.number().nullable().default(null),
 });
 export type FeedbackItem = z.infer<typeof FeedbackItemSchema>;
 

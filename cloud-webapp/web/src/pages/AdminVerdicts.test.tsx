@@ -99,9 +99,9 @@ function mockRoutes(byPath: Array<[RegExp, number, unknown]>): void {
   );
 }
 
-function renderPage(): void {
+function renderPage(path = '/admin/verdicts'): void {
   render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <AdminVerdicts />
     </MemoryRouter>,
   );
@@ -151,6 +151,19 @@ describe('<AdminVerdicts />', () => {
     const grid = within(screen.getByRole('list'));
     expect(grid.getByText("That's me")).toBeTruthy();
     expect(grid.getByText('Wrong match')).toBeTruthy();
+  });
+
+  it('opens the batch named in ?run= directly, and Back returns to the list', async () => {
+    mockRoutes([
+      [/\/api\/admin\/verdict-batches\/run-1$/, 200, DETAIL],
+      [/\/api\/admin\/verdict-batches$/, 200, LIST],
+    ]);
+    renderPage('/admin/verdicts?run=run-1');
+
+    await waitFor(() => expect(screen.getByText('fused')).toBeTruthy());
+    expect(screen.getByAltText('pA')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /All batches/ }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'View verdicts' })).toHaveLength(2));
   });
 
   it('opens the selfie full-size when clicked', async () => {
