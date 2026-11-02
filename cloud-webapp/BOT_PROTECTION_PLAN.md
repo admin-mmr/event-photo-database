@@ -49,6 +49,16 @@ the $30 August bill (see `CLAUDE.md`). Uploads are guarded by the link token.
   token. A working key returns 200 (`MALFORMED`) and a bad key returns 400; both
   were checked against the live API on 2026-11-02. So a deploy with a broken key
   is flagged when it boots. Cost: one assessment per cold start.
+- **Only guests are checked.** A user signed in with Google skips the
+  assessment: it costs nothing and can never 403 them. The verdict line is still
+  logged, with outcome `skipped_signed_in`. Guests are the hole, because a fresh
+  anonymous uid means a fresh per-uid quota. A Google account can't be
+  mass-created, and its fixed uid makes the per-uid limits hold. The skip is an
+  **allowlist** (`google.com` only, read from the token's `sign_in_provider`).
+  Any sign-in method added later, such as email/password, which *is* cheap to
+  mass-create, stays checked unless someone deliberately adds it. Admin and
+  machine calls (`X-Sync-Token`) never reach these routes, so they use no
+  assessments.
 - **The API key moved from the `?key=` URL to the `X-Goog-Api-Key` header**, so it
   can't end up in a logged URL.
 - `infra/monitoring/recaptcha-broken-alert-policy.json`: a dedicated alert with

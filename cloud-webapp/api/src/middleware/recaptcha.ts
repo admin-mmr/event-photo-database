@@ -15,6 +15,15 @@
  * stable shape (`recaptcha.{action,mode,outcome,reason,score}`) so the score
  * distribution can be read straight out of Cloud Logging — see
  * BOT_PROTECTION_PLAN.md for the queries.
+ *
+ * Only GUESTS are checked. A user signed in with a provider on
+ * SKIP_CHECK_PROVIDERS skips the assessment (no cost, no false-positive 403):
+ * a bot can mint anonymous guests at will — each a fresh per-uid quota, which
+ * is the hole reCAPTCHA covers — but cannot mass-create Google accounts, and a
+ * real account's fixed uid makes the per-uid rate limits bind. It is an
+ * ALLOWLIST on purpose: a sign-in method added later (e.g. email/password,
+ * whose accounts ARE cheap to mass-create) stays checked until someone decides
+ * otherwise. Must run after requireAuth so `req.user` is populated.
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
@@ -33,13 +42,22 @@ function extractToken(req: Request): string | undefined {
   return undefined;
 }
 
+/** Sign-in providers whose users skip the check (see header). */
+const SKIP_CHECK_PROVIDERS: ReadonlySet<string> = new Set(['google.com']);
+
+export function skipsRecaptcha(req: Request): boolean {
+  const provider = req.user?.signInProvider;
+  return provider !== undefined && SKIP_CHECK_PROVIDERS.has(provider);
+}
+
 /**
- * pass        — good verdict
- * fail_open   — the assessment itself failed; allowed regardless of mode
- * would_block — bad verdict, allowed because mode is shadow
- * blocked     — bad verdict, 403'd because mode is enforce
+ * pass              — good verdict
+ * fail_open         — the assessment itself failed; allowed regardless of mode
+ * would_block       — bad verdict, allowed because mode is shadow
+ * blocked           — bad verdict, 403'd because mode is enforce
+ * skipped_signed_in — signed-in (non-guest) user; no assessment made
  */
-export type VerdictOutcome = 'pass' | 'fail_open' | 'would_block' | 'blocked';
+export type VerdictOutcome = 'pass' | 'fail_open' | 'would_block' | 'blocked' | 'skipped_signed_in';
 
 export function verdictOutcome(result: RecaptchaResult, mode: 'shadow' | 'enforce'): VerdictOutcome {
   if (result.ok) return result.failOpen ? 'fail_open' : 'pass';
@@ -58,6 +76,17 @@ export function requireRecaptcha(action: string): RequestHandler {
       return;
     }
     const mode = env.RECAPTCHA_MODE;
+    if (skipsRecaptcha(req)) {
+      logger.info(
+        {
+          recaptcha: { action, mode, outcome: 'skipped_signed_in', reason: req.user?.signInProvider },
+          uid: req.user?.uid,
+        },
+        'recaptcha verdict',
+      );
+      next();
+      return;
+    }
     const result = await verifyRecaptcha(extractToken(req), action);
     const outcome = verdictOutcome(result, mode);
 

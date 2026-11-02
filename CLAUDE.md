@@ -518,6 +518,11 @@
     version changes running behaviour as instances recycle, with no deploy. Fixing
     the key while enforce-mode code is live would have started 403ing real users.
   - The API key travels in `X-Goog-Api-Key`, never `?key=` (URLs get logged).
+  - **Only guests are checked; the skip is an ALLOWLIST** (`SKIP_CHECK_PROVIDERS`
+    = `google.com`, from the token's `sign_in_provider`). Anonymous guests can be
+    minted at will (fresh uid = fresh rate-limit quota); Google accounts can't.
+    Never add a provider whose accounts are cheap to create (email/password) —
+    it turns the skip into a bypass.
   - Uploads stay WITHOUT reCAPTCHA (per-file cost; see `routes/volunteerUpload.ts`).
 
 ## Find-Me selfie retention — a sweep, never a TTL

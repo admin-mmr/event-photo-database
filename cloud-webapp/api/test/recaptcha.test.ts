@@ -235,8 +235,9 @@ describe('verdictOutcome', () => {
 });
 
 describe('requireRecaptcha middleware', () => {
-  function run(headers: Record<string, string> = {}) {
-    const req = { headers, body: {}, user: { uid: 'u1' } } as never;
+  function run(headers: Record<string, string> = {}, signInProvider?: string) {
+    const user = { uid: 'u1', ...(signInProvider ? { signInProvider } : {}) };
+    const req = { headers, body: {}, user } as never;
     const res = { status: vi.fn().mockReturnThis(), json: vi.fn().mockReturnThis() };
     const next = vi.fn();
     return { req, res, next, go: () => requireRecaptcha('findme_search')(req, res as never, next) };
@@ -298,6 +299,38 @@ describe('requireRecaptcha middleware', () => {
     expect(t.next).toHaveBeenCalled();
     expect(mockLogger.info.mock.calls[0]![0]).toMatchObject({ recaptcha: { outcome: 'pass', score: 0.9 } });
   });
+
+  it('a Google-signed-in user skips the assessment (no fetch, no 403) and is logged as skipped', async () => {
+    configure(true);
+    mockEnv.RECAPTCHA_MODE = 'enforce';
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const t = run({}, 'google.com');
+    await t.go();
+    expect(t.next).toHaveBeenCalled();
+    expect(t.res.status).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mockLogger.info.mock.calls[0]![0]).toMatchObject({
+      recaptcha: { outcome: 'skipped_signed_in', reason: 'google.com' },
+      uid: 'u1',
+    });
+  });
+
+  // Guests are the hole (a fresh anonymous uid = a fresh quota), and the skip is
+  // an ALLOWLIST: an unknown or future provider (e.g. email/password, cheap to
+  // mass-create) must still be checked.
+  it.each([['anonymous'], ['password'], [undefined]])(
+    'provider %s is still checked (and 403d on a low score in enforce)',
+    async (provider) => {
+      configure(true);
+      mockEnv.RECAPTCHA_MODE = 'enforce';
+      mockFetchJson(lowScore);
+      const t = run({ 'x-recaptcha-token': 'tok' }, provider);
+      await t.go();
+      expect(t.res.status).toHaveBeenCalledWith(403);
+      expect(t.next).not.toHaveBeenCalled();
+    },
+  );
 
   it('ENFORCE: an infra failure still fails OPEN (a broken key never blocks attendees)', async () => {
     configure(true);

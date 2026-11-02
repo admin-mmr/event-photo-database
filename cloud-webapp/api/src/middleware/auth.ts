@@ -22,6 +22,9 @@ export interface AuthedUser {
   uid: string;
   email: string | undefined;
   emailVerified: boolean;
+  /** Firebase `sign_in_provider` from the verified token: 'anonymous' for a
+   *  guest, 'google.com' for Google sign-in. Undefined if the token lacks it. */
+  signInProvider?: string;
   /** Control-plane role, resolved from the Users sheet by middleware/rbac.ts
    *  (attachRole). Undefined until that middleware runs / if the user has no
    *  active Users row and is not a bootstrap admin. */
@@ -57,6 +60,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       uid: decoded.uid,
       email: decoded.email,
       emailVerified: decoded.email_verified ?? false,
+      ...(decoded.firebase?.sign_in_provider ? { signInProvider: decoded.firebase.sign_in_provider } : {}),
     };
     next();
   } catch (err) {
