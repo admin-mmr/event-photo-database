@@ -63,10 +63,11 @@ export async function apiDelete<T>(path: string): Promise<T> {
 export async function apiPost<T, B = unknown>(
   path: string,
   body: B,
-  opts?: { headers?: Record<string, string> },
+  opts?: { headers?: Record<string, string>; signal?: AbortSignal },
 ): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
+    ...(opts?.signal ? { signal: opts.signal } : {}),
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
