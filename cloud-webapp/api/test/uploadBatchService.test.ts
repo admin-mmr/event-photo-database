@@ -54,6 +54,7 @@ const {
   seedChunkBatch,
   getUploadBatchStatus,
   combinePhases,
+  hasUploadBatchRecord,
 } = await import(
   '../src/services/uploadBatchService.js'
 );
@@ -162,5 +163,25 @@ describe('chunked sessions', () => {
     expect(combinePhases(['done', 'error'])).toBe('error');
     expect(combinePhases(['done', 'ready'])).toBe('done');
     expect(combinePhases(['ready', 'ready'])).toBe('ready');
+  });
+});
+
+describe('hasUploadBatchRecord (what the never-completed sweep treats as owned)', () => {
+  it('a plain /complete doc owns its batch', async () => {
+    await initUploadBatch('b1', 'ev1', 'l1', 3);
+    expect(await hasUploadBatchRecord('b1')).toBe(true);
+  });
+
+  it('a chunked session does NOT, until recovery has looked at it once', async () => {
+    // Its doc exists from the first flush, but files staged after the last
+    // flush can still be stranded by a closed page.
+    await claimSessionBatch('s1', 'ev1', 'l1', 'folder');
+    expect(await hasUploadBatchRecord('s1')).toBe(false);
+    docs.s1 = { ...docs.s1, recoveryDispatchedAt: '2026-11-02T08:00:00Z' };
+    expect(await hasUploadBatchRecord('s1')).toBe(true);
+  });
+
+  it('no doc at all is not owned', async () => {
+    expect(await hasUploadBatchRecord('nope')).toBe(false);
   });
 });

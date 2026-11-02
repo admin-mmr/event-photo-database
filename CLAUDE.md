@@ -465,6 +465,39 @@
   `MAX_CHUNK_BYTES` (6 GiB ≈ 1,000s) so one task cannot outlive the 1800s
   request timeout no matter how few objects it holds.
   The api runs at **1Gi** for the same reason (see deploy-api.sh).
+- **Sessions that never reached `/complete` are filed automatically now.**
+  `/complete` is the only thing that dispatches the Drive copy, and the browser
+  sends it once, after its last file — so a closed tab or a dead page stranded
+  every finished file (5 sessions / 1,550 photos on 2026-11-01/02, recovered by
+  hand). The hourly `findme-upload-sweep` scheduler
+  (`provision-upload-sweep-scheduler.sh`) POSTs
+  `/api/admin/upload-recovery/sweep` with `apply: true`
+  (`api/src/services/uploadSweepService.ts`). It decides only WHICH batches are
+  owed and hands them to `dispatchStagedRecovery` — no new copier, same md5
+  filter, chunking and stagger. Keep these:
+  - **Age is the NEWEST staged file's, not the oldest's** (default 2h, floor 1h).
+    A long session's first files are hours old while it is still uploading. A
+    file with no commit time (`ObjectMetadata.createdMs === 0`) makes the batch
+    too recent — unknown age must never license racing a live `/complete`.
+  - **Any `upload_batches` record means hands off**: `<batchId>` (written by
+    `/complete`, the inline copy, or a recovery marker) or `<batchId>-rec1`
+    (recoveries from before markers). That is also what keeps the orphans the
+    worker deliberately keeps on an unproven duplicate out of the sweep. A failed
+    record read throws — it must not read as "never completed".
+  - **Recovery now writes a marker** (`markRecoveryDispatched`): a fresh doc in
+    phase `received` when none existed, otherwise recovery fields ONLY, never the
+    volunteer's phase/counters. Written only when a batch's chunks ALL dispatched,
+    so a half-dispatched or failed batch is retried next tick. The admin tool
+    writes it too, so the sweep never redoes an admin's recovery.
+  - **Candidates with nothing owed (all md5s indexed) or no linkId are marked
+    too** — otherwise every tick re-reads that event's whole photo index.
+  - **A tick schedules at most ~50 min of staggered work** (`MAX_PLANNED_MS`),
+    chained across events, deferring WHOLE batches; with an hourly tick, one
+    tick's chunks never overlap the next's.
+  - Idle = one staging listing. A late `/complete` after a sweep is harmless: the
+    swept files are gone from staging or caught by the md5 claim.
+  - What the volunteer page may promise follows from this: finished files survive
+    a closed tab; a file mid-upload does not (`VolunteerUpload.tsx` copy).
 
 ## Find-Me selfie retention — a sweep, never a TTL
 
@@ -594,7 +627,10 @@
   `provision-deleted-purge-scheduler.sh`) and `findme-duplicates-drain`
   (`/api/admin/duplicates/drain`, ~every 2 min —
   `provision-duplicates-drain-scheduler.sh`; backstop for the duplicate-removal
-  queue, see the duplicate-file removal section above).
+  queue, see the duplicate-file removal section above), and
+  `findme-upload-sweep` (`/api/admin/upload-recovery/sweep`, hourly —
+  `provision-upload-sweep-scheduler.sh`; files uploads that never reached
+  `/complete`, see the staging-recovery section above).
 - **`findme-calibration-monthly`** (1st of the month — `provision-calibration-scheduler.sh`)
   is the odd one out: it starts the `findme-calibration` Cloud Run **job**
   (`deploy-calibration-job.sh`, quality plan Item 17) through the Run Admin API
