@@ -6,6 +6,12 @@
  * dropped connection or a closed tab no longer loses the batch: re-selecting
  * the same files picks up from the last committed byte. The on-page warning is
  * reworded accordingly.
+ *
+ * What closing the tab actually costs — keep the `uploadingBody` copy honest to
+ * this: files that FINISHED uploading are filed into Drive without the page,
+ * by the hourly never-completed sweep (api uploadSweepService.ts) once the
+ * session has been idle 2h. A file still mid-upload is not: its bytes only
+ * exist as an unfinished session until the volunteer comes back and resumes it.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -37,7 +43,7 @@ const STR = {
     heading: '📸 Upload Photos',
     uploadingTitle: 'Uploading…',
     uploadingBody:
-      'You can safely close this tab and come back — reopening this page and re-selecting the same files resumes where you left off.',
+      'Files that finish uploading are kept even if you close this tab — they reach the event library within a few hours. To finish the rest, reopen this page and re-select the same files; it picks up where you left off.',
     finalizingTitle: 'Saving to the event library…',
     finalizingBody:
       'Your files are safely uploaded — we’re filing them into Google Drive and queuing them for indexing.',
@@ -74,7 +80,8 @@ const STR = {
   zh: {
     heading: '📸 上传照片',
     uploadingTitle: '上传中…',
-    uploadingBody: '您可以放心关闭此标签页稍后再来——重新打开此页面并重新选择相同的文件即可从上次中断处继续。',
+    uploadingBody:
+      '已上传完成的文件即使关闭此标签页也会保留，并会在几小时内进入活动相册。如需完成其余文件，请重新打开此页面并重新选择相同的文件，即可从中断处继续。',
     finalizingTitle: '正在保存到活动相册…',
     finalizingBody: '您的文件已安全上传——我们正在将它们归档到 Google Drive 并排队建立索引。',
     finalizingBodyZh: '文件已安全上传，正在保存到 Google Drive 并排队建立索引…',
@@ -118,7 +125,7 @@ interface Item {
   result?: UploadResult;
 }
 
-// idle → uploading (bytes → cloud, safe to close tab) → finalizing (saving to
+// idle → uploading (bytes → cloud; finished files survive a closed tab) → finalizing (saving to
 // Drive + queuing indexing) → done (received; gallery appears after indexing).
 type Phase = 'idle' | 'uploading' | 'finalizing' | 'done';
 

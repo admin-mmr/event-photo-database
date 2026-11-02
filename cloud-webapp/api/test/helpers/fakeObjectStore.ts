@@ -39,6 +39,8 @@ interface Entry {
   /** Overrides the body hash when set (including to `''` = unknown). */
   md5Hex: string;
   custom: Record<string, string>;
+  /** Commit time, epoch ms (0 = unknown). */
+  createdMs: number;
 }
 
 export interface SeedOptions {
@@ -55,6 +57,8 @@ export interface SeedOptions {
   /** Omit for "hash the body"; pass `''` for a provider that reports no hash. */
   md5Hex?: string;
   custom?: Record<string, string>;
+  /** Commit time, epoch ms. Omit for "now"; pass `0` for a provider that reports none. */
+  createdMs?: number;
 }
 
 function md5Of(body: Buffer): string {
@@ -99,6 +103,7 @@ export class FakeObjectStore implements ObjectStore {
       contentType: entry.contentType || 'application/octet-stream',
       md5Hex: entry.md5Hex,
       custom: { ...entry.custom },
+      createdMs: entry.createdMs,
     };
   }
 
@@ -117,6 +122,7 @@ export class FakeObjectStore implements ObjectStore {
       contentType: opts.contentType,
       md5Hex: md5Of(body),
       custom: {},
+      createdMs: Date.now(),
     });
   }
 
@@ -178,6 +184,7 @@ export class FakeObjectStore implements ObjectStore {
         contentType: opts.contentType,
         md5Hex: '',
         custom: { ...opts.metadata },
+        createdMs: Date.now(),
       });
     }
     return {
@@ -203,6 +210,7 @@ export class FakeObjectStore implements ObjectStore {
       contentType: opts.contentType ?? 'application/octet-stream',
       md5Hex: opts.md5Hex ?? md5Of(body),
       custom: { ...(opts.custom ?? {}) },
+      createdMs: opts.createdMs ?? Date.now(),
     });
     return this;
   }

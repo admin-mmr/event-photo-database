@@ -24,6 +24,7 @@ interface Blob {
   /** Absent = the service holds no Content-MD5, which is the norm for a blob a
    *  browser committed (Azure stores only what the writer supplied). */
   contentMD5?: Uint8Array | undefined;
+  createdOn: Date;
   metadata: Record<string, string>;
 }
 
@@ -65,6 +66,7 @@ export class FakeBlobService implements BlobOps {
       contentLength: b.body.length,
       contentType: b.contentType,
       contentMD5: b.contentMD5,
+      createdOn: b.createdOn,
       metadata: { ...b.metadata },
     };
   }
@@ -82,6 +84,7 @@ export class FakeBlobService implements BlobOps {
       body: Buffer.from(body),
       contentType: opts.contentType,
       contentMD5: new Uint8Array(createHash('md5').update(body).digest()),
+      createdOn: new Date(),
       metadata: {},
     });
   }
@@ -101,6 +104,7 @@ export class FakeBlobService implements BlobOps {
           contentLength: b.body.length,
           contentType: b.contentType,
           contentMD5: b.contentMD5,
+          createdOn: b.createdOn,
           metadata: { ...b.metadata },
         },
       }));
@@ -122,7 +126,13 @@ export class FakeBlobService implements BlobOps {
   seed(
     container: string,
     key: string,
-    opts: { body?: Buffer | string; contentType?: string; md5Hex?: string; custom?: Record<string, string> } = {},
+    opts: {
+      body?: Buffer | string;
+      contentType?: string;
+      md5Hex?: string;
+      custom?: Record<string, string>;
+      createdMs?: number;
+    } = {},
   ): void {
     const body =
       opts.body === undefined
@@ -136,6 +146,7 @@ export class FakeBlobService implements BlobOps {
       body,
       contentType: opts.contentType ?? 'application/octet-stream',
       contentMD5: hex === '' ? undefined : new Uint8Array(Buffer.from(hex, 'hex')),
+      createdOn: new Date(opts.createdMs ?? Date.now()),
       metadata: { ...(opts.custom ?? {}) },
     });
   }
