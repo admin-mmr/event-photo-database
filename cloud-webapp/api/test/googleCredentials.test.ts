@@ -118,6 +118,16 @@ describe('mintDwdToken (gcp)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2); // different scope → new mint
   });
 
+  it('re-mints rather than hand out a token with under 5 minutes left', async () => {
+    h.request.mockResolvedValue({ data: { signedJwt: 'S' } });
+    const fetchMock = stubTokenExchange('SHORT', 4 * 60); // expires in 4 min
+    const { mintDwdToken } = await load({});
+
+    await mintDwdToken({ scope: 'scope-a', subject: 'u@x.org' });
+    await mintDwdToken({ scope: 'scope-a', subject: 'u@x.org' });
+    expect(fetchMock).toHaveBeenCalledTimes(2); // inside the margin → not reused
+  });
+
   it('throws with the upstream status on a failed exchange', async () => {
     h.request.mockResolvedValue({ data: { signedJwt: 'S' } });
     globalThis.fetch = vi.fn(async () => ({

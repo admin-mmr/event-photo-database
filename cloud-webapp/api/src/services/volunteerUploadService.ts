@@ -418,7 +418,14 @@ export async function enqueueStagedBatch(
   const folderId = await resolveEventFolderId(link.eventId);
   const store = objectStore();
   const staging = env.VOLUNTEER_STAGING_BUCKET;
-  const driveToken = await getDriveToken(DRIVE_SCOPE_READWRITE);
+  // Ask for the token at EVERY use, never once per batch. A big batch runs for
+  // up to the 30-min request limit, and the shared cache hands out a token with
+  // as little as TOKEN_REFRESH_MARGIN_MS left — so a token captured at the top
+  // expired mid-batch and every remaining file failed `Drive upload 401`. Those
+  // count as `failed` in a 200, so Cloud Tasks never retried them; NYC Marathon
+  // night (2026-11-02) stranded 379 photos in staging that way. The cache makes
+  // a per-file call free.
+  const driveToken = () => getDriveToken(DRIVE_SCOPE_READWRITE);
 
   // Snapshot existing Drive files for the duplicate check. Best-effort: if the
   // listing fails we proceed WITHOUT dedup rather than blocking the upload (the
@@ -427,7 +434,7 @@ export async function enqueueStagedBatch(
   const seenHashes = new Set<string>();
   const seen = new Set<string>();
   try {
-    const existing = await listEventImages(folderId, { token: driveToken });
+    const existing = await listEventImages(folderId, { token: await driveToken() });
     for (const f of existing) {
       const hash = String(f.md5Checksum ?? '').toLowerCase();
       if (hash) seenHashes.add(hash);
@@ -445,9 +452,9 @@ export async function enqueueStagedBatch(
   const ensureBatchFolder = async (photographerName: string): Promise<string> => {
     if (batchFolderId) return batchFolderId;
     let parent = folderId;
-    if (link.clubName) parent = (await getOrCreateSubfolder(parent, link.clubName, { token: driveToken })).id;
+    if (link.clubName) parent = (await getOrCreateSubfolder(parent, link.clubName, { token: await driveToken() })).id;
     const tag = (link.tag || '').trim() || DEFAULT_TAG;
-    parent = (await getOrCreateSubfolder(parent, tag, { token: driveToken })).id;
+    parent = (await getOrCreateSubfolder(parent, tag, { token: await driveToken() })).id;
     // REUSE the name this batch already used, if it got that far before dying.
     // buildBatchFolderName() stamps the CURRENT time, so a retry used to mint a
     // second "20260727-173445_liyiguo" folder beside the first and re-land the
@@ -455,7 +462,7 @@ export async function enqueueStagedBatch(
     // uploader's runs sat in folders ~70s apart. getOrCreateSubfolder is
     // idempotent by name, so reusing the recorded name resumes the same folder.
     const batchName = priorBatchFolderName || buildBatchFolderName(photographerName);
-    batchFolderId = (await getOrCreateSubfolder(parent, batchName, { token: driveToken })).id;
+    batchFolderId = (await getOrCreateSubfolder(parent, batchName, { token: await driveToken() })).id;
     batchFolderName = batchName;
     // Persist the name AS SOON AS it exists, not at the end of the loop: a run
     // killed mid-copy is exactly the run whose retry needs to find it.
@@ -573,7 +580,7 @@ export async function enqueueStagedBatch(
       // killed before it could stamp anything. Copying now would create exactly
       // the duplicate this whole path exists to prevent, so look first.
       if (claimRes.verifyBeforeCopy) {
-        const already = await findFileByAppProperty(UPLOAD_DEDUP_PROPERTY, dedupTag, { token: driveToken });
+        const already = await findFileByAppProperty(UPLOAD_DEDUP_PROPERTY, dedupTag, { token: await driveToken() });
         if (already) {
           await recordClaimTarget(candidate, already.id);
           claim = null;
@@ -603,11 +610,11 @@ export async function enqueueStagedBatch(
           contentType,
           size,
           async (start, end) => store.read(staging, objectName, { start, end }),
-          { token: driveToken, appProperties },
+          { token: await driveToken(), appProperties },
         );
       } else {
         const bytes = await store.read(staging, objectName);
-        uploaded = await uploadFileToDrive(destFolderId, name, contentType, bytes, { token: driveToken, appProperties });
+        uploaded = await uploadFileToDrive(destFolderId, name, contentType, bytes, { token: await driveToken(), appProperties });
       }
       // Point the claim at what it produced so an admin delete can release it.
       await recordClaimTarget(candidate, uploaded.id);
@@ -629,9 +636,10 @@ export async function enqueueStagedBatch(
       // retry to copy the same photo a second time. Ask Drive whether our tag is
       // there before deciding, and only hand the claim back if it truly is not.
       if (claim) {
-        const landed = await findFileByAppProperty(UPLOAD_DEDUP_PROPERTY, claimId(claim.eventId, claim.dedupKey), {
-          token: driveToken,
-        }).catch(() => null);
+        const heldTag = claimId(claim.eventId, claim.dedupKey);
+        const landed = await driveToken()
+          .then((token) => findFileByAppProperty(UPLOAD_DEDUP_PROPERTY, heldTag, { token }))
+          .catch(() => null);
         if (landed) {
           await recordClaimTarget(claim, landed.id);
           copied += 1;
