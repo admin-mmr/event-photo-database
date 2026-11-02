@@ -29,12 +29,30 @@ async function authHeader(): Promise<Record<string, string>> {
   }
 }
 
+/**
+ * A bot check turned a GUEST away: reCAPTCHA (403 `recaptcha_failed`) or the
+ * per-IP guest limit (429 `guest_rate_limited`). Signing in with Google lifts
+ * both, so these — and only these — open the app-wide "sign in to continue"
+ * prompt (components/GuestSignInPrompt.tsx). The per-uid `rate_limited` is
+ * deliberately excluded: sign-in doesn't lift it.
+ */
+export function isGuestBlock(status: number, code: string): boolean {
+  return (status === 403 && code === 'recaptcha_failed') || (status === 429 && code === 'guest_rate_limited');
+}
+
+/** Window event fired on a guest block; GuestSignInPrompt listens for it. */
+export const GUEST_BLOCKED_EVENT = 'app:guest-blocked';
+
 async function parseError(res: Response, fallback: string): Promise<ApiError> {
   const body = (await res.json().catch(() => ({}))) as {
     error?: string;
     message?: string;
   } & Record<string, unknown>;
-  return new ApiError(res.status, body.error ?? 'http_error', body.message ?? fallback, body);
+  const err = new ApiError(res.status, body.error ?? 'http_error', body.message ?? fallback, body);
+  if (isGuestBlock(err.status, err.code) && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(GUEST_BLOCKED_EVENT, { detail: { code: err.code } }));
+  }
+  return err;
 }
 
 export async function apiGet<T>(path: string): Promise<T> {

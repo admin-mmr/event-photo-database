@@ -9,11 +9,14 @@
  */
 
 import { initializeApp, type FirebaseOptions } from 'firebase/app';
+import type { FirebaseError } from 'firebase/app';
 import {
   getAuth,
   GoogleAuthProvider,
+  linkWithPopup,
   onAuthStateChanged,
   signInAnonymously,
+  signInWithCredential,
   signInWithPopup,
   signOut,
   type Auth,
@@ -46,6 +49,43 @@ export function firebaseAuth(): Promise<Auth> {
 export async function signInWithGoogle(): Promise<void> {
   const auth = await firebaseAuth();
   await signInWithPopup(auth, new GoogleAuthProvider());
+}
+
+/**
+ * Turn the current GUEST into a Google account, keeping the same uid where
+ * possible — used when a bot check (reCAPTCHA or the per-IP guest limit)
+ * blocks a guest. Google-signed-in users are exempt from both checks on the
+ * api (api/src/lib/signIn.ts), so this is the one-tap way past a false
+ * positive.
+ *
+ * linkWithPopup, not signInWithPopup: linking keeps the anonymous uid, so the
+ * guest's consent record, saved selfies and "delete my data" all stay theirs.
+ * If that Google account already exists (it was used here before), linking
+ * fails with credential-already-in-use and we sign in to it instead — a
+ * different uid, which is unavoidable and is just a normal Google sign-in.
+ * The token is force-refreshed so the very next api call carries the Google
+ * identity.
+ */
+export async function upgradeGuestToGoogle(): Promise<'linked' | 'signed_in'> {
+  const auth = await firebaseAuth();
+  const provider = new GoogleAuthProvider();
+  const user = auth.currentUser;
+  if (!user || !user.isAnonymous) {
+    await signInWithPopup(auth, provider);
+    return 'signed_in';
+  }
+  try {
+    await linkWithPopup(user, provider);
+    await user.getIdToken(true);
+    return 'linked';
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    if (code !== 'auth/credential-already-in-use' && code !== 'auth/email-already-in-use') throw err;
+    const credential = GoogleAuthProvider.credentialFromError(err as FirebaseError);
+    if (credential) await signInWithCredential(auth, credential);
+    else await signInWithPopup(auth, provider);
+    return 'signed_in';
+  }
 }
 
 /**

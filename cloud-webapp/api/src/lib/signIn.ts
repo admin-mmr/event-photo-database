@@ -19,8 +19,17 @@ import type { Request } from 'express';
  */
 const VERIFIED_SIGN_IN_PROVIDERS: ReadonlySet<string> = new Set(['google.com']);
 
-/** True for a user signed in with a provider on VERIFIED_SIGN_IN_PROVIDERS. */
+/**
+ * True for a user signed in with, or LINKED to, a provider on
+ * VERIFIED_SIGN_IN_PROVIDERS. "Linked" covers the guest who hit a bot check and
+ * upgraded in place (web `upgradeGuestToGoogle`, linkWithPopup): same uid, so
+ * their consent and saved selfies survive, but the token's `sign_in_provider`
+ * may still say 'anonymous' — its `identities` is what proves the Google
+ * account. A Google identity can only be linked by completing Google OAuth.
+ */
 export function hasVerifiedSignIn(req: Request): boolean {
-  const provider = req.user?.signInProvider;
-  return provider !== undefined && VERIFIED_SIGN_IN_PROVIDERS.has(provider);
+  const user = req.user;
+  if (!user) return false;
+  if (user.signInProvider !== undefined && VERIFIED_SIGN_IN_PROVIDERS.has(user.signInProvider)) return true;
+  return (user.linkedProviders ?? []).some((p) => VERIFIED_SIGN_IN_PROVIDERS.has(p));
 }
