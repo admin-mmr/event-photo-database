@@ -6,12 +6,31 @@
  * demo and local dev keep working without a key. The client sends the token in
  * the `X-Recaptcha-Token` header (preferred — works for multipart routes) or a
  * `recaptchaToken` body field.
+ *
+ * RECAPTCHA_MODE decides what a bad verdict does:
+ *   - `shadow` (default): log it and let the request through. This is how a
+ *     threshold gets chosen from real traffic before anyone can be blocked.
+ *   - `enforce`: 403.
+ * Either way every verdict is logged as one `recaptcha verdict` line with a
+ * stable shape (`recaptcha.{action,mode,outcome,reason,score}`) so the score
+ * distribution can be read straight out of Cloud Logging — see
+ * BOT_PROTECTION_PLAN.md for the queries.
+ *
+ * Only GUESTS are checked. A user signed in with a provider on
+ * SKIP_CHECK_PROVIDERS skips the assessment (no cost, no false-positive 403):
+ * a bot can mint anonymous guests at will — each a fresh per-uid quota, which
+ * is the hole reCAPTCHA covers — but cannot mass-create Google accounts, and a
+ * real account's fixed uid makes the per-uid rate limits bind. It is an
+ * ALLOWLIST on purpose: a sign-in method added later (e.g. email/password,
+ * whose accounts ARE cheap to mass-create) stays checked until someone decides
+ * otherwise. Must run after requireAuth so `req.user` is populated.
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 
+import { env } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
-import { isRecaptchaConfigured, verifyRecaptcha } from '../services/recaptcha.js';
+import { isRecaptchaConfigured, verifyRecaptcha, type RecaptchaResult } from '../services/recaptcha.js';
 
 function extractToken(req: Request): string | undefined {
   const header = req.headers['x-recaptcha-token'];
@@ -23,7 +42,29 @@ function extractToken(req: Request): string | undefined {
   return undefined;
 }
 
-/** Middleware factory: verifies the token for `action`, 403 on a bad verdict. */
+/** Sign-in providers whose users skip the check (see header). */
+const SKIP_CHECK_PROVIDERS: ReadonlySet<string> = new Set(['google.com']);
+
+export function skipsRecaptcha(req: Request): boolean {
+  const provider = req.user?.signInProvider;
+  return provider !== undefined && SKIP_CHECK_PROVIDERS.has(provider);
+}
+
+/**
+ * pass              — good verdict
+ * fail_open         — the assessment itself failed; allowed regardless of mode
+ * would_block       — bad verdict, allowed because mode is shadow
+ * blocked           — bad verdict, 403'd because mode is enforce
+ * skipped_signed_in — signed-in (non-guest) user; no assessment made
+ */
+export type VerdictOutcome = 'pass' | 'fail_open' | 'would_block' | 'blocked' | 'skipped_signed_in';
+
+export function verdictOutcome(result: RecaptchaResult, mode: 'shadow' | 'enforce'): VerdictOutcome {
+  if (result.ok) return result.failOpen ? 'fail_open' : 'pass';
+  return mode === 'enforce' ? 'blocked' : 'would_block';
+}
+
+/** Middleware factory: verifies the token for `action`; 403 only in enforce mode. */
 export function requireRecaptcha(action: string): RequestHandler {
   return async function recaptchaMiddleware(
     req: Request,
@@ -34,12 +75,41 @@ export function requireRecaptcha(action: string): RequestHandler {
       next();
       return;
     }
-    const result = await verifyRecaptcha(extractToken(req), action);
-    if (result.ok) {
+    const mode = env.RECAPTCHA_MODE;
+    if (skipsRecaptcha(req)) {
+      logger.info(
+        {
+          recaptcha: { action, mode, outcome: 'skipped_signed_in', reason: req.user?.signInProvider },
+          uid: req.user?.uid,
+        },
+        'recaptcha verdict',
+      );
       next();
       return;
     }
-    logger.warn({ action, reason: result.reason, score: result.score }, 'recaptcha rejected');
+    const result = await verifyRecaptcha(extractToken(req), action);
+    const outcome = verdictOutcome(result, mode);
+
+    const line = {
+      recaptcha: {
+        action,
+        mode,
+        outcome,
+        reason: result.reason,
+        ...(result.score !== undefined ? { score: result.score } : {}),
+      },
+      uid: req.user?.uid,
+    };
+    if (outcome === 'blocked' || outcome === 'would_block') {
+      logger.warn(line, 'recaptcha verdict');
+    } else {
+      logger.info(line, 'recaptcha verdict');
+    }
+
+    if (outcome !== 'blocked') {
+      next();
+      return;
+    }
     res.status(403).json({
       ok: false,
       error: 'recaptcha_failed',

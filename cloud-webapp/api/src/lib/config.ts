@@ -280,6 +280,14 @@ const EnvSchema = z.object({
   RECAPTCHA_API_KEY: z.string().default(''),
   // Minimum Enterprise risk score (0..1) to accept; below this is rejected.
   RECAPTCHA_MIN_SCORE: z.coerce.number().min(0).max(1).default(0.5),
+  // What a bad verdict DOES (middleware/recaptcha.ts). `shadow` (default):
+  // verify and log every verdict, but never block — the request goes through
+  // and the log says it would have been rejected. `enforce`: 403 the request.
+  // Shadow is the default on purpose: the gate was never exercised in prod
+  // (the API key was invalid from 2026-10-04, so every check failed open), so
+  // a threshold must be chosen from logged scores before anything is blocked.
+  // Switching to enforce is a deliberate, owner-approved env change.
+  RECAPTCHA_MODE: z.enum(['shadow', 'enforce']).default('shadow'),
 
   // ── Pilot feature flag (dev plan M6.1 / M6.4) ─────────────────────────
   // Find Me search gate, evaluated per search in `runSearch`. Two knobs:

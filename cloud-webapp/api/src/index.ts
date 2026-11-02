@@ -4,7 +4,7 @@ import { env } from './lib/config.js';
 import { initDb } from './lib/firestore.js';
 import { initStorage } from './lib/storage.js';
 import { logger } from './lib/logger.js';
-import { recaptchaConfigStatus } from './services/recaptcha.js';
+import { recaptchaConfigStatus, recaptchaSelfCheck } from './services/recaptcha.js';
 
 const app = buildServer();
 
@@ -26,7 +26,10 @@ const server = app.listen(env.PORT, () => {
         'Set RECAPTCHA_PROJECT_ID, RECAPTCHA_SITE_KEY and RECAPTCHA_API_KEY (check the secret env-var name).',
     );
   } else if (rc.configured) {
-    logger.info('reCAPTCHA token verification enabled');
+    logger.info({ mode: env.RECAPTCHA_MODE }, 'reCAPTCHA token verification enabled');
+    // Prove the key actually works. Logs ERROR (alert: recaptcha_broken) if not;
+    // never throws and never delays serving.
+    void recaptchaSelfCheck();
   } else {
     logger.info('reCAPTCHA not configured — token verification disabled (expected in local/dev)');
   }

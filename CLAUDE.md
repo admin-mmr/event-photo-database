@@ -499,6 +499,32 @@
   - What the volunteer page may promise follows from this: finished files survive
     a closed tab; a file mid-upload does not (`VolunteerUpload.tsx` copy).
 
+## reCAPTCHA — shadow first, and never fail open silently
+
+- **From 2026-10-04 to 2026-11-02 the bot gate on download and Find-Me was OFF**
+  and nobody knew: secret `RECAPTCHA_KEY` held a value that is not an API key, so
+  every assessment 400'd "API key not valid", `services/recaptcha.ts` failed open
+  as designed, and the only trace was a WARN. Plan and rollout steps:
+  `cloud-webapp/BOT_PROTECTION_PLAN.md`. Keep these:
+  - **Config-class failures (400/401/403/404) log at ERROR with
+    `alert: "recaptcha_broken"`** — the live `severity>=ERROR` policy emails on
+    them. Transient 429/5xx stay WARN. Still fail OPEN either way: a broken key
+    must not lock attendees out — it must just be loud.
+  - **`RECAPTCHA_MODE` defaults to `shadow`** (log every verdict, never block).
+    `enforce` is an owner decision made from `recaptcha-score-report.sh` output.
+    `deploy-api.sh` sends MODE/MIN_SCORE only when exported — a redeploy must
+    never flip enforcement or reset the chosen threshold.
+  - **Cloud Run resolves a `:latest` secret at INSTANCE START.** Adding a secret
+    version changes running behaviour as instances recycle, with no deploy. Fixing
+    the key while enforce-mode code is live would have started 403ing real users.
+  - The API key travels in `X-Goog-Api-Key`, never `?key=` (URLs get logged).
+  - **Only guests are checked; the skip is an ALLOWLIST** (`SKIP_CHECK_PROVIDERS`
+    = `google.com`, from the token's `sign_in_provider`). Anonymous guests can be
+    minted at will (fresh uid = fresh rate-limit quota); Google accounts can't.
+    Never add a provider whose accounts are cheap to create (email/password) —
+    it turns the skip into a bypass.
+  - Uploads stay WITHOUT reCAPTCHA (per-file cost; see `routes/volunteerUpload.ts`).
+
 ## Gallery club / tag filter — read off the Drive path
 
 - **The gallery's `?club=&tag=` filter keys on `photos.clubName`/`photos.tag`,

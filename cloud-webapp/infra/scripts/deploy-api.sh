@@ -97,7 +97,12 @@ ENV_VARS="${ENV_VARS},ORIGINAL_FETCH_LIMIT=${ORIGINAL_FETCH_LIMIT:-500}"
 # shell var can't blank a live value (merge preserves it).
 ENV_VARS="${ENV_VARS},RECAPTCHA_PROJECT_ID=${RECAPTCHA_PROJECT_ID:-${PROJECT_ID}}"
 if [[ -n "${RECAPTCHA_SITE_KEY:-}" ]]; then ENV_VARS="${ENV_VARS},RECAPTCHA_SITE_KEY=${RECAPTCHA_SITE_KEY}"; fi
-ENV_VARS="${ENV_VARS},RECAPTCHA_MIN_SCORE=${RECAPTCHA_MIN_SCORE:-0.5}"
+# RECAPTCHA_MODE (shadow|enforce) and RECAPTCHA_MIN_SCORE are only sent when
+# exported, so a routine redeploy can never flip enforcement on or reset a
+# threshold the owner chose from shadow-mode scores (BOT_PROTECTION_PLAN.md).
+# Unset everywhere → the code defaults: shadow, 0.5.
+if [[ -n "${RECAPTCHA_MIN_SCORE:-}" ]]; then ENV_VARS="${ENV_VARS},RECAPTCHA_MIN_SCORE=${RECAPTCHA_MIN_SCORE}"; fi
+if [[ -n "${RECAPTCHA_MODE:-}" ]]; then ENV_VARS="${ENV_VARS},RECAPTCHA_MODE=${RECAPTCHA_MODE}"; fi
 
 # Volunteer upload background worker (UPLOAD_ASYNC_QUEUE_DESIGN.md step 3).
 # Dispatch is OFF unless the flag is 'true' AND the queue + worker URL are set
