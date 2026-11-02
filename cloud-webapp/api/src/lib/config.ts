@@ -145,6 +145,11 @@ const EnvSchema = z.object({
   // POST /api/admin/sync via the `X-Sync-Token` header instead of a Firebase
   // admin token. Empty = only Firebase admins can trigger a sync.
   SYNC_TRIGGER_TOKEN: z.string().default(''),
+  // The pre-rotation value of SYNC_TRIGGER_TOKEN, accepted alongside it during a
+  // rotation's grace window (middleware/cronAuth.ts) so queued Cloud Tasks and
+  // not-yet-reprovisioned scheduler jobs keep working. Wired from Secret Manager
+  // only while a rotation is in progress; empty (the default) = current only.
+  SYNC_TRIGGER_TOKEN_PREVIOUS: z.string().default(''),
 
   // ── Volunteer upload background worker (UPLOAD_ASYNC_QUEUE_DESIGN.md) ──
   // When 'true', /complete will (step 3) enqueue a Cloud Tasks task targeting

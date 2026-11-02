@@ -114,6 +114,20 @@ jobs:
           UPLOAD_WORKER_URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)')"
           OUTFIT_ENV=""
           if [ -n "${OUTFIT_URL}" ]; then OUTFIT_ENV=",OUTFIT_URL=${OUTFIT_URL}"; fi
+          # SYNC_TRIGGER_TOKEN_PREVIOUS is wired only during a token rotation (the
+          # owner adds/removes it with `gcloud run services update`). --set-secrets
+          # REPLACES the whole secret set, so carry the live ref forward or a merge
+          # mid-rotation would close the grace window and 401 every queued Cloud
+          # Tasks upload copy still holding the old token. Same as deploy-api.sh.
+          SECRETS="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_API_KEY=RECAPTCHA_KEY:latest"
+          PREVIOUS_TOKEN_REF="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format=json | python3 -c 'import json, sys
+          envs = json.load(sys.stdin)["spec"]["template"]["spec"]["containers"][0].get("env", [])
+          ref = next((e.get("valueFrom", {}).get("secretKeyRef", {}) for e in envs if e.get("name") == "SYNC_TRIGGER_TOKEN_PREVIOUS"), {})
+          print(ref["name"] + ":" + ref.get("key", "latest") if ref.get("name") else "")')"
+          if [ -n "$PREVIOUS_TOKEN_REF" ]; then
+            echo "Token rotation in progress: keeping SYNC_TRIGGER_TOKEN_PREVIOUS=${PREVIOUS_TOKEN_REF}"
+            SECRETS="${SECRETS},SYNC_TRIGGER_TOKEN_PREVIOUS=${PREVIOUS_TOKEN_REF}"
+          fi
           gcloud run deploy "$SERVICE" \
             --image="$IMAGE" \
             --region="$REGION" \
@@ -127,7 +141,7 @@ jobs:
             --concurrency=80 \
             --timeout="${API_TIMEOUT_SECONDS}" \
             --update-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},FIREBASE_PROJECT_ID=${PROJECT_ID},GIT_COMMIT_SHA=${GITHUB_SHA::7},MATCHER_URL=${MATCHER_URL},MASTER_SPREADSHEET_ID=${MASTER_SPREADSHEET_ID},FINDME_EVENT_ALLOWLIST=${FINDME_EVENT_ALLOWLIST},UPLOAD_DISPATCH_TO_WORKER=${UPLOAD_DISPATCH_TO_WORKER},UPLOAD_TASKS_QUEUE=${UPLOAD_TASKS_QUEUE},UPLOAD_TASKS_LOCATION=${UPLOAD_TASKS_LOCATION},UPLOAD_WORKER_URL=${UPLOAD_WORKER_URL}${OUTFIT_ENV}" \
-            --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_API_KEY=RECAPTCHA_KEY:latest"
+            --set-secrets="$SECRETS"
           # Auth: deliberately pass NEITHER --allow-unauthenticated nor
           # --no-allow-unauthenticated, so the deploy leaves the service's IAM
           # policy untouched (matches deploy-api.sh + CLAUDE.md). --allow-unauthenticated
