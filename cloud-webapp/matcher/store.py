@@ -10,15 +10,20 @@ Phase F). Per-event layout, local dir / GCS / Azure Blob:
 
 Search is brute-force cosine similarity (dot product on normalized vectors) —
 milliseconds at per-event scale (a few thousand photos). Events are cached
-in memory for the instance lifetime; the indexer bumping `model_version`
-implies new files + cache invalidation on the next deploy/restart.
+in memory, and the cache is checked against the stored manifest's version
+(GCS generation / Azure ETag / local mtime) at most every
+`STORE_CHECK_SEC` per event, so a re-index reaches a WARM instance too — see
+`EmbeddingStore.load_event`.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
+import time
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -29,6 +34,13 @@ FILES = {"face": "faces.npy", "person": "persons.npy"}
 MANIFEST = "manifest.json"
 
 AZURE_SUFFIX = ".blob.core.windows.net"
+
+# How often (seconds, per event) a cached event re-reads its manifest's version.
+# One metadata read — never a download — so this is cheap; it bounds how long a
+# warm instance keeps serving a store the indexer has since replaced.
+STORE_CHECK_SEC = float(os.environ.get("MATCHER_STORE_CHECK_SEC", "60"))
+
+logger = logging.getLogger(__name__)
 
 
 def parse_root(root: str) -> tuple[str, object]:
@@ -195,8 +207,9 @@ class EventEmbeddings:
         """Per-row score multipliers in [1 - weight, 1.0] from each crop's stored
         quality (Item 5). `weight` 0.0 → all ones (feature off).
 
-        Cached per (kind, weight): the manifest is immutable for the instance
-        lifetime, so this is computed once per event rather than per search."""
+        Cached per (kind, weight): an EventEmbeddings is immutable (a newer store
+        is a NEW object, see `EmbeddingStore.load_event`), so this is computed
+        once per loaded event rather than per search."""
         key = (kind, float(weight))
         cached = self._quality_cache.get(key)
         if cached is not None:
@@ -303,6 +316,13 @@ class EventEmbeddings:
         return best
 
 
+@dataclass
+class _Cached:
+    ev: EventEmbeddings
+    version: object  # the manifest's version token when `ev` was loaded
+    checked_at: float  # clock() of the last time `version` was confirmed current
+
+
 class EmbeddingStore:
     """Loads + caches EventEmbeddings from a local dir, GCS, or Azure Blob.
 
@@ -314,21 +334,86 @@ class EmbeddingStore:
     neither installed.
     """
 
-    def __init__(self, root: str):
+    def __init__(self, root: str, check_sec: float | None = None, clock=time.monotonic):
         self.root = root.rstrip("/")
-        self._cache: dict[str, EventEmbeddings] = {}
+        self._cache: dict[str, _Cached] = {}
         self._lock = threading.Lock()
+        self._check_sec = STORE_CHECK_SEC if check_sec is None else check_sec
+        self._clock = clock
+        self._gcs_client = None
 
     def load_event(self, event_id: str) -> EventEmbeddings:
-        ev = self._cache.get(event_id)
-        if ev is not None:
-            return ev
-        with self._lock:
-            ev = self._cache.get(event_id)
-            if ev is None:
-                ev = self._load(event_id)
-                self._cache[event_id] = ev
-            return ev
+        """The event's vectors, reloaded when the indexer has written a newer store.
+
+        The cache used to live for the whole instance, which scale-to-zero hid:
+        an idle instance dies and the next one loads fresh. A warm one
+        (`event-scale.sh up` holds `min-instances=1`) kept serving its first
+        load — a re-index's new photos never matched, and photos an admin had
+        deleted still came back with dead thumbs. So at most every `check_sec`
+        per event this reads the MANIFEST's version (one metadata call, no
+        download) and reloads only when it changed. The manifest is the signal
+        because the indexer writes it LAST, after both .npy files.
+
+        Nothing polls: the check rides on a search, so an idle instance costs
+        nothing extra (the zero-idle-cost policy). While one thread reloads,
+        the others keep answering from the old copy rather than queueing."""
+        entry = self._cache.get(event_id)
+        if entry is not None and self._clock() - entry.checked_at < self._check_sec:
+            return entry.ev
+        if entry is not None:
+            # Someone is already loading/checking — serve what we have.
+            if not self._lock.acquire(blocking=False):
+                return entry.ev
+        else:
+            self._lock.acquire()
+        try:
+            return self._refresh(event_id)
+        finally:
+            self._lock.release()
+
+    def _refresh(self, event_id: str) -> EventEmbeddings:
+        """load_event's slow path; the caller holds `self._lock`."""
+        now = self._clock()
+        entry = self._cache.get(event_id)
+        if entry is not None and now - entry.checked_at < self._check_sec:
+            return entry.ev  # another thread refreshed it while we waited
+        try:
+            version = self._version(event_id)
+        except Exception:
+            if entry is None:
+                raise
+            # A failed metadata read must not turn a search into a 500; the
+            # cached copy is at worst one re-index old. Retry next interval.
+            logger.warning("store version check failed for %s; serving cached copy", event_id, exc_info=True)
+            entry.checked_at = now
+            return entry.ev
+        if version is None:
+            # The manifest is gone (event deleted / derivatives swept): drop it.
+            self._cache.pop(event_id, None)
+            raise FileNotFoundError(f"event '{event_id}' not indexed: no manifest")
+        if entry is not None and version == entry.version:
+            entry.checked_at = now
+            return entry.ev
+        # Version read BEFORE the load: if the indexer lands another write while
+        # we read, the next check sees a newer version and reloads again, rather
+        # than pinning a half-old copy under the new version.
+        try:
+            ev = self._load(event_id)
+        except FileNotFoundError:
+            self._cache.pop(event_id, None)
+            raise
+        except Exception:
+            if entry is None:
+                raise
+            # e.g. a manifest/vector length mismatch read mid-write. Keep the
+            # last good copy and retry next interval.
+            logger.warning("store reload failed for %s; serving cached copy", event_id, exc_info=True)
+            entry.checked_at = now
+            return entry.ev
+        if entry is not None:
+            logger.info("store for %s changed (%s -> %s); reloaded", event_id, entry.version, version)
+        self._cache[event_id] = _Cached(ev, version, now)
+        return ev
 
     def invalidate(self, event_id: str | None = None) -> None:
         with self._lock:
@@ -338,6 +423,53 @@ class EmbeddingStore:
                 self._cache.pop(event_id, None)
 
     # ── backends ────────────────────────────────────────────────────────────
+
+    def _version(self, event_id: str) -> object | None:
+        """An opaque token that changes whenever the event's manifest is
+        rewritten, or None when there is no manifest. Metadata only."""
+        backend, details = parse_root(self.root)
+        if backend == "gcs":
+            return self._version_gcs(event_id)
+        if backend == "azure":
+            return self._version_azure(event_id, details)  # type: ignore[arg-type]
+        return self._version_local(event_id)
+
+    def _version_local(self, event_id: str) -> object | None:
+        try:
+            st = os.stat(os.path.join(self.root, event_id, EMB_SUBDIR, MANIFEST))
+        except FileNotFoundError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    def _version_gcs(self, event_id: str) -> object | None:
+        bucket, base = self._gcs_base(event_id)
+        blob = bucket.get_blob(f"{base}/{MANIFEST}")  # one metadata GET; None if absent
+        return None if blob is None else blob.generation
+
+    def _version_azure(self, event_id: str, details: tuple[str, str, str]) -> object | None:
+        account_url, container_name, prefix = details
+        container = _azure_container(account_url, container_name)
+        base = "/".join(p for p in (prefix, event_id, EMB_SUBDIR) if p)
+        try:
+            props = container.get_blob_client(f"{base}/{MANIFEST}").get_blob_properties()
+        except Exception as e:
+            # ResourceNotFoundError, matched by status so this needs no azure import.
+            if getattr(e, "status_code", None) == 404:
+                return None
+            raise
+        return props.etag
+
+    def _gcs_base(self, event_id: str):
+        """(bucket, key prefix) for the event. The client is kept for the
+        instance: building one per call refetches credentials, and the version
+        check runs every `check_sec`."""
+        bucket_name, prefix = parse_root(self.root)[1]  # type: ignore[misc]
+        if self._gcs_client is None:
+            from google.cloud import storage  # lazy: not needed for local/test runs
+
+            self._gcs_client = storage.Client()
+        base = "/".join(p for p in (prefix, event_id, EMB_SUBDIR) if p)
+        return self._gcs_client.bucket(bucket_name), base
 
     def _load(self, event_id: str) -> EventEmbeddings:
         backend, details = parse_root(self.root)
@@ -366,13 +498,8 @@ class EmbeddingStore:
         return out
 
     def _read_gcs(self, event_id: str) -> dict[str, bytes]:
-        from google.cloud import storage  # lazy: not needed for local/test runs
-
-        without_scheme = self.root[len("gs://") :]
-        bucket_name, _, prefix = without_scheme.partition("/")
-        client = storage.Client()
-        bucket = client.bucket(bucket_name)
-        base = "/".join(p for p in (prefix, event_id, EMB_SUBDIR) if p)
+        bucket, base = self._gcs_base(event_id)
+        bucket_name = bucket.name
         out = {}
         for name in (MANIFEST, FILES["face"], FILES["person"]):
             blob = bucket.blob(f"{base}/{name}")
