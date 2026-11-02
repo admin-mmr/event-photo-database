@@ -562,6 +562,31 @@
     enforce without this fallback deployed.
   - Uploads stay WITHOUT reCAPTCHA (per-file cost; see `routes/volunteerUpload.ts`).
 
+## Rotating SYNC_TRIGGER_TOKEN — a grace window, never a straight swap
+
+- **The machine token outlives any switch you make**, in two places nobody can
+  update atomically: every queued Cloud Tasks upload copy stores it in its task
+  header (`uploadDispatch.ts`; the `upload-process` queue retries a 401 for
+  hours, and recovery chunks are scheduled up to ~50 min out), and each of the
+  eight token-carrying scheduler jobs sends it until its
+  `provision-*-scheduler.sh` is re-run. Just adding a secret version 401s both —
+  and an un-copied upload is a photo missing from the gallery.
+- **`cronAuth.ts` accepts `SYNC_TRIGGER_TOKEN` OR `SYNC_TRIGGER_TOKEN_PREVIOUS`**
+  (constant time, both slots always compared). PREVIOUS is a Secret Manager
+  secret wired ONLY while a rotation runs; empty means current-only, and it can
+  never open the header path on its own. A PREVIOUS match logs WARN
+  `alert: "sync_token_previous"` with the scheduler job / task name, never the
+  value — that log going quiet is how you know it is safe to clear.
+- **Both deploy paths carry the live PREVIOUS ref forward** (`--set-secrets`
+  replaces the whole set): a merge mid-rotation must not close the window.
+- **Order matters:** wire PREVIOUS (a copy of the live version) and pin
+  `SYNC_TRIGGER_TOKEN` to that version number in ONE roll, *then* add the new
+  version and roll to `:latest`. Adding the version first lets an autoscaled
+  instance boot with only the new token. The full runbook with per-step
+  verification is in the PR that added this (`git log -S SYNC_TRIGGER_TOKEN_PREVIOUS`).
+- Re-running a provision script can print the job resource, headers included, unless
+  the `gcloud scheduler jobs` call has `--format='value(name)'` — keep it.
+
 ## Gallery club / tag filter — read off the Drive path
 
 - **The gallery's `?club=&tag=` filter keys on `photos.clubName`/`photos.tag`,

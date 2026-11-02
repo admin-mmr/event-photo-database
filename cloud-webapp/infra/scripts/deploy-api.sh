@@ -134,6 +134,23 @@ if [[ -n "${DRIVE_MIN_INTERVAL_MS:-}" ]]; then ENV_VARS="${ENV_VARS},DRIVE_MIN_I
 
 echo "==> Setting env vars: ${ENV_VARS}"
 
+# Secrets. SYNC_TRIGGER_TOKEN_PREVIOUS is wired only while a token rotation is in
+# progress (the owner adds it with `gcloud run services update --update-secrets`
+# and removes it at the end). --set-secrets REPLACES the whole secret set, so a
+# deploy mid-rotation must carry it forward or it would silently close the grace
+# window: queued Cloud Tasks and not-yet-reprovisioned scheduler jobs, still on
+# the old token, would start getting 401s. Keep the exact ref the live service
+# has, version pin included. Same logic in .github/workflows/deploy-api.yml.
+SECRETS="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_API_KEY=RECAPTCHA_KEY:latest"
+PREVIOUS_TOKEN_REF="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format=json | python3 -c 'import json, sys
+envs = json.load(sys.stdin)["spec"]["template"]["spec"]["containers"][0].get("env", [])
+ref = next((e.get("valueFrom", {}).get("secretKeyRef", {}) for e in envs if e.get("name") == "SYNC_TRIGGER_TOKEN_PREVIOUS"), {})
+print(ref["name"] + ":" + ref.get("key", "latest") if ref.get("name") else "")')"
+if [[ -n "$PREVIOUS_TOKEN_REF" ]]; then
+  echo "==> Token rotation in progress: keeping SYNC_TRIGGER_TOKEN_PREVIOUS=${PREVIOUS_TOKEN_REF}"
+  SECRETS="${SECRETS},SYNC_TRIGGER_TOKEN_PREVIOUS=${PREVIOUS_TOKEN_REF}"
+fi
+
 gcloud run deploy "$SERVICE" \
   --image="$IMAGE" \
   --region="$REGION" \
@@ -148,7 +165,7 @@ gcloud run deploy "$SERVICE" \
   --concurrency=80 \
   --timeout=1800 \
   --update-env-vars="$ENV_VARS" \
-  --set-secrets="SYNC_TRIGGER_TOKEN=SYNC_TRIGGER_TOKEN:latest,CONSENT_POLICY_VERSION=CONSENT_POLICY_VERSION:latest,RECAPTCHA_API_KEY=RECAPTCHA_KEY:latest"
+  --set-secrets="$SECRETS"
 # Memory: 4Gi / 2 vCPU / max 20 since the NYC Marathon (2026-11-01): with the
 #   upload queue running batches concurrently, each batch also holds a listing
 #   of the whole event's Drive files (~1 KB/file) for its duplicate check, so a
@@ -187,6 +204,10 @@ gcloud run deploy "$SERVICE" \
 #     gcloud secrets add-iam-policy-binding SYNC_TRIGGER_TOKEN --project=mmr-data-pipeline \
 #       --member="serviceAccount:api-runtime@mmr-data-pipeline.iam.gserviceaccount.com" \
 #       --role="roles/secretmanager.secretAccessor"
+#   Rotating it: never just add a version. Queued Cloud Tasks hold the old value
+#   in their stored header, so use the grace window (CLAUDE.md, "Rotating
+#   SYNC_TRIGGER_TOKEN"): it wires SYNC_TRIGGER_TOKEN_PREVIOUS, which the SECRETS
+#   block above preserves.
 # Note: no --add-cloudsql-instances — Cloud SQL was dropped (zero-cost design, runbook Phase F).
 # Runtime SA is api-runtime (least privilege), never the deployer SA (runbook E2).
 

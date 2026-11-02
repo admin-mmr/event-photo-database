@@ -49,22 +49,26 @@ fi
 URI="${API_URL}/api/admin/sync"
 
 # Create or update.
+# gcloud takes --headers on create but --update-headers on update (CLAUDE.md).
 if gcloud scheduler jobs describe "$JOB" --location="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1; then
   VERB="update http"
+  HEADER_FLAG="--update-headers"
 else
   VERB="create http"
+  HEADER_FLAG="--headers"
 fi
 
 echo "==> ${VERB%% *}-ing scheduler job '$JOB' → POST $URI ($SCHEDULE $TZ)"
 # shellcheck disable=SC2086
 gcloud scheduler jobs $VERB "$JOB" \
+  --format='value(name)' \
   --location="$REGION" \
   --project="$PROJECT_ID" \
   --schedule="$SCHEDULE" \
   --time-zone="$TZ" \
   --uri="$URI" \
   --http-method=POST \
-  --headers="X-Sync-Token=${SYNC_TRIGGER_TOKEN},Content-Type=application/json" \
+  "$HEADER_FLAG=X-Sync-Token=${SYNC_TRIGGER_TOKEN},Content-Type=application/json" \
   --message-body='{}' \
   --attempt-deadline=320s
 

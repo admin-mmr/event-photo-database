@@ -84,6 +84,7 @@ fi
 echo "==> ${VERB%% *}-ing scheduler job '$JOB' → POST $URI ($SCHEDULE $TZ)"
 # shellcheck disable=SC2086
 gcloud scheduler jobs $VERB "$JOB" \
+  --format='value(name)' \
   --location="$REGION" \
   --project="$PROJECT_ID" \
   --schedule="$SCHEDULE" \

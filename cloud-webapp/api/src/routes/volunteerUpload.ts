@@ -290,7 +290,7 @@ volunteerUploadRouter.get('/volunteer/upload/status/:batchId', async (req, res, 
  */
 volunteerUploadRouter.post('/internal/process-batch', async (req, res, next) => {
   try {
-    if (!validCronToken(req.header('x-sync-token'))) {
+    if (!validCronToken(req.header('x-sync-token'), req)) {
       res.status(401).json({ ok: false, error: 'unauthorized', message: 'machine token required' });
       return;
     }
