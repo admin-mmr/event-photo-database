@@ -44,7 +44,7 @@ import { deriveSearchVersion } from '../services/searchVersion.js';
 import { logger } from '../lib/logger.js';
 import type { AuthedUser } from '../middleware/auth.js';
 import { requireAuth } from '../middleware/auth.js';
-import { findmeSearchRateLimit } from '../middleware/rateLimit.js';
+import { findmeSearchIpRateLimit, findmeSearchRateLimit } from '../middleware/rateLimit.js';
 import { requireRecaptcha } from '../middleware/recaptcha.js';
 import { matcherQualityCheck, matcherSearch } from '../services/matcherClient.js';
 import { confirmedPhotoIdsForUser } from '../services/feedback.js';
@@ -524,6 +524,7 @@ findmeRouter.post(
   '/findme/search',
   requireAuth,
   findmeSearchRateLimit(),
+  findmeSearchIpRateLimit(),
   requireRecaptcha('findme_search'),
   upload.array('file', MAX_REFERENCE_IMAGES),
   async (req, res, next) => {
@@ -618,6 +619,7 @@ findmeRouter.post(
   '/findme/selfie-check',
   requireAuth,
   findmeSearchRateLimit(),
+  findmeSearchIpRateLimit(),
   upload.array('file', MAX_REFERENCE_IMAGES),
   async (req, res, next) => {
     try {
@@ -743,6 +745,7 @@ findmeRouter.post(
   '/findme/uploads/:uploadId/search',
   requireAuth,
   findmeSearchRateLimit(),
+  findmeSearchIpRateLimit(),
   requireRecaptcha('findme_search'),
   async (req, res, next) => {
     try {
