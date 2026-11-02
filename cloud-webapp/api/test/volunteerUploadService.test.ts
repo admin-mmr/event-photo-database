@@ -72,6 +72,8 @@ vi.mock('../src/lib/firestore.js', () => ({
       if (name === 'upload_batches') {
         return {
           doc: (id: string) => ({
+            __col: 'upload_batches',
+            __id: id,
             get: async () => ({ exists: batchDocs.has(id), data: () => batchDocs.get(id) }),
             set: async (data: Record<string, unknown>, opts?: { merge?: boolean }) => {
               batchWrites.push({ id, ...data });
@@ -99,8 +101,13 @@ vi.mock('../src/lib/firestore.js', () => ({
         get: async (ref: { __col?: string; __id: string }) =>
           ref.__col === 'events'
             ? { exists: eventDocs[ref.__id] !== undefined, data: () => eventDocs[ref.__id] }
-            : { exists: dedupDocs.has(ref.__id), data: () => dedupDocs.get(ref.__id) },
-        set: (ref: { __id: string }, data: Record<string, unknown>) => mergeEventDoc(ref.__id, data),
+            : ref.__col === 'upload_batches'
+              ? { exists: batchDocs.has(ref.__id), data: () => batchDocs.get(ref.__id) }
+              : { exists: dedupDocs.has(ref.__id), data: () => dedupDocs.get(ref.__id) },
+        set: (ref: { __col?: string; __id: string }, data: Record<string, unknown>) =>
+          ref.__col === 'upload_batches'
+            ? void batchDocs.set(ref.__id, { ...batchDocs.get(ref.__id), ...data })
+            : mergeEventDoc(ref.__id, data),
         update: (ref: { __id: string }, patch: Record<string, unknown>) =>
           void dedupDocs.set(ref.__id, { ...dedupDocs.get(ref.__id), ...patch }),
       }),
@@ -130,6 +137,8 @@ const existingDriveFiles: Array<{ name: string; size: string; md5Checksum?: stri
 // Every getDriveToken call mints a distinct token, and each Drive upload records
 // the one it was handed, so a test can tell a per-file token from a per-batch one.
 let tokenMints = 0;
+// How many full-event Drive listings ran (each is ~30 s in production).
+let listings = 0;
 const uploadTokens: string[] = [];
 vi.mock('../src/services/driveService.js', () => ({
   DRIVE_SCOPE_READWRITE: 'rw-scope',
@@ -180,7 +189,7 @@ vi.mock('../src/services/driveService.js', () => ({
     folderCreates.push({ parent, name });
     return { id: `${parent}>${name}`, name };
   },
-  listEventImages: async () =>
+  listEventImages: async () => (listings++,
     existingDriveFiles.map((f) => ({
       id: `id-${f.name}`,
       name: f.name,
@@ -188,7 +197,7 @@ vi.mock('../src/services/driveService.js', () => ({
       mimeType: 'image/jpeg',
       size: f.size,
       ...(f.md5Checksum === undefined ? {} : { md5Checksum: f.md5Checksum }),
-    })),
+    }))),
 }));
 
 const indexTriggers: string[] = [];
@@ -237,7 +246,10 @@ const {
   stagingObjectName,
   UploadLinkError,
   __clearUploadLinksCache,
+  prepareSessionFolder,
+  __resetEventListingCache,
 } = await import('../src/services/volunteerUploadService.js');
+const { seedChunkBatch } = await import('../src/services/uploadBatchService.js');
 // Real (unmocked) — tests seed claim docs under the same ids the service uses.
 const { claimId } = await import('../src/services/uploadDedupService.js');
 
@@ -272,6 +284,8 @@ beforeEach(() => {
   appPropLookups.length = 0;
   failUploadsFor.clear();
   tokenMints = 0;
+  listings = 0;
+  __resetEventListingCache();
   uploadTokens.length = 0;
 
   sheetData[LINKS_RANGE] = [
@@ -995,5 +1009,55 @@ describe('enqueueStagedBatch retry safety', () => {
     // query would be pure per-file cost on every upload.
     expect(appPropLookups).toEqual([]);
     expect(driveUploads).toHaveLength(1);
+  });
+});
+
+describe('chunked sessions copy into ONE folder', () => {
+  it('names and creates the session folder once; a later /complete adopts it', async () => {
+    const link = await validateUploadLink('tok-good');
+    stageObj('vol/ev1/s1/u1.jpg', { size: 10, contentType: 'image/jpeg', metadata: { photographerName: 'Danny Zeng' } });
+
+    const first = await prepareSessionFolder(link, 's1', 'vol/ev1/s1/u1.jpg');
+    const again = await prepareSessionFolder(link, 's1', 'vol/ev1/s1/u1.jpg');
+
+    expect(first).toMatch(/^\d{8}-\d{6}_dannyzeng$/);
+    expect(again).toBe(first);
+    expect(folderCreates.filter((f) => f.name === first)).toHaveLength(1);
+    expect(batchDocs.get('s1')).toMatchObject({ chunked: true, batchFolderName: first });
+  });
+
+  it('every seeded chunk copies into the session folder, not one of its own', async () => {
+    const link = await validateUploadLink('tok-good');
+    stageObj('vol/ev1/s2/u1.jpg', { size: 10, contentType: 'image/jpeg', metadata: { originalName: 'a.jpg', photographerName: 'Danny Zeng' } });
+    stageObj('vol/ev1/s2/u2.jpg', { size: 20, contentType: 'image/jpeg', metadata: { originalName: 'b.jpg', photographerName: 'Danny Zeng' } });
+    const folder = await prepareSessionFolder(link, 's2', 'vol/ev1/s2/u1.jpg');
+    await seedChunkBatch('s2-pa', 's2', 'ev1', 'link1', 1, folder);
+    await seedChunkBatch('s2-pb', 's2', 'ev1', 'link1', 1, folder);
+
+    await Promise.all([
+      enqueueStagedBatch(link, 's2-pa', ['vol/ev1/s2/u1.jpg']),
+      enqueueStagedBatch(link, 's2-pb', ['vol/ev1/s2/u2.jpg']),
+    ]);
+
+    expect(driveUploads.map((u) => u.folderId)).toEqual([
+      `folder-ev1>ClubA>tagX>${folder}`,
+      `folder-ev1>ClubA>tagX>${folder}`,
+    ]);
+    expect(new Set(folderCreates.filter((f) => /_dannyzeng$/.test(f.name)).map((f) => f.name))).toEqual(new Set([folder]));
+  });
+});
+
+describe('the duplicate-check listing', () => {
+  it('is shared by the copy chunks of one event instead of re-run by each', async () => {
+    const link = await validateUploadLink('tok-good');
+    stageObj('vol/ev1/s3/u1.jpg', { size: 10, contentType: 'image/jpeg', metadata: { originalName: 'a.jpg' } });
+    stageObj('vol/ev1/s3/u2.jpg', { size: 20, contentType: 'image/jpeg', metadata: { originalName: 'b.jpg' } });
+
+    await Promise.all([
+      enqueueStagedBatch(link, 's3-pa', ['vol/ev1/s3/u1.jpg']),
+      enqueueStagedBatch(link, 's3-pb', ['vol/ev1/s3/u2.jpg']),
+    ]);
+
+    expect(listings).toBe(1);
   });
 });

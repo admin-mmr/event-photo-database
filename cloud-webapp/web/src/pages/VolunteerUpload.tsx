@@ -19,9 +19,12 @@ import type {
 
 import { uploadFileResumable, AbortError, type UploadResult } from '../lib/resumableUpload.js';
 import { apiGet, apiPost } from '../lib/api.js';
+import { FLUSH_EVERY, completeBody, newFilesOnly, unflushed } from '../lib/uploadFlush.js';
 import { useStrings } from '../lib/i18n.js';
 
-const CONCURRENCY = 3;
+// Files in flight at once. Each file pays ~3 round trips before its bytes go
+// (session, offset check, PUT), so on a fast line 3 left the uplink idle.
+const CONCURRENCY = 6;
 const ACCEPTED = new Set([
   'image/jpeg',
   'image/png',
@@ -200,6 +203,15 @@ export function VolunteerUpload(): JSX.Element {
   // Successful uploads accumulate here across upload rounds so the finalize
   // (/complete) step can be retried without re-uploading already-sent bytes.
   const resultsRef = useRef<UploadResult[]>([]);
+  // Which results the server already has (by uploadId), the last batch it took
+  // (re-sent if the final flush finds nothing new — the server dedupes it), and
+  // the chain that keeps flushes in order.
+  const flushedRef = useRef<Set<string>>(new Set());
+  // …and which of those the server has CONFIRMED. The page-hide beacon sends
+  // everything unconfirmed, including a flush still queued behind another.
+  const confirmedRef = useRef<Set<string>>(new Set());
+  const lastFlushRef = useRef<UploadResult[]>([]);
+  const flushChainRef = useRef<Promise<void>>(Promise.resolve());
   // Auto-start is "armed" only by a fresh file add (drop/pick). This is what
   // makes Cancel stick: aborting leaves items pending but disarms, so the
   // uploader doesn't immediately restart them.
@@ -221,7 +233,12 @@ export function VolunteerUpload(): JSX.Element {
 
   const addFiles = useCallback((files: FileList | null) => {
     if (!files) return;
-    const next: Item[] = Array.from(files).map((file) => ({ file, status: 'pending', sent: 0 }));
+    // The same photo picked twice used to upload twice.
+    const fresh = newFilesOnly(
+      itemsRef.current.map((i) => i.file),
+      Array.from(files),
+    );
+    const next: Item[] = fresh.map((file) => ({ file, status: 'pending', sent: 0 }));
     if (next.length === 0) return;
     setItems((prev) => [...prev, ...next]);
     // Arm the auto-start effect: a fresh add always means "upload these".
@@ -260,25 +277,59 @@ export function VolunteerUpload(): JSX.Element {
   // Bytes are safely in the cloud by now; file them into Drive + queue indexing.
   // Split out from the upload loop so it can be retried on its own (the bytes
   // don't need re-sending) via the Retry button.
+  const fileNameOf = useCallback(
+    (r: UploadResult) => itemsRef.current.find((i) => i.result?.uploadId === r.uploadId)?.file.name ?? r.objectName,
+    [],
+  );
+
+  // Hand a batch of finished uploads to the server. Marked as flushed BEFORE
+  // the request so a concurrent flush (or the page-hide beacon) can't send it
+  // too; un-marked on failure so the next flush picks it up again.
+  const sendFlush = useCallback(
+    async (batch: UploadResult[]): Promise<CompleteUploadResponse> => {
+      for (const r of batch) flushedRef.current.add(r.uploadId);
+      try {
+        const res = await apiPost<CompleteUploadResponse>(
+          '/api/volunteer/upload/complete',
+          completeBody(token, batchId, batch, resultsRef.current.length, fileNameOf),
+        );
+        lastFlushRef.current = batch;
+        for (const r of batch) confirmedRef.current.add(r.uploadId);
+        return res;
+      } catch (err) {
+        for (const r of batch) flushedRef.current.delete(r.uploadId);
+        throw err;
+      }
+    },
+    [token, batchId, fileNameOf],
+  );
+
+  // Mid-upload: once FLUSH_EVERY files are waiting, send them so the Drive copy
+  // starts now and an abandoned page strands at most one flush's worth. A
+  // failure is not fatal here — those files go out with the next flush.
+  const maybeFlush = useCallback(() => {
+    const waiting = unflushed(resultsRef.current, flushedRef.current);
+    if (waiting.length < FLUSH_EVERY) return;
+    for (const r of waiting) flushedRef.current.add(r.uploadId);
+    flushChainRef.current = flushChainRef.current.then(async () => {
+      for (const r of waiting) flushedRef.current.delete(r.uploadId);
+      await sendFlush(waiting).catch(() => undefined);
+    });
+  }, [sendFlush]);
+
   const finalize = useCallback(async (): Promise<void> => {
-    const results = resultsRef.current;
-    if (results.length === 0) {
+    if (resultsRef.current.length === 0) {
       setFatalError(t.noFilesUploaded);
       setPhase('idle');
       return;
     }
     setPhase('finalizing');
     try {
-      const res = await apiPost<CompleteUploadResponse>('/api/volunteer/upload/complete', {
-        token,
-        batchId,
-        items: results.map((r) => ({
-          uploadId: r.uploadId,
-          objectName: r.objectName,
-          fileName: itemsRef.current.find((i) => i.result?.uploadId === r.uploadId)?.file.name ?? r.objectName,
-          bytes: r.bytes,
-        })),
-      });
+      await flushChainRef.current;
+      // Everything may already be flushed; re-sending the last batch is a no-op
+      // on the server and still returns the session's receipt.
+      const rest = unflushed(resultsRef.current, flushedRef.current);
+      const res = await sendFlush(rest.length > 0 ? rest : lastFlushRef.current);
       setReceipt(res.message);
       setSkipped(res.skippedDuplicateNames ?? []);
       setPhase('done');
@@ -287,7 +338,7 @@ export function VolunteerUpload(): JSX.Element {
       setFatalError(err instanceof Error ? err.message : String(err));
       setPhase('idle');
     }
-  }, [token, batchId, pollStatus, t]);
+  }, [batchId, pollStatus, sendFlush, t]);
 
   const runUploads = useCallback(async () => {
     if (phase === 'uploading' || phase === 'finalizing') return;
@@ -343,6 +394,7 @@ export function VolunteerUpload(): JSX.Element {
             );
             patch(idx, { status: 'done', sent: file.size, result });
             resultsRef.current.push(result);
+            maybeFlush();
           } catch (err) {
             if (err instanceof AbortError) return;
             patch(idx, { status: 'error', error: err instanceof Error ? err.message : String(err) });
@@ -367,7 +419,7 @@ export function VolunteerUpload(): JSX.Element {
       setFatalError(err instanceof Error ? err.message : String(err));
       setPhase('idle');
     }
-  }, [phase, token, batchId, patch, photographerName, finalize, t]);
+  }, [phase, token, batchId, patch, photographerName, finalize, maybeFlush, t]);
 
   // Auto-start: the moment files are dropped/picked while idle, upload begins —
   // no button click. Armed only by addFiles, so Cancel and errors don't loop.
@@ -377,6 +429,30 @@ export function VolunteerUpload(): JSX.Element {
     armedRef.current = false;
     void runUploads();
   }, [items, phase, runUploads]);
+
+  // Closing the tab or quitting mid-upload: send what has uploaded but not been
+  // flushed, so those photos still reach the gallery. sendBeacon survives the
+  // page going away, where a fetch would be cancelled.
+  useEffect(() => {
+    const onHide = (): void => {
+      const waiting = unflushed(resultsRef.current, confirmedRef.current);
+      if (waiting.length === 0 || typeof navigator.sendBeacon !== 'function') return;
+      const body = JSON.stringify(completeBody(token, batchId, waiting, resultsRef.current.length, fileNameOf));
+      try {
+        if (navigator.sendBeacon('/api/volunteer/upload/complete', new Blob([body], { type: 'application/json' }))) {
+          for (const r of waiting) {
+            flushedRef.current.add(r.uploadId);
+            confirmedRef.current.add(r.uploadId);
+          }
+          lastFlushRef.current = waiting;
+        }
+      } catch {
+        /* best-effort: the bytes stay staged and recoverable */
+      }
+    };
+    window.addEventListener('pagehide', onHide);
+    return () => window.removeEventListener('pagehide', onHide);
+  }, [token, batchId, fileNameOf]);
 
   const cancel = useCallback(() => {
     armedRef.current = false;

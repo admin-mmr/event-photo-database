@@ -35,9 +35,11 @@ import {
   loadUploadLinkById,
   createResumableSession,
   enqueueStagedBatch,
+  prepareSessionFolder,
   UploadLinkError,
 } from '../services/volunteerUploadService.js';
-import { getUploadBatch, initUploadBatch } from '../services/uploadBatchService.js';
+import { getUploadBatchStatus, seedChunkBatch } from '../services/uploadBatchService.js';
+import { chunkBatchId, chunkObjectNames } from '../lib/uploadChunks.js';
 import { isUploadDispatchConfigured, enqueueProcessBatchTask } from '../services/uploadDispatch.js';
 
 export const volunteerUploadRouter = Router();
@@ -153,43 +155,64 @@ volunteerUploadRouter.post('/volunteer/upload/complete', async (req, res, next) 
       res.status(400).json({ ok: false, error: 'bad_request', message: parsed.error.message });
       return;
     }
-    const { token, batchId, items } = parsed.data;
+    const { token, batchId, items, sessionTotal } = parsed.data;
 
     const link = await validateUploadLink(token);
     const objectNames = items.map((i) => i.objectName);
     const where = link.eventName || link.eventId;
 
-    // Background path (step 3): bytes are already safely staged in GCS, so mark
-    // the batch `received`, hand the copy to Cloud Tasks, and return immediately
-    // — a large batch can't hit the 60s request timeout. The worker
-    // (/api/internal/process-batch) runs the same copy and advances the status
-    // doc, which the client polls. If enqueue fails we fall through to inline so
-    // an upload is never stranded.
+    // Background path: bytes are already safely staged, so hand the copy to
+    // Cloud Tasks and return immediately. The upload is split into copy CHUNKS
+    // (uploadChunks.ts) so the queue copies one session in parallel instead of
+    // one file at a time; each chunk advances its own status doc and the
+    // session's status sums them. A page may call /complete several times per
+    // session (it flushes every ~100 files), so every call joins the same
+    // session doc and Drive folder. A chunk that cannot be queued is copied
+    // inline below, so an upload is never stranded.
+    let inlineChunks: string[][] = [[...objectNames]];
+    let inlineIds: string[] = [batchId];
     if (isUploadDispatchConfigured()) {
-      await initUploadBatch(batchId, link.eventId, link.linkId, objectNames.length, 'received');
-      try {
-        await enqueueProcessBatchTask({ token, batchId, objectNames });
-        const queued: CompleteUploadResponse = {
+      const chunks = chunkObjectNames(objectNames);
+      const chunkIds = chunks.map((names) => chunkBatchId(batchId, names));
+      const folderName = await prepareSessionFolder(link, batchId, objectNames[0] ?? '');
+      const queued = await Promise.allSettled(
+        chunks.map(async (names, i) => {
+          const chunkId = chunkIds[i] ?? chunkBatchId(batchId, names);
+          await seedChunkBatch(chunkId, batchId, link.eventId, link.linkId, names.length, folderName);
+          await enqueueProcessBatchTask({ token, batchId: chunkId, objectNames: names });
+        }),
+      );
+      inlineChunks = chunks.filter((_, i) => queued[i]?.status === 'rejected');
+      inlineIds = chunkIds.filter((_, i) => queued[i]?.status === 'rejected');
+      if (inlineChunks.length === 0) {
+        const n = sessionTotal ?? objectNames.length;
+        const body: CompleteUploadResponse = {
           ok: true,
           batchId,
           accepted: 0,
           skippedDuplicates: 0,
           skippedDuplicateNames: [],
-          message: `Received ${objectNames.length} file${objectNames.length === 1 ? '' : 's'} for "${where}" — saving in the background.`,
+          message: `Received ${n} file${n === 1 ? '' : 's'} for "${where}" — saving in the background.`,
         };
-        res.json(queued);
+        res.json(body);
         return;
-      } catch (err) {
-        logger.error({ err, batchId, eventId: link.eventId }, 'process-batch enqueue failed; copying inline');
-        // fall through to the inline copy below
+      }
+      for (const r of queued) {
+        if (r.status === 'rejected') {
+          logger.error({ err: r.reason, batchId, eventId: link.eventId }, 'process-batch enqueue failed; copying that chunk inline');
+        }
       }
     }
 
-    const { copied, skippedDuplicates, skippedDuplicateNames } = await enqueueStagedBatch(
-      link,
-      batchId,
-      objectNames,
-    );
+    let copied = 0;
+    let skippedDuplicates = 0;
+    const skippedDuplicateNames: string[] = [];
+    for (const [i, names] of inlineChunks.entries()) {
+      const r = await enqueueStagedBatch(link, inlineIds[i] ?? batchId, names);
+      copied += r.copied;
+      skippedDuplicates += r.skippedDuplicates;
+      skippedDuplicateNames.push(...r.skippedDuplicateNames);
+    }
     const dupNote =
       skippedDuplicates > 0
         ? ` (${skippedDuplicates} duplicate${skippedDuplicates === 1 ? '' : 's'} skipped)`
@@ -226,7 +249,7 @@ volunteerUploadRouter.get('/volunteer/upload/status/:batchId', async (req, res, 
       return;
     }
     const link = await validateUploadLink(token);
-    const batch = await getUploadBatch(String(req.params.batchId));
+    const batch = await getUploadBatchStatus(String(req.params.batchId));
     if (!batch || batch.eventId !== link.eventId) {
       res.status(404).json({ ok: false, error: 'not_found', message: 'Unknown batch' });
       return;

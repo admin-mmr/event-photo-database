@@ -115,6 +115,9 @@ export const CompleteUploadRequestSchema = z.object({
   token: z.string().min(1),
   batchId: z.string().min(1),
   items: z.array(CompleteUploadItemSchema).min(1),
+  /** Files in the whole session so far. The page flushes /complete every ~100
+   *  files, so `items` is only this flush; the receipt counts the session. */
+  sessionTotal: z.number().int().positive().optional(),
 });
 export type CompleteUploadRequest = z.infer<typeof CompleteUploadRequestSchema>;
 
