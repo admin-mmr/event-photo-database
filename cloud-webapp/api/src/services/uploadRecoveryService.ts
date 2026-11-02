@@ -28,13 +28,17 @@
  *   - Dispatch is idempotent per chunk: the Cloud Tasks task name is derived
  *     from the chunk, so re-dispatching an in-flight chunk is a 409 no-op.
  *   - Recovery uses its own batchId suffix, so the volunteer's original status
- *     doc is never overwritten.
+ *     doc is never overwritten. A fully dispatched batch gets a recovery marker
+ *     on that doc instead (`markRecoveryDispatched` — recovery fields only, or a
+ *     fresh doc when `/complete` never ran), which is what stops the scheduled
+ *     never-completed sweep (`uploadSweepService.ts`) from redoing the work.
  */
 
 import { env } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { firestore } from '../lib/firestore.js';
 import { objectStore } from '../lib/storage.js';
+import { markRecoveryDispatched } from './uploadBatchService.js';
 import { enqueueProcessBatchTask, isUploadDispatchConfigured } from './uploadDispatch.js';
 
 /**
@@ -84,7 +88,7 @@ const THROUGHPUT_BYTES_PER_SEC = 6 * 1024 * 1024;
 const MAX_CHUNK_BYTES = 6 * 1024 * 1024 * 1024;
 
 /** Wall-clock a chunk should take: fixed per-object cost + transfer time. */
-function chunkCostMs(objs: ReadonlyArray<StagedObject>): number {
+export function chunkCostMs(objs: ReadonlyArray<StagedObject>): number {
   const bytes = objs.reduce((n, o) => n + o.size, 0);
   return objs.length * PER_OBJECT_MS + (bytes / THROUGHPUT_BYTES_PER_SEC) * 1000;
 }
@@ -146,6 +150,17 @@ export interface RecoveryDispatch {
   notDispatched: number;
   /** Roughly how long the staggered run takes end to end. */
   estimatedMinutes: number;
+  /**
+   * Where the stagger schedule ended, ms from now (starts at `startAtMs`). A
+   * caller dispatching several events passes it on as the next one's
+   * `startAtMs`, so their chunks queue behind each other instead of landing
+   * together.
+   */
+  plannedMs: number;
+  /** Batches held back whole because the schedule passed `maxPlannedMs`. */
+  deferredBatches: number;
+  /** Batches whose stranded objects were ALL dispatched (on a dry run: would be). */
+  dispatchedBatchIds: string[];
   warnings: string[];
 }
 
@@ -161,7 +176,8 @@ interface StagedObject {
 
 /** Every staged object for an event, with the metadata the copy path needs. */
 async function listStaged(eventId: string): Promise<StagedObject[]> {
-  const prefix = `volunteer_uploads/${eventId}/`;
+  // Same prefix `stagingObjectName` writes under (volunteerUploadService.ts).
+  const prefix = `${env.VOLUNTEER_STAGING_PREFIX}/${eventId}/`;
   const objects = await objectStore().list(env.VOLUNTEER_STAGING_BUCKET, { prefix });
   const out: StagedObject[] = [];
   for (const o of objects) {
@@ -258,11 +274,28 @@ export async function scanStagedRecovery(eventId: string): Promise<RecoveryScan>
  */
 export async function dispatchStagedRecovery(
   eventId: string,
-  opts: { apply?: boolean; chunkSize?: number; batchIds?: ReadonlyArray<string> | undefined } = {},
+  opts: {
+    apply?: boolean;
+    chunkSize?: number;
+    batchIds?: ReadonlyArray<string> | undefined;
+    /** Delay before the first chunk, ms — see `RecoveryDispatch.plannedMs`. */
+    startAtMs?: number;
+    /**
+     * Don't START a batch scheduled this far out (ms from now); defer it whole
+     * to a later run. Whole batches only, so a batch is never half-dispatched
+     * and marked done. The first batch always goes, however large.
+     */
+    maxPlannedMs?: number;
+    /** Object cap for this call (never above `MAX_DISPATCH`). */
+    maxObjects?: number;
+  } = {},
 ): Promise<RecoveryDispatch> {
   const apply = opts.apply === true;
   const chunk = opts.chunkSize && opts.chunkSize > 0 ? Math.min(opts.chunkSize, 1000) : DEFAULT_CHUNK;
   const only = opts.batchIds && opts.batchIds.length > 0 ? new Set(opts.batchIds) : null;
+  const startAtMs = Math.max(0, opts.startAtMs ?? 0);
+  const maxPlannedMs = opts.maxPlannedMs ?? Number.POSITIVE_INFINITY;
+  const cap = Math.min(MAX_DISPATCH, Math.max(0, opts.maxObjects ?? MAX_DISPATCH));
 
   const result: RecoveryDispatch = {
     eventId,
@@ -272,6 +305,9 @@ export async function dispatchStagedRecovery(
     batches: 0,
     notDispatched: 0,
     estimatedMinutes: 0,
+    plannedMs: startAtMs,
+    deferredBatches: 0,
+    dispatchedBatchIds: [],
     warnings: [],
   };
 
@@ -291,11 +327,11 @@ export async function dispatchStagedRecovery(
     else byBatch.set(o.batchId, [o]);
   }
 
-  let budget = MAX_DISPATCH;
+  let budget = cap;
   // Grows as chunks are planned, so each is scheduled after the previous should
   // have finished rather than all firing at once. Also the run's duration
   // estimate, which is why it accrues on a dry run too.
-  let plannedMs = 0;
+  let plannedMs = startAtMs;
   for (const [batchId, objs] of byBatch) {
     const linkId = objs.find((o) => o.linkId)?.linkId ?? '';
     if (!linkId) {
@@ -304,15 +340,22 @@ export async function dispatchStagedRecovery(
       result.notDispatched += objs.length;
       continue;
     }
+    if (result.batches > 0 && plannedMs >= maxPlannedMs) {
+      result.deferredBatches += 1;
+      result.notDispatched += objs.length;
+      continue;
+    }
     result.batches += 1;
 
     const chunks = buildChunks(objs, chunk);
     let done = 0;
+    let complete = true;
     for (const [n, slice] of chunks.entries()) {
       if (slice.length > budget) {
         result.notDispatched += objs.length - done;
-        result.warnings.push(`Dispatch cap (${MAX_DISPATCH}) reached — re-run to continue`);
+        result.warnings.push(`Dispatch cap (${cap}) reached — re-run to continue`);
         budget = 0;
+        complete = false;
         break;
       }
       budget -= slice.length;
@@ -347,6 +390,18 @@ export async function dispatchStagedRecovery(
         result.objects -= slice.length;
         result.notDispatched += slice.length;
         result.warnings.push(`Batch ${batchId} chunk ${n + 1}: dispatch failed — ${String(err)}`);
+        complete = false;
+      }
+    }
+    if (complete) result.dispatchedBatchIds.push(batchId);
+    if (apply && complete) {
+      try {
+        await markRecoveryDispatched(batchId, { eventId, linkId, objects: done });
+      } catch (err) {
+        // Not data loss: the copies are queued either way. Without the marker
+        // the sweep re-dispatches next tick, which the task name / md5 claim
+        // turn into a no-op.
+        result.warnings.push(`Batch ${batchId}: dispatched, but the recovery marker failed — ${String(err)}`);
       }
     }
     if (budget === 0) break;
@@ -355,7 +410,9 @@ export async function dispatchStagedRecovery(
   // Rounded, not ceilinged: ceil turned 2.0003 minutes into "3", and an estimate
   // that rounds up on a rounding artefact reads as sloppy. Any non-empty run
   // still reports at least 1 minute.
-  result.estimatedMinutes = result.objects === 0 ? 0 : Math.max(1, Math.round(plannedMs / 60_000));
+  result.plannedMs = plannedMs;
+  const runMs = plannedMs - startAtMs;
+  result.estimatedMinutes = result.objects === 0 ? 0 : Math.max(1, Math.round(runMs / 60_000));
 
   logger.info(
     {

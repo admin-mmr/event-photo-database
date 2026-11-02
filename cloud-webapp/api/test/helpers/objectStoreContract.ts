@@ -26,7 +26,13 @@ export interface ObjectStoreHarness {
   seed(
     bucket: string,
     key: string,
-    opts?: { body?: Buffer | string; contentType?: string; md5Hex?: string; custom?: Record<string, string> },
+    opts?: {
+      body?: Buffer | string;
+      contentType?: string;
+      md5Hex?: string;
+      custom?: Record<string, string>;
+      createdMs?: number;
+    },
   ): void;
   keys(bucket: string): string[];
   has(bucket: string, key: string): boolean;
@@ -152,6 +158,18 @@ export function runObjectStoreContract(label: string, makeHarness: () => ObjectS
       expect(entry?.metadata.size).toBe(5);
       expect(entry?.metadata.md5Hex).toBe('5d41402abc4b2a76b9719d911017c592');
       expect(entry?.metadata.custom.linkId).toBe('link-1');
+    });
+
+    it('reports each entry\'s commit time', async () => {
+      // uploadSweepService's age guard: a never-completed session is filed only
+      // once its NEWEST staged object is older than the safe age, so a live
+      // upload whose /complete is still coming is never raced.
+      const h = makeHarness();
+      const t = Date.parse('2026-11-01T14:00:00Z');
+      h.seed(B, 'e1/a.jpg', { body: 'x', createdMs: t });
+      const [entry] = await h.store.list(B, { prefix: 'e1/' });
+      expect(entry?.metadata.createdMs).toBe(t);
+      expect((await h.store.head(B, 'e1/a.jpg'))?.createdMs).toBe(t);
     });
 
     it('is empty, not an error, for a prefix with nothing under it', async () => {

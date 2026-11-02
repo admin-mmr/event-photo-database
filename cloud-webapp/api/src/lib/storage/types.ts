@@ -9,6 +9,8 @@
  *
  *   read      signReadUrl (V4 signed URL ↔ user-delegation SAS) · read (whole
  *             object or a byte range) · head · list(prefix, limit)
+ *             (+ `createdMs` on the metadata since 2026-11, for the
+ *             never-completed upload sweep's age guard)
  *   write     write(buffer) · remove · createUploadSession (browser-direct)
  *
  * Deliberately absent, because nothing uses them — do not add without a call
@@ -45,6 +47,14 @@ export interface ObjectMetadata {
   md5Hex: string;
   /** User-defined metadata stamped when the object was created. */
   custom: Record<string, string>;
+  /**
+   * When the object was committed, epoch ms (GCS `timeCreated`, Azure
+   * `createdOn`). `0` = the provider reported none, which callers must read as
+   * *unknown*, never as *old*: the never-completed upload sweep
+   * (`uploadSweepService.ts`) keys "safe to file" off this, and an unknown age
+   * must not license dispatching a session whose `/complete` may still come.
+   */
+  createdMs: number;
 }
 
 /** One object from a prefix listing. */

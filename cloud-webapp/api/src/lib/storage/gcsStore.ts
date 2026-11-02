@@ -54,6 +54,8 @@ interface RawMetadata {
   size?: string | number | undefined;
   contentType?: string | undefined;
   md5Hash?: string | null | undefined;
+  /** RFC 3339 commit time. */
+  timeCreated?: string | undefined;
   metadata?: Record<string, string | number | boolean | undefined> | undefined;
 }
 
@@ -67,6 +69,7 @@ function normalize(raw: RawMetadata | undefined): ObjectMetadata {
     contentType: raw?.contentType || 'application/octet-stream',
     md5Hex: md5ToHex(raw?.md5Hash),
     custom,
+    createdMs: Date.parse(raw?.timeCreated ?? '') || 0,
   };
 }
 

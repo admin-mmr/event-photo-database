@@ -56,6 +56,8 @@ export interface RawBlobProps {
   contentType?: string | undefined;
   /** Azure hands md5 back as raw bytes, not base64 or hex. */
   contentMD5?: Uint8Array | undefined;
+  /** When the blob was created (first committed). */
+  createdOn?: Date | undefined;
   metadata?: Record<string, string> | undefined;
 }
 
@@ -101,6 +103,7 @@ function normalize(props: RawBlobProps): ObjectMetadata {
     contentType: props.contentType || 'application/octet-stream',
     md5Hex: md5ToHex(props.contentMD5),
     custom: { ...(props.metadata ?? {}) },
+    createdMs: props.createdOn?.getTime() || 0,
   };
 }
 
