@@ -38,6 +38,16 @@ export const PhotoWebUrlResponseSchema = z.object({
 });
 export type PhotoWebUrlResponse = z.infer<typeof PhotoWebUrlResponseSchema>;
 
+/** One club/tag folder of an event, with how many gallery photos it holds.
+ *  Written by the indexer (`events.galleryFolders`); feeds the gallery's
+ *  club/tag filter menus. `tag` is '' for photos filed directly under a club. */
+export const GalleryFolderSchema = z.object({
+  clubName: z.string(),
+  tag: z.string().default(''),
+  count: z.number().int().nonnegative().default(0),
+});
+export type GalleryFolder = z.infer<typeof GalleryFolderSchema>;
+
 export const ListPhotosResponseSchema = z.object({
   ok: z.literal(true),
   eventId: z.string(),
@@ -48,6 +58,9 @@ export const ListPhotosResponseSchema = z.object({
   /** Opaque cursor for the next page (the last photoId of this page), or null
    *  when this is the final page. Pass it back as `?cursor=` to fetch more. */
   nextCursor: z.string().nullable().default(null),
+  /** The event's club/tag folders, for the filter menus. Empty until the event
+   *  is (re)indexed by an indexer that records them. */
+  folders: z.array(GalleryFolderSchema).default([]),
 });
 export type ListPhotosResponse = z.infer<typeof ListPhotosResponseSchema>;
 
@@ -109,6 +122,10 @@ export const DeletePhotosResponseSchema = z.object({
   /** Indexer execution name if a re-index was triggered to refresh Find Me,
    *  else null (nothing deleted, or the trigger failed — non-fatal). */
   reindex: z.string().nullable().default(null),
+  /** Set when no re-index was started because one is already in flight for the
+   *  event (`reindex` is then null). That run, or the next index-scan tick,
+   *  picks up the deletion. Optional so an older api still parses. */
+  reindexSkipped: z.literal('already_running').optional(),
 });
 export type DeletePhotosResponse = z.infer<typeof DeletePhotosResponseSchema>;
 

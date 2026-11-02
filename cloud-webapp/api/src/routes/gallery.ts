@@ -14,6 +14,8 @@ import { Router } from 'express';
 import { DOC_ID, type Query } from '../lib/db/types.js';
 import {
   DeletePhotosRequestSchema,
+  GalleryFolderSchema,
+  type GalleryFolder,
   type ListPhotosResponse,
   type GalleryPhoto,
   type DeletePhotosResponse,
@@ -25,7 +27,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
 import { signThumbUrls, signPhotoUrl, deletePhotoDerivatives } from '../services/gcsService.js';
 import { trashFile } from '../services/driveService.js';
-import { triggerIndexJob } from '../services/indexerJob.js';
+import { triggerIndexJobUnlessInFlight } from '../services/indexTrigger.js';
 import { releaseClaimsForDriveFile } from '../services/uploadDedupService.js';
 
 export const galleryRouter = Router();
@@ -95,6 +97,35 @@ function parseSort(raw: unknown): SortMode {
   return 'added_desc';
 }
 
+/**
+ * Optional club / club+tag filter, `?club=&tag=` (browsing only; Find Me stays
+ * event-wide). Both match the photo doc's `clubName`/`tag`, which the indexer
+ * reads off the Drive path (`Club/tag/<batch>/<file>`, see `folder_scope`). A
+ * tag without a club is ignored: tag names repeat across clubs ("ALL", "5K"),
+ * and every filtered query needs its own composite index, so only the two
+ * shapes the menus offer are indexed (firestore.indexes.json).
+ */
+interface FolderFilter {
+  club: string;
+  tag: string;
+}
+
+function parseFilter(club: unknown, tag: unknown): FolderFilter {
+  const clean = (v: unknown): string => (typeof v === 'string' ? v.trim().slice(0, 200) : '');
+  const c = clean(club);
+  return { club: c, tag: c ? clean(tag) : '' };
+}
+
+/** `events.galleryFolders`, defensively parsed — a malformed entry is dropped
+ *  rather than failing the photo list it rides along with. */
+function galleryFolders(raw: unknown): GalleryFolder[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((f) => {
+    const parsed = GalleryFolderSchema.safeParse(f);
+    return parsed.success && parsed.data.clubName ? [parsed.data] : [];
+  });
+}
+
 /** Opaque, base64url page cursor carrying the last doc's primary sort value
  *  plus its id (the implicit __name__ tiebreak), so paging is stable even
  *  across photos that share a value. The key identifies which sort produced it:
@@ -123,6 +154,7 @@ galleryRouter.get('/events/:id/photos', requireAuth, async (req, res, next) => {
     const limit = pageSize(req.query.limit);
     const sort = parseSort(req.query.sort);
     const cursor = req.query.cursor ? decodeCursor(String(req.query.cursor)) : null;
+    const filter = parseFilter(req.query.club, req.query.tag);
 
     const eventDoc = await firestore().collection('events').doc(eventId).get();
     if (!eventDoc.exists) {
@@ -140,7 +172,14 @@ galleryRouter.get('/events/:id/photos', requireAuth, async (req, res, next) => {
     // Firestore excludes docs that lack the orderBy field, so an event indexed
     // before `addedAt` existed returns nothing under an `added_*` sort; the
     // takenAt fallback below handles that.
-    const base = (): Query => firestore().collection('photos').where('eventId', '==', eventId);
+    // A club/tag filter adds equality clauses ahead of the sort, served by the
+    // photos(eventId, clubName[, tag], <field>) indexes.
+    const base = (): Query => {
+      let q = firestore().collection('photos').where('eventId', '==', eventId);
+      if (filter.club) q = q.where('clubName', '==', filter.club);
+      if (filter.tag) q = q.where('tag', '==', filter.tag);
+      return q;
+    };
 
     const buildQuery = (spec: SortSpec): Query => {
       let q = base().orderBy(spec.field, spec.dir).orderBy(DOC_ID, spec.dir);
@@ -250,7 +289,8 @@ galleryRouter.get('/events/:id/photos', requireAuth, async (req, res, next) => {
     }));
 
     const eventName = String(eventDoc.data()?.name ?? '');
-    const body: ListPhotosResponse = { ok: true, eventId, eventName, photos, nextCursor };
+    const folders = galleryFolders(eventDoc.data()?.galleryFolders);
+    const body: ListPhotosResponse = { ok: true, eventId, eventName, photos, nextCursor, folders };
     res.json(body);
   } catch (err) {
     next(err);
@@ -287,6 +327,13 @@ galleryRouter.get('/events/:id/photos/:photoId/web', requireAuth, async (req, re
  * Per-photo failures are collected (not fatal) so one bad id doesn't abort the
  * batch. The re-index is best-effort — the photos are already gone from the
  * gallery, and the scheduled change-scan would catch the Drive change anyway.
+ *
+ * The re-index goes through the guarded trigger, never `triggerIndexJob`
+ * directly: on a big event day index-scan keeps a run going, and starting a
+ * second execution on the same event stacks two runs racing to write one
+ * manifest. When one is already in flight we skip (`reindex: null`,
+ * `reindexSkipped: 'already_running'`) — that run, or the next index-scan tick,
+ * sees the trashed originals gone from Drive.
  */
 galleryRouter.post('/events/:id/photos/delete', requireAuth, attachRole, requireAnyAdmin, async (req, res, next) => {
   try {
@@ -342,28 +389,31 @@ galleryRouter.post('/events/:id/photos/delete', requireAuth, attachRole, require
     }
 
     // 4. Refresh Find Me by re-indexing (best-effort; non-fatal on error).
+    // The guarded trigger claims the slot and stamps `queued` itself.
     let reindex: string | null = null;
+    let reindexSkipped: 'already_running' | undefined;
     if (deleted.length > 0 && eventDoc.data()?.driveFolderId) {
       try {
-        const { execution } = await triggerIndexJob(eventId);
-        reindex = execution;
-        await firestore()
-          .collection('events')
-          .doc(eventId)
-          .set(
-            { indexState: { status: 'queued', updatedAt: new Date().toISOString() } },
-            { merge: true },
-          );
+        const result = await triggerIndexJobUnlessInFlight(eventId);
+        if (result.triggered) reindex = result.execution;
+        else reindexSkipped = result.reason;
       } catch (err) {
         logger.warn({ err, eventId }, 'admin delete: reindex trigger failed (non-fatal)');
       }
     }
 
     logger.info(
-      { eventId, deleted: deleted.length, failed: failed.length, by: req.user?.email },
+      { eventId, deleted: deleted.length, failed: failed.length, reindexSkipped, by: req.user?.email },
       'admin photo delete',
     );
-    const body: DeletePhotosResponse = { ok: true, eventId, deleted, failed, reindex };
+    const body: DeletePhotosResponse = {
+      ok: true,
+      eventId,
+      deleted,
+      failed,
+      reindex,
+      ...(reindexSkipped ? { reindexSkipped } : {}),
+    };
     res.json(body);
   } catch (err) {
     next(err);
