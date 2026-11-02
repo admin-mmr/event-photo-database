@@ -117,6 +117,14 @@ async function signJwt(sa: string, payload: string): Promise<string> {
  */
 const dwdCache = new Map<string, { token: string; expiresAt: number }>();
 
+/**
+ * A cached token is only handed out while it has at least this long to live.
+ * Callers use a token for one Drive/Sheets operation, but some operations are
+ * long (listing a 100k-photo event folder page by page); 60s was too thin for
+ * those. Tokens last an hour, so re-minting 5 min early costs ~nothing.
+ */
+export const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000;
+
 export interface DwdTokenOptions {
   /** OAuth scope to request, e.g. the Drive / Sheets / gmail.send scope. */
   scope: string;
@@ -135,7 +143,7 @@ export async function mintDwdToken(opts: DwdTokenOptions): Promise<string> {
   const sa = opts.sa ?? env.DWD_SA;
   const key = `${sa}|${opts.subject}|${opts.scope}`;
   const hit = dwdCache.get(key);
-  if (hit && Date.now() < hit.expiresAt - 60_000) return hit.token;
+  if (hit && Date.now() < hit.expiresAt - TOKEN_REFRESH_MARGIN_MS) return hit.token;
 
   const now = Math.floor(Date.now() / 1000);
   const claims = JSON.stringify({

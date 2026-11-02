@@ -127,16 +127,21 @@ const folderCreates: Array<{ parent: string; name: string }> = [];
 // Existing Drive files the duplicate-check lists. `md5Checksum` is the primary
 // dedup key; name/size is only the fallback for a file Drive didn't hash.
 const existingDriveFiles: Array<{ name: string; size: string; md5Checksum?: string }> = [];
+// Every getDriveToken call mints a distinct token, and each Drive upload records
+// the one it was handed, so a test can tell a per-file token from a per-batch one.
+let tokenMints = 0;
+const uploadTokens: string[] = [];
 vi.mock('../src/services/driveService.js', () => ({
   DRIVE_SCOPE_READWRITE: 'rw-scope',
-  getDriveToken: async () => 'drive-token',
+  getDriveToken: async () => `drive-token-${++tokenMints}`,
   uploadFileToDrive: async (
     folderId: string,
     name: string,
     mimeType: string,
     bytes: Uint8Array,
-    opts?: { appProperties?: Record<string, string> },
+    opts?: { token?: string; appProperties?: Record<string, string> },
   ) => {
+    if (opts?.token) uploadTokens.push(opts.token);
     if (failUploadsFor.has(name)) throw new Error('Drive upload 500: boom');
     driveUploads.push({ folderId, name, mimeType, size: bytes.length, ...(opts?.appProperties ? { appProperties: opts.appProperties } : {}) });
     return { id: `drive-${name}`, name };
@@ -266,6 +271,8 @@ beforeEach(() => {
   appPropFiles.clear();
   appPropLookups.length = 0;
   failUploadsFor.clear();
+  tokenMints = 0;
+  uploadTokens.length = 0;
 
   sheetData[LINKS_RANGE] = [
     ['LINK_ID', 'EVENT_ID', 'CLUB_NAME', 'TOKEN', '', '', '', 'REVOKED_AT', '', '', 'TAG'],
@@ -489,6 +496,26 @@ size: 200,
     ]);
     expect(deleted.sort()).toEqual(['vol/ev1/b1/u1.jpg', 'vol/ev1/b1/u2.jpg']);
     expect(indexTriggers).toEqual(['ev1']);
+  });
+
+  it('asks for the Drive token per file, so a long batch never outlives one token', async () => {
+    // NYC Marathon night: one token taken at the top of a batch expired part-way
+    // through, and every file after it failed `Drive upload 401` with no retry.
+    const link = await validateUploadLink('tok-good');
+    const names = ['u1', 'u2', 'u3'];
+    for (const [i, u] of names.entries()) {
+      stageObj(`vol/ev1/bt/${u}.jpg`, {
+        size: 100 + i,
+        contentType: 'image/jpeg',
+        metadata: { originalName: `${u}.jpg`, photographerName: 'Jane Doe' },
+      });
+    }
+
+    const res = await enqueueStagedBatch(link, 'bt', names.map((u) => `vol/ev1/bt/${u}.jpg`));
+
+    expect(res).toMatchObject({ copied: 3 });
+    expect(uploadTokens).toHaveLength(3);
+    expect(new Set(uploadTokens).size).toBe(3);
   });
 
   it('copies a large video via the chunked resumable path (never buffered whole)', async () => {
