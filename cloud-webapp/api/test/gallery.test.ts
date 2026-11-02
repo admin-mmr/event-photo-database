@@ -390,8 +390,43 @@ describe('POST /api/events/:id/photos/delete (admin)', () => {
     expect(store.peek('photos', 'p1')).toBeUndefined();
     expect(store.peek('photos', 'p2')).toBeUndefined();
     expect(side.reindexed).toEqual(['ev1']);
+    expect(res.body.reindexSkipped).toBeUndefined();
+    // The guarded trigger's claim is what stamps `queued`.
+    expect(store.peek('events', 'ev1')?.indexState).toMatchObject({ status: 'queued' });
     // The event isn't a different one's photo: px untouched.
     expect(store.peek('photos', 'px')).toBeTruthy();
+  });
+
+  it('does not stack a second indexer run when one is already in flight', async () => {
+    const running = { status: 'running', updatedAt: new Date().toISOString(), processed: 40, total: 900 };
+    seedEvent('ev1', { name: 'Spring Run 2026', driveFolderId: 'folder1', indexState: running });
+    const res = await request(app)
+      .post('/api/events/ev1/photos/delete')
+      .set('x-test-user', USER)
+      .send({ photoIds: ['p1'] });
+    expect(res.status).toBe(200);
+    // The delete itself still happens in full.
+    expect(res.body.deleted).toEqual(['p1']);
+    expect(side.trashed).toEqual(['p1']);
+    expect(store.peek('photos', 'p1')).toBeUndefined();
+    // But no new execution, and the live run's state is left alone.
+    expect(side.reindexed).toEqual([]);
+    expect(res.body.reindex).toBeNull();
+    expect(res.body.reindexSkipped).toBe('already_running');
+    expect(store.peek('events', 'ev1')?.indexState).toEqual(running);
+  });
+
+  it('re-indexes when the in-flight state is stale (a dead run)', async () => {
+    const stale = { status: 'running', updatedAt: '2026-01-01T00:00:00Z' };
+    seedEvent('ev1', { name: 'Spring Run 2026', driveFolderId: 'folder1', indexState: stale });
+    const res = await request(app)
+      .post('/api/events/ev1/photos/delete')
+      .set('x-test-user', USER)
+      .send({ photoIds: ['p1'] });
+    expect(res.status).toBe(200);
+    expect(side.reindexed).toEqual(['ev1']);
+    expect(res.body.reindex).toContain('photo-indexer');
+    expect(store.peek('events', 'ev1')?.indexState).toMatchObject({ status: 'queued' });
   });
 
   it('reports photos not in this event as failed (and does not trash them)', async () => {

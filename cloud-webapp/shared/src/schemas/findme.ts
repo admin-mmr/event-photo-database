@@ -109,6 +109,10 @@ export const DeletePhotosResponseSchema = z.object({
   /** Indexer execution name if a re-index was triggered to refresh Find Me,
    *  else null (nothing deleted, or the trigger failed — non-fatal). */
   reindex: z.string().nullable().default(null),
+  /** Set when no re-index was started because one is already in flight for the
+   *  event (`reindex` is then null). That run, or the next index-scan tick,
+   *  picks up the deletion. Optional so an older api still parses. */
+  reindexSkipped: z.literal('already_running').optional(),
 });
 export type DeletePhotosResponse = z.infer<typeof DeletePhotosResponseSchema>;
 
