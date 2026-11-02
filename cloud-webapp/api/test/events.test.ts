@@ -44,6 +44,14 @@ vi.mock('../src/lib/firestore.js', () => ({
         }),
       };
     },
+    // The index-trigger claim (services/indexTrigger.ts) reads and writes the
+    // same docs through a transaction.
+    runTransaction: async <T>(
+      fn: (tx: {
+        get: (ref: { get: () => Promise<unknown> }) => Promise<unknown>;
+        set: (ref: { set: (d: Record<string, unknown>) => Promise<void> }, d: Record<string, unknown>) => void;
+      }) => Promise<T>,
+    ): Promise<T> => fn({ get: (ref) => ref.get(), set: (ref, d) => void ref.set(d) }),
   }),
 }));
 
@@ -145,12 +153,12 @@ describe('events routes', () => {
       expect(res.status).toBe(202);
       expect(res.body).toMatchObject({ ok: true, eventId: 'ev1' });
       expect(res.body.execution).toContain('executions/exec-1');
-      expect(triggerIndexJob).toHaveBeenCalledWith('ev1', { force: false });
-      const queued = fakeDb.sets.find((s) => s.id === 'ev1');
-      expect(queued?.data).toMatchObject({ indexState: { status: 'queued' } });
-      expect((queued?.data.indexState as { updatedAt?: string }).updatedAt).toBeTruthy();
+      expect(triggerIndexJob).toHaveBeenCalledWith('ev1');
+      const ev = fakeDb.events.get('ev1');
+      expect(ev).toMatchObject({ indexState: { status: 'queued' } });
+      expect((ev?.indexState as { updatedAt?: string }).updatedAt).toBeTruthy();
       // The direct trigger records the fingerprint so the next scan can skip it.
-      expect(queued?.data.lastIndexSig).toBe(FIXED_SIG);
+      expect(ev?.lastIndexSig).toBe(FIXED_SIG);
     });
 
     it('passes force through', async () => {
@@ -197,7 +205,7 @@ describe('events routes', () => {
       });
       const res = await request(app).post('/api/events/ev1/index').set('x-test-user', ADMIN);
       expect(res.status).toBe(202);
-      expect(triggerIndexJob).toHaveBeenCalledWith('ev1', { force: false });
+      expect(triggerIndexJob).toHaveBeenCalledWith('ev1');
     });
 
     it('still blocks while a fresh run is in flight', async () => {
@@ -210,10 +218,24 @@ describe('events routes', () => {
       expect(res.body.error).toBe('already_running');
     });
 
+    it('409s (no second run) when a run is claimed while the fingerprint is read', async () => {
+      listEventImages.mockImplementationOnce(async () => {
+        fakeDb.events.set('ev1', {
+          ...fakeDb.events.get('ev1'),
+          indexState: { status: 'running', updatedAt: new Date().toISOString() },
+        });
+        return [SIG_IMAGE];
+      });
+      const res = await request(app).post('/api/events/ev1/index').set('x-test-user', ADMIN);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('already_running');
+      expect(triggerIndexJob).not.toHaveBeenCalled();
+    });
+
     it('accepts the machine X-Sync-Token path (no Firebase user)', async () => {
       const res = await request(app).post('/api/events/ev1/index').set('X-Sync-Token', 'cron-secret');
       expect(res.status).toBe(202);
-      expect(triggerIndexJob).toHaveBeenCalledWith('ev1', { force: false });
+      expect(triggerIndexJob).toHaveBeenCalledWith('ev1');
     });
 
     it('rejects a wrong token with 401 (falls through to auth)', async () => {
@@ -287,8 +309,7 @@ describe('events routes', () => {
       });
       const res = await request(app).post('/api/admin/index-scan').set('X-Sync-Token', 'cron-secret');
       expect(res.body.triggered).toEqual(['ev1']);
-      const queued = fakeDb.sets.find((s) => s.id === 'ev1');
-      expect(queued?.data.lastIndexSig).toBe(FIXED_SIG);
+      expect(fakeDb.events.get('ev1')?.lastIndexSig).toBe(FIXED_SIG);
     });
 
     it('re-triggers a matching fingerprint when the last run did not reach done', async () => {
@@ -306,7 +327,7 @@ describe('events routes', () => {
       // lastIndexSig and queues the event.
       const trigger = await request(app).post('/api/events/ev1/index').set('x-test-user', ADMIN);
       expect(trigger.status).toBe(202);
-      const recordedSig = fakeDb.sets.find((s) => s.id === 'ev1')?.data.lastIndexSig;
+      const recordedSig = fakeDb.events.get('ev1')?.lastIndexSig;
       expect(recordedSig).toBe(FIXED_SIG);
 
       // The indexer finishes (status → done); fingerprint is unchanged.
@@ -320,6 +341,24 @@ describe('events routes', () => {
       const scan = await request(app).post('/api/admin/index-scan').set('X-Sync-Token', 'cron-secret');
       expect(scan.body.triggered).toEqual([]);
       expect(scan.body.skipped).toContainEqual({ eventId: 'ev1', reason: 'unchanged' });
+      expect(triggerIndexJob).not.toHaveBeenCalled();
+    });
+
+    // 2026-11-02, the NYC Marathon: the scan read `done`, spent ~70s on Drive
+    // fingerprints, and an upload worker claimed and started a run in that gap.
+    // The scan then started a second execution on the same event.
+    it('does not stack a run when a worker claims the event while the scan is fingerprinting', async () => {
+      listEventImages.mockImplementationOnce(async () => {
+        fakeDb.events.set('ev1', {
+          ...fakeDb.events.get('ev1'),
+          indexState: { status: 'queued', updatedAt: new Date().toISOString() },
+        });
+        return [SIG_IMAGE];
+      });
+      const res = await request(app).post('/api/admin/index-scan').set('X-Sync-Token', 'cron-secret');
+      expect(res.status).toBe(200);
+      expect(res.body.triggered).toEqual([]);
+      expect(res.body.skipped).toContainEqual({ eventId: 'ev1', reason: 'already_running' });
       expect(triggerIndexJob).not.toHaveBeenCalled();
     });
 

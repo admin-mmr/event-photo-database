@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { DocumentStore } from '../src/lib/db/types.js';
 import { fakeStore, type FakeStore } from './helpers/fakeDb.js';
 
-import { consumeRateLimit, decideGuestIpLimit, humanizeRetry } from '../src/middleware/rateLimit.js';
+import { consumeRateLimit, decideGuestIpLimit, humanizeRetry, rateLimitDocId } from '../src/middleware/rateLimit.js';
 
 /** The shared in-memory DocumentStore (see helpers/fakeDb.ts) — no bespoke
  *  double here, so these assertions hold for any adapter that satisfies the
@@ -73,6 +73,35 @@ describe('consumeRateLimit', () => {
     });
     const d = await consumeRateLimit(db, 'b', 'u1', 1, 60, NOW);
     expect(d.allowed).toBe(true);
+  });
+
+  it('fails OPEN when the store rejects the document id (a synchronous throw)', async () => {
+    const db: DocumentStore = Object.assign(fakeStore(), {
+      collection: () => ({
+        doc: () => {
+          throw new Error('Value for argument "documentPath" must point to a document');
+        },
+      }),
+    });
+    await expect(consumeRateLimit(db, 'b', 'u1', 1, 60, NOW)).resolves.toMatchObject({ allowed: true });
+  });
+
+  it('counts an IPv6 /64 key (the `/` would be a Firestore path separator)', async () => {
+    const { db } = makeDb();
+    const key = 'ip:2600:4040:9758:900::/64';
+    const a = await consumeRateLimit(db, 'findme_search_ip', key, 1, 60, NOW);
+    const b = await consumeRateLimit(db, 'findme_search_ip', key, 1, 60, NOW);
+    expect([a.allowed, b.allowed]).toEqual([true, false]);
+  });
+});
+
+describe('rateLimitDocId', () => {
+  it('replaces characters Firestore and Cosmos reject in an id', () => {
+    expect(rateLimitDocId('findme_search_ip', 'ip:2600:4040:9758:900::/64', 1793649600)).toBe(
+      'findme_search_ip:ip:2600:4040:9758:900::_64:1793649600',
+    );
+    expect(rateLimitDocId('b', 'a\\b?c#d', 0)).toBe('b:a_b_c_d:0');
+    expect(rateLimitDocId('search', 'uid123', 60)).toBe('search:uid123:60');
   });
 });
 
