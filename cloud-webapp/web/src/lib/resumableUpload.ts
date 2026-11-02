@@ -26,6 +26,7 @@
 import { apiPost } from './api.js';
 import { uploadBlockBlob } from './blockBlobUpload.js';
 import { getRecaptchaToken } from './recaptcha.js';
+import { STALL_MS, StallError, fetchWithStall, timeoutSignal, watchXhr } from './stallWatchdog.js';
 import { getSession, putSession, deleteSession, sessionKey, type StoredSession } from './uploadDb.js';
 
 /** 256 KiB granularity GCS requires; 8 MiB balances throughput vs. resume cost. */
@@ -83,18 +84,32 @@ async function ensureSession(
   // pass the request-body schema.
   const recaptchaToken = await getRecaptchaToken('volunteer_upload');
 
-  const res = await apiPost<SessionResponse>(
-    '/api/volunteer/upload/session',
-    {
-      token,
-      batchId,
-      fileName: file.name,
-      mimeType,
-      size: file.size,
-      photographerName,
-    },
-    recaptchaToken ? { headers: { 'X-Recaptcha-Token': recaptchaToken } } : undefined,
-  );
+  // Bounded like every other request here: a hung mint would otherwise park
+  // this upload worker for good (see stallWatchdog.ts).
+  const t = timeoutSignal(STALL_MS);
+  let res: SessionResponse;
+  try {
+    res = await apiPost<SessionResponse>(
+      '/api/volunteer/upload/session',
+      {
+        token,
+        batchId,
+        fileName: file.name,
+        mimeType,
+        size: file.size,
+        photographerName,
+      },
+      {
+        ...(recaptchaToken ? { headers: { 'X-Recaptcha-Token': recaptchaToken } } : {}),
+        signal: t.signal,
+      },
+    );
+  } catch (err) {
+    if (t.signal.aborted) throw new StallError('Starting the upload');
+    throw err;
+  } finally {
+    t.clear();
+  }
   const rec: StoredSession = {
     key,
     uploadId: res.uploadId,
@@ -128,7 +143,7 @@ export function backoffMs(attempt: number): number {
  * complete (GCS answers 200/201 to the status probe).
  */
 export async function queryOffset(sessionUri: string, total: number): Promise<number> {
-  const res = await fetch(sessionUri, {
+  const res = await fetchWithStall('Resume query', sessionUri, {
     method: 'PUT',
     headers: { 'Content-Range': `bytes */${total}` },
   });
@@ -138,7 +153,8 @@ export async function queryOffset(sessionUri: string, total: number): Promise<nu
 }
 
 /** PUT one chunk via XHR (for upload progress). Resolves with the new committed
- *  offset, or -1 when the whole object is finalized (200/201). */
+ *  offset, or -1 when the whole object is finalized (200/201). Rejects with
+ *  `StallError` if the connection goes silent for `STALL_MS`. */
 function putChunk(
   sessionUri: string,
   file: File,
@@ -156,11 +172,16 @@ function putChunk(
     xhr.open('PUT', sessionUri);
     xhr.setRequestHeader('Content-Range', `bytes ${start}-${end - 1}/${total}`);
 
+    const watchdog = watchXhr(xhr);
     const onAbort = (): void => xhr.abort();
     signal?.addEventListener('abort', onAbort);
-    const cleanup = (): void => signal?.removeEventListener('abort', onAbort);
+    const cleanup = (): void => {
+      watchdog.stop();
+      signal?.removeEventListener('abort', onAbort);
+    };
 
     xhr.upload.onprogress = (e) => {
+      watchdog.touch();
       if (e.lengthComputable) onProgress(start + e.loaded);
     };
     xhr.onload = () => {
@@ -179,7 +200,7 @@ function putChunk(
     };
     xhr.onabort = () => {
       cleanup();
-      reject(new AbortError());
+      reject(watchdog.stalled ? new StallError('Chunk upload') : new AbortError());
     };
     xhr.send(blob);
   });
@@ -231,9 +252,23 @@ export async function uploadFileResumable(
   if (offset > 0) cb.onResumed?.(offset);
 
   let attempt = 0;
+  let resync = false;
   while (offset < total) {
     if (cb.signal?.aborted) throw new AbortError();
     try {
+      if (resync) {
+        // Re-sync the offset from GCS before retrying (it may have committed
+        // part of the failed chunk). Inside the try, so a probe that fails or
+        // stalls is just another attempt rather than the end of the file.
+        const q = await queryOffset(sessionUri, total);
+        resync = false;
+        if (q === -1) {
+          offset = total;
+          break;
+        }
+        offset = q;
+        continue;
+      }
       const next = await putChunk(sessionUri, file, offset, total, (sent) => cb.onProgress?.(sent), cb.signal);
       if (next === -1) {
         offset = total;
@@ -245,14 +280,7 @@ export async function uploadFileResumable(
       if (err instanceof AbortError) throw err;
       if (++attempt > MAX_RETRIES) throw err;
       await sleep(backoffMs(attempt));
-      // Re-sync the offset from GCS before retrying (it may have committed
-      // part of the failed chunk).
-      const q = await queryOffset(sessionUri, total);
-      if (q === -1) {
-        offset = total;
-        break;
-      }
-      offset = q;
+      resync = true;
     }
   }
 

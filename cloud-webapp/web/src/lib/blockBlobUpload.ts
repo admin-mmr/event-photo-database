@@ -31,6 +31,8 @@
  *    trusted for authorization — see `CreateUploadSessionResponse.metadata`.
  */
 
+import { StallError, fetchWithStall, watchXhr } from './stallWatchdog.js';
+
 /** Block ids must be equal-length and base64. 5 digits covers 50,000 blocks,
  *  which is Azure's per-blob ceiling. */
 export function blockId(index: number): string {
@@ -114,7 +116,10 @@ class AbortError extends Error {
 
 /** Blocks the service already holds for this blob. Empty on a fresh upload. */
 export async function queryStagedBlocks(sasUrl: string): Promise<Set<string>> {
-  const res = await fetch(withQuery(sasUrl, { comp: 'blocklist', blocklisttype: 'uncommitted' }));
+  const res = await fetchWithStall(
+    'Block list query',
+    withQuery(sasUrl, { comp: 'blocklist', blocklisttype: 'uncommitted' }),
+  );
   // 404 = the blob has no staged blocks at all, which is the normal fresh case.
   if (res.status === 404) return new Set();
   if (!res.ok) throw new Error(`Block list query failed: HTTP ${res.status}`);
@@ -139,11 +144,16 @@ function putBlock(
     xhr.open('PUT', withQuery(sasUrl, { comp: 'block', blockid: blockId(index) }));
     xhr.setRequestHeader('x-ms-blob-type', 'BlockBlob');
 
+    const watchdog = watchXhr(xhr);
     const onAbort = (): void => xhr.abort();
     signal?.addEventListener('abort', onAbort);
-    const cleanup = (): void => signal?.removeEventListener('abort', onAbort);
+    const cleanup = (): void => {
+      watchdog.stop();
+      signal?.removeEventListener('abort', onAbort);
+    };
 
     xhr.upload.onprogress = (e) => {
+      watchdog.touch();
       if (e.lengthComputable) onProgress(e.loaded);
     };
     xhr.onload = () => {
@@ -158,7 +168,7 @@ function putBlock(
     };
     xhr.onabort = () => {
       cleanup();
-      reject(new AbortError());
+      reject(watchdog.stalled ? new StallError('Block upload') : new AbortError());
     };
     xhr.send(blob);
   });
@@ -186,7 +196,7 @@ export async function commitBlockList(
     // rather than sending an empty header the service would reject.
     if (v !== '') headers[`x-ms-meta-${k}`] = v;
   }
-  const res = await fetch(withQuery(sasUrl, { comp: 'blocklist' }), {
+  const res = await fetchWithStall('Block list commit', withQuery(sasUrl, { comp: 'blocklist' }), {
     method: 'PUT',
     headers,
     body: buildBlockListXml(blockCount),
