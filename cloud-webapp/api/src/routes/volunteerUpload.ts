@@ -4,8 +4,9 @@
  *   POST /api/volunteer/upload/session   initiate a GCS resumable session
  *   POST /api/volunteer/upload/complete  finalize a batch (→ Drive copy + index)
  *
- * No Firebase auth: volunteers reach this via a shared `/upload/:token` link,
- * exactly like the gas-app flow. The token is validated against the master
+ * No Firebase auth required: volunteers reach this via a shared `/upload/:token`
+ * link, exactly like the gas-app flow. A signed-in uploader is still RECORDED
+ * (staged-object metadata → session doc → Upload_Log.uploadedBy), never checked. The token is validated against the master
  * Sheet's Upload_Links tab on every call (see volunteerUploadService).
  *
  * Abuse protection on /session (UPLOAD_RESUMABLE_NOTES): a per-link-token rate
@@ -36,8 +37,10 @@ import {
   createResumableSession,
   enqueueStagedBatch,
   prepareSessionFolder,
+  uploaderIdentity,
   UploadLinkError,
 } from '../services/volunteerUploadService.js';
+import { optionalUser } from '../middleware/auth.js';
 import { getUploadBatchStatus, seedChunkBatch } from '../services/uploadBatchService.js';
 import { chunkBatchId, chunkObjectNames } from '../lib/uploadChunks.js';
 import { isUploadDispatchConfigured, enqueueProcessBatchTask } from '../services/uploadDispatch.js';
@@ -115,11 +118,14 @@ volunteerUploadRouter.post(
       return;
     }
 
-    const link = await validateUploadLink(token);
-    const session = await createResumableSession(link, batchId, fileName, effectiveMime, photographerName);
+    // The link token is the credential; a login is optional and only
+    // recorded (who uploaded), never required — see optionalUser.
+    const [link, user] = await Promise.all([validateUploadLink(token), optionalUser(req)]);
+    const uploader = uploaderIdentity(user);
+    const session = await createResumableSession(link, batchId, fileName, effectiveMime, photographerName, uploader);
 
     logger.info(
-      { eventId: link.eventId, batchId, uploadId: session.uploadId, size },
+      { eventId: link.eventId, batchId, uploadId: session.uploadId, size, signedIn: uploader.uid !== '' },
       'volunteer resumable session created',
     );
 

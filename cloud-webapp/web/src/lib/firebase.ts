@@ -85,8 +85,12 @@ export function watchAuth(cb: (user: User | null) => void): () => void {
   };
 }
 
-/** Current user's ID token, or null when signed out. */
+/** Current user's ID token, or null when signed out. Waits for the persisted
+ *  sign-in to be restored first: right after a page load `currentUser` is null
+ *  until it is, and a call made in that window would go out anonymous (which
+ *  is how a signed-in volunteer's upload ended up with no uploader recorded). */
 export async function idToken(): Promise<string | null> {
   const auth = await firebaseAuth();
+  await auth.authStateReady();
   return auth.currentUser ? auth.currentUser.getIdToken() : null;
 }

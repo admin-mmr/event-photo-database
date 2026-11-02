@@ -37,6 +37,27 @@ declare module 'express-serve-static-core' {
 }
 
 /**
+ * Who is calling, when they happen to be signed in — for ATTRIBUTION only,
+ * never authorization. Routes that are open to anyone (the volunteer upload
+ * link) still want to know a signed-in uploader, but must not turn anyone away:
+ * a missing, expired or forged token, or an anonymous guest session, all read
+ * as "not signed in" (null) instead of a 401.
+ */
+export async function optionalUser(req: Request): Promise<AuthedUser | null> {
+  const header = req.headers.authorization;
+  if (!header || !header.startsWith('Bearer ')) return null;
+  try {
+    const decoded = await getAuth().verifyIdToken(header.slice('Bearer '.length));
+    // A guest (continueAsGuest) has a uid but no identity worth recording.
+    if (decoded.firebase?.sign_in_provider === 'anonymous') return null;
+    return { uid: decoded.uid, email: decoded.email, emailVerified: decoded.email_verified ?? false };
+  } catch (err) {
+    logger.debug({ err }, 'optional token did not verify (treated as not signed in)');
+    return null;
+  }
+}
+
+/**
  * Verifies a Firebase ID token from the `Authorization: Bearer …` header
  * and attaches `req.user`. Returns 401 if the token is missing or invalid.
  *

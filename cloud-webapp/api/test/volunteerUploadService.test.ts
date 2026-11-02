@@ -15,6 +15,8 @@ const sheetData: Record<string, string[][]> = {};
 // Per-range read counter so a test can assert the service caches the tab
 // instead of re-reading it on every validateUploadLink call.
 const sheetReads: Record<string, number> = {};
+// Rows appended to the Sheet (Upload_Log), so a test can read what was logged.
+const sheetAppends: unknown[][] = [];
 vi.mock('../src/services/sheetsService.js', () => ({
   getSheetValues: async (_spreadsheetId: string, range: string) => {
     sheetReads[range] = (sheetReads[range] ?? 0) + 1;
@@ -23,8 +25,10 @@ vi.mock('../src/services/sheetsService.js', () => ({
   // The Upload_Log append (appendUploadLog → appendSheetValues) runs after a
   // batch is copied to Drive. Stubbed so the best-effort logging path succeeds
   // quietly instead of hitting its non-fatal catch on a missing mock export.
-  appendSheetValues: async (_spreadsheetId: string, _range: string, rows: unknown[][]) =>
-    rows.length,
+  appendSheetValues: async (_spreadsheetId: string, _range: string, rows: unknown[][]) => {
+    sheetAppends.push(...rows);
+    return rows.length;
+  },
 }));
 
 const eventDocs: Record<string, Record<string, unknown> | undefined> = {};
@@ -241,6 +245,7 @@ function stageObj(
 const {
   validateUploadLink,
   createResumableSession,
+  uploaderIdentity,
   enqueueStagedBatch,
   stagingExtForMime,
   stagingObjectName,
@@ -279,6 +284,7 @@ beforeEach(() => {
   indexTriggers.length = 0;
   dedupDocs.clear();
   batchDocs.clear();
+  sheetAppends.length = 0;
   batchWrites.length = 0;
   appPropFiles.clear();
   appPropLookups.length = 0;
@@ -339,7 +345,23 @@ describe('createResumableSession', () => {
       tag: 'tagX',
       originalName: 'race-001.jpg',
       photographerName: 'Jane Doe', // trimmed
+      uploaderEmail: '', // signed out, the usual volunteer case
+      uploaderUid: '',
       batchId: 'b1',
+    });
+  });
+
+  it('stamps the signed-in uploader onto every file', async () => {
+    // Per file, because /session is the one call that always carries the
+    // login: the pagehide beacon cannot, and recovery reads these objects.
+    const link = await validateUploadLink('tok-good');
+    await createResumableSession(link, 'b1', 'race-001.jpg', 'image/jpeg', '', {
+      email: 'cathy@example.org',
+      uid: 'u-123',
+    });
+    expect(storage.sessions.at(-1)!.opts.metadata).toMatchObject({
+      uploaderEmail: 'cathy@example.org',
+      uploaderUid: 'u-123',
     });
   });
 
@@ -374,6 +396,27 @@ describe('createResumableSession', () => {
     const a = await createResumableSession(link, 'b1', 'x.jpg', 'image/jpeg');
     const b = await createResumableSession(link, 'b1', 'x.jpg', 'image/jpeg');
     expect(a.objectName).not.toBe(b.objectName);
+  });
+});
+
+describe('uploaderIdentity', () => {
+  it('reads signed out as no uploader', () => {
+    expect(uploaderIdentity(null)).toEqual({ email: '', uid: '' });
+  });
+
+  it('records a verified email, lowercased', () => {
+    expect(uploaderIdentity({ uid: 'u1', email: ' Cathy@Example.ORG ', emailVerified: true })).toEqual({
+      email: 'cathy@example.org',
+      uid: 'u1',
+    });
+  });
+
+  it('drops an UNVERIFIED email but keeps the uid', () => {
+    // An unverified address is whatever the account holder typed.
+    expect(uploaderIdentity({ uid: 'u2', email: 'someone@else.org', emailVerified: false })).toEqual({
+      email: '',
+      uid: 'u2',
+    });
   });
 });
 
@@ -1024,6 +1067,22 @@ describe('chunked sessions copy into ONE folder', () => {
     expect(again).toBe(first);
     expect(folderCreates.filter((f) => f.name === first)).toHaveLength(1);
     expect(batchDocs.get('s1')).toMatchObject({ chunked: true, batchFolderName: first });
+    expect(batchDocs.get('s1')).not.toHaveProperty('uploaderEmail'); // signed out
+  });
+
+  it('records the signed-in uploader on the session doc, the chunk doc and Upload_Log', async () => {
+    const link = await validateUploadLink('tok-good');
+    const meta = { originalName: 'a.jpg', photographerName: 'Danny Zeng', uploaderEmail: 'danny@example.org', uploaderUid: 'u9' };
+    stageObj('vol/ev1/s3/u1.jpg', { size: 10, contentType: 'image/jpeg', metadata: meta });
+
+    const folder = await prepareSessionFolder(link, 's3', 'vol/ev1/s3/u1.jpg');
+    await seedChunkBatch('s3-pa', 's3', 'ev1', 'link1', 1, folder);
+    await enqueueStagedBatch(link, 's3-pa', ['vol/ev1/s3/u1.jpg']);
+
+    expect(batchDocs.get('s3')).toMatchObject({ uploaderEmail: 'danny@example.org' });
+    expect(batchDocs.get('s3-pa')).toMatchObject({ uploaderEmail: 'danny@example.org' });
+    // Upload_Log column D is uploadedBy (gas-app column order).
+    expect(sheetAppends.at(-1)?.[3]).toBe('danny@example.org');
   });
 
   it('every seeded chunk copies into the session folder, not one of its own', async () => {

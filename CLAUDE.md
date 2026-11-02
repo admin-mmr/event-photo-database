@@ -433,12 +433,19 @@
   `./cloud-webapp/infra/scripts/recover-staged-uploads.sh [--apply] <event-id …>`.
 - **It adds NO copy logic.** Every staged object carries the metadata the normal
   path needs (`eventId`, `linkId`, `clubName`, `tag`, `originalName`,
-  `photographerName`, `batchId` — stamped by `createResumableSession`), so
+  `photographerName`, `uploaderEmail`/`uploaderUid`, `batchId` — stamped by
+  `createResumableSession`), so
   recovery just re-dispatches the same Cloud Tasks work item a volunteer upload
   would and `enqueueStagedBatch` does the rest. Keep it that way; a bespoke
   copier is a second implementation to get wrong.
   - Photographer credit therefore survives even when the `upload_batches` doc is
-    missing — credit lives on the OBJECT, not the batch doc. A blank
+    missing — credit lives on the OBJECT, not the batch doc.
+  - The same goes for WHO uploaded: a signed-in uploader's verified email is
+    stamped per file at `/session` (the one call that always carries the login —
+    the pagehide `/complete` beacon cannot send headers) and flows to the session
+    doc and `Upload_Log.uploadedBy`. Attribution only: `optionalUser` never
+    rejects, and on Azure the client stamps metadata itself, so never authorize
+    on it. Uploads before 2026-11-02 recorded no uploader at all. A blank
     `photographerName` is legitimate (the field is optional) and falls back to
     `volunteer` via `buildBatchFolderName`.
   - The worker accepts `linkId` as well as the public `token`, because staged

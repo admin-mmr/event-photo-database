@@ -35,6 +35,9 @@ export interface UploadBatchDoc {
   skippedDuplicateNames: string[];
   failed: number;
   batchFolderName: string;
+  /** Verified email of the signed-in uploader, when there was one. Internal —
+   *  never returned by the public status endpoint. */
+  uploaderEmail?: string;
   error?: string;
   /**
    * Set when staging recovery (the admin tool or the never-completed sweep)
@@ -203,6 +206,7 @@ export async function claimSessionBatch(
   eventId: string,
   linkId: string,
   proposedFolderName: string,
+  uploaderEmail = '',
 ): Promise<string> {
   try {
     const ref = firestore().collection(COLLECTION).doc(batchId);
@@ -214,7 +218,7 @@ export async function claimSessionBatch(
       tx.set(
         ref,
         existing
-          ? { batchFolderName: proposedFolderName, chunked: true, updatedAt: now }
+          ? { batchFolderName: proposedFolderName, chunked: true, ...(uploaderEmail ? { uploaderEmail } : {}), updatedAt: now }
           : {
               batchId,
               eventId,
@@ -227,6 +231,7 @@ export async function claimSessionBatch(
               failed: 0,
               batchFolderName: proposedFolderName,
               chunked: true,
+              ...(uploaderEmail ? { uploaderEmail } : {}),
               createdAt: now,
               updatedAt: now,
             },

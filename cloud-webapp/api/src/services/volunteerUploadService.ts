@@ -47,6 +47,7 @@ import { triggerIndexJobUnlessInFlight } from './indexTrigger.js';
 import { appendUploadLog } from './uploadLogService.js';
 import { claimSessionBatch, getUploadBatch, initUploadBatch, updateUploadBatch } from './uploadBatchService.js';
 import { buildCreditedFileName } from '../lib/creditedFileName.js';
+import type { AuthedUser } from '../middleware/auth.js';
 import { tryRebuildSpecialFoldersForBatch } from './specialFoldersService.js';
 import { tryRebuildPublicFolderIndex } from './publicFolderIndexService.js';
 
@@ -245,6 +246,29 @@ export interface CreatedSession {
 }
 
 /**
+ * The signed-in user behind an upload, recorded so an admin can see who sent
+ * what. Volunteers mostly upload signed out (the link is the credential), so
+ * both fields are usually ''. ATTRIBUTION ONLY: on Azure the client stamps
+ * object metadata itself, so nothing may trust these for authorization.
+ */
+export interface UploaderIdentity {
+  /** Lowercased, and only when Firebase has verified it — an unverified
+   *  address is whatever the account holder typed. */
+  email: string;
+  uid: string;
+}
+
+export const NO_UPLOADER: UploaderIdentity = { email: '', uid: '' };
+
+export function uploaderIdentity(user: AuthedUser | null): UploaderIdentity {
+  if (!user) return NO_UPLOADER;
+  return {
+    email: user.emailVerified && user.email ? user.email.trim().toLowerCase() : '',
+    uid: user.uid,
+  };
+}
+
+/**
  * Initiate a resumable upload session for one file and return its URL. On GCS
  * `origin` MUST match the bucket CORS config or the browser's PUTs are blocked
  * (on Azure, CORS is account-level config instead). We stamp the original
@@ -262,6 +286,7 @@ export async function createResumableSession(
   fileName: string,
   mimeType: string,
   photographerName = '',
+  uploader: UploaderIdentity = NO_UPLOADER,
 ): Promise<CreatedSession> {
   const uploadId = randomUUID();
   const objectName = stagingObjectName(link.eventId, batchId, uploadId, mimeType);
@@ -275,6 +300,12 @@ export async function createResumableSession(
     // Stamped so the later Drive-copy step can reconstruct the credited
     // filename without a side channel. Trimmed to keep object metadata tidy.
     photographerName: photographerName.trim(),
+    // Who was signed in, if anyone. Stamped per FILE because /session is the
+    // one call that always carries the login: the pagehide beacon that may
+    // send /complete cannot set headers, and recovery re-dispatches straight
+    // from these objects. Attribution only — see UploaderIdentity.
+    uploaderEmail: uploader.email,
+    uploaderUid: uploader.uid,
     batchId,
   };
 
@@ -389,12 +420,15 @@ export async function prepareSessionFolder(link: ValidatedLink, batchId: string,
   }
 
   let photographerName = '';
+  let uploaderEmail = '';
   try {
-    photographerName = (await objectStore().head(env.VOLUNTEER_STAGING_BUCKET, firstObjectName))?.custom.photographerName ?? '';
+    const custom = (await objectStore().head(env.VOLUNTEER_STAGING_BUCKET, firstObjectName))?.custom;
+    photographerName = custom?.photographerName ?? '';
+    uploaderEmail = custom?.uploaderEmail ?? '';
   } catch (err) {
     logger.warn({ err, batchId, firstObjectName }, 'could not read the photographer name (folder named "volunteer")');
   }
-  const name = await claimSessionBatch(batchId, link.eventId, link.linkId, buildBatchFolderName(photographerName));
+  const name = await claimSessionBatch(batchId, link.eventId, link.linkId, buildBatchFolderName(photographerName), uploaderEmail);
 
   const create = resolveEventFolderId(link.eventId).then((folderId) => ensureBatchFolderPath(link, folderId, name));
   const timedOut = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), SESSION_FOLDER_WAIT_MS).unref?.());
@@ -565,6 +599,9 @@ export async function enqueueStagedBatch(
   let copiedBytes = 0;
   let skippedDuplicates = 0;
   let failed = 0;
+  // The signed-in uploader, from the first file that recorded one (a session is
+  // one page, so every file that has it agrees).
+  let uploadedBy = '';
   const skippedDuplicateNames: string[] = [];
   for (const objectName of objectNames) {
     // Set once we hold an atomic claim, so a failed copy hands it back rather
@@ -584,6 +621,7 @@ export async function enqueueStagedBatch(
         continue;
       }
       const custom = meta.custom;
+      uploadedBy ||= custom.uploaderEmail ?? '';
       const originalName = (custom.originalName || objectName.split('/').pop() || objectName).trim();
       const contentType = meta.contentType;
 
@@ -776,6 +814,7 @@ export async function enqueueStagedBatch(
   await appendUploadLog({
     eventId: link.eventId,
     clubName: link.clubName,
+    uploadedBy,
     batchFolderName,
     batchFolderId: batchFolderId ?? '',
     fileCount: copied,
@@ -796,6 +835,7 @@ export async function enqueueStagedBatch(
     skippedDuplicateNames,
     failed,
     batchFolderName,
+    ...(uploadedBy ? { uploaderEmail: uploadedBy } : {}),
   });
 
   // Managed folders (gas-app migration): scoped, inline rebuild of THIS batch's
