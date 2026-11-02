@@ -258,3 +258,48 @@ redeploy.
 **Residual risk.** A request relayed by a non-Cloud Google service that lets
 the caller set headers (e.g. Apps Script `UrlFetchApp`) can still choose its
 key. That costs a bot real Google quota per request, and reCAPTCHA still applies.
+
+## 7. What shadow mode showed, and the fallback for blocked guests
+
+**Event-day scores (2026-11-02, about one day, `recaptcha-score-report.sh`):**
+
+| | Downloads | Find-Me |
+|---|---|---|
+| Verdicts | 1,456 (927 scored; 36% signed-in skips) | 238 (181 scored) |
+| Would block at 0.5 | 8.2% | 16% |
+| Would block at 0.3 | 2.6% | 2.8% |
+| Would block at 0.1 | 0.1% | 1.1% |
+| `missing_token` | 0 | 0 |
+
+- **The low scores look like real people, not bots.** The 29 requests below 0.3
+  came from just 6 uids, and 5 of those also scored ≥ 0.7 on other requests. That
+  is attendees saving many photos in quick bursts, with scores that swing for the
+  same person.
+- **So never enforce at 0.5:** it would have blocked one Find-Me search in six.
+  Even 0.3 would intermittently block real bulk savers.
+- **No request arrived without a token,** so the ad-blocker risk in §5 has not
+  shown up.
+
+**The fallback (this PR).** A real person must never be stuck at a block. A
+guest turned away by a bot check gets an app-wide prompt: *"Please sign in to
+continue"*, with a Google sign-in button. Google-signed-in users skip both
+checks, so one tap gets them through.
+
+- **Triggers:** 403 `recaptcha_failed` or 429 `guest_rate_limited` (the per-IP
+  limit now has its own code). `lib/api.ts` fires the event for exactly those two
+  codes; the per-uid `rate_limited` doesn't open it, because sign-in doesn't lift
+  it.
+- **Upgrade in place:** `upgradeGuestToGoogle` uses `linkWithPopup`, so the guest
+  keeps their uid, consent record and saved selfies. If that Google account
+  already exists, it signs in to it instead.
+- **How the api recognises it:** a linked guest's token may still say
+  `sign_in_provider: anonymous`, so `lib/signIn.ts` also accepts a Google entry
+  in the token's `identities`, which only completing Google OAuth can put there.
+- **In-app browsers** (WeChat etc.) block Google OAuth. There the prompt says to
+  open the page in Safari or Chrome instead of showing a button that would fail.
+
+**Before enforcing reCAPTCHA (step 5):** deploy this fallback first. Then:
+
+- block Find-Me first, at **0.3**;
+- keep downloads in shadow until another event's data says otherwise;
+- rerun the report after the next event — Find-Me needs about 500 scored verdicts.

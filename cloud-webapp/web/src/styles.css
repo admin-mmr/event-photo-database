@@ -2526,3 +2526,39 @@ pre.error {
     transform: none;
   }
 }
+
+
+/* ── Guest "sign in to continue" prompt (components/GuestSignInPrompt.tsx) ──
+   Above the lightbox (z 50): a save from the lightbox can trigger it. */
+.guest-prompt-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom));
+  background: rgba(15, 23, 42, 0.45);
+}
+.guest-prompt {
+  width: 100%;
+  max-width: 420px;
+  padding: 20px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+}
+.guest-prompt h2 {
+  margin: 0 0 8px;
+  font-size: 1.15rem;
+}
+.guest-prompt p {
+  margin: 0 0 12px;
+}
+.guest-prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}

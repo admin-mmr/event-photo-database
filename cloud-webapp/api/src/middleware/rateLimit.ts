@@ -325,9 +325,11 @@ export function guestIpRateLimit(opts: { bucket: string; limit: number; windowSe
       return;
     }
     res.setHeader('Retry-After', String(out.decision.resetSec));
+    // Its own code (not `rate_limited`): signing in with Google lifts THIS
+    // limit, and the web app keys its "sign in to continue" prompt on it.
     res.status(429).json({
       ok: false,
-      error: 'rate_limited',
+      error: 'guest_rate_limited',
       message:
         `Too many requests from your network — please try again in ${humanizeRetry(out.decision.resetSec)}, ` +
         'or sign in with Google.',

@@ -25,6 +25,10 @@ export interface AuthedUser {
   /** Firebase `sign_in_provider` from the verified token: 'anonymous' for a
    *  guest, 'google.com' for Google sign-in. Undefined if the token lacks it. */
   signInProvider?: string;
+  /** Providers linked to the account (keys of the token's `firebase.identities`,
+   *  e.g. ['google.com', 'email']). A guest who upgrades in place with
+   *  linkWithPopup keeps their uid and gains 'google.com' here. */
+  linkedProviders?: string[];
   /** Control-plane role, resolved from the Users sheet by middleware/rbac.ts
    *  (attachRole). Undefined until that middleware runs / if the user has no
    *  active Users row and is not a bootstrap admin. */
@@ -61,6 +65,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       email: decoded.email,
       emailVerified: decoded.email_verified ?? false,
       ...(decoded.firebase?.sign_in_provider ? { signInProvider: decoded.firebase.sign_in_provider } : {}),
+      ...(decoded.firebase?.identities ? { linkedProviders: Object.keys(decoded.firebase.identities) } : {}),
     };
     next();
   } catch (err) {

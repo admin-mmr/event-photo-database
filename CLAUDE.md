@@ -552,6 +552,14 @@
     `googleFrontEndRanges.ts` with `refresh-google-front-end-ranges.sh` when an
     ERROR `client_ip_unrecognized_hop` fires; a stale list makes every Hosting
     visitor share one IP.
+  - **A blocked guest must always have a way through.** 403 `recaptcha_failed`
+    and 429 `guest_rate_limited` open the web app's "sign in to continue" prompt
+    (`GuestSignInPrompt`, `upgradeGuestToGoogle` = linkWithPopup, keeps the uid).
+    Keep those two codes distinct from the per-uid `rate_limited`, and keep
+    `hasVerifiedSignIn` accepting a linked Google identity — a linked guest's
+    token can still say `sign_in_provider: anonymous`. Event-day shadow data:
+    low scores were real bulk savers (BOT_PROTECTION_PLAN.md §7), so never
+    enforce without this fallback deployed.
   - Uploads stay WITHOUT reCAPTCHA (per-file cost; see `routes/volunteerUpload.ts`).
 
 ## Gallery club / tag filter — read off the Drive path

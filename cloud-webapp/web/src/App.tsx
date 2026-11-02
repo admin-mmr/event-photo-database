@@ -8,6 +8,7 @@ import { clearStoredName, setStoredName } from './lib/userName.js';
 import { isInAppBrowser } from './lib/inAppBrowser.js';
 import { InAppBrowserWarning } from './components/InAppBrowserWarning.js';
 import { Footer } from './components/Footer.js';
+import { GuestSignInPrompt } from './components/GuestSignInPrompt.js';
 
 /** Inline brand glyph (folder + lens) — placeholder until a real logo asset. */
 function BrandMark({ className = 'brand-mark' }: { className?: string }): JSX.Element {
@@ -365,7 +366,11 @@ export function App(): JSX.Element {
       {loading ? (
         <p className="muted">{t.loading}</p>
       ) : user ? (
-        <Outlet />
+        <>
+          <Outlet />
+          {/* Bot-check fallback: a blocked guest gets "sign in to continue". */}
+          <GuestSignInPrompt isGuest={isGuest} />
+        </>
       ) : (
         <div className="signin-screen">
           <div className="signin-card">

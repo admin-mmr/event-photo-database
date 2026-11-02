@@ -101,7 +101,7 @@ export function requireRecaptcha(action: string): RequestHandler {
     res.status(403).json({
       ok: false,
       error: 'recaptcha_failed',
-      message: 'We could not verify this request. Please reload and try again.',
+      message: 'We could not verify this request. Please reload and try again, or sign in with Google.',
     });
   };
 }
