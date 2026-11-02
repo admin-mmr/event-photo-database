@@ -324,6 +324,79 @@ describe('GET /api/events/:id/photos', () => {
       .set('x-test-user', USER);
     expect(second.body.photos.map((p: { photoId: string }) => p.photoId)).toEqual(['p3']);
   });
+
+  describe('club / tag filter', () => {
+    const ids = (res: { body: { photos: Array<{ photoId: string }> } }): string[] =>
+      res.body.photos.map((p) => p.photoId);
+
+    beforeEach(() => {
+      clearPhotos();
+      seedPhotos(
+        { id: 'a1', data: { eventId: 'ev1', name: 'a1.jpg', clubName: 'MMR', tag: '10K', addedAt: '2026-06-20T05:00:00' } },
+        { id: 'a2', data: { eventId: 'ev1', name: 'a2.jpg', clubName: 'MMR', tag: '5K', addedAt: '2026-06-20T04:00:00' } },
+        { id: 'a3', data: { eventId: 'ev1', name: 'a3.jpg', clubName: 'MMR', tag: '10K', addedAt: '2026-06-20T03:00:00' } },
+        { id: 'b1', data: { eventId: 'ev1', name: 'b1.jpg', clubName: 'Harriers', tag: '10K', addedAt: '2026-06-20T02:00:00' } },
+        { id: 'r1', data: { eventId: 'ev1', name: 'r1.jpg', clubName: '', tag: '', addedAt: '2026-06-20T01:00:00' } },
+        { id: 'x1', data: { eventId: 'other', name: 'x1.jpg', clubName: 'MMR', tag: '10K', addedAt: '2026-06-20T06:00:00' } },
+      );
+    });
+
+    it('defaults to every photo in the event (all clubs, all tags)', async () => {
+      const res = await request(app).get('/api/events/ev1/photos').set('x-test-user', USER);
+      expect(ids(res)).toEqual(['a1', 'a2', 'a3', 'b1', 'r1']);
+    });
+
+    it('?club= narrows to one club', async () => {
+      const res = await request(app).get('/api/events/ev1/photos?club=MMR').set('x-test-user', USER);
+      expect(ids(res)).toEqual(['a1', 'a2', 'a3']);
+    });
+
+    it('?club=&tag= narrows to one club + tag, and pages within it', async () => {
+      const page1 = await request(app)
+        .get('/api/events/ev1/photos?club=MMR&tag=10K&limit=1')
+        .set('x-test-user', USER);
+      expect(ids(page1)).toEqual(['a1']);
+      const page2 = await request(app)
+        .get(`/api/events/ev1/photos?club=MMR&tag=10K&limit=1&cursor=${encodeURIComponent(page1.body.nextCursor)}`)
+        .set('x-test-user', USER);
+      expect(ids(page2)).toEqual(['a3']);
+    });
+
+    it('ignores a tag without a club (tag names repeat across clubs)', async () => {
+      const res = await request(app).get('/api/events/ev1/photos?tag=10K').set('x-test-user', USER);
+      expect(ids(res)).toEqual(['a1', 'a2', 'a3', 'b1', 'r1']);
+    });
+
+    it('handles non-ASCII club names', async () => {
+      seedPhotos({ id: 'z1', data: { eventId: 'ev1', name: 'z1.jpg', clubName: '湘舍动', tag: 'ALL', addedAt: '2026-06-20T00:00:00' } });
+      const res = await request(app)
+        .get(`/api/events/ev1/photos?club=${encodeURIComponent('湘舍动')}`)
+        .set('x-test-user', USER);
+      expect(ids(res)).toEqual(['z1']);
+    });
+
+    it("returns the event's folders for the menus, dropping malformed entries", async () => {
+      seedEvent('ev1', {
+        name: 'Spring Run 2026',
+        galleryFolders: [
+          { clubName: 'Harriers', tag: '10K', count: 1 },
+          { clubName: 'MMR', tag: '10K', count: 2 },
+          { clubName: '', tag: 'ALL', count: 4 },
+          { tag: 'nope' },
+        ],
+      });
+      const res = await request(app).get('/api/events/ev1/photos').set('x-test-user', USER);
+      expect(res.body.folders).toEqual([
+        { clubName: 'Harriers', tag: '10K', count: 1 },
+        { clubName: 'MMR', tag: '10K', count: 2 },
+      ]);
+    });
+
+    it('returns no folders for an event indexed before they were recorded', async () => {
+      const res = await request(app).get('/api/events/ev1/photos').set('x-test-user', USER);
+      expect(res.body.folders).toEqual([]);
+    });
+  });
 });
 
 describe('POST /api/events/:id/photos/delete (admin)', () => {

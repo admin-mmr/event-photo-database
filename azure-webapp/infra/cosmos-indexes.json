@@ -85,6 +85,206 @@
             "path": "/id",
             "order": "descending"
           }
+        ],
+        [
+          {
+            "path": "/eventId",
+            "order": "ascending"
+          },
+          {
+            "path": "/clubName",
+            "order": "ascending"
+          },
+          {
+            "path": "/takenAt",
+            "order": "ascending"
+          },
+          {
+            "path": "/id",
+            "order": "ascending"
+          }
+        ],
+        [
+          {
+            "path": "/eventId",
+            "order": "ascending"
+          },
+          {
+            "path": "/clubName",
+            "order": "ascending"
+          },
+          {
+            "path": "/takenAt",
+            "order": "descending"
+          },
+          {
+            "path": "/id",
+            "order": "descending"
+          }
+        ],
+        [
+          {
+            "path": "/eventId",
+            "order": "ascending"
+          },
+          {
+            "path": "/clubName",
+            "order": "ascending"
+          },
+          {
+            "path": "/name",
+            "order": "ascending"
+          },
+          {
+            "path": "/id",
+            "order": "ascending"
+          }
+        ],
+        [
+          {
+            "path": "/eventId",
+            "order": "ascending"
+          },
+          {
+            "path": "/clubName",
+            "order": "ascending"
+          },
+          {
+            "path": "/addedAt",
+            "order": "ascending"
+          },
+          {
+            "path": "/id",
+            "order": "ascending"
+          }
+        ],
+        [
+          {
+            "path": "/eventId",
+            "order": "ascending"
+          },
+          {
+            "path": "/clubName",
+            "order": "ascending"
+          },
+          {
+            "path": "/addedAt",
+            "order": "descending"
+          },
+          {
+            "path": "/id",
+            "order": "descending"
+          }
+        ],
+        [
+          {
+            "path": "/eventId",
+            "order": "ascending"
+          },
+          {
+            "path": "/clubName",
+            "order": "ascending"
+          },
+          {
+            "path": "/tag",
+            "order": "ascending"
+          },
+          {
+            "path": "/takenAt",
+            "order": "ascending"
+          },
+          {
+            "path": "/id",
+            "order": "ascending"
+          }
+        ],
+        [
+          {
+            "path": "/eventId",
+            "order": "ascending"
+          },
+          {
+            "path": "/clubName",
+            "order": "ascending"
+          },
+          {
+            "path": "/tag",
+            "order": "ascending"
+          },
+          {
+            "path": "/takenAt",
+            "order": "descending"
+          },
+          {
+            "path": "/id",
+            "order": "descending"
+          }
+        ],
+        [
+          {
+            "path": "/eventId",
+            "order": "ascending"
+          },
+          {
+            "path": "/clubName",
+            "order": "ascending"
+          },
+          {
+            "path": "/tag",
+            "order": "ascending"
+          },
+          {
+            "path": "/name",
+            "order": "ascending"
+          },
+          {
+            "path": "/id",
+            "order": "ascending"
+          }
+        ],
+        [
+          {
+            "path": "/eventId",
+            "order": "ascending"
+          },
+          {
+            "path": "/clubName",
+            "order": "ascending"
+          },
+          {
+            "path": "/tag",
+            "order": "ascending"
+          },
+          {
+            "path": "/addedAt",
+            "order": "ascending"
+          },
+          {
+            "path": "/id",
+            "order": "ascending"
+          }
+        ],
+        [
+          {
+            "path": "/eventId",
+            "order": "ascending"
+          },
+          {
+            "path": "/clubName",
+            "order": "ascending"
+          },
+          {
+            "path": "/tag",
+            "order": "ascending"
+          },
+          {
+            "path": "/addedAt",
+            "order": "descending"
+          },
+          {
+            "path": "/id",
+            "order": "descending"
+          }
         ]
       ]
     },

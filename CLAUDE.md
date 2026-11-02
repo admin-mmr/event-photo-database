@@ -499,6 +499,21 @@
   - What the volunteer page may promise follows from this: finished files survive
     a closed tab; a file mid-upload does not (`VolunteerUpload.tsx` copy).
 
+## Gallery club / tag filter — read off the Drive path
+
+- **The gallery's `?club=&tag=` filter keys on `photos.clubName`/`photos.tag`,
+  which the indexer derives from `relPath` (`folder_scope` in `indexer/job.py`):
+  club = first folder, tag = second folder only when the path is at least
+  `Club/tag/<batch>/<file>` deep.** That is the layout `ensureBatchFolderPath`
+  writes; change one and you must change the other, or new uploads silently fall
+  out of their club's view. Browsing only — Find-Me stays event-wide.
+- The menus come from `events.galleryFolders` (per-(club, tag) counts, written at
+  the end of each index run). Existing events show no menus until re-indexed;
+  that run backfills the fields without re-embedding.
+- Each filtered query shape has its own composite indexes
+  (`eventId, clubName[, tag], <sort field>`); a new sort or filter needs new ones
+  in `firestore.indexes.json` (and `generate-cosmos-indexes.mjs`).
+
 ## Find-Me selfie retention — a sweep, never a TTL
 
 - **Stored reference selfies are kept 90 days (adult) / 30 days (minor), PRD §8.4,
