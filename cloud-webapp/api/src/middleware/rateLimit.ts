@@ -48,6 +48,17 @@ export function humanizeRetry(sec: number): string {
 }
 
 /**
+ * The counter's document id. A key may hold characters a document id cannot:
+ * an IPv6 key is a CIDR (`ip:2600:4040:9758:900::/64`) and Firestore reads `/`
+ * as a path separator — every IPv6 guest's request crashed the api on it. Cosmos
+ * forbids `/ \ ? #` too, so all four are replaced. The stored `key` field keeps
+ * the original for anyone reading the counters.
+ */
+export function rateLimitDocId(bucket: string, key: string, windowStart: number): string {
+  return `${bucket}:${key}:${windowStart}`.replace(/[/\\?#]/g, '_');
+}
+
+/**
  * Increments and checks the counter for one (bucket, key) in the current
  * fixed window. `limit <= 0` disables the bucket (always allowed). Never throws
  * — backend errors fail open.
@@ -67,10 +78,12 @@ export async function consumeRateLimit(
   const nowSec = Math.floor(now / 1000);
   const windowStart = Math.floor(nowSec / windowSec) * windowSec;
   const resetSec = windowStart + windowSec - nowSec;
-  const docId = `${bucket}:${key}:${windowStart}`;
-  const ref = db.collection('rate_limits').doc(docId);
 
   try {
+    // Inside the try: `.doc()` throws SYNCHRONOUSLY on an id it rejects, and a
+    // throw here escaped every limiter as an unhandled rejection that killed
+    // the whole api instance (2026-11-02).
+    const ref = db.collection('rate_limits').doc(rateLimitDocId(bucket, key, windowStart));
     const count = await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       const current = (snap.exists ? (snap.data()?.count as number | undefined) : 0) ?? 0;
@@ -117,8 +130,18 @@ export function rateLimit(opts: {
       next();
       return;
     }
-    const key = opts.keyFn ? opts.keyFn(req) : req.user?.uid || req.ip || 'anon';
-    const decision = await consumeRateLimit(firestore(), opts.bucket, key, opts.limit, opts.windowSec);
+    let decision: RateLimitDecision;
+    try {
+      const key = opts.keyFn ? opts.keyFn(req) : req.user?.uid || req.ip || 'anon';
+      decision = await consumeRateLimit(firestore(), opts.bucket, key, opts.limit, opts.windowSec);
+    } catch (err) {
+      // Express 4 does not catch a rejected async middleware: an escaped throw
+      // is an unhandled rejection, and Node exits — taking every in-flight
+      // request on the instance with it. Fail open instead.
+      logger.warn({ err, bucket: opts.bucket }, 'rate limiter threw — failing open');
+      next();
+      return;
+    }
 
     res.setHeader('X-RateLimit-Limit', String(decision.limit));
     res.setHeader('X-RateLimit-Remaining', String(Math.max(0, decision.remaining)));
@@ -269,7 +292,15 @@ export function guestIpRateLimit(opts: { bucket: string; limit: number; windowSe
       next();
       return;
     }
-    const out = await decideGuestIpLimit(firestore(), req, { ...opts, mode: env.GUEST_IP_LIMIT_MODE });
+    let out: GuestIpLimitOutcome;
+    try {
+      out = await decideGuestIpLimit(firestore(), req, { ...opts, mode: env.GUEST_IP_LIMIT_MODE });
+    } catch (err) {
+      // See rateLimitMiddleware: an escaped throw here exits the process.
+      logger.warn({ err, bucket: opts.bucket }, 'guest ip limiter threw — failing open');
+      next();
+      return;
+    }
     if (out.kind === 'skip' || out.kind === 'allow') {
       next();
       return;

@@ -14,6 +14,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { attachRole, requireAnyAdmin } from '../middleware/rbac.js';
 import { allowCronOrAdmin } from '../middleware/cronAuth.js';
 import { triggerIndexJob } from '../services/indexerJob.js';
+import { triggerIndexJobUnlessInFlight } from '../services/indexTrigger.js';
 import { isIndexInFlight } from '../lib/indexState.js';
 import { listEventImages } from '../services/driveService.js';
 import { rebuildAllSpecialFoldersForEvent } from '../services/specialFoldersService.js';
@@ -203,17 +204,32 @@ eventsRouter.post('/events/:id/index', allowCronOrAdmin, async (req, res, next) 
       logger.warn({ err, eventId }, 'index trigger: drive fingerprint failed (non-fatal)');
     }
 
-    const { execution } = await triggerIndexJob(eventId, { force });
-    await firestore()
-      .collection('events')
-      .doc(eventId)
-      .set(
-        {
-          indexState: { status: 'queued', updatedAt: new Date().toISOString() },
-          ...(driveSig ? { lastIndexSig: driveSig } : {}),
-        },
-        { merge: true },
-      );
+    // `force` is the admin override (and FORCE_REINDEX): it starts a run
+    // regardless. Otherwise the check above is only a cheap early-out — the
+    // Drive fingerprint takes seconds, and the state can change under it — so
+    // the start itself goes through the transactional claim.
+    let execution: string;
+    if (force) {
+      ({ execution } = await triggerIndexJob(eventId, { force }));
+      await firestore()
+        .collection('events')
+        .doc(eventId)
+        .set({ indexState: { status: 'queued', updatedAt: new Date().toISOString() } }, { merge: true });
+    } else {
+      const out = await triggerIndexJobUnlessInFlight(eventId);
+      if (!out.triggered) {
+        res.status(409).json({
+          ok: false,
+          error: 'already_running',
+          message: 'An index run is already in progress for this event',
+        });
+        return;
+      }
+      execution = out.execution;
+    }
+    if (driveSig) {
+      await firestore().collection('events').doc(eventId).set({ lastIndexSig: driveSig }, { merge: true });
+    }
 
     logger.info({ eventId, execution, admin: req.user?.email ?? 'machine' }, 'index job triggered');
     const body: TriggerIndexResponse = { ok: true, eventId, execution };
@@ -292,17 +308,20 @@ eventsRouter.post('/admin/index-scan', allowCronOrAdmin, async (req, res, next) 
       }
 
       try {
-        const { execution } = await triggerIndexJob(eventId);
-        await firestore()
-          .collection('events')
-          .doc(eventId)
-          .set(
-            {
-              indexState: { status: 'queued', updatedAt: new Date().toISOString() },
-              ...(driveSig ? { lastIndexSig: driveSig } : {}),
-            },
-            { merge: true },
-          );
+        // Claimed, not just started: the in-flight check above read a snapshot
+        // taken when the scan began, and the Drive fingerprints in between can
+        // take a minute on a big event. On 2026-11-02 an upload worker claimed
+        // and started a run 8s before this loop reached the marathon event, and
+        // a second 8-vCPU execution was stacked on it.
+        const out = await triggerIndexJobUnlessInFlight(eventId);
+        if (!out.triggered) {
+          skipped.push({ eventId, reason: 'already_running' });
+          continue;
+        }
+        const { execution } = out;
+        if (driveSig) {
+          await firestore().collection('events').doc(eventId).set({ lastIndexSig: driveSig }, { merge: true });
+        }
         triggered.push(eventId);
         logger.info({ eventId, execution }, 'index-scan triggered event');
       } catch (err) {

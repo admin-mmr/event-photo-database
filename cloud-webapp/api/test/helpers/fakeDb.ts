@@ -221,6 +221,12 @@ class FakeQuery implements Query {
 
 class FakeCollectionRef extends FakeQuery implements CollectionRef {
   doc(id?: string): DocRef {
+    // Firestore throws synchronously on an id with a `/` (it is a path
+    // separator). Without this, a bad id passed every test and crashed the api
+    // in production (rate-limit keys for IPv6, 2026-11-02).
+    if (id !== undefined && (id === '' || id.includes('/'))) {
+      throw new Error(`Value for argument "documentPath" must point to a document, but was "${id}"`);
+    }
     return new FakeDocRef(this.db, this.name, id ?? this.db.nextId());
   }
 
