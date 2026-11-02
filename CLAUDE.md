@@ -381,6 +381,25 @@
   per-link upload limit, matcher warm window, budget alert). The matcher's
   `min-instances=1` there is the documented exception to the zero-idle-cost
   policy: a scheduled warm window, removed by `down`.
+- **A warm matcher must notice a re-index on its own.** `EmbeddingStore` used to
+  cache each event's vectors for the instance's whole life — scale-to-zero hid
+  that, but under the warm window one instance served its FIRST load all day:
+  re-indexed photos never matched, and photos an admin had deleted still came
+  back with dead thumbs (`signPhotoUrls` doesn't check that objects exist).
+  Confirmed on the NYC Marathon event, 2026-11-02. `load_event` now reads the
+  `manifest.json` version (GCS generation / Azure ETag / local mtime) at most
+  every `MATCHER_STORE_CHECK_SEC` (60s) per event and reloads only when it
+  changed. Keep these:
+  - **The check rides on a search — never a poller or a timer.** An idle
+    instance must cost nothing extra; that is the zero-idle-cost policy.
+  - **Metadata only.** Never turn the check into a per-search download.
+  - **The manifest is the signal because the indexer writes it LAST**
+    (`_write_store`: both `.npy` files, then the manifest). Reorder those writes
+    and the matcher can pin a half-old store.
+  - **A failed check or reload serves the cached copy**, never a 500; a missing
+    manifest drops the event (`event_not_indexed`). While one thread reloads the
+    rest keep answering from the old copy, so a reload briefly holds two copies
+    of the event in memory — size the matcher for that at 100k+ photos.
 - **The upload worker must not start the indexer while a run is in flight**
   (`services/indexTrigger.ts`, a transactional claim on `indexState`). It used to
   trigger after every batch; with batches running concurrently that stacks 8-vCPU

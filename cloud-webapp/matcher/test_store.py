@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 
 import numpy as np
 import pytest
@@ -25,13 +26,13 @@ ACCT = "https://myacct.blob.core.windows.net"
 DIM = 4
 
 
-def _manifest() -> dict:
+def _manifest(photos: int = 1) -> dict:
     return {
         "version": 1,
         "eventId": "e1",
         "modelVersion": "test@1",
-        "faces": [{"photoId": "p1", "box": [0, 0, 10, 10], "score": 0.9}],
-        "persons": [{"photoId": "p1", "box": [0, 0, 20, 20], "score": 0.8}],
+        "faces": [{"photoId": f"p{i}", "box": [0, 0, 10, 10], "score": 0.9} for i in range(1, photos + 1)],
+        "persons": [{"photoId": f"p{i}", "box": [0, 0, 20, 20], "score": 0.8} for i in range(1, photos + 1)],
     }
 
 
@@ -88,6 +89,17 @@ def test_a_missing_local_event_says_not_indexed(tmp_path):
 
 # ── the Azure read path ──────────────────────────────────────────────────────
 
+class FakeNotFound(Exception):
+    """Stands in for azure.core's ResourceNotFoundError (status_code 404)."""
+
+    status_code = 404
+
+
+class FakeProps:
+    def __init__(self, etag: str):
+        self.etag = etag
+
+
 class FakeBlobClient:
     def __init__(self, blobs: dict[str, bytes], name: str):
         self._blobs, self._name = blobs, name
@@ -97,6 +109,12 @@ class FakeBlobClient:
 
     def download_blob(self):
         return FakeDownload(self._blobs[self._name])
+
+    def get_blob_properties(self):
+        if self._name not in self._blobs:
+            raise FakeNotFound(self._name)
+        # Content-derived, so a rewrite with different bytes changes the ETag.
+        return FakeProps(f'"{hash(self._blobs[self._name]) & 0xFFFFFFFF:x}"')
 
 
 class FakeDownload:
@@ -149,6 +167,7 @@ def test_azure_keys_match_the_indexer_layout(azure):
     _seed(blobs, f"e1/{EMB_SUBDIR}")
     store.load_event("e1")
     assert container.requested == [
+        f"e1/{EMB_SUBDIR}/{MANIFEST}",  # the version check (properties only)
         f"e1/{EMB_SUBDIR}/{MANIFEST}",
         f"e1/{EMB_SUBDIR}/{FILES['face']}",
         f"e1/{EMB_SUBDIR}/{FILES['person']}",
@@ -190,7 +209,7 @@ def test_azure_events_are_cached(azure):
     _seed(blobs, f"e1/{EMB_SUBDIR}")
     store.load_event("e1")
     store.load_event("e1")
-    assert len(container.requested) == 3  # one pass, not two
+    assert len(container.requested) == 4  # one version check + one pass, not two
 
 
 def test_invalidate_forces_a_reload(azure):
@@ -199,4 +218,197 @@ def test_invalidate_forces_a_reload(azure):
     store.load_event("e1")
     store.invalidate("e1")
     store.load_event("e1")
-    assert len(container.requested) == 6
+    assert len(container.requested) == 8
+
+
+# ── a warm instance notices a re-index (no restart) ──────────────────────────
+#
+# `event-scale.sh up` holds the matcher at min-instances=1, so an instance can
+# outlive many index runs. It used to serve its FIRST load forever: new photos
+# never matched and deleted ones came back. These pin the lazy version check.
+
+class Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def _write_local_event(root, photos: int, mtime_ns: int) -> None:
+    emb = root / "e1" / EMB_SUBDIR
+    emb.mkdir(parents=True, exist_ok=True)
+    (emb / FILES["face"]).write_bytes(_npy(photos))
+    (emb / FILES["person"]).write_bytes(_npy(photos))
+    (emb / MANIFEST).write_text(json.dumps(_manifest(photos)), encoding="utf-8")
+    # Pin the mtime: two writes inside one filesystem tick must still differ.
+    os.utime(emb / MANIFEST, ns=(mtime_ns, mtime_ns))
+
+
+@pytest.fixture()
+def local(tmp_path, monkeypatch):
+    """A local store with a fake clock that counts full loads."""
+    clock = Clock()
+    store = EmbeddingStore(str(tmp_path), check_sec=60, clock=clock)
+    loads = []
+    real_load = store._load
+    monkeypatch.setattr(store, "_load", lambda eid: loads.append(eid) or real_load(eid))
+    return store, tmp_path, clock, loads
+
+
+def test_a_reindexed_event_is_reloaded_after_the_check_interval(local):
+    store, root, clock, loads = local
+    _write_local_event(root, photos=1, mtime_ns=1_000_000_000)
+    assert len(store.load_event("e1").meta["face"]) == 1
+
+    _write_local_event(root, photos=3, mtime_ns=2_000_000_000)  # the indexer re-ran
+    clock.t += 59
+    assert len(store.load_event("e1").meta["face"]) == 1  # inside the window: cached
+    clock.t += 2
+    assert len(store.load_event("e1").meta["face"]) == 3  # stale -> reloaded
+    assert loads == ["e1", "e1"]
+
+
+def test_an_unchanged_event_stays_cached(local, monkeypatch):
+    store, root, clock, loads = local
+    _write_local_event(root, photos=1, mtime_ns=1_000_000_000)
+    first = store.load_event("e1")
+    checks = []
+    real_version = store._version
+    monkeypatch.setattr(store, "_version", lambda eid: checks.append(eid) or real_version(eid))
+
+    store.load_event("e1")  # inside the window: no metadata read at all
+    assert checks == []
+    for _ in range(3):
+        clock.t += 61
+        assert store.load_event("e1") is first
+    assert checks == ["e1"] * 3  # one cheap check per interval...
+    assert loads == ["e1"]  # ...and never a second download
+
+
+def test_a_deleted_store_stops_being_served(local):
+    store, root, clock, _loads = local
+    _write_local_event(root, photos=1, mtime_ns=1_000_000_000)
+    store.load_event("e1")
+    (root / "e1" / EMB_SUBDIR / MANIFEST).unlink()
+    clock.t += 61
+    with pytest.raises(FileNotFoundError, match="not indexed"):
+        store.load_event("e1")
+
+
+def test_a_reload_that_fails_keeps_the_last_good_copy(local):
+    # The indexer writes both .npy files and THEN the manifest, but a reload can
+    # still catch a mismatched set (or a transient read error). Serve the old
+    # store and retry next interval rather than failing the search.
+    store, root, clock, loads = local
+    _write_local_event(root, photos=1, mtime_ns=1_000_000_000)
+    first = store.load_event("e1")
+    emb = root / "e1" / EMB_SUBDIR
+    (emb / MANIFEST).write_text(json.dumps(_manifest(3)), encoding="utf-8")  # vectors still 1 row
+    os.utime(emb / MANIFEST, ns=(2_000_000_000, 2_000_000_000))
+    clock.t += 61
+    assert store.load_event("e1") is first
+
+    _write_local_event(root, photos=3, mtime_ns=3_000_000_000)  # the write completes
+    clock.t += 61
+    assert len(store.load_event("e1").meta["face"]) == 3
+
+
+def test_a_failed_version_check_serves_the_cached_copy(local, monkeypatch):
+    store, root, clock, _loads = local
+    _write_local_event(root, photos=1, mtime_ns=1_000_000_000)
+    first = store.load_event("e1")
+
+    def boom(eid):
+        raise OSError("metadata read failed")
+
+    monkeypatch.setattr(store, "_version", boom)
+    clock.t += 61
+    assert store.load_event("e1") is first
+
+
+def test_azure_reloads_on_a_new_etag_only(azure):
+    store, blobs, container = azure
+    store._clock = clock = Clock()
+    _seed(blobs, f"e1/{EMB_SUBDIR}")
+    store.load_event("e1")
+    clock.t += 61
+    store.load_event("e1")
+    assert len(container.requested) == 5  # check + load, then one more check
+
+    base = f"e1/{EMB_SUBDIR}"
+    blobs[f"{base}/{FILES['face']}"] = _npy(2)
+    blobs[f"{base}/{FILES['person']}"] = _npy(2)
+    blobs[f"{base}/{MANIFEST}"] = json.dumps(_manifest(2)).encode("utf-8")
+    clock.t += 61
+    assert len(store.load_event("e1").meta["face"]) == 2
+    assert len(container.requested) == 9  # check + a full reload
+
+
+# ── GCS: the version is the manifest's generation ────────────────────────────
+
+class FakeGcsBlob:
+    def __init__(self, bucket: "FakeBucket", name: str):
+        self._bucket, self.name = bucket, name
+
+    @property
+    def generation(self):
+        return self._bucket.generations[self.name]
+
+    def exists(self) -> bool:
+        return self.name in self._bucket.objects
+
+    def download_as_bytes(self) -> bytes:
+        self._bucket.downloads.append(self.name)
+        return self._bucket.objects[self.name]
+
+
+class FakeBucket:
+    def __init__(self, name: str):
+        self.name = name
+        self.objects: dict[str, bytes] = {}
+        self.generations: dict[str, int] = {}
+        self.downloads: list[str] = []
+
+    def put(self, key: str, data: bytes) -> None:
+        self.objects[key] = data
+        self.generations[key] = self.generations.get(key, 0) + 1
+
+    def blob(self, name: str) -> FakeGcsBlob:
+        return FakeGcsBlob(self, name)
+
+    def get_blob(self, name: str):
+        return FakeGcsBlob(self, name) if name in self.objects else None
+
+
+class FakeGcsClient:
+    def __init__(self, bucket: FakeBucket):
+        self._bucket = bucket
+
+    def bucket(self, name: str) -> FakeBucket:
+        assert name == self._bucket.name
+        return self._bucket
+
+
+def test_gcs_reloads_on_a_new_generation_only():
+    bucket = FakeBucket("derivs")
+    base = f"pre/e1/{EMB_SUBDIR}"
+
+    def index(photos: int) -> None:
+        bucket.put(f"{base}/{FILES['face']}", _npy(photos))
+        bucket.put(f"{base}/{FILES['person']}", _npy(photos))
+        bucket.put(f"{base}/{MANIFEST}", json.dumps(_manifest(photos)).encode("utf-8"))
+
+    clock = Clock()
+    store = EmbeddingStore("gs://derivs/pre", check_sec=60, clock=clock)
+    store._gcs_client = FakeGcsClient(bucket)
+    index(1)
+    assert len(store.load_event("e1").meta["face"]) == 1
+    clock.t += 61
+    store.load_event("e1")
+    assert len(bucket.downloads) == 3  # unchanged generation: no re-download
+
+    index(4)  # an admin delete / volunteer upload re-ran the indexer
+    clock.t += 61
+    assert len(store.load_event("e1").meta["face"]) == 4
+    assert len(bucket.downloads) == 6
