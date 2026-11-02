@@ -29,7 +29,7 @@ behaviour.
 | **Photo plane** (volunteer upload → Drive → indexer → gallery) | **Live.** Async Cloud Tasks upload queue, managed folders (`MANAGED_FOLDERS_ENABLED=true` in prod), capture-time sort, duplicate-file removal queue, event deletion, upload recovery. |
 | **Find-Me** (face + outfit search) | **Live**, and the active workstream is *quality*, not features. T-norm on by default at **z ≥ 4.5** (raised from 4.0 in #75); anchor promotion, per-face quality metadata, the pick-time selfie check, near-miss logging, "see more" and the 90/30-day selfie retention sweep have all shipped. |
 | **Video → running stills** | **Research + Phase 0 harness only.** The go/no-go gate is undecided because the frames were never judged. |
-| **Azure** | **Dormant.** Strategy decision D1 (adapters inside `cloud-webapp/`) has not been executed, and the `azure-webapp/` fork holds a rotted copy of the app source. |
+| **Azure** | **D1 is largely built, not dormant** — the cloud-neutral adapters landed in `cloud-webapp/` on 2026-07-28/29 (`lib/db/` with a Cosmos impl, `lib/storage/` with a Blob impl, `lib/googleCredentials.ts`, `CLOUD_PROVIDER` switch; the indexer and matcher already read/write Blob roots). What is left is **AZ3 (infra scripts) and AZ4 (pilot deploy)**, plus the AZ1 stragglers. The `azure-webapp/` fork holds a rotted copy of the app source and is not the path. |
 | **gas-app** | Deprecated, frozen, still in the tree. Phase E retirement steps are not done. |
 
 ---
@@ -148,11 +148,25 @@ Owner: [AZURE_MIGRATION_DEV_PLAN.md](AZURE_MIGRATION_DEV_PLAN.md) (audit +
 phased plan; decision **D1** = build cloud-neutral adapters inside
 `cloud-webapp/` rather than maintain the fork).
 
-Nothing has been run against a real subscription. The `azure-webapp/` fork was
-~90 commits stale at the 2026-07-28 re-audit and has only drifted further, so its
-app source is a liability, not an asset — D1 exists precisely to stop maintaining
-it. Before any Azure work: confirm the move is still wanted, then execute D1
-(adapters + `azure-webapp/` reduced to `infra/` + docs).
+**Correction (2026-09-26): this section said "Dormant — D1 has not been
+executed", and that was wrong when it was written.** AZ1 and AZ2 landed on
+2026-07-28/29, a week BEFORE this file was first drafted, and the error survived
+the 2026-09-26 re-verification because that pass re-checked the numbers and not
+the premise. What actually exists today: `api/src/lib/db/{types,firestoreDb,
+cosmosDb,cosmosSql}.ts`, `api/src/lib/storage/{types,gcsStore,blobStore}.ts`
+(user-delegation SAS included), `lib/googleCredentials.ts`, the `CLOUD_PROVIDER`
+env switch with Zod refinements, `@azure/{cosmos,identity,storage-blob}` in
+`package.json`, and Azure backends in `indexer/blobs.py` + `matcher/store.py`.
+
+Still nothing has been run against a real subscription, which is the real gap.
+The frontier is **AZ3** (the infra scripts — see §5.1 first) then **AZ4** (pilot
+deploy). The `azure-webapp/` fork is now far past the ~90-commit drift measured
+at the 2026-07-28 re-audit — `api/src` carries 38 files against cloud-webapp's
+101, `web/src` 39 against 82, `matcher` 19 against 41 — so its app source is a
+liability, not an asset. Remaining AZ1 stragglers: ~~indexer `drive.py`
+credentials~~ (done 2026-09-26), the `indexerJob.ts` job-trigger interface,
+`uploadDispatch.ts` (Cloud Tasks → Storage Queue) and the pino→Azure Monitor
+severity mapping.
 
 ### 5.0 If Azure is the target, converge with `trailhead` — but do NOT merge the repos
 

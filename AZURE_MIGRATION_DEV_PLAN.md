@@ -1,6 +1,9 @@
 # Azure Migration Dev Plan — audit findings & phased plan
 
 **Date:** 2026-07-18 · **re-audited 2026-07-28** (see §1.7 — corrects §1.3–1.5 counts)
+· **goal set 2026-09-26**: Find-Me moves 100% to Azure and GCP compute + storage
+are decommissioned — see **D9** for what must survive, **D10** for the code
+layout, and §3's stage table for the sequence.
 **Companion docs:** `azure-webapp/AZURE.md` (service mapping), `azure-webapp/AZURE_MIGRATION_PROGRESS.md` (pilot checklist), `Azure_vs_GCP_Cost_Model.xlsx` (cost rationale), `CUTOVER_RUNBOOK.md` (GAS cutover, in flight).
 **Why Azure:** the org's Microsoft nonprofit grant ($2,000/yr, recurring) covers the projected workload ~80× over; existing Azure spend is ~$65/mo with a <$100/mo total ceiling. The GCP stack currently rides temporary credits. Azure egress is also cheaper (first 100 GB/mo free).
 
@@ -339,6 +342,58 @@ contract byte-identical on both clouds, needs no rewrite of `gallery.ts`, and
 rather than mitigating it. The cost is that every paged query needs its
 composite index present on Cosmos — which `cosmos-indexes.json` owes anyway.
 
+**D9 — The end state is Find-Me 100% on Azure, and GCP does NOT go to zero.**
+*(Confirmed by Cathy, 2026-09-26.)* Compute, storage and the database all move;
+Google Drive remains the photo SSOT and the Google Sheet the control-plane SSOT.
+But **the GCP project cannot be deleted**, and anyone reading "take down GCP"
+literally will break Drive access:
+
+- **The DWD identity is a GCP service account.**
+  `indexer-runtime@mmr-data-pipeline.iam.gserviceaccount.com` (`DWD_SA`) is what
+  Google Workspace's domain-wide delegation is bound to — by that SA's OAuth
+  client id, authorized in the Admin console. Delete the project and every Drive,
+  Sheets and Gmail call in the system stops, on both clouds. It must outlive the
+  migration. A service account costs nothing.
+- **Firebase Auth stays** (D3). It is the IdP for ~50 admins and every member
+  login, it is free at our volume, and moving it means re-issuing every identity
+  — a separate project with its own risk, not a migration chore.
+
+So the correct phrasing of the goal is **"decommission GCP compute and storage"**:
+Cloud Run services and jobs, GCS buckets, Firestore, Cloud Tasks, Cloud
+Scheduler. What remains is an identity-and-auth shell on the free tier. Write it
+that way in every ticket, because "delete the project" is a one-click
+irreversible action that someone will otherwise take.
+
+**D10 — One codebase with a provider switch; delete the loser at the end, not
+the winner at the start.** The question "what is the best coding structure?"
+has a different answer during a migration than after one, and the cost of
+getting it wrong is editing the wrong copy of a file:
+
+- **Keep `cloud-webapp/` as the single tree.** The seams already exist
+  (`lib/db/`, `lib/storage/`, `lib/googleCredentials.ts`, `CLOUD_PROVIDER`), and
+  a parallel run *needs* one codebase: identical behaviour on both clouds is what
+  makes the parity diff meaningful. Two trees would make every parity failure
+  ambiguous — a real difference, or just drift?
+- **Do not rename the tree mid-migration.** `cloud-webapp` is a poor name for an
+  Azure app, but renaming ~180 files costs review noise, breaks every CI path and
+  every doc link, and buys nothing until GCP is gone. Rename in AZ6 if at all.
+- **Delete `azure-webapp/` now.** It is the fork D1 already rejected, and it is
+  now 60+ files stale (`api/src` 38 vs 101, `web/src` 39 vs 82, `matcher` 19 vs
+  41). During a migration the worst failure mode is editing the stale copy and
+  wondering why nothing changed. Its only unique content is `infra/` + docs,
+  which `infra/azure/` supersedes; git history keeps it.
+- **Infra lives at `cloud-webapp/infra/azure/`, beside `infra/scripts/`** (which
+  is GCP-only today). Same build contexts as the Dockerfiles they deploy, and no
+  rename of the GCP scripts while CI still references them by path.
+- **The seam must be enforced, not just documented.** "Nothing outside `lib/db/`
+  imports `@google-cloud/firestore`" is a rule that rots the moment someone is in
+  a hurry. It belongs in lint, where a violation fails CI.
+- **At decommission the switch collapses:** delete `firestoreDb.ts`,
+  `gcsStore.ts`, the `gcp` branch of `CLOUD_PROVIDER` and its Zod refinements,
+  the GCP deploy workflows and `infra/scripts/`, then flatten `infra/azure/`.
+  That is the moment the code gets simpler — which is why the switch is worth
+  carrying until then.
+
 **D7 — Regenerate derived data; copy only what's primary.** Most of Firestore
 is a derived cache: control-plane collections mirror the Sheet (reconcile
 regenerates them), `photos`/`events.indexState` are rebuilt by the indexer
@@ -355,15 +410,71 @@ past event). Everything else is regenerated on Azure by running reconcile +
 
 Effort labels: S ≤ 2 days, M ≤ 1 week, L ≤ 3 weeks.
 
+### The shape of the whole thing (added 2026-09-26)
+
+Under D9 the destination is Find-Me entirely on Azure with GCP compute and
+storage gone. That is reached in five stages, and **the parallel run is a stage,
+not the goal** — it exists to make the cutover boring.
+
+| Stage | What exists at the end of it | Gate to the next |
+|---|---|---|
+| **1. Code seams** — AZ1, AZ2 | One codebase that runs on either cloud. **Done 2026-07-28/29**, plus the indexer's off-GCP Drive credentials (2026-09-26). Left: `indexerJob.ts` trigger interface, `uploadDispatch.ts` → Storage Queue, pino→Azure Monitor severity | Nothing outside `lib/` imports a provider SDK, and CI proves it |
+| **2. Infra** — AZ3 | `infra/azure/` provisions the footprint into `mmr-resources` from empty, idempotently, every app at `minReplicas=0` | A scratch run top-to-bottom with zero swallowed errors |
+| **3. Parallel read-only site** — AZ4 | Azure serves gallery + Find-Me at its own URL from its own Blob + Cosmos, indexing the SAME Drive. GCP stays primary and the sole Sheet writer | One event indexed on both clouds; a search returns the same top-20 |
+| **4. Parity + cutover** — AZ5 | Azure is primary; GCP idles, warm, as the rollback | A full event cycle on Azure + a clean live event day |
+| **5. Decommission** — AZ6 | GCP compute and storage deleted; the identity shell (DWD SA + Firebase Auth) remains per D9 | N stable weeks, and a verified final copy |
+
+**Stage 3 is the one worth protecting.** Uploads and the admin control plane stay
+on GCP through stages 3 and 4, because the Sheet is the control-plane SSOT and
+`CLAUDE.md` makes cloud-webapp its *single writer* — two writers against one
+Sheet is the failure this project has already paid for once, and it corrupts
+silently rather than erroring. Azure gets the write paths only at cutover, when
+GCP stops using them. A read-only parallel site is therefore not a reduced
+scope; it is the only version of stage 3 that is safe to run.
+
+**What migrates, and how each piece moves:**
+
+| Piece | GCP today | Azure | How it moves |
+|---|---|---|---|
+| Photo originals + derivatives | GCS `…-derivatives` (~109 GiB) | Blob container on `mmrunnersstorage` | `azcopy` GCS→Blob; re-verify, then re-point |
+| Embeddings (`.npy` + manifest) | same bucket | same container | Copy, don't recompute — ~25 KB/photo, and re-embedding is the expensive part (D7) |
+| Photo/event metadata | Firestore | Cosmos free tier | **Regenerate**, don't copy: reconcile rebuilds it from the Sheet (D7) |
+| Consents, feedback, match runs | Firestore | Cosmos | Copy — this is primary data with no other source |
+| Search | Cloud Run `matcher` | Container App | Redeploy the same image; vectors follow the blobs |
+| Indexing | Cloud Run Job | Container Apps Job | Redeploy; see §5.1 in `ROADMAP.md` — the sizing does **not** carry over |
+| Scheduled work | 7 Cloud Scheduler jobs | Container Apps scheduled Jobs | Rewrite (AZ3); 4 of the 6 scripts are still missing |
+| Auth | Firebase Auth | **stays on Firebase Auth** | Does not move (D3/D9) |
+| Drive + Sheets access | DWD SA in the GCP project | **stays** | Does not move (D9) — deleting it breaks both clouds |
+
 ### AZ0 — Preconditions & subscription prep (S, ops)
 
 - GAS cutover reaches Phase D — ✅ done 2026-07-18 (cloud-webapp is the
   writer, gas-app writes frozen, schedulers live; 48 h watch running, Phase E
   retire follows).
-- Confirm Azure subscription, nonprofit grant status, and whether the Cosmos
-  free-tier slot is unclaimed (D5).
-- Pick region + globally-unique name suffix (ACR / storage / cosmos); record
-  in `azure-webapp/infra/scripts/` defaults.
+- ~~Confirm Azure subscription, nonprofit grant status, and whether the Cosmos
+  free-tier slot is unclaimed (D5).~~ **Done 2026-09-26** — one subscription
+  ("Azure subscription 1", tenant `mmrunners.onmicrosoft.com`), resource group
+  **`mmr-resources`**, and **no Cosmos account exists**, so the free-tier slot is
+  unclaimed. Take it (D5).
+- ~~Pick region + name suffix.~~ **Decided 2026-09-26.** Reuse what exists — the
+  operator's constraint is **no new resource groups**:
+
+  | Reuse | Why |
+  |---|---|
+  | RG `mmr-resources` | A resource group is a container, not a location, so East US resources sit in it happily |
+  | Storage `mmrunnersstorage` (**East US**) | New containers only (`derivatives`, `staging`, `uploads`). It already holds member profile photos and payment screenshots, so: keep `allowBlobPublicAccess` **false** (verified false today), SAS-only, and remember **Blob CORS is per-account per-service, not per-container** — one merged rule set, owned by one script |
+  | Log Analytics `DefaultWorkspace-…-SEC` | Already exists; Container Apps needs no new one |
+
+  **New resources go in East US**, with the storage account — it is the
+  high-bandwidth path for photos. Note the existing footprint is split (MySQL,
+  App Service, App Insights and the workspace are in **Sweden Central**); that is
+  backwards for a US org but it is `trailhead`'s to move, and Find-Me does not
+  depend on it.
+- **Do not reuse `mmr-mysql-v4`.** An earlier session recommended it on cost
+  grounds; that advice predated knowing `lib/db/cosmosDb.ts` (670 lines, tested)
+  already exists. Cosmos is built, its free tier is $0 and unclaimed, and it
+  keeps the photo workload's write bursts off the 1-vCore burstable server that
+  carries membership and payments.
 - Day-1 guardrails per the cost model: budget alert at $80/mo
   (50/80/100% thresholds), cost anomaly alert, Log Analytics 5 GB daily cap.
   `provision-budget-guardrails.sh` covers most of this — verify, don't trust.
@@ -784,8 +895,14 @@ Mirror `CUTOVER_RUNBOOK.md`'s shape:
 ### AZ6 — Decommission GCP + follow-ups (S–M)
 
 - After N stable weeks: delete Cloud Run services/jobs, Firestore, buckets
-  (after final azcopy verify), scheduler jobs; keep the Firebase Auth project
-  (still the IdP) and the Google Workspace side (Sheet/Drive/Gmail — permanent).
+  (after final azcopy verify), Cloud Tasks queues and scheduler jobs.
+- **Delete the resources, never the project (D9).** `mmr-data-pipeline` survives
+  as an identity shell: the **DWD service account** that Google Workspace's
+  domain-wide delegation is bound to, and **Firebase Auth** (still the IdP for
+  ~50 admins and every member). Both are free at our volume. Deleting the project
+  revokes Drive, Sheets and Gmail for the Azure app too — the one irreversible
+  mistake available at this step, and the reason the milestone is worded as
+  "decommission compute and storage" rather than "take down GCP".
 - Follow-up backlog (not gating): Entra External ID evaluation (D3), indexer
   incremental checkpointing, moving originals to Cool tier after 30 days
   (lifecycle rule from the cost model), delete `azure-webapp/`'s stale source

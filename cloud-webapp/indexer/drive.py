@@ -7,11 +7,21 @@ Auth = keyless domain-wide delegation, the verified G1 pattern
 indexer-runtime@ with `sub=<workspace user>` and exchanged for a Drive
 access token. No SA key files anywhere.
 
-Two signers, auto-selected:
+Three signers, auto-selected in this order:
+  - **off GCP (Azure, AZ1): an explicit service-account key**
+    (`GOOGLE_SA_KEY_JSON`, the same env var the api's `googleCredentials.ts`
+    reads). There is no metadata server and no `gcloud` in the Azure image, so
+    both signers below fail there. The key IS the DWD SA, so it signs its own
+    assertion locally — no IAM round-trip and no `signJwt` grant needed.
   - on Cloud Run / with ADC: IAM Credentials `signJwt` REST call
     (the runtime SA needs roles/iam.serviceAccountTokenCreator **on itself**)
   - local dev fallback: `gcloud iam service-accounts sign-jwt`
     (your gcloud user needs tokenCreator on the SA — already granted for admin@)
+
+The key path is opt-in by presence: with `GOOGLE_SA_KEY_JSON` unset — every GCP
+run — the chain is byte-for-byte what it was, so this cannot change behaviour on
+Cloud Run. Google Workspace does not move when compute does; only the way we
+prove who we are changes.
 """
 
 from __future__ import annotations
@@ -24,6 +34,9 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+
+_UNSET = object()
+_SA_KEY_CACHE: dict | None | object = _UNSET
 
 DEFAULT_SA = "indexer-runtime@mmr-data-pipeline.iam.gserviceaccount.com"
 DEFAULT_SUBJECT = "admin@mmrunners.org"
@@ -78,6 +91,51 @@ def _claims(sa: str, subject: str, scope: str = SCOPE) -> str:
     )
 
 
+def _sa_key() -> dict | None:
+    """Parsed GOOGLE_SA_KEY_JSON, or None on GCP where ADC is keyless.
+
+    Mirrors `api/src/lib/googleCredentials.ts serviceAccountKey()` — same env
+    var, same "malformed key fails loudly here rather than as a confusing 401
+    later" rule. Cached, including the None, so the parse happens once.
+    """
+    global _SA_KEY_CACHE
+    if _SA_KEY_CACHE is not _UNSET:
+        return _SA_KEY_CACHE
+    raw = os.environ.get("GOOGLE_SA_KEY_JSON", "").strip()
+    if not raw:
+        _SA_KEY_CACHE = None
+        return None
+    try:
+        key = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("GOOGLE_SA_KEY_JSON is set but is not valid JSON") from exc
+    if not isinstance(key, dict) or "client_email" not in key or "private_key" not in key:
+        raise RuntimeError(
+            "GOOGLE_SA_KEY_JSON is not a service-account key "
+            "(needs client_email + private_key)"
+        )
+    _SA_KEY_CACHE = key
+    return key
+
+
+def _dwd_token_from_key(key: dict, subject: str, scope: str) -> str:
+    """Mint a DWD access token by signing locally with the SA's own key.
+
+    google-auth builds the same `sub`-bearing assertion `_claims` describes and
+    exchanges it at the token endpoint; `with_subject` IS domain-wide
+    delegation. Imported lazily so the GCP path — and the unit tests, which
+    install only numpy/Pillow/pytest — never need google.oauth2.
+    """
+    from google.oauth2 import service_account  # noqa: PLC0415
+    from google.auth.transport.requests import Request  # noqa: PLC0415
+
+    creds = service_account.Credentials.from_service_account_info(
+        key, scopes=[scope], subject=subject
+    )
+    creds.refresh(Request())
+    return creds.token
+
+
 def _sign_jwt_iam(sa: str, claims: str) -> str:
     """Sign via IAM Credentials API using ADC (Cloud Run path)."""
     import google.auth
@@ -109,9 +167,21 @@ def _sign_jwt_gcloud(sa: str, claims: str) -> str:
 
 
 def dwd_token(sa: str | None = None, subject: str | None = None, scope: str = SCOPE) -> str:
-    """Mint a Drive access token via keyless DWD."""
+    """Mint a Drive access token via domain-wide delegation.
+
+    Keyless on GCP; with an explicit SA key off it (see the module docstring).
+    """
     sa = sa or os.environ.get("DWD_SA", DEFAULT_SA)
     subject = subject or os.environ.get("DWD_SUBJECT", DEFAULT_SUBJECT)
+
+    # Off GCP the key IS the DWD identity, so it signs for itself and we skip
+    # the IAM round-trip entirely. Deliberately NOT inside the try below: a bad
+    # key must fail loudly, not fall through to a gcloud that isn't installed
+    # and surface as a confusing FileNotFoundError.
+    key = _sa_key()
+    if key is not None:
+        return _dwd_token_from_key(key, subject, scope)
+
     claims = _claims(sa, subject, scope)
     try:
         jwt = _sign_jwt_iam(sa, claims)
