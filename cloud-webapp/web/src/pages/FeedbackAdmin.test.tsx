@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('../lib/firebase.js', () => ({
@@ -22,6 +22,11 @@ const SAMPLE = {
       uid: 'u1',
       email: 'runner@mmrunners.org',
       createdAt: '2026-06-15T10:00:00.000Z',
+      tier: 'expanded',
+      thumbUrl: 't/ev1/p1',
+      eventName: 'Spring 10K',
+      rank: 14,
+      score: 4.62,
     },
     {
       feedbackId: 'f2',
@@ -36,17 +41,25 @@ const SAMPLE = {
   ],
 };
 
-function mockFetch(status: number, body: unknown): void {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(
-      async () =>
-        new Response(JSON.stringify(body), {
-          status,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-    ),
-  );
+function mockFetch(status: number, body: unknown): ReturnType<typeof vi.fn> {
+  const fn = vi.fn(async (input: RequestInfo | URL) => {
+    if (/\/photos\/[^/]+\/web$/.test(String(input))) {
+      return new Response(JSON.stringify({ ok: true, photoId: 'p1', webUrl: 'w/ev1/p1' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+  vi.stubGlobal('fetch', fn);
+  return fn;
+}
+
+function requestedUrls(fn: ReturnType<typeof vi.fn>): string[] {
+  return fn.mock.calls.map((c) => String(c[0]));
 }
 
 beforeEach(() => {
@@ -72,6 +85,64 @@ describe('<FeedbackAdmin />', () => {
     expect(table.getByText(/That's me/)).toBeTruthy();
     // Falls back to uid when email is null.
     expect(table.getByText('u2')).toBeTruthy();
+  });
+
+  it('shows each row ready to investigate: photo, event name, placement, search link', async () => {
+    mockFetch(200, SAMPLE);
+    render(
+      <MemoryRouter>
+        <FeedbackAdmin />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText('Spring 10K')).toBeTruthy());
+    const table = within(screen.getByRole('table'));
+    expect(table.getByAltText('p1').getAttribute('src')).toBe('t/ev1/p1');
+    expect(table.getByText('#14 · 4.62')).toBeTruthy();
+    expect(table.getByText('see more')).toBeTruthy();
+    // An event with no resolved name falls back to its id.
+    expect(table.getByText('ev2')).toBeTruthy();
+    // The run links into the verdict-batch view; a run-less vote says so.
+    const link = table.getByRole('link', { name: /Open search/ });
+    expect(link.getAttribute('href')).toBe('/admin/verdicts?run=run-7');
+    expect(table.getByText('Not linked to a search')).toBeTruthy();
+  });
+
+  it('opens a row full-size in the lightbox, signing the web copy on demand', async () => {
+    const fetchFn = mockFetch(200, SAMPLE);
+    render(
+      <MemoryRouter>
+        <FeedbackAdmin />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText('Spring 10K')).toBeTruthy());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open photo' })[0]!);
+    await waitFor(() =>
+      expect(screen.getAllByAltText('p1').some((el) => el.getAttribute('src') === 'w/ev1/p1')).toBe(true),
+    );
+    expect(requestedUrls(fetchFn)).toContain('/api/events/ev1/photos/p1/web');
+  });
+
+  it('narrows the queue to an event or a user from the row', async () => {
+    const fetchFn = mockFetch(200, SAMPLE);
+    render(
+      <MemoryRouter>
+        <FeedbackAdmin />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText('Spring 10K')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'runner@mmrunners.org' }));
+    await waitFor(() => expect(requestedUrls(fetchFn)).toContain('/api/admin/feedback?uid=u1'));
+    expect(screen.getByText('User: runner@mmrunners.org')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Spring 10K' }));
+    await waitFor(() =>
+      expect(requestedUrls(fetchFn)).toContain('/api/admin/feedback?eventId=ev1&uid=u1'),
+    );
+    expect((screen.getByPlaceholderText('Filter by event ID') as HTMLInputElement).value).toBe('ev1');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear user filter' }));
+    await waitFor(() => expect(screen.queryByText(/^User:/)).toBeNull());
   });
 
   it('shows an admin-only message on 403', async () => {

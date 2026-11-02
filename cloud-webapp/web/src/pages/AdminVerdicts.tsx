@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import type {
   AdminVerdictBatchListResponse,
   AdminVerdictBatchResponse,
@@ -173,6 +173,11 @@ export function AdminVerdicts(): JSX.Element {
   // the query, not one of the results, so it has no place in that sequence.
   const [selfieOpen, setSelfieOpen] = useState<string | null>(null);
 
+  // The open batch lives in the URL (`?run=<runId>`): the Match feedback queue
+  // links each row straight to its search, and browser Back returns to the list.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const runParam = searchParams.get('run');
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -220,6 +225,13 @@ export function AdminVerdicts(): JSX.Element {
     [t],
   );
 
+  useEffect(() => {
+    if (runParam) void openBatch(runParam);
+    else setBatch(null);
+  }, [runParam, openBatch]);
+
+  const closeBatch = useCallback(() => setSearchParams({}), [setSearchParams]);
+
   // Lazily sign the full-size URL for whichever photo the lightbox is showing.
   useEffect(() => {
     if (lightboxIndex === null || !batch) return;
@@ -249,7 +261,7 @@ export function AdminVerdicts(): JSX.Element {
       <div>
         <div className="gallery-header">
           <h2>{t.title}</h2>
-          <button className="btn btn-light btn-sm" onClick={() => setBatch(null)}>
+          <button className="btn btn-light btn-sm" onClick={closeBatch}>
             {t.back}
           </button>
         </div>
@@ -456,7 +468,7 @@ export function AdminVerdicts(): JSX.Element {
                 </div>
                 <button
                   className="btn btn-light btn-sm"
-                  onClick={() => void openBatch(b.runId)}
+                  onClick={() => setSearchParams({ run: b.runId })}
                   disabled={loadingBatch}
                 >
                   {t.view}

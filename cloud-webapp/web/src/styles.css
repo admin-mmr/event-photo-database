@@ -1892,6 +1892,85 @@ pre.error {
   color: inherit;
 }
 
+/* A removable filter set by tapping a row (Match feedback's user filter). */
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 4px 6px 4px 12px;
+  border-radius: var(--r-full);
+  background: var(--primary-weak);
+  font-size: 14px;
+}
+
+.filter-chip-clear {
+  border: 0;
+  background: none;
+  font-size: 18px;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+  color: inherit;
+}
+
+/* ── Match feedback queue ──────────────────────────────────────────────────── */
+
+.feedback-thumb {
+  width: 56px;
+  height: 56px;
+  flex: none;
+}
+
+.feedback-verdict {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* Long event names / emails wrap instead of widening the table. */
+.feedback-table td .btn-inline-link {
+  text-align: inherit;
+  text-decoration: none;
+  white-space: normal;
+}
+
+.feedback-table td .btn-inline-link:hover {
+  text-decoration: underline;
+}
+
+@media (min-width: 768px) {
+  .feedback-table td {
+    vertical-align: middle;
+  }
+
+  .feedback-table td:first-child {
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+}
+
+/* Under the lightbox photo: which event/searcher/rank this is. The lightbox is
+   dark, so the page's muted/link colours don't apply. */
+.feedback-lightbox-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 14px;
+  color: #e4e7ec;
+  font-size: 14px;
+}
+
+.feedback-lightbox-meta .muted {
+  color: #aab1bd;
+}
+
+.feedback-lightbox-meta .inline-link {
+  color: #9cc2ff;
+}
+
 /* Upload-links page: the generated bilingual share message. */
 .links-share {
   margin-top: 24px;

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import type { Request, Response, NextFunction } from 'express';
+import type * as GcsService from '../src/services/gcsService.js';
 
 // requireAuth is mocked to read x-test-user; requireAdmin is the REAL middleware
 // (it checks ADMIN_EMAILS, default admin@mmrunners.org) so we exercise the gate.
@@ -19,11 +20,21 @@ vi.mock('../src/middleware/auth.js', () => ({
 // In-memory match_feedback, newest first when ordered by createdAt desc.
 interface Row { id: string; data: Record<string, unknown> }
 let rows: Row[] = [];
+// Point lookups the queue resolves for display: run placements + event names.
+let docs: Record<string, Record<string, Record<string, unknown>>> = {};
 
 vi.mock('../src/lib/firestore.js', () => ({
   firestore: () => ({
-    collection: () => {
+    collection: (name: string) => {
       const builder = {
+        doc(id: string) {
+          return {
+            async get() {
+              const data = docs[name]?.[id];
+              return { exists: !!data, data: () => data };
+            },
+          };
+        },
         _order: 'createdAt',
         _limit: 1000,
         orderBy(_field: string) {
@@ -52,6 +63,14 @@ vi.mock('../src/services/accountEmails.js', () => ({
   uidForEmail: async () => null,
 }));
 
+const signThumbUrls = vi.fn(async (eventId: string, photoIds: string[]) =>
+  photoIds.map((photoId) => ({ photoId, thumbUrl: `t/${eventId}/${photoId}` })),
+);
+vi.mock('../src/services/gcsService.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof GcsService>()),
+  signThumbUrls: (eventId: string, photoIds: string[]) => signThumbUrls(eventId, photoIds),
+}));
+
 const { buildServer } = await import('../src/server.js');
 
 const ADMIN = JSON.stringify({ uid: 'a1', email: 'admin@mmrunners.org', emailVerified: true });
@@ -63,6 +82,11 @@ function seed(): void {
     { id: 'f2', data: { eventId: 'ev1', photoId: 'p2', verdict: 'confirmed', runId: null, uid: 'u2', email: 'b@x', createdAt: '2026-06-12T00:00:00.000Z' } },
     { id: 'f3', data: { eventId: 'ev2', photoId: 'p9', verdict: 'not_me', runId: 'r3', uid: 'u3', email: 'c@x', createdAt: '2026-06-11T00:00:00.000Z' } },
   ];
+  docs = {
+    events: { ev1: { name: 'Spring 10K' } },
+    match_runs: { r1: { resultPhotoIds: ['p0', 'p1'], scores: { p0: 5.1, p1: 4.62 } } },
+  };
+  signThumbUrls.mockClear();
 }
 
 describe('GET /api/admin/feedback (M4.4)', () => {
@@ -97,6 +121,31 @@ describe('GET /api/admin/feedback (M4.4)', () => {
     const byId = Object.fromEntries(res.body.items.map((i: { feedbackId: string; email: string | null }) => [i.feedbackId, i.email]));
     expect(byId).toMatchObject({ f4: 'new@x', f1: 'a@x' });
     expect(emailsForUids).toHaveBeenCalledWith(['u4']);
+  });
+
+  it('resolves each row for in-place review: thumbnail, event name, rank and score', async () => {
+    const res = await request(app).get('/api/admin/feedback').set('x-test-user', ADMIN);
+    expect(res.status).toBe(200);
+    const byId = Object.fromEntries(res.body.items.map((i: { feedbackId: string }) => [i.feedbackId, i]));
+    expect(byId.f1).toMatchObject({ thumbUrl: 't/ev1/p1', eventName: 'Spring 10K', rank: 2, score: 4.62 });
+    // No run → no placement; an event with no record keeps its id only.
+    expect(byId.f2).toMatchObject({ thumbUrl: 't/ev1/p2', eventName: 'Spring 10K', rank: null, score: null });
+    expect(byId.f3).toMatchObject({ thumbUrl: 't/ev2/p9', eventName: null, rank: null, score: null });
+    // Signed once per event, not once per row.
+    expect(signThumbUrls).toHaveBeenCalledTimes(2);
+  });
+
+  it('still returns the rows when thumbnail signing fails', async () => {
+    signThumbUrls.mockRejectedValueOnce(new Error('iam down'));
+    const res = await request(app).get('/api/admin/feedback').set('x-test-user', ADMIN);
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(3);
+  });
+
+  it('filters by uid', async () => {
+    const res = await request(app).get('/api/admin/feedback?uid=u3').set('x-test-user', ADMIN);
+    expect(res.body.total).toBe(1);
+    expect(res.body.items[0].feedbackId).toBe('f3');
   });
 
   it('filters by eventId', async () => {
