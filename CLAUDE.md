@@ -395,6 +395,24 @@
   reCAPTCHA bills per assessment (~$1/1k past 100k/month): ~$400 for 500k photos,
   and a fast bulk uploader is the pattern that scores low. The link token + the
   per-link rate limit guard that route.
+- **One upload is copied as parallel 100-file chunks** (`lib/uploadChunks.ts`).
+  It used to be ONE Cloud Tasks job copying file by file at ~3 s/photo — a
+  1,583-photo upload needed ~85 min, past the 30-min task deadline, while nine
+  queue slots idled. Keep these:
+  - **Chunk ids are derived from the object names** (`<batchId>-p<hash>`), so a
+    re-sent /complete maps to the same Cloud Tasks names and dedupes (409).
+  - **The session's Drive folder is named and created in /complete, BEFORE the
+    chunks are dispatched** (`prepareSessionFolder`), and each chunk doc is
+    seeded with that name. `getOrCreateSubfolder` is find-then-create: parallel
+    chunks creating it themselves would each make a same-named folder.
+  - The session doc (`chunked: true`) is what the page polls;
+    `getUploadBatchStatus` sums its chunks. Chunk docs carry `parentBatchId`.
+  - The page flushes /complete every `FLUSH_EVERY` (100) files and beacons the
+    rest on `pagehide`. It used to call /complete only after the LAST file, so a
+    closed tab stranded the whole session (748 photos on 2026-11-02).
+  - Copy tasks on one instance share the event's Drive listing for 5 min. Safe
+    only because the md5 claim, not the listing, is the authoritative duplicate
+    check — keep it that way.
 - **Still unsolved at this scale** (post-event work, see ROADMAP): the indexer
   writes its store only at the end (24h task timeout ≈ 180k NEW photos per run);
   the matcher scores every crop per search (~10–15 s at 500k photos in one

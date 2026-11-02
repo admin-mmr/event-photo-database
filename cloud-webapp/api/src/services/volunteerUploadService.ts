@@ -45,7 +45,7 @@ import {
 } from './uploadDedupService.js';
 import { triggerIndexJobUnlessInFlight } from './indexTrigger.js';
 import { appendUploadLog } from './uploadLogService.js';
-import { getUploadBatch, initUploadBatch, updateUploadBatch } from './uploadBatchService.js';
+import { claimSessionBatch, getUploadBatch, initUploadBatch, updateUploadBatch } from './uploadBatchService.js';
 import { buildCreditedFileName } from '../lib/creditedFileName.js';
 import { tryRebuildSpecialFoldersForBatch } from './specialFoldersService.js';
 import { tryRebuildPublicFolderIndex } from './publicFolderIndexService.js';
@@ -318,6 +318,97 @@ async function resolveEventFolderId(eventId: string): Promise<string> {
   return folderId;
 }
 
+/**
+ * Get-or-create Event/Club/tag/<batchName> and return the batch folder id.
+ * Each layer is idempotent by name, so a second caller with the same name
+ * resumes the same folder — provided the first one has finished creating it
+ * (see `prepareSessionFolder` for why chunked copies create it up front).
+ */
+async function ensureBatchFolderPath(link: ValidatedLink, eventFolderId: string, batchName: string): Promise<string> {
+  const token = () => getDriveToken(DRIVE_SCOPE_READWRITE);
+  let parent = eventFolderId;
+  if (link.clubName) parent = (await getOrCreateSubfolder(parent, link.clubName, { token: await token() })).id;
+  const tag = (link.tag || '').trim() || DEFAULT_TAG;
+  parent = (await getOrCreateSubfolder(parent, tag, { token: await token() })).id;
+  return (await getOrCreateSubfolder(parent, batchName, { token: await token() })).id;
+}
+
+/**
+ * How long one Drive listing of an event serves the duplicate check. Every copy
+ * task starts by listing the WHOLE event tree (~32 s at ~5k photos, and growing
+ * with it), and an upload now runs as many parallel 100-file chunks — so tasks
+ * on one instance share a listing instead of each paying for its own. Staleness
+ * is safe: the snapshot only catches files that reached Drive some OTHER way;
+ * our own copies are caught by the transactional md5 claim, which is always
+ * live.
+ */
+const EVENT_LISTING_TTL_MS = 5 * 60_000;
+const eventListings = new Map<string, { at: number; files: Promise<Awaited<ReturnType<typeof listEventImages>>> }>();
+
+function listEventImagesShared(folderId: string, token: () => Promise<string>): ReturnType<typeof listEventImages> {
+  const hit = eventListings.get(folderId);
+  if (hit && Date.now() - hit.at < EVENT_LISTING_TTL_MS) return hit.files;
+  const files = token().then((t) => listEventImages(folderId, { token: t }));
+  eventListings.set(folderId, { at: Date.now(), files });
+  // A failed listing must not be served to the next task.
+  files.catch(() => {
+    if (eventListings.get(folderId)?.files === files) eventListings.delete(folderId);
+  });
+  return files;
+}
+
+/** Test-only: forget shared listings. */
+export function __resetEventListingCache(): void {
+  eventListings.clear();
+}
+
+/** How long /complete waits on the up-front folder creation before moving on. */
+const SESSION_FOLDER_WAIT_MS = 15_000;
+
+/**
+ * Decide — and create in Drive — the ONE batch folder a chunked session copies
+ * into, before its copy chunks are dispatched. Returns the folder name, which
+ * the caller seeds into every chunk's doc.
+ *
+ * Why up front: the chunks run in parallel, and `getOrCreateSubfolder` is
+ * find-then-create. Ten chunks starting together would all find nothing and
+ * each create a same-named folder, splitting one photographer's session across
+ * several. Created here, they all find it.
+ *
+ * Best-effort past the name: a Drive failure (or a slow one, past
+ * SESSION_FOLDER_WAIT_MS) is logged and the chunks create the folder
+ * themselves. The name itself is claimed transactionally, so every /complete
+ * call of the session agrees on it.
+ */
+export async function prepareSessionFolder(link: ValidatedLink, batchId: string, firstObjectName: string): Promise<string> {
+  try {
+    const known = (await getUploadBatch(batchId))?.batchFolderName;
+    if (known) return known;
+  } catch (err) {
+    logger.warn({ err, batchId }, 'could not read the session doc (claiming a folder name)');
+  }
+
+  let photographerName = '';
+  try {
+    photographerName = (await objectStore().head(env.VOLUNTEER_STAGING_BUCKET, firstObjectName))?.custom.photographerName ?? '';
+  } catch (err) {
+    logger.warn({ err, batchId, firstObjectName }, 'could not read the photographer name (folder named "volunteer")');
+  }
+  const name = await claimSessionBatch(batchId, link.eventId, link.linkId, buildBatchFolderName(photographerName));
+
+  const create = resolveEventFolderId(link.eventId).then((folderId) => ensureBatchFolderPath(link, folderId, name));
+  const timedOut = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), SESSION_FOLDER_WAIT_MS).unref?.());
+  try {
+    if ((await Promise.race([create, timedOut])) === 'timeout') {
+      logger.warn({ eventId: link.eventId, batchId, name }, 'session folder creation is slow; the copy chunks will finish it');
+    }
+  } catch (err) {
+    logger.warn({ err, eventId: link.eventId, batchId, name }, 'session folder pre-create failed; the copy chunks will create it');
+  }
+  create.catch(() => undefined);
+  return name;
+}
+
 /** Outcome of a handoff: how many staged files were copied into Drive (new)
  *  vs. skipped because an identical file is already in the event's folder. */
 export interface BatchResult {
@@ -434,7 +525,7 @@ export async function enqueueStagedBatch(
   const seenHashes = new Set<string>();
   const seen = new Set<string>();
   try {
-    const existing = await listEventImages(folderId, { token: await driveToken() });
+    const existing = await listEventImagesShared(folderId, driveToken);
     for (const f of existing) {
       const hash = String(f.md5Checksum ?? '').toLowerCase();
       if (hash) seenHashes.add(hash);
@@ -451,10 +542,6 @@ export async function enqueueStagedBatch(
   let batchFolderName = '';
   const ensureBatchFolder = async (photographerName: string): Promise<string> => {
     if (batchFolderId) return batchFolderId;
-    let parent = folderId;
-    if (link.clubName) parent = (await getOrCreateSubfolder(parent, link.clubName, { token: await driveToken() })).id;
-    const tag = (link.tag || '').trim() || DEFAULT_TAG;
-    parent = (await getOrCreateSubfolder(parent, tag, { token: await driveToken() })).id;
     // REUSE the name this batch already used, if it got that far before dying.
     // buildBatchFolderName() stamps the CURRENT time, so a retry used to mint a
     // second "20260727-173445_liyiguo" folder beside the first and re-land the
@@ -462,13 +549,13 @@ export async function enqueueStagedBatch(
     // uploader's runs sat in folders ~70s apart. getOrCreateSubfolder is
     // idempotent by name, so reusing the recorded name resumes the same folder.
     const batchName = priorBatchFolderName || buildBatchFolderName(photographerName);
-    batchFolderId = (await getOrCreateSubfolder(parent, batchName, { token: await driveToken() })).id;
+    batchFolderId = await ensureBatchFolderPath(link, folderId, batchName);
     batchFolderName = batchName;
     // Persist the name AS SOON AS it exists, not at the end of the loop: a run
     // killed mid-copy is exactly the run whose retry needs to find it.
     if (batchName !== priorBatchFolderName) await updateUploadBatch(batchId, { batchFolderName: batchName });
     logger.info(
-      { eventId: link.eventId, batchId, batchFolderId, batchName, tag, resumed: batchName === priorBatchFolderName },
+      { eventId: link.eventId, batchId, batchFolderId, batchName, resumed: batchName === priorBatchFolderName },
       'volunteer batch folder ready',
     );
     return batchFolderId;
