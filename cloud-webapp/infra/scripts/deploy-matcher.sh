@@ -115,7 +115,14 @@ gcloud run deploy "$SERVICE" \
   --min-instances=0 \
   --concurrency=4 \
   --timeout=300 \
-  --set-env-vars="EMBEDDINGS_ROOT=gs://${PROJECT_ID}-derivatives"
+  --set-env-vars="EMBEDDINGS_ROOT=gs://${PROJECT_ID}-derivatives,MAX_UPLOAD_BYTES=33554432"
+# MAX_UPLOAD_BYTES caps the whole /quality or /search request, i.e. ALL of a
+# person's selfies together (the api allows up to 5 at 15 MB each). At the
+# 25 MB default, two or three full-size phone photos 413'd during the NYC
+# Marathon (27 and 31 MB requests). 32 MiB is Cloud Run's own request ceiling,
+# so going higher buys nothing; past it the fix is shrinking selfies first.
+# It lives here because --set-env-vars REPLACES the env: a value set only with
+# `gcloud run services update` is wiped by the next deploy.
 # min-instances=0 keeps steady-state cost at $0; raise to 1 before event
 # weekends / demos to avoid the model-load cold start (dev plan §8) — use
 # `event-scale.sh up|down`, which does exactly that and nothing permanent.
