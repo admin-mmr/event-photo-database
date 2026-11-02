@@ -1,0 +1,23 @@
+{
+  "displayName": "reCAPTCHA broken — bot gate failing open",
+  "documentation": {
+    "content": "The reCAPTCHA Enterprise assessment API rejected event-photo-api's configuration (HTTP 400/401/403/404: invalid or wrongly-restricted API key, wrong project, API disabled). The api FAILS OPEN on this, so the download and Find-Me routes have NO bot gate until it is fixed. This exact failure went unnoticed from 2026-10-04 to 2026-11-02. The log entry's `jsonPayload.api` carries Google's error status/reason (never the key). Fix: add a new version of the `RECAPTCHA_KEY` secret from a valid API key restricted to recaptchaenterprise.googleapis.com, then redeploy — see cloud-webapp/BOT_PROTECTION_PLAN.md.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "recaptcha_broken log lines from event-photo-api",
+      "conditionMatchedLog": {
+        "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"event-photo-api\" AND jsonPayload.alert=\"recaptcha_broken\""
+      }
+    }
+  ],
+  "alertStrategy": {
+    "notificationRateLimit": { "period": "3600s" },
+    "autoClose": "86400s"
+  },
+  "notificationChannels": [
+    "projects/mmr-data-pipeline/notificationChannels/2707820505476417914"
+  ]
+}

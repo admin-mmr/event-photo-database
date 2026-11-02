@@ -129,7 +129,7 @@ const HANDLER_GATED: Record<string, string> = {
   'GET /api/health':
     'public by design — liveness probe, returns no data about the org',
   'POST /api/volunteer/upload/session':
-    'upload-link token in the body → validateUploadLink(); plus a per-token rate limit and reCAPTCHA',
+    'upload-link token in the body → validateUploadLink(); plus a per-token rate limit (no reCAPTCHA — it ran per file)',
   'POST /api/volunteer/upload/complete':
     'upload-link token in the body → validateUploadLink()',
   'GET /api/volunteer/upload/status/:batchId':

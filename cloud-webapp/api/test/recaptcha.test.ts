@@ -6,6 +6,7 @@ const mockEnv = {
   RECAPTCHA_SITE_KEY: '',
   RECAPTCHA_API_KEY: '',
   RECAPTCHA_MIN_SCORE: 0.5,
+  RECAPTCHA_MODE: 'shadow' as 'shadow' | 'enforce',
 };
 
 vi.mock('../src/lib/config.js', () => ({
@@ -13,13 +14,12 @@ vi.mock('../src/lib/config.js', () => ({
   isProd: false,
   isTest: true,
 }));
-vi.mock('../src/lib/logger.js', () => ({
-  logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
-}));
+const mockLogger = vi.hoisted(() => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() }));
+vi.mock('../src/lib/logger.js', () => ({ logger: mockLogger }));
 
-const { verifyRecaptcha, isRecaptchaConfigured, recaptchaConfigStatus } = await import(
-  '../src/services/recaptcha.js'
-);
+const { verifyRecaptcha, isRecaptchaConfigured, recaptchaConfigStatus, recaptchaSelfCheck } =
+  await import('../src/services/recaptcha.js');
+const { requireRecaptcha, verdictOutcome } = await import('../src/middleware/recaptcha.js');
 
 function configure(on: boolean): void {
   mockEnv.RECAPTCHA_PROJECT_ID = on ? 'proj' : '';
@@ -41,8 +41,24 @@ function mockFetchJson(body: unknown, ok = true, status = 200): void {
 
 beforeEach(() => {
   vi.unstubAllGlobals();
+  vi.clearAllMocks();
   configure(false);
+  mockEnv.RECAPTCHA_MODE = 'shadow';
 });
+
+/** The body Google actually returns for a bad API key (verified 2026-11-02). */
+const BAD_KEY_BODY = {
+  error: { code: 400, message: 'API key not valid. Please pass a valid API key.', status: 'INVALID_ARGUMENT' },
+};
+
+/** Logged objects, flattened to JSON, for "the key never appears" checks. */
+function everythingLogged(): string {
+  return JSON.stringify([
+    ...mockLogger.info.mock.calls,
+    ...mockLogger.warn.mock.calls,
+    ...mockLogger.error.mock.calls,
+  ]);
+}
 
 describe('verifyRecaptcha', () => {
   it('no-ops (ok, disabled) and does not fetch when unconfigured', async () => {
@@ -117,6 +133,181 @@ describe('verifyRecaptcha', () => {
     const r = await verifyRecaptcha('tok', 'findme_search');
     expect(r.ok).toBe(true);
     expect(r.reason).toBe('verify_error');
+    expect(r.failOpen).toBe(true);
+  });
+
+  // The 2026-10-04 → 11-02 incident: every call 400'd "API key not valid" and
+  // only a WARN was logged, so nothing alerted for a month.
+  it('logs a bad API key (400) at ERROR with the alert tag, still failing open', async () => {
+    configure(true);
+    mockFetchJson(BAD_KEY_BODY, false, 400);
+    const r = await verifyRecaptcha('tok', 'download');
+    expect(r).toMatchObject({ ok: true, reason: 'http_400', failOpen: true });
+    expect(mockLogger.error).toHaveBeenCalledTimes(1);
+    const [fields] = mockLogger.error.mock.calls[0]!;
+    expect(fields).toMatchObject({
+      alert: 'recaptcha_broken',
+      status: 400,
+      action: 'download',
+      api: { status: 'INVALID_ARGUMENT' },
+    });
+  });
+
+  it.each([401, 403, 404])('treats HTTP %i as a config error (ERROR + alert)', async (status) => {
+    configure(true);
+    mockFetchJson({ error: { status: 'PERMISSION_DENIED', details: [{ reason: 'API_KEY_SERVICE_BLOCKED' }] } }, false, status);
+    await verifyRecaptcha('tok', 'findme_search');
+    expect(mockLogger.error).toHaveBeenCalledTimes(1);
+    expect(mockLogger.error.mock.calls[0]![0]).toMatchObject({
+      alert: 'recaptcha_broken',
+      api: { reason: 'API_KEY_SERVICE_BLOCKED' },
+    });
+  });
+
+  it.each([429, 500, 503])('treats HTTP %i as transient (WARN, no alert)', async (status) => {
+    configure(true);
+    mockFetchJson({}, false, status);
+    await verifyRecaptcha('tok', 'findme_search');
+    expect(mockLogger.error).not.toHaveBeenCalled();
+    expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends the API key in a header, never in the URL', async () => {
+    configure(true);
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchSpy);
+    await verifyRecaptcha('tok', 'download');
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).not.toContain('api-key');
+    expect(url).not.toContain('key=');
+    expect((init.headers as Record<string, string>)['X-Goog-Api-Key']).toBe('api-key');
+  });
+
+  it('never logs the API key, even on a config error', async () => {
+    configure(true);
+    mockFetchJson(BAD_KEY_BODY, false, 400);
+    await verifyRecaptcha('tok', 'download');
+    expect(everythingLogged()).not.toContain('api-key');
+  });
+});
+
+describe('recaptchaSelfCheck', () => {
+  it('is disabled (and does not fetch) when unconfigured', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    expect(await recaptchaSelfCheck()).toEqual({ state: 'disabled' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // A working key answers 200 with valid:false / MALFORMED for a bogus token
+  // (verified against the live API 2026-11-02) — that is HEALTHY.
+  it('is healthy on a 200, even though the bogus token is invalid', async () => {
+    configure(true);
+    mockFetchJson({ tokenProperties: { valid: false, invalidReason: 'MALFORMED' } });
+    expect(await recaptchaSelfCheck()).toEqual({ state: 'healthy' });
+    expect(mockLogger.error).not.toHaveBeenCalled();
+  });
+
+  it('is broken on a bad key, and logs the alert line', async () => {
+    configure(true);
+    mockFetchJson(BAD_KEY_BODY, false, 400);
+    expect(await recaptchaSelfCheck()).toEqual({ state: 'broken', status: 400 });
+    expect(mockLogger.error.mock.calls[0]![0]).toMatchObject({ alert: 'recaptcha_broken', action: 'self_check' });
+  });
+
+  it('is inconclusive (no alert) on a 5xx or a network error, and never throws', async () => {
+    configure(true);
+    mockFetchJson({}, false, 503);
+    expect(await recaptchaSelfCheck()).toEqual({ state: 'unknown', status: 503 });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network')));
+    expect(await recaptchaSelfCheck()).toEqual({ state: 'unknown' });
+    expect(mockLogger.error).not.toHaveBeenCalled();
+  });
+});
+
+describe('verdictOutcome', () => {
+  it('maps results to outcomes per mode', () => {
+    expect(verdictOutcome({ ok: true, reason: 'ok' }, 'enforce')).toBe('pass');
+    expect(verdictOutcome({ ok: true, reason: 'http_400', failOpen: true }, 'enforce')).toBe('fail_open');
+    expect(verdictOutcome({ ok: false, reason: 'low_score' }, 'shadow')).toBe('would_block');
+    expect(verdictOutcome({ ok: false, reason: 'low_score' }, 'enforce')).toBe('blocked');
+  });
+});
+
+describe('requireRecaptcha middleware', () => {
+  function run(headers: Record<string, string> = {}) {
+    const req = { headers, body: {}, user: { uid: 'u1' } } as never;
+    const res = { status: vi.fn().mockReturnThis(), json: vi.fn().mockReturnThis() };
+    const next = vi.fn();
+    return { req, res, next, go: () => requireRecaptcha('findme_search')(req, res as never, next) };
+  }
+  const lowScore = { tokenProperties: { valid: true, action: 'findme_search' }, riskAnalysis: { score: 0.1 } };
+
+  it('passes through without fetching when unconfigured', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const t = run();
+    await t.go();
+    expect(t.next).toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('SHADOW (the default): a low score is logged as would_block but allowed', async () => {
+    configure(true);
+    mockFetchJson(lowScore);
+    const t = run({ 'x-recaptcha-token': 'tok' });
+    await t.go();
+    expect(t.next).toHaveBeenCalled();
+    expect(t.res.status).not.toHaveBeenCalled();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      {
+        recaptcha: { action: 'findme_search', mode: 'shadow', outcome: 'would_block', reason: 'low_score', score: 0.1 },
+        uid: 'u1',
+      },
+      'recaptcha verdict',
+    );
+  });
+
+  it('SHADOW: a missing token is allowed (an ad-blocked script must not lock anyone out yet)', async () => {
+    configure(true);
+    const t = run();
+    await t.go();
+    expect(t.next).toHaveBeenCalled();
+    expect(mockLogger.warn.mock.calls[0]![0]).toMatchObject({
+      recaptcha: { outcome: 'would_block', reason: 'missing_token' },
+    });
+  });
+
+  it('ENFORCE: a low score is 403d and logged as blocked', async () => {
+    configure(true);
+    mockEnv.RECAPTCHA_MODE = 'enforce';
+    mockFetchJson(lowScore);
+    const t = run({ 'x-recaptcha-token': 'tok' });
+    await t.go();
+    expect(t.next).not.toHaveBeenCalled();
+    expect(t.res.status).toHaveBeenCalledWith(403);
+    expect(mockLogger.warn.mock.calls[0]![0]).toMatchObject({ recaptcha: { mode: 'enforce', outcome: 'blocked' } });
+  });
+
+  it('ENFORCE: a good score passes and logs the score at INFO', async () => {
+    configure(true);
+    mockEnv.RECAPTCHA_MODE = 'enforce';
+    mockFetchJson({ tokenProperties: { valid: true, action: 'findme_search' }, riskAnalysis: { score: 0.9 } });
+    const t = run({ 'x-recaptcha-token': 'tok' });
+    await t.go();
+    expect(t.next).toHaveBeenCalled();
+    expect(mockLogger.info.mock.calls[0]![0]).toMatchObject({ recaptcha: { outcome: 'pass', score: 0.9 } });
+  });
+
+  it('ENFORCE: an infra failure still fails OPEN (a broken key never blocks attendees)', async () => {
+    configure(true);
+    mockEnv.RECAPTCHA_MODE = 'enforce';
+    mockFetchJson(BAD_KEY_BODY, false, 400);
+    const t = run({ 'x-recaptcha-token': 'tok' });
+    await t.go();
+    expect(t.next).toHaveBeenCalled();
+    expect(t.res.status).not.toHaveBeenCalled();
+    expect(mockLogger.info.mock.calls[0]![0]).toMatchObject({ recaptcha: { outcome: 'fail_open', reason: 'http_400' } });
   });
 });
 
