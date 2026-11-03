@@ -50,6 +50,7 @@ import {
   renderCropToFile,
   renderCropToDataUrl,
   imageSize,
+  shrinkForUpload,
   type CropRect,
   type NormBox,
 } from '../lib/faceCrop.js';
@@ -1103,7 +1104,7 @@ export function FindMe(): JSX.Element {
    * photo or search anyway; otherwise go straight to search. The check failing
    * for any reason must never block the search — we just proceed.
    */
-  async function handlePicked(files: File[]): Promise<void> {
+  async function handlePicked(picked: File[]): Promise<void> {
     setError(null);
     setNoFaceFiles([]);
     setNoFaceReasons([]);
@@ -1113,8 +1114,17 @@ export function FindMe(): JSX.Element {
     clearReframe();
     setRejectedFindings([]);
     setWeakSelfie(false);
-    if (files.length === 0) return;
+    if (picked.length === 0) return;
     setCheckingPhoto(true);
+    // Shrink oversized picks HERE, once: every later path (the check, the
+    // search, a reframe, "search anyway", "find more") reuses these files, so
+    // the check's face boxes stay valid for what is uploaded. One at a time —
+    // decoding five full-resolution photos at once can exhaust a phone's memory.
+    const files: File[] = [];
+    for (const file of picked) {
+      // eslint-disable-next-line no-await-in-loop
+      files.push(await shrinkForUpload(file));
+    }
     // Multiple selfies are averaged into one centroid query (§1.1). We quality-
     // check them all and only warn if EVERY one is poor — a single sharp shot in
     // the set is enough to search well.
