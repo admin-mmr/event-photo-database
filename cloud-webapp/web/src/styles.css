@@ -1798,7 +1798,7 @@ pre.error {
   letter-spacing: -0.01em;
 }
 
-/* ── In-app browser warning (sign-in only; always bilingual) ──────────────── */
+/* ── In-app browser warning (top of every page; always bilingual) ───────── */
 
 .inapp-warning {
   text-align: left;
@@ -1810,6 +1810,10 @@ pre.error {
   color: #7c3a06;
   line-height: 1.6;
   font-size: 14px;
+}
+
+.page > .inapp-warning {
+  margin: 0 0 16px;
 }
 
 .inapp-title {
