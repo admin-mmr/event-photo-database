@@ -26,6 +26,7 @@ import { emailPrefsRouter } from './routes/emailPrefs.js';
 import { emailDigestRouter } from './routes/emailDigest.js';
 import { adminDeletedFilesRouter } from './routes/adminDeletedFiles.js';
 import { summaryRouter } from './routes/summary.js';
+import { adminUploadInsightsRouter } from './routes/adminUploadInsights.js';
 import { partnerRouter } from './routes/partner.js';
 import { adminManagedFoldersRouter } from './routes/adminManagedFolders.js';
 import { adminDuplicatesRouter } from './routes/adminDuplicates.js';
@@ -108,6 +109,7 @@ export function buildServer(): express.Express {
   app.use('/api', emailDigestRouter);
   app.use('/api', adminDeletedFilesRouter);
   app.use('/api', summaryRouter);
+  app.use('/api', adminUploadInsightsRouter);
   app.use('/api', partnerRouter);
   app.use('/api', adminManagedFoldersRouter);
   app.use('/api', adminDuplicatesRouter);

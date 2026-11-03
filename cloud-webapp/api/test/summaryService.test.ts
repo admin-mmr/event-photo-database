@@ -5,7 +5,7 @@ vi.mock('../src/services/sheetsService.js', () => ({
   getSheetValues: async (_id: string, range: string) => sheetData[range] ?? [],
 }));
 
-const { summarize } = await import('../src/services/summaryService.js');
+const { summarize, copiedMbByBatchFolder } = await import('../src/services/summaryService.js');
 
 const RANGE = 'Upload_Log!A1:N';
 const HEADER = ['log_id', 'event_id', 'club_name', 'uploaded_by', 'batch', 'batch_id', 'file_count', 'size_mb', 'sk1', 'sk2', 'upload_ts', 'source', 'link_id', 'duration'];
@@ -78,5 +78,25 @@ describe('summarize', () => {
     const s = await summarize(SID, { until: '2026-06-15T10:00:00.000Z' });
     expect(s.totals.sessions).toBe(1);
     expect(s.totals.files).toBe(10);
+  });
+});
+
+describe('copiedMbByBatchFolder', () => {
+  it('sums one event\'s rows per batch folder, skipping folder-less rows', async () => {
+    const row = (event: string, folder: string, size: string, id: string): string[] => {
+      const r = logRow('MMR', '1', size, '2026-11-02T00:00:00Z', id);
+      r[1] = event;
+      r[4] = folder;
+      return r;
+    };
+    sheetData[RANGE] = [
+      HEADER,
+      row('ev1', '20261102-090000_jane', '10.5', 'a'),
+      row('ev1', '20261102-090000_jane', '2', 'b'),
+      row('ev1', '', '0', 'c'),
+      row('ev2', '20261102-090000_jane', '99', 'd'),
+    ];
+    const m = await copiedMbByBatchFolder(SID, 'ev1');
+    expect([...m.entries()]).toEqual([['20261102-090000_jane', 12.5]]);
   });
 });

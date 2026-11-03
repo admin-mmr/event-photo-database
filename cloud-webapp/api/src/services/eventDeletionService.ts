@@ -73,6 +73,7 @@ const EVENT_SCOPED_COLLECTIONS = [
   'upload_dedup',
   'match_runs',
   'match_feedback',
+  'upload_folder_counts',
 ] as const;
 
 /** Firestore caps a batch at 500 writes; stay under it. */

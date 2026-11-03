@@ -135,6 +135,10 @@ class FirestoreMeta:
         self._db.collection("events").document(event_id).set(
             {"galleryFolders": folders}, merge=True)
 
+    def set_upload_folders(self, event_id: str, doc: dict) -> None:
+        # Replaced whole, never merged: a batch folder that left Drive must drop out.
+        self._db.collection(UPLOAD_FOLDERS_COLLECTION).document(event_id).set(doc)
+
     def upsert_photo(self, photo_id: str, doc: dict) -> None:
         self._db.collection("photos").document(photo_id).set(doc, merge=True)
 
@@ -269,6 +273,10 @@ class CosmosMeta:
     def set_gallery_folders(self, event_id: str, folders: list[dict]) -> None:
         self._merge_write("events", event_id, {"galleryFolders": folders}, event_id)
 
+    def set_upload_folders(self, event_id: str, doc: dict) -> None:
+        # Every field is in `doc`, so a shallow merge replaces the whole list.
+        self._merge_write(UPLOAD_FOLDERS_COLLECTION, event_id, doc, event_id)
+
     def upsert_photo(self, photo_id: str, doc: dict) -> None:
         event_id = str(doc.get("eventId") or "")
         if not event_id:
@@ -389,6 +397,34 @@ def gallery_folders(photos_map: dict) -> list[dict]:
             key = (club, row.get("tag") or "")
             counts[key] = counts.get(key, 0) + 1
     return [{"clubName": c, "tag": t, "count": n} for (c, t), n in sorted(counts.items())]
+
+
+# Per-batch-folder counts live in their OWN doc, not on `events`: the gallery
+# reads the events doc on every page load, and a big event has thousands of
+# upload sessions. Read by the admin upload-insights page
+# (api/src/services/uploadInsightsService.ts), keyed by eventId.
+UPLOAD_FOLDERS_COLLECTION = "upload_folder_counts"
+# Firestore's 1 MiB doc cap at ~100 bytes an entry, with headroom.
+MAX_UPLOAD_FOLDERS = 5000
+
+
+def upload_folders(photos_map: dict) -> list[dict]:
+    """Indexed-photo counts per upload batch folder (`Club/tag/<batch>/<file>`).
+
+    This is the index side of the admin upload-insights page's index %: the
+    batch folder is what ties an upload session (`upload_batches.batchFolderName`)
+    to the photos it produced. Counted over canonical photos only, like
+    `gallery_folders`, so a duplicate collapsed into an earlier batch counts there.
+    Shallower paths were placed by hand, not uploaded, and are left out.
+    """
+    counts: dict[tuple[str, str, str], int] = {}
+    for row in photos_map.values():
+        folders = str(row.get("relPath") or "").split("/")[:-1]
+        if len(folders) >= 3:
+            key = (folders[0], folders[1], folders[2])
+            counts[key] = counts.get(key, 0) + 1
+    return [{"clubName": c, "tag": t, "batchFolder": b, "count": n}
+            for (c, t, b), n in sorted(counts.items())]
 
 
 def _write_store(blobs, event_id: str, manifest: dict,
@@ -763,6 +799,18 @@ def run(cfg: Config, drive, blobs, fs, embed, model_version: str,
         fs.set_gallery_folders(cfg.event_id, gallery_folders(photos_map))
     except Exception as exc:  # noqa: BLE001
         log.warning("galleryFolders write failed (non-fatal): %s", exc)
+    # ...and the upload-insights index counts, same best-effort terms.
+    try:
+        from datetime import datetime, timezone
+        folders = upload_folders(photos_map)
+        fs.set_upload_folders(cfg.event_id, {
+            "eventId": cfg.event_id,
+            "folders": folders[:MAX_UPLOAD_FOLDERS],
+            "truncated": len(folders) > MAX_UPLOAD_FOLDERS,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:  # noqa: BLE001
+        log.warning("upload folder counts write failed (non-fatal): %s", exc)
 
     summary = {"eventId": cfg.event_id, "photoCount": len(photos_map),
                "faces": len(faces_meta), "persons": len(persons_meta),

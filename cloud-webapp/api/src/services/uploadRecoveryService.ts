@@ -164,18 +164,21 @@ export interface RecoveryDispatch {
   warnings: string[];
 }
 
-interface StagedObject {
+export interface StagedObject {
   name: string;
   md5Hex: string;
   size: number;
   batchId: string;
   linkId: string;
   clubName: string;
+  tag: string;
   photographerName: string;
+  /** Commit time, epoch ms; 0 = unknown (see `ObjectMetadata.createdMs`). */
+  createdMs: number;
 }
 
 /** Every staged object for an event, with the metadata the copy path needs. */
-async function listStaged(eventId: string): Promise<StagedObject[]> {
+export async function listStaged(eventId: string): Promise<StagedObject[]> {
   // Same prefix `stagingObjectName` writes under (volunteerUploadService.ts).
   const prefix = `${env.VOLUNTEER_STAGING_PREFIX}/${eventId}/`;
   const objects = await objectStore().list(env.VOLUNTEER_STAGING_BUCKET, { prefix });
@@ -197,7 +200,9 @@ async function listStaged(eventId: string): Promise<StagedObject[]> {
       batchId,
       linkId: custom.linkId ?? '',
       clubName: custom.clubName ?? '',
+      tag: custom.tag ?? '',
       photographerName: (custom.photographerName ?? '').trim(),
+      createdMs: o.metadata.createdMs,
     });
   }
   return out;

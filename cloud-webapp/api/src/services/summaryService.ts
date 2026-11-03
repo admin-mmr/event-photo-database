@@ -13,6 +13,7 @@ const COL = {
   LOG_ID: 0,
   EVENT_ID: 1,
   CLUB_NAME: 2,
+  BATCH_FOLDER_NAME: 4,
   FILE_COUNT: 6,
   TOTAL_SIZE_MB: 7,
   UPLOAD_TIMESTAMP: 10,
@@ -75,4 +76,22 @@ export async function summarize(
   totals.sizeMb = round2(totals.sizeMb);
   const byClub = [...perClub.values()].sort((a, b) => b.files - a.files);
   return { totals, byClub };
+}
+
+/**
+ * Megabytes copied to Drive per batch folder for one event, summed over its
+ * Upload_Log rows (one per copy chunk, all naming the session's folder). Feeds
+ * the upload-insights page: `upload_batches` docs carry no byte counts. Rows
+ * with no folder (an all-duplicate chunk copies nothing) are skipped.
+ */
+export async function copiedMbByBatchFolder(spreadsheetId: string, eventId: string): Promise<Map<string, number>> {
+  const rows = await readTab(spreadsheetId, TAB, LAST_COL, COL.LOG_ID, 'logid');
+  const out = new Map<string, number>();
+  for (const r of rows) {
+    if (cell(r.cells, COL.EVENT_ID) !== eventId) continue;
+    const folder = cell(r.cells, COL.BATCH_FOLDER_NAME);
+    if (!folder) continue;
+    out.set(folder, (out.get(folder) ?? 0) + num(cell(r.cells, COL.TOTAL_SIZE_MB)));
+  }
+  return out;
 }
