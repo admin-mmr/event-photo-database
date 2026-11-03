@@ -32,6 +32,7 @@ import {
   OriginalsFetcher,
   PREFETCH_MAX_PHOTOS,
   PREFETCH_DEBOUNCE_MS,
+  wasCancelled,
   type OriginalEntry,
 } from '../lib/originals.js';
 import { getRecaptchaToken } from '../lib/recaptcha.js';
@@ -1760,13 +1761,14 @@ export function FindMe(): JSX.Element {
     try {
       // Same fetcher as the save prefetch, so anything already in hand is zipped
       // from cache instead of pulled down a second time.
-      const { included, failed } = await downloadOriginalsZip(
+      const { included, failed, cancelled } = await downloadOriginalsZip(
         fetcher,
         eventId,
         ids,
         'my-photos.zip',
         { onProgress: (done, total) => setSaveProgress({ done, total }) },
       );
+      if (cancelled) return;
       const skipped = failed > 0 ? t.downloadSkipped(failed) : '';
       setStatus(t.downloadedZip(included, skipped));
     } catch (e) {
@@ -1831,14 +1833,17 @@ export function FindMe(): JSX.Element {
       setSaveProgress({ done: fetcher.countCached(ids), total: n });
       try {
         let done = 0;
-        const { entries, failed, sampleErrors } = await fetcher.fetch(ids, {
+        const result = await fetcher.fetch(ids, {
           onSettled: (photoId, entry) => {
             recordSettled(photoId, entry);
             done += 1;
             setSaveProgress({ done, total: n });
           },
         });
+        const { entries, failed, sampleErrors } = result;
 
+        // Aborted because the user moved on — not a failure to report or show.
+        if (wasCancelled(result)) return;
         if (entries.length === 0) {
           reportClientError('download_failed', 'Save to Photos: every original failed to load', {
             context: { eventId, requested: n, failed, sampleErrors },

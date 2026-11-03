@@ -6,6 +6,8 @@ import { useSession } from './lib/useSession.js';
 import { LangToggle, useStrings } from './lib/i18n.js';
 import { clearStoredName, setStoredName } from './lib/userName.js';
 import { isInAppBrowser } from './lib/inAppBrowser.js';
+import { isSignInCancelled } from './lib/signInErrors.js';
+import { reportClientError } from './lib/reportError.js';
 import { InAppBrowserWarning } from './components/InAppBrowserWarning.js';
 import { Footer } from './components/Footer.js';
 import { GuestSignInPrompt } from './components/GuestSignInPrompt.js';
@@ -140,6 +142,7 @@ const STR = {
     loading: 'Loading…',
     guestError:
       'Could not start a guest session. Ask an admin to enable Anonymous sign-in in Firebase.',
+    googleError: 'Google sign-in did not finish. Allow pop-ups for this site and try again.',
   },
   zh: {
     title: '一键找我',
@@ -173,6 +176,7 @@ const STR = {
     signOut: '退出登录',
     loading: '加载中…',
     guestError: '无法开始访客会话，请联系管理员在 Firebase 中启用匿名登录。',
+    googleError: 'Google 登录未完成。请允许本网站弹出窗口后重试。',
   },
 };
 import { Events } from './pages/Events.js';
@@ -197,6 +201,7 @@ import { VolunteerUpload } from './pages/VolunteerUpload.js';
 export function App(): JSX.Element {
   const { user, loading } = useAuth();
   const [signInError, setSignInError] = useState<string | null>(null);
+  const [signingIn, setSigningIn] = useState(false);
   const [inApp] = useState(() => isInAppBrowser());
   const [menuOpen, setMenuOpen] = useState(false);
   const [guestName, setGuestName] = useState('');
@@ -252,6 +257,29 @@ export function App(): JSX.Element {
       // Most likely cause: Anonymous sign-in not enabled in the Firebase console.
       setSignInError(t.guestError);
       console.error('anonymous sign-in failed', err);
+    }
+  }
+
+  // Closing the popup is a choice, not an error — it used to surface as an
+  // unhandled rejection that tripped the ERROR alert. A real failure (popup
+  // blocked, network) is shown and reported. The button is disabled while the
+  // popup is open: a second click is what makes Firebase cancel the first
+  // (`cancelled-popup-request`, and once an internal assertion).
+  async function google(): Promise<void> {
+    if (signingIn) return;
+    setSignInError(null);
+    setSigningIn(true);
+    try {
+      await signInWithGoogle();
+    } catch (err) {
+      if (!isSignInCancelled(err)) {
+        setSignInError(t.googleError);
+        reportClientError('client_error', `Google sign-in failed: ${err instanceof Error ? err.message : String(err)}`, {
+          context: { code: (err as { code?: unknown } | null)?.code },
+        });
+      }
+    } finally {
+      setSigningIn(false);
     }
   }
 
@@ -349,9 +377,10 @@ export function App(): JSX.Element {
             {isGuest ? (
               <>
                 <span className="muted">{t.guest}</span>
-                <button className="btn btn-light btn-sm" onClick={() => void signInWithGoogle()}>
+                <button className="btn btn-light btn-sm" onClick={() => void google()} disabled={signingIn}>
                   {t.signInGoogle}
                 </button>
+                {signInError && <span className="error-text">{signInError}</span>}
               </>
             ) : (
               <span className="muted">{user.email}</span>
@@ -409,7 +438,7 @@ export function App(): JSX.Element {
               </button>
             </form>
             {!inApp && (
-              <button className="btn btn-light btn-google" onClick={() => void signInWithGoogle()}>
+              <button className="btn btn-light btn-google" onClick={() => void google()} disabled={signingIn}>
                 {t.signInGoogle}
               </button>
             )}

@@ -224,7 +224,11 @@ async function strandedObjects(eventId: string): Promise<{ all: StagedObject[]; 
   const [all, inDrive] = await Promise.all([listStaged(eventId), hashesInDrive(eventId)]);
   // An object with no md5 cannot be matched — treat it as stranded and let the
   // worker's name+size fallback decide. Unknown must not read as "already done".
-  const stranded = all.filter((o) => !o.md5Hex || !inDrive.has(o.md5Hex));
+  // An EMPTY object is a session that never sent a byte: the worker skips it
+  // ("staged object is empty"), so dispatching it only re-reports it as owed on
+  // every run, forever (3 such on the NYC Marathon event, 2026-11-03). It stays
+  // in `all`, and the bucket lifecycle reclaims it.
+  const stranded = all.filter((o) => o.size > 0 && (!o.md5Hex || !inDrive.has(o.md5Hex)));
   return { all, stranded };
 }
 

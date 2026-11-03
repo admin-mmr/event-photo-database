@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-import { OriginalsFetcher } from './originals.js';
+import { OriginalsFetcher, wasCancelled, type OriginalEntry } from './originals.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -239,9 +239,22 @@ describe('OriginalsFetcher', () => {
     await vi.waitFor(() => expect(s.byteReads).toHaveLength(3)); // cap reached
     f.abort();
     s.openGates();
-    await pending;
+    const result = await pending;
 
     // The two still queued never started a transfer.
     expect(s.byteReads).toHaveLength(3);
+    // An abort is the user moving on, not a failure: it must not read as
+    // "every original failed" (reported with failed: 0 twice on 2026-11-02/03).
+    expect(result.failed).toBe(0);
+    expect(result.cancelled).toBeGreaterThan(0);
+    expect(wasCancelled(result)).toBe(result.entries.length === 0);
+  });
+
+  it('wasCancelled is only true when nothing came back AND nothing failed', () => {
+    const entry = { photoId: 'p1', blob: new Blob(), filename: 'a.jpg' } as unknown as OriginalEntry;
+    expect(wasCancelled({ entries: [], failed: 0, cancelled: 3, sampleErrors: [] })).toBe(true);
+    expect(wasCancelled({ entries: [], failed: 1, cancelled: 3, sampleErrors: [] })).toBe(false);
+    expect(wasCancelled({ entries: [entry], failed: 0, cancelled: 3, sampleErrors: [] })).toBe(false);
+    expect(wasCancelled({ entries: [], failed: 0, cancelled: 0, sampleErrors: [] })).toBe(false);
   });
 });
