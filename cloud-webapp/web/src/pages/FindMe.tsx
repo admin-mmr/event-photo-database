@@ -17,6 +17,7 @@ import type {
   ExpandResultsResponse,
 } from '@cloud-webapp/shared';
 import {
+  FINDME_MAX_FILE_BYTES,
   FINDME_MAX_REFERENCE_IMAGES,
   SelfieFaceReasonSchema,
   WEAK_SELFIE_SCORE,
@@ -49,12 +50,12 @@ import {
   type FaceAlert,
 } from '../lib/results.js';
 import { analyzePhoto, type QualityResult, type QualityIssue } from '../lib/photoQuality.js';
-import { fitSelfieForUpload, oversizedSelfies, MAX_SELFIE_MB } from '../lib/selfieUpload.js';
 import {
   suggestedPortraitRect,
   renderCropToFile,
   renderCropToDataUrl,
   imageSize,
+  shrinkForUpload,
   type CropRect,
   type NormBox,
 } from '../lib/faceCrop.js';
@@ -456,6 +457,8 @@ type Phase = 'consent' | 'pick' | 'searching' | 'results';
 
 /** Client-side cap on selfies per search; the api enforces the same number. */
 const MAX_REFERENCE_IMAGES = FINDME_MAX_REFERENCE_IMAGES;
+/** The api's per-file cap in whole MB, for the "photo too big" message. */
+const MAX_SELFIE_MB = Math.round(FINDME_MAX_FILE_BYTES / (1024 * 1024));
 
 
 /** How a result set was queried, kept so an anchored re-search can repeat the
@@ -1125,17 +1128,18 @@ export function FindMe(): JSX.Element {
     setWeakSelfie(false);
     if (picked.length === 0) return;
     setCheckingPhoto(true);
-    // Shrink big phone photos FIRST, so the check, any reframe and the search
-    // all work from the same file. One at a time: each decode of a 48 MP photo
-    // holds a full bitmap, and a phone has little memory to spare.
+    // Shrink oversized picks HERE, once: every later path (the check, the
+    // search, a reframe, "search anyway", "find more") reuses these files, so
+    // the check's face boxes stay valid for what is uploaded. One at a time —
+    // decoding five full-resolution photos at once can exhaust a phone's memory.
     const files: File[] = [];
     for (const file of picked) {
       // eslint-disable-next-line no-await-in-loop
-      files.push(await fitSelfieForUpload(file));
+      files.push(await shrinkForUpload(file));
     }
-    // Still too big (the browser couldn't decode it to shrink it): say so now
-    // rather than after a long upload that ends in a 413.
-    if (oversizedSelfies(files).length > 0) {
+    // Still over the api's cap (the browser couldn't decode it to shrink it):
+    // say so now rather than after a long upload that ends in a 413.
+    if (files.some((f) => f.size > FINDME_MAX_FILE_BYTES)) {
       setCheckingPhoto(false);
       setError(t.photoTooLarge(MAX_SELFIE_MB));
       return;

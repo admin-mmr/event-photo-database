@@ -201,6 +201,50 @@ export async function renderCropToFile(
   rect: CropRect,
   maxEdge = MAX_UPLOAD_EDGE,
 ): Promise<File | null> {
+  const blob = await drawToJpeg(file, rect, maxEdge);
+  if (!blob) return null;
+  const name = file.name.replace(/\.[^.]+$/, '') || 'selfie';
+  return new File([blob], `${name}-cropped.jpg`, { type: 'image/jpeg' });
+}
+
+/**
+ * Picks larger than this are re-encoded before upload. The api takes at most
+ * 15 MB per file, and the matcher takes 32 MiB for the WHOLE request — up to 5
+ * picks — so 6 MB keeps any allowed set under both. A full-resolution photo from
+ * a recent phone is 10–25 MB; uploading it as picked was answered with a bare
+ * 500 (9 searches on 2026-11-02, the NYC Marathon).
+ */
+export const SHRINK_ABOVE_BYTES = 6 * 1024 * 1024;
+/** Longest edge of a shrunk pick, then a smaller one if that is still too big.
+ *  Deliberately far above MAX_UPLOAD_EDGE: an un-reframed pick can be a wide
+ *  shot whose face is small, and the matcher needs ≥40 px of it. */
+export const SHRINK_EDGES = [4096, 2560] as const;
+
+/**
+ * The pick as it should be uploaded: unchanged when it is already small enough,
+ * otherwise re-encoded as a JPEG no larger than SHRINK_EDGES allow. Never throws
+ * and never blocks a search — a pick that cannot be decoded (e.g. HEIC outside
+ * Safari) or shrunk goes up as-is, and the api answers a too-large one with a
+ * readable 413. Like a crop, the output carries no EXIF (see renderCropToFile).
+ */
+export async function shrinkForUpload(file: File): Promise<File> {
+  if (file.size <= SHRINK_ABOVE_BYTES) return file;
+  const whole: CropRect = { x: 0, y: 0, width: Number.MAX_SAFE_INTEGER, height: Number.MAX_SAFE_INTEGER };
+  for (const edge of SHRINK_EDGES) {
+    // eslint-disable-next-line no-await-in-loop
+    const blob = await drawToJpeg(file, whole, edge);
+    if (!blob) return file;
+    if (blob.size <= SHRINK_ABOVE_BYTES) {
+      const name = file.name.replace(/\.[^.]+$/, '') || 'selfie';
+      return new File([blob], `${name}.jpg`, { type: 'image/jpeg', lastModified: file.lastModified });
+    }
+  }
+  return file;
+}
+
+/** Draw `rect` of `file`, scaled so its longest edge is at most `maxEdge`, to a
+ *  JPEG blob. Null when the image cannot be decoded or drawn. */
+async function drawToJpeg(file: File, rect: CropRect, maxEdge: number): Promise<Blob | null> {
   let img: HTMLImageElement;
   try {
     img = await loadImage(file);
@@ -235,12 +279,7 @@ export async function renderCropToFile(
   }
   URL.revokeObjectURL(img.src);
 
-  const blob = await new Promise<Blob | null>((resolve) =>
-    canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.9),
-  );
-  if (!blob) return null;
-  const name = file.name.replace(/\.[^.]+$/, '') || 'selfie';
-  return new File([blob], `${name}-cropped.jpg`, { type: 'image/jpeg' });
+  return new Promise<Blob | null>((resolve) => canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.9));
 }
 
 /** Natural pixel size of an already-created object URL, or null if it won't

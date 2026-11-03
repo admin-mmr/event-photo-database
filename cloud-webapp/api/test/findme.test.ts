@@ -616,6 +616,26 @@ describe('POST /api/findme/selfie-check', () => {
     expect(matcherQualityCheck).not.toHaveBeenCalled();
   });
 
+  // A full-resolution phone photo over the 15 MB per-file limit used to come
+  // back as a bare 500 "Internal server error" (2026-11-02).
+  it('answers a photo over the size limit with a readable 413, not a 500', async () => {
+    const res = await request(app)
+      .post('/api/findme/selfie-check')
+      .set('x-test-user', USER)
+      .field('consent', 'true')
+      .attach('file', Buffer.alloc(16 * 1024 * 1024, 0xff), { filename: 'big.jpg', contentType: 'image/jpeg' });
+    expect(res.status).toBe(413);
+    expect(res.body).toMatchObject({ ok: false, error: 'file_too_large' });
+    expect(res.body.message).toMatch(/too large/);
+    expect(matcherQualityCheck).not.toHaveBeenCalled();
+  });
+
+  it('answers too many files with a 413 too_many_files, not a 500', async () => {
+    const res = await check({ consent: 'true' }, 6);
+    expect(res.status).toBe(413);
+    expect(res.body.error).toBe('too_many_files');
+  });
+
   it('rejects unsupported mime types', async () => {
     const res = await request(app)
       .post('/api/findme/selfie-check')
@@ -743,7 +763,7 @@ describe('Find Me upload limits', () => {
         error: 'file_too_large',
         maxFileBytes: FINDME_MAX_FILE_BYTES,
       });
-      expect(res.body.message).toContain('15 MB');
+      expect(res.body.message).toContain('the limit is 15 MB');
       expect(matcherSearch).not.toHaveBeenCalled();
       expect(matcherQualityCheck).not.toHaveBeenCalled();
       expect(fakeDb.added).toHaveLength(0);
