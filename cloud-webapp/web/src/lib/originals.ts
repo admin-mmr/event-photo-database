@@ -59,6 +59,19 @@ export interface FetchOriginalsResult {
   failed: number;
   /** A few distinct failure reasons for error reporting — never one per photo. */
   sampleErrors: string[];
+  /** How many transfers were aborted (selection or event changed, page left).
+   *  Not failures: they are neither counted in `failed` nor reported. */
+  cancelled: number;
+}
+
+/**
+ * True when nothing came back only because the transfers were aborted — the
+ * user moved on, nothing broke. Such a result used to be reported as
+ * "every original failed" with `failed: 0` (2 on 2026-11-02/03) and the user
+ * was told no photo could be loaded.
+ */
+export function wasCancelled(r: FetchOriginalsResult): boolean {
+  return r.entries.length === 0 && r.failed === 0 && r.cancelled > 0;
 }
 
 export interface FetchOriginalsOptions {
@@ -134,6 +147,7 @@ export class OriginalsFetcher {
 
     const sampleErrors: string[] = [];
     let failed = 0;
+    let cancelled = 0;
 
     if (missing.length > 0) {
       let signed: Array<{ photoId: string } & SignedOriginal>;
@@ -147,6 +161,7 @@ export class OriginalsFetcher {
           entries: ids.map((id) => this.cache.get(id)).filter((e): e is OriginalEntry => Boolean(e)),
           failed: missing.length,
           sampleErrors: [err instanceof Error ? err.message : String(err)],
+          cancelled: 0,
         };
       }
 
@@ -182,7 +197,10 @@ export class OriginalsFetcher {
           const entry = await pending;
           opts.onSettled?.(id, entry);
         } catch (err) {
-          if (isAbort(err)) return;
+          if (isAbort(err)) {
+            cancelled += 1;
+            return;
+          }
           failed += 1;
           const message = err instanceof Error ? err.message : String(err);
           if (sampleErrors.length < 3 && !sampleErrors.includes(message)) sampleErrors.push(message);
@@ -196,7 +214,7 @@ export class OriginalsFetcher {
       const entry = this.cache.get(id);
       if (entry) entries.push(entry);
     }
-    return { entries, failed, sampleErrors };
+    return { entries, failed, sampleErrors, cancelled };
   }
 
   /** Drop cached originals outside `keep`, bounding memory on a phone. */

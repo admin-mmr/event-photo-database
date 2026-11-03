@@ -14,13 +14,15 @@
 import { downloadBlob } from './share.js';
 import { reportClientError } from './reportError.js';
 import { buildStoreZip, type ZipEntry } from './zip.js';
-import type { OriginalsFetcher } from './originals.js';
+import { wasCancelled, type OriginalsFetcher } from './originals.js';
 
 export interface ZipDownloadResult {
   /** Entries successfully fetched and included in the ZIP. */
   included: number;
   /** Entries whose original couldn't be fetched (skipped, not fatal). */
   failed: number;
+  /** Every transfer was aborted (the user moved on): no ZIP, and nothing to report. */
+  cancelled?: boolean;
 }
 
 export interface ZipDownloadOptions {
@@ -41,13 +43,15 @@ export async function downloadOriginalsZip(
   opts: ZipDownloadOptions = {},
 ): Promise<ZipDownloadResult> {
   let done = 0;
-  const { entries, failed, sampleErrors } = await fetcher.fetch(photoIds, {
+  const result = await fetcher.fetch(photoIds, {
     onSettled: () => {
       done += 1;
       opts.onProgress?.(done, photoIds.length);
     },
   });
+  const { entries, failed, sampleErrors } = result;
 
+  if (wasCancelled(result)) return { included: 0, failed: 0, cancelled: true };
   if (entries.length === 0) {
     // Every original failed — a real outage (commonly the derivatives bucket
     // missing its CORS rule). Report it so ops gets an email alert; the user

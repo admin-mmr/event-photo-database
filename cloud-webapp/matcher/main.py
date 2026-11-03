@@ -150,7 +150,7 @@ def _read_upload():
     try:
         img = decode_image(file.read())
     except Exception:
-        logger.exception("image decode failed")
+        logger.warning("image decode failed", exc_info=True)  # a 400, not our fault
         return None, (jsonify({"error": "bad_image", "detail": "could not decode image"}), 400)
     return img, None
 
@@ -448,7 +448,9 @@ def check_quality():
         try:
             img = decode_image(file.read())
         except Exception:
-            logger.exception("image decode failed")
+            # The caller's bad file, answered as `bad_image` — WARN, not ERROR, so
+            # a truncated upload doesn't trip the severity>=ERROR alert.
+            logger.warning("image decode failed", exc_info=True)
             reports.append({**entry, "usable": False, "faceCount": 0, "selfieScore": 0.0,
                             "advisories": [], "reasons": ["bad_image"]})
             continue
@@ -603,7 +605,7 @@ def search():
         try:
             img = decode_image(data)
         except Exception:
-            logger.exception("image decode failed")
+            logger.warning("image decode failed", exc_info=True)  # a 400, not our fault
             return jsonify({"error": "bad_image", "detail": "could not decode image"}), 400
         result = embed_image(img)
         model_version = result["model_version"]

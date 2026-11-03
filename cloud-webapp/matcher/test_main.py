@@ -585,10 +585,12 @@ class TestEmbed:
         resp = client.post("/embed", data={})
         assert resp.status_code == 400 and resp.get_json()["error"] == "missing_file"
 
-    def test_garbage_image_400(self, client):
+    def test_garbage_image_400(self, client, caplog):
         set_bundle(make_bundle(basis(0), basis(1)))
         resp = client.post("/embed", data={"file": (io.BytesIO(b"not an image"), "x.jpg")})
         assert resp.status_code == 400 and resp.get_json()["error"] == "bad_image"
+        # The caller's bad file: logged, but below the ERROR alert threshold.
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
 
 
 class TestSearch:
@@ -1107,13 +1109,17 @@ class TestQualityEndpoint:
         assert "too_blurry" in body["files"][0]["reasons"]
         assert body["anyUsable"] is False
 
-    def test_undecodable_file_reported_per_file(self, client):
+    def test_undecodable_file_reported_per_file(self, client, caplog):
         set_bundle(make_bundle(basis(0), basis(1)))
         resp = client.post(
             "/quality",
             data={"file": [(io.BytesIO(b"not an image"), "a.jpg"), (io.BytesIO(jpeg_bytes()), "b.jpg")]},
         )
         assert resp.status_code == 200  # one bad pick must not fail the batch
+        # A handled bad pick must not trip the ERROR alert (matcher-00036, 11-02:
+        # a truncated JPEG logged a full traceback at ERROR).
+        assert [r.levelname for r in caplog.records if r.getMessage() == "image decode failed"] == ["WARNING"]
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
         body = resp.get_json()
         assert body["files"][0]["reasons"] == ["bad_image"]
         assert body["files"][1]["usable"] is True

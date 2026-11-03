@@ -40,6 +40,12 @@ AZURE_SUFFIX = ".blob.core.windows.net"
 # warm instance keeps serving a store the indexer has since replaced.
 STORE_CHECK_SEC = float(os.environ.get("MATCHER_STORE_CHECK_SEC", "60"))
 
+# A FIRST load that catches the indexer mid-write (new .npy files, old manifest)
+# has no cached copy to fall back on, so it waits and tries again rather than
+# failing the search. The indexer's three writes land within seconds.
+COLD_LOAD_RETRIES = 2
+COLD_LOAD_RETRY_SEC = 1.5
+
 logger = logging.getLogger(__name__)
 
 
@@ -334,12 +340,15 @@ class EmbeddingStore:
     neither installed.
     """
 
-    def __init__(self, root: str, check_sec: float | None = None, clock=time.monotonic):
+    def __init__(
+        self, root: str, check_sec: float | None = None, clock=time.monotonic, sleep=time.sleep
+    ):
         self.root = root.rstrip("/")
         self._cache: dict[str, _Cached] = {}
         self._lock = threading.Lock()
         self._check_sec = STORE_CHECK_SEC if check_sec is None else check_sec
         self._clock = clock
+        self._sleep = sleep
         self._gcs_client = None
 
     def load_event(self, event_id: str) -> EventEmbeddings:
@@ -398,7 +407,10 @@ class EmbeddingStore:
         # we read, the next check sees a newer version and reloads again, rather
         # than pinning a half-old copy under the new version.
         try:
-            ev = self._load(event_id)
+            if entry is None:
+                ev, version = self._cold_load(event_id, version)
+            else:
+                ev = self._load(event_id)
         except FileNotFoundError:
             self._cache.pop(event_id, None)
             raise
@@ -414,6 +426,31 @@ class EmbeddingStore:
             logger.info("store for %s changed (%s -> %s); reloaded", event_id, entry.version, version)
         self._cache[event_id] = _Cached(ev, version, now)
         return ev
+
+    def _cold_load(self, event_id: str, version: object) -> tuple[EventEmbeddings, object]:
+        """First load of an event, retried when it catches a write in progress.
+
+        A reload with a cached copy just serves that copy, but a first load has
+        nothing to fall back on: one landing between the indexer's .npy writes
+        and its manifest write raised "length mismatch" straight into a 500
+        (matcher-00035, 2026-11-02, mid NYC Marathon re-indexing). The version is
+        re-read with each retry so the cache records the store actually loaded."""
+        for attempt in range(COLD_LOAD_RETRIES + 1):
+            try:
+                return self._load(event_id), version
+            except FileNotFoundError:
+                raise
+            except Exception:
+                if attempt == COLD_LOAD_RETRIES:
+                    raise
+                logger.warning(
+                    "first load of %s failed (store mid-write?); retrying", event_id, exc_info=True
+                )
+                self._sleep(COLD_LOAD_RETRY_SEC)
+                version = self._version(event_id)
+                if version is None:
+                    raise FileNotFoundError(f"event '{event_id}' not indexed: no manifest")
+        raise AssertionError("unreachable")
 
     def invalidate(self, event_id: str | None = None) -> None:
         with self._lock:

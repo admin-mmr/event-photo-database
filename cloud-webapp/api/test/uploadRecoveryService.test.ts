@@ -122,6 +122,23 @@ describe('scanStagedRecovery', () => {
     expect((await scanEvent()).strandedObjects).toBe(1);
   });
 
+  it('never counts an EMPTY object as owed — the worker can only skip it', async () => {
+    // A session that never sent a byte. Counting it meant "would copy 3" on
+    // every run, forever (NYC Marathon event, 2026-11-03).
+    stage([obj('b1', 'empty', { size: 0 }), obj('b2', 'real', { md5: 'rr' })]);
+    const scan = await scanEvent();
+    expect(scan.stagedObjects).toBe(2);
+    expect(scan.strandedObjects).toBe(1);
+    expect(scan.batches.map((b) => b.batchId)).toEqual(['b2']);
+  });
+
+  it('does not dispatch an empty object', async () => {
+    stage([obj('b1', 'empty', { size: 0 })]);
+    const out = await dispatch({ apply: true });
+    expect(out.objects).toBe(0);
+    expect(enqueueProcessBatchTask).not.toHaveBeenCalled();
+  });
+
   it('surfaces credit, including the uncredited blank-name case', async () => {
     stage([obj('b1', 'a', { md5: 'aa', who: 'Rebecca Tan' }), obj('b2', 'b', { md5: 'bb', who: '' })]);
     const scan = await scanEvent();

@@ -13,6 +13,7 @@ import {
   OriginalsFetcher,
   PREFETCH_MAX_PHOTOS,
   PREFETCH_DEBOUNCE_MS,
+  wasCancelled,
   type OriginalEntry,
 } from '../lib/originals.js';
 import { useAuth } from '../lib/useAuth.js';
@@ -640,12 +641,13 @@ export function Gallery(): JSX.Element {
       if (!fetcher) throw new Error('originals fetcher unavailable');
       // Same fetcher as the save prefetch, so anything already in hand is zipped
       // from cache instead of pulled down a second time.
-      const { included, failed } = await downloadOriginalsZip(
+      const { included, failed, cancelled } = await downloadOriginalsZip(
         fetcher,
         eventId,
         [...sel.selected],
         `${title}.zip`,
       );
+      if (cancelled) return;
       const skipped = failed > 0 ? t.downloadZipSkipped(failed) : '';
       setStatus(t.downloadZip(included, skipped));
     } catch (e) {
@@ -750,10 +752,13 @@ export function Gallery(): JSX.Element {
       if (!fetcher) throw new Error('originals fetcher unavailable');
       // JOINS whatever the prefetch already has in flight rather than starting a
       // duplicate set of transfers.
-      const { entries, failed, sampleErrors } = await fetcher.fetch(
+      const result = await fetcher.fetch(
         chosen.map((p) => p.photoId),
         { onSettled: recordSettled },
       );
+      const { entries, failed, sampleErrors } = result;
+      // Aborted because the user moved on — not a failure to report or show.
+      if (wasCancelled(result)) return;
       const files: NamedBlob[] = entries.map((e) => ({ blob: e.blob, filename: e.filename }));
       if (files.length === 0) {
         reportClientError('download_failed', 'Save to Photos: every original failed to load', {

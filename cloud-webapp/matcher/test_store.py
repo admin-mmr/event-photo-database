@@ -314,6 +314,50 @@ def test_a_reload_that_fails_keeps_the_last_good_copy(local):
     assert len(store.load_event("e1").meta["face"]) == 3
 
 
+def _write_half_written_event(root, mtime_ns: int) -> None:
+    """New 3-row vectors, old 1-row manifest: the indexer between its writes."""
+    emb = root / "e1" / EMB_SUBDIR
+    emb.mkdir(parents=True, exist_ok=True)
+    (emb / FILES["face"]).write_bytes(_npy(3))
+    (emb / FILES["person"]).write_bytes(_npy(3))
+    (emb / MANIFEST).write_text(json.dumps(_manifest(1)), encoding="utf-8")
+    os.utime(emb / MANIFEST, ns=(mtime_ns, mtime_ns))
+
+
+def test_a_first_load_mid_write_waits_for_the_write_to_finish(tmp_path):
+    # No cached copy to serve, so a first load used to 500 on this
+    # (matcher-00035, 2026-11-02). It now waits and retries.
+    _write_half_written_event(tmp_path, mtime_ns=1_000_000_000)
+    sleeps = []
+
+    def sleep(sec):
+        sleeps.append(sec)
+        _write_local_event(tmp_path, photos=3, mtime_ns=2_000_000_000)  # the manifest lands
+
+    store = EmbeddingStore(str(tmp_path), check_sec=60, clock=Clock(), sleep=sleep)
+    assert len(store.load_event("e1").meta["face"]) == 3
+    assert len(sleeps) == 1
+    # The cache recorded the version it actually loaded, so no extra reload.
+    assert store._cache["e1"].version == store._version("e1")
+
+
+def test_a_first_load_that_stays_broken_still_fails(tmp_path):
+    _write_half_written_event(tmp_path, mtime_ns=1_000_000_000)
+    sleeps = []
+    store = EmbeddingStore(str(tmp_path), check_sec=60, clock=Clock(), sleep=sleeps.append)
+    with pytest.raises(ValueError, match="length mismatch"):
+        store.load_event("e1")
+    assert len(sleeps) == store_mod.COLD_LOAD_RETRIES
+
+
+def test_a_missing_event_is_not_retried(tmp_path):
+    sleeps = []
+    store = EmbeddingStore(str(tmp_path), check_sec=60, clock=Clock(), sleep=sleeps.append)
+    with pytest.raises(FileNotFoundError):
+        store.load_event("e1")
+    assert sleeps == []
+
+
 def test_a_failed_version_check_serves_the_cached_copy(local, monkeypatch):
     store, root, clock, _loads = local
     _write_local_event(root, photos=1, mtime_ns=1_000_000_000)

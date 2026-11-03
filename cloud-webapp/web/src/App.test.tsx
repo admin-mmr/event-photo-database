@@ -1,17 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { User } from 'firebase/auth';
 
 // Mock the firebase module so tests never load the real SDK / network.
 const authState: { user: User | null } = { user: null };
 
+const signInWithGoogle = vi.fn();
 vi.mock('./lib/firebase.js', () => ({
   watchAuth: (cb: (u: User | null) => void) => {
     cb(authState.user);
     return () => undefined;
   },
   idToken: async () => (authState.user ? 'fake-token' : null),
-  signInWithGoogle: vi.fn(),
+  signInWithGoogle: () => signInWithGoogle(),
   continueAsGuest: vi.fn(),
   signOutUser: vi.fn(),
 }));
@@ -34,6 +35,41 @@ beforeEach(() => {
       return new Response('{}', { status: 404 });
     }),
   );
+});
+
+describe('<App /> Google sign-in', () => {
+  // Closing the popup used to be an unhandled rejection that tripped the ERROR
+  // alert (3 on 2026-11-02); a real failure told the user nothing.
+  it('says nothing when the user closes the popup', async () => {
+    authState.user = null;
+    signInWithGoogle.mockReset();
+    signInWithGoogle.mockRejectedValue(Object.assign(new Error('closed'), { code: 'auth/popup-closed-by-user' }));
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: /Sign in with Google/i }));
+    await waitFor(() => expect(signInWithGoogle).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: /Sign in with Google/i })).toHaveProperty('disabled', false));
+    expect(screen.queryByText(/did not finish/i)).toBeNull();
+  });
+
+  it('tells the user when sign-in really fails', async () => {
+    authState.user = null;
+    signInWithGoogle.mockReset();
+    signInWithGoogle.mockRejectedValue(Object.assign(new Error('blocked'), { code: 'auth/popup-blocked' }));
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: /Sign in with Google/i }));
+    expect(await screen.findByText(/Google sign-in did not finish/i)).toBeTruthy();
+  });
+
+  it('ignores a second click while the popup is open', async () => {
+    authState.user = null;
+    signInWithGoogle.mockReset();
+    signInWithGoogle.mockReturnValue(new Promise(() => undefined));
+    render(<App />);
+    const button = screen.getByRole('button', { name: /Sign in with Google/i });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(signInWithGoogle).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('<App />', () => {
