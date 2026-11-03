@@ -46,6 +46,13 @@ STORE_CHECK_SEC = float(os.environ.get("MATCHER_STORE_CHECK_SEC", "60"))
 COLD_LOAD_RETRIES = 2
 COLD_LOAD_RETRY_SEC = 1.5
 
+# How long one GCS download may keep retrying before it is abandoned. A reload
+# runs between requests, when Cloud Run gives the instance almost no CPU, so a
+# ~430 MB .npy can take minutes; the client's default 120s deadline threw the
+# transfer away part-way (256 MiB in, 2026-11-03 19:24) and the next check
+# started over from zero — new photos took ~50 min to become searchable.
+GCS_DOWNLOAD_DEADLINE_SEC = float(os.environ.get("MATCHER_GCS_DOWNLOAD_DEADLINE_SEC", "900"))
+
 logger = logging.getLogger(__name__)
 
 
@@ -588,8 +595,14 @@ class EmbeddingStore:
                 raise FileNotFoundError(
                     f"event '{event_id}' not indexed: gs://{bucket_name}/{base}/{name} missing"
                 )
-            out[name] = blob.download_as_bytes()
+            out[name] = blob.download_as_bytes(retry=self._download_retry())
         return out
+
+    @staticmethod
+    def _download_retry():
+        from google.cloud.storage.retry import DEFAULT_RETRY  # lazy, as in _gcs_base
+
+        return DEFAULT_RETRY.with_timeout(GCS_DOWNLOAD_DEADLINE_SEC)
 
     def _read_azure(self, event_id: str, details: tuple[str, str, str]) -> dict[str, bytes]:
         account_url, container_name, prefix = details

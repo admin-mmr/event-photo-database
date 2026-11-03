@@ -156,6 +156,11 @@ export function installGlobalErrorReporting(): void {
 
   window.addEventListener('error', (e: ErrorEvent) => {
     const err = e.error as Error | undefined;
+    // A script from another origin (a browser extension, an in-app browser's
+    // injected code) threw. The browser hides everything but this fixed text —
+    // no error, file or line — so there is nothing to act on, and it paged at
+    // ERROR twice on 2026-11-03. Our own bundle is same-origin and never hits it.
+    if (!err && e.message === 'Script error.') return;
     reportClientError('unhandled_error', err?.message || e.message || 'window error', {
       stack: err?.stack,
       context: {

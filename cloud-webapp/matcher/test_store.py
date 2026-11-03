@@ -407,8 +407,9 @@ class FakeGcsBlob:
     def exists(self) -> bool:
         return self.name in self._bucket.objects
 
-    def download_as_bytes(self) -> bytes:
+    def download_as_bytes(self, **kwargs) -> bytes:
         self._bucket.downloads.append(self.name)
+        self._bucket.download_kwargs.append(kwargs)
         return self._bucket.objects[self.name]
 
 
@@ -418,6 +419,7 @@ class FakeBucket:
         self.objects: dict[str, bytes] = {}
         self.generations: dict[str, int] = {}
         self.downloads: list[str] = []
+        self.download_kwargs: list[dict] = []
 
     def put(self, key: str, data: bytes) -> None:
         self.objects[key] = data
@@ -563,4 +565,21 @@ def test_the_default_spawn_reloads_on_a_thread(tmp_path):
     with store._lock:  # taken only once the reload thread has let go of it
         pass
     assert len(store.load_event("e1").meta["face"]) == 3
+
+
+# 2026-11-03 19:24: a background reload on an idle instance (no CPU between
+# requests) hit the storage client's default 120s retry deadline 256 MiB into a
+# ~430 MB file, and the next check started over from zero.
+def test_gcs_downloads_get_a_long_retry_deadline():
+    bucket = FakeBucket("derivs")
+    base = f"pre/e1/{EMB_SUBDIR}"
+    bucket.put(f"{base}/{FILES['face']}", _npy(1))
+    bucket.put(f"{base}/{FILES['person']}", _npy(1))
+    bucket.put(f"{base}/{MANIFEST}", json.dumps(_manifest(1)).encode("utf-8"))
+    store = EmbeddingStore("gs://derivs/pre", check_sec=60, clock=Clock(), spawn=_inline)
+    store._gcs_client = FakeGcsClient(bucket)
+    store.load_event("e1")
+    assert len(bucket.download_kwargs) == 3
+    for kw in bucket.download_kwargs:
+        assert kw["retry"].timeout >= 600
 
