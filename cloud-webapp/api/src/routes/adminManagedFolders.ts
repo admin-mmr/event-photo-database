@@ -195,10 +195,23 @@ adminManagedFoldersRouter.post('/admin/folders/resync-names', allowCronOrAdmin, 
  * batches. Cloud Scheduler (`findme-folder-rebuild`) hits this every couple of
  * minutes via the `allowCronOrAdmin` machine path; an admin can also trigger a
  * drain by hand. Cheap no-op when nothing is queued. See folderRebuildQueue.ts.
+ *
+ * Switched OFF (MANAGED_FOLDERS_ENABLED != 'true') it is ALSO a 200 no-op
+ * (`skipped: 'not_enabled'`), not the 503 the human-facing routes give. The
+ * scheduler keeps ticking while `event-scale.sh up` has the feature off, and a
+ * 503 is an ERROR log line: from 2026-10-31 to 11-03 this route wrote 720 a
+ * day, so the api's ERROR alert emailed every 5 minutes and buried real alerts
+ * (recaptcha_broken, client_ip_unrecognized_hop). Nothing can be enqueued while
+ * the feature is off, and anything queued before stays pending until
+ * `event-scale.sh down` turns it back on.
  */
 adminManagedFoldersRouter.post('/admin/folders/rebuild-drain', allowCronOrAdmin, async (req, res, next) => {
   try {
-    if (!masterSheetId(res) || notEnabled(res)) return;
+    if (!masterSheetId(res)) return;
+    if (env.MANAGED_FOLDERS_ENABLED !== 'true') {
+      res.json({ ok: true, skipped: 'not_enabled', drained: false, processed: 0, failed: 0, remaining: 0, finished: false });
+      return;
+    }
     const summary = await drainRebuildQueue();
     res.json({ ok: true, ...summary });
   } catch (err) {
