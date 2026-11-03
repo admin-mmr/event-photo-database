@@ -155,6 +155,28 @@ describe('POST /api/feedback (B7)', () => {
     await send('p3');
     expect(added.map((a) => a.doc.tier)).toEqual(['default', 'expanded', null]);
   });
+  // 2026-11-03: an account switch left a guest's results on screen and the new
+  // account voted on them. A label is only the searcher's to give.
+  it("refuses a vote on another account's search and records nothing", async () => {
+    runs['run-g'] = { uid: 'guest-1', resultPhotoIds: ['p1'] };
+    const res = await request(app)
+      .post('/api/feedback')
+      .set('x-test-user', USER)
+      .send({ eventId: 'ev1', photoId: 'p1', verdict: 'not_me', runId: 'run-g' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('not_your_search');
+    expect(added).toHaveLength(0);
+  });
+
+  it('records a vote on your own search', async () => {
+    runs['run-mine'] = { uid: 'u1', resultPhotoIds: ['p1'] };
+    const res = await request(app)
+      .post('/api/feedback')
+      .set('x-test-user', USER)
+      .send({ eventId: 'ev1', photoId: 'p1', verdict: 'confirmed', runId: 'run-mine' });
+    expect(res.status).toBe(201);
+    expect(added).toHaveLength(1);
+  });
 });
 
 describe('POST /api/feedback/batch ("all me" / "all not me")', () => {
@@ -243,5 +265,16 @@ describe('POST /api/feedback/batch ("all me" / "all not me")', () => {
     expect(res.status).toBe(201);
     expect(res.body.recorded).toBe(200);
     expect(added).toHaveLength(200);
+  });
+
+  it("refuses a batch on another account's search and records nothing", async () => {
+    runs['run-g'] = { uid: 'guest-1', resultPhotoIds: ['p1', 'p2'] };
+    const res = await request(app)
+      .post('/api/feedback/batch')
+      .set('x-test-user', USER)
+      .send({ eventId: 'ev1', photoIds: ['p1', 'p2'], verdict: 'confirmed', runId: 'run-g' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('not_your_search');
+    expect(added).toHaveLength(0);
   });
 });

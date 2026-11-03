@@ -4,6 +4,7 @@ import {
   saveResults,
   loadResults,
   clearResults,
+  clearAllResults,
   FINDME_CACHE_TTL_MS,
   type CachedFindMe,
 } from './findmeCache.js';
@@ -51,8 +52,8 @@ function state(over: Partial<CachedFindMe> = {}): CachedFindMe {
 describe('findmeCache', () => {
   it('round-trips references, activeId, confirmed and the hidden Set', () => {
     const s = fakeStorage();
-    saveResults('ev1', state(), s);
-    const got = loadResults('ev1', s);
+    saveResults('u1', 'ev1', state(), s);
+    const got = loadResults('u1', 'ev1', s);
     expect(got).not.toBeNull();
     expect(got!.activeId).toBe('run-1');
     expect([...got!.confirmed]).toEqual(['p2']);
@@ -67,42 +68,64 @@ describe('findmeCache', () => {
     const s = fakeStorage();
     const st = state();
     st.references[0]!.previewUrl = 'blob:http://app/abc-123';
-    saveResults('ev1', st, s);
-    expect(loadResults('ev1', s)!.references[0]!.previewUrl).toBe('');
+    saveResults('u1', 'ev1', st, s);
+    expect(loadResults('u1', 'ev1', s)!.references[0]!.previewUrl).toBe('');
 
     const st2 = state();
-    saveResults('ev2', st2, s);
-    expect(loadResults('ev2', s)!.references[0]!.previewUrl).toBe('https://signed/selfie.jpg');
+    saveResults('u1', 'ev2', st2, s);
+    expect(loadResults('u1', 'ev2', s)!.references[0]!.previewUrl).toBe('https://signed/selfie.jpg');
   });
 
   it('returns null and clears the entry once past the TTL', () => {
     const s = fakeStorage();
-    saveResults('ev1', state(), s);
+    saveResults('u1', 'ev1', state(), s);
     const justAfter = Date.now() + FINDME_CACHE_TTL_MS + 1000;
-    expect(loadResults('ev1', s, justAfter)).toBeNull();
+    expect(loadResults('u1', 'ev1', s, justAfter)).toBeNull();
     // entry was purged
-    expect(s.getItem('findme:results:ev1')).toBeNull();
+    expect(s.getItem('findme:results:u1:ev1')).toBeNull();
   });
 
   it('returns null for a missing or corrupt entry', () => {
     const s = fakeStorage();
-    expect(loadResults('nope', s)).toBeNull();
-    s.setItem('findme:results:bad', '{not json');
-    expect(loadResults('bad', s)).toBeNull();
+    expect(loadResults('u1', 'nope', s)).toBeNull();
+    s.setItem('findme:results:u1:bad', '{not json');
+    expect(loadResults('u1', 'bad', s)).toBeNull();
   });
 
   it('clearResults removes the cached set', () => {
     const s = fakeStorage();
-    saveResults('ev1', state(), s);
-    clearResults('ev1', s);
-    expect(loadResults('ev1', s)).toBeNull();
+    saveResults('u1', 'ev1', state(), s);
+    clearResults('u1', 'ev1', s);
+    expect(loadResults('u1', 'ev1', s)).toBeNull();
   });
 
   it('scopes entries per eventId', () => {
     const s = fakeStorage();
-    saveResults('ev1', state({ activeId: 'a' }), s);
-    saveResults('ev2', state({ activeId: 'b' }), s);
-    expect(loadResults('ev1', s)!.activeId).toBe('a');
-    expect(loadResults('ev2', s)!.activeId).toBe('b');
+    saveResults('u1', 'ev1', state({ activeId: 'a' }), s);
+    saveResults('u1', 'ev2', state({ activeId: 'b' }), s);
+    expect(loadResults('u1', 'ev1', s)!.activeId).toBe('a');
+    expect(loadResults('u1', 'ev2', s)!.activeId).toBe('b');
+  });
+
+  // A tab outlives an account: the next person on a shared phone must never be
+  // handed the previous person's matches.
+  it('never restores another account’s results', () => {
+    const s = fakeStorage();
+    saveResults('u1', 'ev1', state(), s);
+    expect(loadResults('u2', 'ev1', s)).toBeNull();
+    expect(loadResults('u1', 'ev1', s)).not.toBeNull();
+  });
+
+  it('clearAllResults drops every account’s entries and nothing else', () => {
+    const s = fakeStorage();
+    saveResults('u1', 'ev1', state(), s);
+    saveResults('u2', 'ev2', state(), s);
+    s.setItem('findme:results:ev3', '{}'); // pre-uid key from an older bundle
+    s.setItem('other', 'keep');
+    clearAllResults(s);
+    expect(loadResults('u1', 'ev1', s)).toBeNull();
+    expect(loadResults('u2', 'ev2', s)).toBeNull();
+    expect(s.getItem('findme:results:ev3')).toBeNull();
+    expect(s.getItem('other')).toBe('keep');
   });
 });

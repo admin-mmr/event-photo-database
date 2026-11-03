@@ -67,6 +67,7 @@ import { downloadOriginalsZip } from '../lib/zipDownload.js';
 import { reportClientError } from '../lib/reportError.js';
 import { type ShareOutcome } from '../lib/share.js';
 import { saveResults, loadResults, clearResults } from '../lib/findmeCache.js';
+import { useAccountUid } from '../lib/accountScope.js';
 import { useFindMePageSize, FINDME_PAGE_SIZE_OPTIONS } from '../lib/pageSize.js';
 import { getStoredName, setStoredName } from '../lib/userName.js';
 import { SelectBar } from '../components/SelectBar.js';
@@ -579,6 +580,7 @@ function parseNoFaceReasons(err: ApiError): SelfieFaceReason[] {
 export function FindMe(): JSX.Element {
   const t = useStrings(STR);
   const { eventId = '' } = useParams();
+  const uid = useAccountUid();
   const [phase, setPhase] = useState<Phase>('consent');
   const [agreed, setAgreed] = useState(false);
   // Required: Find Me is open to guests, so we capture who is searching (feeds
@@ -877,7 +879,7 @@ export function FindMe(): JSX.Element {
   // C6: restore cached results on mount so a reload (or the iOS share/download
   // bounce) doesn't wipe the matches and force a re-search. Runs once.
   useEffect(() => {
-    const cached = loadResults(eventId);
+    const cached = loadResults(uid, eventId);
     if (cached && cached.references.length > 0) {
       // A restored set has no query to re-run (see Reference.origin), so it also
       // carries no anchor suggestion — the button would have nothing to search with.
@@ -899,15 +901,15 @@ export function FindMe(): JSX.Element {
     }
     restored.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eventId]);
+  }, [uid, eventId]);
 
   // C6: persist whenever the result set changes (after the initial restore).
   // Clear the cache once everything is gone.
   useEffect(() => {
     if (!restored.current) return;
-    if (references.length > 0) saveResults(eventId, { references, activeId, confirmed });
-    else clearResults(eventId);
-  }, [eventId, references, activeId, confirmed]);
+    if (references.length > 0) saveResults(uid, eventId, { references, activeId, confirmed });
+    else clearResults(uid, eventId);
+  }, [uid, eventId, references, activeId, confirmed]);
 
   // Close the lightbox if its target scrolls out of the current page (e.g.
   // after "Not me" removes it, or switching reference tabs / pages). The

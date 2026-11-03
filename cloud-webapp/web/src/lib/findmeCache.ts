@@ -5,7 +5,12 @@
  * iOS share/download sheet — wipes the match set and forces a re-search, which
  * needlessly burns the search + download rate limits. We cache the result set
  * in `sessionStorage` (tab-scoped, cleared when the tab closes — appropriate
- * for face-match output) keyed by eventId.
+ * for face-match output) keyed by account uid + eventId.
+ *
+ * The uid is in the key because a tab outlives an account: signing out and
+ * handing the phone to the next person used to restore the previous person's
+ * matches (and saved-selfie preview) to them for up to the TTL. Sign-out also
+ * drops every entry (`clearAllResults`), so nothing waits in the tab at all.
  *
  * TTL: the result thumbnails are short-lived V4 signed URLs (api caps them at
  * `SIGNED_URL_TTL_MINUTES`, default 60). We treat the cache as stale a little
@@ -56,8 +61,8 @@ interface PersistedFindMe {
   confirmed: string[];
 }
 
-function key(eventId: string): string {
-  return `${KEY_PREFIX}${eventId}`;
+function key(uid: string, eventId: string): string {
+  return `${KEY_PREFIX}${uid}:${eventId}`;
 }
 
 function store(injected?: Storage): Storage | null {
@@ -79,7 +84,12 @@ function durablePreview(url: string): string {
   return url.startsWith('blob:') ? '' : url;
 }
 
-export function saveResults(eventId: string, state: CachedFindMe, injected?: Storage): void {
+export function saveResults(
+  uid: string,
+  eventId: string,
+  state: CachedFindMe,
+  injected?: Storage,
+): void {
   const s = store(injected);
   if (!s) return;
   const payload: PersistedFindMe = {
@@ -97,13 +107,14 @@ export function saveResults(eventId: string, state: CachedFindMe, injected?: Sto
     })),
   };
   try {
-    s.setItem(key(eventId), JSON.stringify(payload));
+    s.setItem(key(uid, eventId), JSON.stringify(payload));
   } catch {
     // Quota / serialization failure is non-fatal — caching is an optimisation.
   }
 }
 
 export function loadResults(
+  uid: string,
   eventId: string,
   injected?: Storage,
   now: number = Date.now(),
@@ -112,7 +123,7 @@ export function loadResults(
   if (!s) return null;
   let raw: string | null;
   try {
-    raw = s.getItem(key(eventId));
+    raw = s.getItem(key(uid, eventId));
   } catch {
     return null;
   }
@@ -121,7 +132,7 @@ export function loadResults(
     const p = JSON.parse(raw) as PersistedFindMe;
     if (!p || typeof p.savedAt !== 'number' || !Array.isArray(p.references)) return null;
     if (now - p.savedAt > FINDME_CACHE_TTL_MS) {
-      clearResults(eventId, injected); // expired → drop it
+      clearResults(uid, eventId, injected); // expired → drop it
       return null;
     }
     return {
@@ -142,11 +153,27 @@ export function loadResults(
   }
 }
 
-export function clearResults(eventId: string, injected?: Storage): void {
+export function clearResults(uid: string, eventId: string, injected?: Storage): void {
   const s = store(injected);
   if (!s) return;
   try {
-    s.removeItem(key(eventId));
+    s.removeItem(key(uid, eventId));
+  } catch {
+    // ignore
+  }
+}
+
+/** Drop every cached result set in this tab, whoever it belonged to — on sign-out. */
+export function clearAllResults(injected?: Storage): void {
+  const s = store(injected);
+  if (!s) return;
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < s.length; i += 1) {
+      const k = s.key(i);
+      if (k?.startsWith(KEY_PREFIX)) keys.push(k);
+    }
+    keys.forEach((k) => s.removeItem(k));
   } catch {
     // ignore
   }
