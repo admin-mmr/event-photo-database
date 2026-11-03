@@ -30,6 +30,35 @@ import { clientErrorRateLimit } from '../middleware/rateLimit.js';
 
 export const telemetryRouter = Router();
 
+/**
+ * Backstop for a client that floods identical reports (the web client dedupes
+ * per page load, but a tab still on an older bundle does not): after the first
+ * ERROR for a given (uid, kind, message), repeats inside this window log at WARN,
+ * so one broken tab can't bury real errors under alert-matching lines.
+ * In-memory and per instance — a looser bound across instances is fine for a
+ * backstop. Keyed on the verified uid, never on `req.ip`.
+ */
+export const REPEAT_WINDOW_MS = 10 * 60_000;
+const MAX_TRACKED_REPORTS = 5000;
+const lastErrorAt = new Map<string, number>();
+
+/** True when this report already logged at ERROR inside the window. */
+function isRepeat(key: string, nowMs: number): boolean {
+  const last = lastErrorAt.get(key);
+  if (last !== undefined && nowMs - last < REPEAT_WINDOW_MS) return true;
+  if (lastErrorAt.size >= MAX_TRACKED_REPORTS) {
+    for (const [k, t] of lastErrorAt) if (nowMs - t >= REPEAT_WINDOW_MS) lastErrorAt.delete(k);
+    if (lastErrorAt.size >= MAX_TRACKED_REPORTS) lastErrorAt.clear();
+  }
+  lastErrorAt.set(key, nowMs);
+  return false;
+}
+
+/** Test hook. */
+export function resetClientErrorRepeats(): void {
+  lastErrorAt.clear();
+}
+
 telemetryRouter.post(
   '/client-errors',
   requireAuth,
@@ -57,21 +86,25 @@ telemetryRouter.post(
 
       // ERROR severity is the whole point: it's what the alert policy matches.
       // `clientError: true` lets you tell these apart from server exceptions in
-      // the alert / log filter.
-      logger.error(
-        {
-          clientError: true,
-          kind: report.kind,
-          clientMessage: report.message,
-          stack: report.stack,
-          clientUrl: report.url,
-          userAgent: report.userAgent ?? req.get('user-agent'),
-          context,
-          by: req.user?.email,
-          uid: req.user?.uid,
-        },
-        `client error reported: ${report.kind}`,
-      );
+      // the alert / log filter. A repeat (the client's own follow-up, or one we
+      // already logged at ERROR for this user) drops to WARN.
+      const key = `${req.user?.uid ?? ''}\u0000${report.kind}\u0000${report.message.slice(0, 200)}`;
+      const repeat = isRepeat(key, Date.now()) || report.repeatCount !== undefined;
+      const fields = {
+        clientError: true,
+        kind: report.kind,
+        clientMessage: report.message,
+        stack: report.stack,
+        clientUrl: report.url,
+        userAgent: report.userAgent ?? req.get('user-agent'),
+        context,
+        ...(report.repeatCount !== undefined ? { repeatCount: report.repeatCount } : {}),
+        ...(repeat ? { repeat: true } : {}),
+        by: req.user?.email,
+        uid: req.user?.uid,
+      };
+      if (repeat) logger.warn(fields, `client error repeated: ${report.kind}`);
+      else logger.error(fields, `client error reported: ${report.kind}`);
 
       const body: ClientErrorAck = { ok: true };
       res.status(202).json(body);
