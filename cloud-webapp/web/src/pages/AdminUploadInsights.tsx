@@ -1,165 +1,107 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
-import type {
-  EventSummary,
-  ListEventsResponse,
-  UploadInsightsGroup,
-  UploadInsightsResponse,
-  UploadInsightsRow,
-  UploadInsightsSession,
-  UploadSessionStatus,
-} from '@cloud-webapp/shared';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import type { EventSummary, ListEventsResponse, UploadInsightsResponse } from '@cloud-webapp/shared';
 import { apiGet, ApiError } from '../lib/api.js';
 import { eventLabel } from '../lib/eventLabel.js';
 import { useStrings } from '../lib/i18n.js';
-import { fmtBytes, fmtMinutes, fmtPct, fmtRate, fmtTime, sizeOf, sortRows, type SortKey } from '../lib/uploadInsights.js';
+import {
+  ALL_DIMS,
+  allGroupKeys,
+  buildPivot,
+  defaultLayout,
+  fmtBytes,
+  fmtCount,
+  fmtMinutes,
+  fmtPct,
+  fmtRate,
+  fmtTime,
+  readLayout,
+  saveLayout,
+  sizeOf,
+  sortNodes,
+  visibleRows,
+  type ColumnId,
+  type Dim,
+  type InsightsLayout,
+  type PivotNode,
+  type SortKey,
+} from '../lib/uploadInsights.js';
+import { INSIGHTS_STRINGS, nodeTitle, type InsightsStrings } from '../lib/uploadInsightsStrings.js';
+import { InsightsColumnPicker } from '../components/InsightsColumnPicker.js';
+import { AttentionBadges, StatusBadge, UploadInsightsDetail } from '../components/UploadInsightsDetail.js';
 
-const STR = {
-  en: {
-    title: 'Upload insights',
-    intro:
-      'One row per club, tag and uploader. Upload time runs from the first time the server heard from a session to its last copy activity. Index % compares photos in the Find-Me index with files copied to Drive (videos are never indexed).',
-    forbidden: 'Upload insights are admin-only — sign in with an admin account.',
-    eventLabel: 'Event',
-    loadingEvents: 'Loading events…',
-    choose: 'Choose an event…',
-    refresh: 'Refresh',
-    loading: 'Loading…',
-    loadError: 'Could not load upload insights.',
-    exportCsv: 'Export CSV',
-    noUploads: 'No uploads recorded for this event.',
-    noIndexCounts: 'Index % appears after the event is next indexed.',
-    indexCountsAt: (when: string) => `Index counts as of ${when}.`,
-    total: 'Total',
-    club: 'Club',
-    tag: 'Tag',
-    uploader: 'Uploader',
-    sessions: 'Sessions',
-    files: 'Files',
-    size: 'Size',
-    minutes: 'Upload time',
-    indexPct: 'Index %',
-    first: 'First session',
-    last: 'Last session',
-    staged: 'In staging',
-    duplicates: 'Duplicates',
-    rate: 'MB/s',
-    filesPerMin: 'Files/min',
-    attention: 'Needs attention',
-    showSessions: (who: string) => `Show sessions for ${who}`,
-    session: 'Session',
-    status: 'Status',
-    folders: 'Drive folder',
-    copied: 'Copied',
-    untracked: 'Not counted',
-    untrackedHint:
-      'No copy result was recorded for these files. Almost always a retried copy: the first attempt copied them to Drive, then died before saving its counts, and the retry skipped them. Indexed / Index % confirms they are in Drive.',
-    sumNote: 'Files = copied + not counted + duplicates + in staging. Failed counts failed copy attempts; those files stay in staging or were copied later.',
-    failed: 'Failed',
-    indexed: 'Indexed',
-    started: 'Started',
-    lastActivity: 'Last activity',
-    statusLabel: {
-      ok: 'done',
-      in_progress: 'copying',
-      stuck: 'stuck',
-      error: 'error',
-      never_completed: 'never completed',
-    } satisfies Record<UploadSessionStatus, string>,
-    stuckBadge: (n: number) => `${n} stuck`,
-    errorBadge: (n: number) => `${n} error`,
-    neverBadge: (n: number) => `${n} never completed`,
-    copyingBadge: (n: number) => `${n} copying`,
-    recoveredBadge: (n: number) => `${n} recovered`,
-    unnamed: '(no name yet)',
-  },
-  zh: {
-    title: '上传洞察',
-    intro:
-      '每个俱乐部、标签和上传者一行。上传时间从服务器首次收到该会话起，到最后一次复制活动为止。索引 % 为 Find-Me 索引中的照片数与已复制到 Drive 的文件数之比（视频不会被索引）。',
-    forbidden: '上传洞察仅限管理员，请使用管理员账号登录。',
-    eventLabel: '活动',
-    loadingEvents: '正在加载活动…',
-    choose: '选择活动…',
-    refresh: '刷新',
-    loading: '加载中…',
-    loadError: '无法加载上传洞察。',
-    exportCsv: '导出 CSV',
-    noUploads: '此活动暂无上传记录。',
-    noIndexCounts: '下次索引该活动后将显示索引 %。',
-    indexCountsAt: (when: string) => `索引计数截至 ${when}。`,
-    total: '合计',
-    club: '俱乐部',
-    tag: '标签',
-    uploader: '上传者',
-    sessions: '会话',
-    files: '文件',
-    size: '大小',
-    minutes: '上传时间',
-    indexPct: '索引 %',
-    first: '首次会话',
-    last: '最近会话',
-    staged: '暂存中',
-    duplicates: '重复',
-    rate: 'MB/秒',
-    filesPerMin: '文件/分钟',
-    attention: '需要关注',
-    showSessions: (who: string) => `显示 ${who} 的会话`,
-    session: '会话',
-    status: '状态',
-    folders: 'Drive 文件夹',
-    copied: '已复制',
-    untracked: '未计数',
-    untrackedHint:
-      '这些文件没有记录复制结果。几乎都是重试的复制：首次尝试已将它们复制到 Drive，但在保存计数前中断，重试时跳过了它们。已索引 / 索引 % 可确认它们在 Drive 中。',
-    sumNote: '文件 = 已复制 + 未计数 + 重复 + 暂存中。失败为复制失败的尝试次数；这些文件仍在暂存中或稍后已复制。',
-    failed: '失败',
-    indexed: '已索引',
-    started: '开始',
-    lastActivity: '最后活动',
-    statusLabel: {
-      ok: '完成',
-      in_progress: '复制中',
-      stuck: '卡住',
-      error: '错误',
-      never_completed: '未完成',
-    } satisfies Record<UploadSessionStatus, string>,
-    stuckBadge: (n: number) => `${n} 个卡住`,
-    errorBadge: (n: number) => `${n} 个错误`,
-    neverBadge: (n: number) => `${n} 个未完成`,
-    copyingBadge: (n: number) => `${n} 个复制中`,
-    recoveredBadge: (n: number) => `${n} 个已恢复`,
-    unnamed: '（尚未命名）',
-  },
-};
+/** Frozen label column widths (px); a column's left edge is the sum of those before it. */
+const DIM_WIDTH: Record<Dim, number> = { club: 170, tag: 130, uploader: 190 };
+
+/** Text sorts A→Z first; numbers and times biggest/latest first. */
+const firstDir = (key: SortKey): 'asc' | 'desc' => (key === 'label' ? 'asc' : 'desc');
 
 function csvCell(v: string): string {
   return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
 }
 
-const STATUS_BADGE: Record<UploadSessionStatus, string> = {
-  ok: 'badge badge-ok',
-  in_progress: 'badge',
-  stuck: 'badge badge-err',
-  error: 'badge badge-err',
-  never_completed: 'badge badge-warn',
-};
+function cell(c: ColumnId, n: PivotNode, t: InsightsStrings): JSX.Element | string {
+  const m = n.metrics;
+  switch (c) {
+    case 'attention':
+      return n.session ? <StatusBadge t={t} status={n.session.status} /> : <AttentionBadges t={t} row={m} />;
+    case 'staged':
+      return m.staged > 0 ? (
+        <span className="insights-warn">
+          {fmtCount(m.staged)} <span className="muted">({fmtBytes(m.stagedBytes)})</span>
+        </span>
+      ) : (
+        '0'
+      );
+    case 'indexed':
+      return m.indexed === null ? '—' : fmtCount(m.indexed);
+    case 'indexRatio':
+      return fmtPct(m.indexRatio);
+    case 'size':
+      return fmtBytes(sizeOf(m));
+    case 'minutes':
+      return fmtMinutes(m.minutes);
+    case 'firstSessionAt':
+      return fmtTime(m.firstSessionAt);
+    case 'lastSessionAt':
+      return fmtTime(m.lastSessionAt);
+    case 'lastActivityAt':
+      return fmtTime(m.lastActivityAt);
+    case 'mbPerSec':
+      return fmtRate(m.mbPerSec, 2);
+    case 'filesPerMin':
+      return fmtRate(m.filesPerMin, 1);
+    default:
+      return fmtCount(m[c]);
+  }
+}
+
+const NUMERIC: ReadonlySet<ColumnId> = new Set<ColumnId>([
+  'sessions', 'files', 'copied', 'untracked', 'skippedDuplicates', 'staged', 'failed', 'indexed', 'indexRatio',
+  'size', 'minutes', 'mbPerSec', 'filesPerMin',
+]);
 
 /**
- * Per-uploader upload insights for one event: sessions, files, size, upload
- * time and index coverage per (club, tag, uploader), with the sessions behind
- * each row one click away so a stuck or never-completed upload can be found.
- * Club-scoped server-side (a club_admin only sees their own club).
+ * Upload insights for one event as a pivot: rows grouped by any order of club /
+ * tag / uploader, each level rolled up from the sessions beneath it, the last
+ * level opening onto its sessions. The header row and the grouping columns stay
+ * put while the table scrolls; columns are pickable; a row opens a detail panel
+ * with its whole breakdown. Club-scoped server-side (a club_admin only sees
+ * their own club).
  */
 export function AdminUploadInsights(): JSX.Element {
-  const t = useStrings(STR);
+  const t = useStrings(INSIGHTS_STRINGS);
   const [events, setEvents] = useState<EventSummary[] | null>(null);
   const [eventId, setEventId] = useState('');
   const [data, setData] = useState<UploadInsightsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
+  const [layout, setLayoutState] = useState<InsightsLayout>(readLayout);
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'lastSessionAt', dir: 'desc' });
-  const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const [sessionsOpen, setSessionsOpen] = useState<ReadonlySet<string>>(new Set());
+  const [detail, setDetail] = useState<PivotNode[]>([]);
+  const tableBox = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     apiGet<ListEventsResponse>('/api/events')
@@ -174,6 +116,7 @@ export function AdminUploadInsights(): JSX.Element {
     async (id: string) => {
       setLoading(true);
       setError(null);
+      setDetail([]);
       try {
         setData(await apiGet<UploadInsightsResponse>(`/api/admin/upload-insights/${encodeURIComponent(id)}`));
       } catch (e) {
@@ -187,42 +130,92 @@ export function AdminUploadInsights(): JSX.Element {
     [t.loadError],
   );
 
-  const rows = useMemo(() => (data ? sortRows(data.groups, sort.key, sort.dir) : []), [data, sort]);
-
-  function toggleSort(key: SortKey): void {
-    setSort((s) =>
-      s.key === key
-        ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' }
-        : { key, dir: key === 'clubName' || key === 'tag' || key === 'uploader' ? 'asc' : 'desc' },
-    );
+  function setLayout(next: InsightsLayout): void {
+    // Regrouping changes every row key, so open/closed state and the panel reset.
+    if (next.dims.join() !== layout.dims.join()) {
+      setCollapsed(new Set());
+      setSessionsOpen(new Set());
+      setDetail([]);
+    }
+    setLayoutState(next);
+    saveLayout(next);
   }
 
-  const groupKey = (g: UploadInsightsGroup): string => JSON.stringify([g.clubName, g.tag, g.uploader]);
+  const pivot = useMemo(() => (data ? buildPivot(data.groups, layout.dims) : null), [data, layout.dims]);
+  const rows = useMemo(
+    () => (pivot ? visibleRows(pivot.children, { collapsed, sessionsOpen, key: sort.key, dir: sort.dir }) : []),
+    [pivot, collapsed, sessionsOpen, sort],
+  );
+  const columns = layout.columns;
+  const dims = layout.dims;
+  const panelOpen = detail.length > 0;
+
+  // The table box ends at the bottom of the window, so both of its scrollbars
+  // are on screen without scrolling the page first. Measured from the top of
+  // the document, so it fits the window as first seen, whatever sits above it.
+  useLayoutEffect(() => {
+    const box = tableBox.current;
+    if (!box) return;
+    const fit = (): void => {
+      const top = box.getBoundingClientRect().top + window.scrollY;
+      box.style.setProperty('--fit-height', `${Math.max(320, Math.round(window.innerHeight - top - 16))}px`);
+    };
+    fit();
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, [pivot, layout, panelOpen]);
+  const inDetail = new Set(detail.map((n) => n.key));
+  const closeDetail = useCallback(() => setDetail([]), []);
+
+  function toggleSort(key: SortKey): void {
+    setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: firstDir(key) }));
+  }
+
+  const toggleIn = (set: ReadonlySet<string>, key: string): Set<string> => {
+    const next = new Set(set);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  };
 
   function downloadCsv(): void {
-    if (!data) return;
-    const head = [
-      'club', 'tag', 'uploader', 'sessions', 'files', 'copied', 'notCounted', 'duplicates', 'failed', 'staged',
-      'copiedBytes', 'stagedBytes', 'minutes', 'indexed', 'indexPct', 'mbPerSec', 'filesPerMin',
-      'inProgress', 'stuck', 'errors', 'neverCompleted', 'recovered', 'firstSessionAt', 'lastSessionAt', 'lastActivityAt',
-    ];
-    const line = (r: UploadInsightsRow, label?: string): string =>
+    if (!data || !pivot) return;
+    // One line per row of the finest grouping, whatever is collapsed on screen.
+    const leaves: PivotNode[] = [];
+    const walk = (level: PivotNode[]): void => {
+      for (const n of sortNodes(level, sort.key, sort.dir)) {
+        if (n.children.length > 0) walk(n.children);
+        else leaves.push(n);
+      }
+    };
+    walk(pivot.children);
+    const metrics = [
+      'sessions', 'files', 'copied', 'untracked', 'skippedDuplicates', 'staged', 'failed', 'copiedBytes', 'stagedBytes',
+      'minutes', 'indexed', 'indexRatio', 'mbPerSec', 'filesPerMin', 'inProgress', 'stuck', 'errors', 'neverCompleted',
+      'recovered', 'firstSessionAt', 'lastSessionAt', 'lastActivityAt',
+    ] as const;
+    const line = (n: PivotNode, label?: string): string =>
       [
-        label ?? r.clubName, label ? '' : r.tag, label ? '' : r.uploader, r.sessions, r.files, r.copied, r.untracked,
-        r.skippedDuplicates, r.failed, r.staged, r.copiedBytes ?? '', r.stagedBytes, r.minutes, r.indexed ?? '',
-        r.indexRatio === null ? '' : Math.round(r.indexRatio * 100), r.mbPerSec?.toFixed(2) ?? '',
-        r.filesPerMin?.toFixed(1) ?? '', r.inProgress, r.stuck, r.errors, r.neverCompleted, r.recovered,
-        r.firstSessionAt, r.lastSessionAt, r.lastActivityAt,
+        ...dims.map((d, i) => (label ? (i === 0 ? label : '') : (n.path[d] ?? ''))),
+        ...metrics.map((k) => {
+          const v = n.metrics[k];
+          if (v === null) return '';
+          if (k === 'indexRatio') return Math.round((v as number) * 100);
+          if (k === 'mbPerSec') return (v as number).toFixed(2);
+          if (k === 'filesPerMin') return (v as number).toFixed(1);
+          return v;
+        }),
       ]
         .map((x) => csvCell(String(x)))
         .join(',');
-    const lines = [head.join(','), ...rows.map((r) => line(r)), line(data.totals, 'TOTAL')];
+    const head = [...dims, ...metrics.map((k) => (k === 'indexRatio' ? 'indexPct' : k))];
+    const lines = [head.join(','), ...leaves.map((n) => line(n)), line(pivot, 'TOTAL')];
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     try {
       const a = document.createElement('a');
       a.href = url;
-      a.download = `upload-insights-${data.eventId}-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.download = `upload-insights-${data.eventId}-${dims.join('-')}-${new Date().toISOString().slice(0, 10)}.csv`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -240,71 +233,119 @@ export function AdminUploadInsights(): JSX.Element {
     );
   }
 
-  const header = (key: SortKey, label: string, className?: string, hint?: string): JSX.Element => (
+  /** Each grouping column's frozen width and left edge, as CSS variables the desktop rules read. */
+  const dimStyle = (i: number): CSSProperties =>
+    ({
+      '--pivot-left': `${dims.slice(0, i).reduce((a, d) => a + DIM_WIDTH[d], 0)}px`,
+      '--pivot-w': `${DIM_WIDTH[dims[i] as Dim]}px`,
+    }) as CSSProperties;
+  const dimClass = (i: number, extra = ''): string =>
+    `pivot-dim${i === dims.length - 1 ? ' pivot-dim-last' : ''}${extra ? ` ${extra}` : ''}`;
+
+  const sortHeader = (
+    key: SortKey,
+    label: string,
+    opts: { className?: string | undefined; style?: CSSProperties; hint?: string | undefined } = {},
+  ): JSX.Element => (
     <th
-      className={className}
-      title={hint}
+      key={`${key}-${label}`}
+      className={opts.className}
+      style={opts.style}
+      title={opts.hint}
       aria-sort={sort.key === key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
     >
-      <button type="button" className="btn-inline-link" onClick={() => toggleSort(key)}>
+      <button type="button" className="pivot-sort" onClick={() => toggleSort(key)}>
         {label}
         {sort.key === key ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
       </button>
     </th>
   );
 
-  const badges = (r: UploadInsightsRow): JSX.Element => (
-    <>
-      {r.stuck > 0 && <span className="badge badge-err">{t.stuckBadge(r.stuck)}</span>}{' '}
-      {r.errors > 0 && <span className="badge badge-err">{t.errorBadge(r.errors)}</span>}{' '}
-      {r.neverCompleted > 0 && <span className="badge badge-warn">{t.neverBadge(r.neverCompleted)}</span>}{' '}
-      {r.inProgress > 0 && <span className="badge">{t.copyingBadge(r.inProgress)}</span>}{' '}
-      {r.recovered > 0 && <span className="muted">{t.recoveredBadge(r.recovered)}</span>}
-    </>
-  );
-
-  const cells = (r: UploadInsightsRow): JSX.Element => (
-    <>
-      <td data-label={t.attention}>{badges(r)}</td>
-      <td data-label={t.sessions}>{r.sessions}</td>
-      <td data-label={t.files}>{r.files}</td>
-      <td data-label={t.copied}>{r.copied}</td>
-      <td data-label={t.untracked} title={r.untracked > 0 ? t.untrackedHint : undefined}>{r.untracked}</td>
-      <td data-label={t.duplicates}>{r.skippedDuplicates}</td>
-      <td data-label={t.staged}>{r.staged > 0 ? `${r.staged} (${fmtBytes(r.stagedBytes)})` : 0}</td>
-      <td data-label={t.indexPct}>{fmtPct(r.indexRatio)}</td>
-      <td data-label={t.size}>{fmtBytes(sizeOf(r))}</td>
-      <td data-label={t.minutes}>{fmtMinutes(r.minutes)}</td>
-      <td data-label={t.first}>{fmtTime(r.firstSessionAt)}</td>
-      <td data-label={t.last}>{fmtTime(r.lastSessionAt)}</td>
-      <td data-label={t.rate}>{fmtRate(r.mbPerSec, 2)}</td>
-      <td data-label={t.filesPerMin}>{fmtRate(r.filesPerMin, 1)}</td>
-    </>
-  );
-
-  const sessionRow = (s: UploadInsightsSession): JSX.Element => (
-    <tr key={s.batchId}>
-      <td className="mono" data-label={t.session} title={s.batchId}>{s.batchId.slice(0, 8)}</td>
-      <td data-label={t.status}>
-        <span className={STATUS_BADGE[s.status]}>{t.statusLabel[s.status]}</span>
+  function labelCell(n: PivotNode, i: number): JSX.Element {
+    const title = nodeTitle(n, t);
+    const isGroup = n.children.length > 0;
+    const open = isGroup ? !collapsed.has(n.key) : sessionsOpen.has(n.key);
+    const crumbs = ALL_DIMS.filter((d) => n.path[d] !== undefined).map((d) => n.path[d] || '—').join(' › ');
+    return (
+      <td key={`dim-${i}`} className={dimClass(i, 'pivot-label')} style={dimStyle(i)} data-label={n.session ? t.session : t.dim[n.kind as Dim]}>
+        <span className="pivot-label-inner" title={n.session ? `${crumbs} › ${n.session.batchId}` : crumbs}>
+          {n.session ? (
+            <span className="pivot-session-mark" aria-hidden="true">
+              ↳
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="pivot-toggle"
+              aria-expanded={open}
+              aria-label={
+                isGroup ? (open ? t.collapse(title) : t.expand(title)) : open ? t.hideSessions(title) : t.showSessions(title)
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                if (isGroup) setCollapsed((s) => toggleIn(s, n.key));
+                else setSessionsOpen((s) => toggleIn(s, n.key));
+              }}
+            >
+              {open ? '▾' : '▸'}
+            </button>
+          )}
+          <span className={n.session ? 'pivot-text pivot-session-text' : 'pivot-text'}>{title}</span>
+        </span>
       </td>
-      <td data-label={t.files}>{s.files}</td>
-      <td data-label={t.copied}>{s.copied}</td>
-      <td data-label={t.untracked} title={s.untracked > 0 ? t.untrackedHint : undefined}>{s.untracked}</td>
-      <td data-label={t.duplicates}>{s.skippedDuplicates}</td>
-      <td data-label={t.staged}>{s.staged}</td>
-      <td data-label={t.failed}>{s.failed}</td>
-      <td data-label={t.indexed}>{s.indexed ?? '—'}</td>
-      <td data-label={t.size}>{fmtBytes(s.copiedBytes === null ? null : s.copiedBytes + s.stagedBytes)}</td>
-      <td data-label={t.started}>{fmtTime(s.startedAt)}</td>
-      <td data-label={t.lastActivity}>{fmtTime(s.lastActivityAt)}</td>
-      <td data-label={t.minutes}>{fmtMinutes(s.minutes)}</td>
-      <td className="mono" data-label={t.folders}>{s.batchFolders.join(', ') || '—'}</td>
-    </tr>
-  );
+    );
+  }
+
+  function row(n: PivotNode): JSX.Element {
+    // A session sits in the last grouping column, under the row it belongs to.
+    const labelAt = n.kind === 'session' || n.kind === 'total' ? (n.kind === 'total' ? 0 : dims.length - 1) : n.depth;
+    const level = n.kind === 'session' ? 'pivot-session' : n.kind === 'total' ? 'pivot-total' : `pivot-l${n.depth}${n.children.length > 0 ? ' pivot-group' : ''}`;
+    const open = (): void => setDetail([n]);
+    return (
+      <tr
+        key={n.key}
+        className={`pivot-row ${level}${inDetail.has(n.key) ? ' is-selected' : ''}`}
+        tabIndex={0}
+        aria-label={t.openDetails(nodeTitle(n, t))}
+        onClick={open}
+        onKeyDown={(e: KeyboardEvent<HTMLTableRowElement>) => {
+          if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault();
+            open();
+          }
+        }}
+      >
+        {dims.map((_, i) =>
+          i !== labelAt ? (
+            <td key={`dim-${i}`} className={dimClass(i, 'pivot-dim-empty')} style={dimStyle(i)} />
+          ) : n.kind === 'total' ? (
+            <td key={`dim-${i}`} className={dimClass(i, 'pivot-label')} style={dimStyle(i)} data-label={t.total}>
+              <span className="pivot-label-inner">
+                <span className="pivot-text">{t.total}</span>
+              </span>
+            </td>
+          ) : (
+            labelCell(n, i)
+          ),
+        )}
+        {columns.map((c) => (
+          <td
+            key={c}
+            className={NUMERIC.has(c) ? 'num' : undefined}
+            data-label={t.col[c]}
+            title={c === 'untracked' && n.metrics.untracked > 0 ? t.hint.untracked : undefined}
+          >
+            {cell(c, n, t)}
+          </td>
+        ))}
+      </tr>
+    );
+  }
+
+  const missing = ALL_DIMS.filter((d) => !dims.includes(d));
 
   return (
-    <div className="insights-page">
+    <div className={`insights-page${panelOpen ? ' has-detail' : ''}`}>
       <div className="gallery-header">
         <h2>{t.title}</h2>
         <button className="btn btn-light btn-sm" onClick={downloadCsv} disabled={!data || data.groups.length === 0}>
@@ -324,7 +365,8 @@ export function AdminUploadInsights(): JSX.Element {
               const id = e.target.value;
               setEventId(id);
               setData(null);
-              setOpen(new Set());
+              setCollapsed(new Set());
+              setSessionsOpen(new Set());
               if (id) void load(id);
             }}
           >
@@ -348,115 +390,113 @@ export function AdminUploadInsights(): JSX.Element {
         </p>
       ))}
 
-      {data && (
+      {data && pivot && (
         <>
-          <p className="muted">
-            {data.indexCountsAt ? t.indexCountsAt(fmtTime(data.indexCountsAt)) : t.noIndexCounts}
-          </p>
           {data.groups.length === 0 ? (
             <p className="muted">{t.noUploads}</p>
           ) : (
-            <div className="table-wrap insights-table-wrap">
-              <table className="data-table insights-table">
-                <thead>
-                  <tr>
-                    {header('clubName', t.club, 'sticky-c1')}
-                    {header('tag', t.tag, 'sticky-c2')}
-                    {header('uploader', t.uploader, 'sticky-c3')}
-                    {header('attention', t.attention)}
-                    {header('sessions', t.sessions)}
-                    {header('files', t.files)}
-                    {header('copied', t.copied)}
-                    {header('untracked', t.untracked, undefined, t.untrackedHint)}
-                    {header('skippedDuplicates', t.duplicates)}
-                    {header('staged', t.staged)}
-                    {header('indexRatio', t.indexPct)}
-                    {header('size', t.size)}
-                    {header('minutes', t.minutes)}
-                    {header('firstSessionAt', t.first)}
-                    {header('lastSessionAt', t.last)}
-                    {header('mbPerSec', t.rate)}
-                    {header('filesPerMin', t.filesPerMin)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((g) => {
-                    const key = groupKey(g);
-                    const isOpen = open.has(key);
-                    const who = g.uploader || t.unnamed;
-                    return (
-                      <Fragment key={key}>
-                        <tr>
-                          <td className="mono sticky-c1" data-label={t.club} title={g.clubName}>{g.clubName || '—'}</td>
-                          <td className="sticky-c2" data-label={t.tag} title={g.tag}>{g.tag || '—'}</td>
-                          <td className="sticky-c3" data-label={t.uploader}>
-                            <button
-                              type="button"
-                              className="btn-inline-link"
-                              aria-expanded={isOpen}
-                              aria-label={t.showSessions(who)}
-                              onClick={() =>
-                                setOpen((prev) => {
-                                  const next = new Set(prev);
-                                  if (next.has(key)) next.delete(key);
-                                  else next.add(key);
-                                  return next;
-                                })
-                              }
-                            >
-                              {isOpen ? '▾ ' : '▸ '}
-                              {who}
-                            </button>
-                          </td>
-                          {cells(g)}
-                        </tr>
-                        {isOpen && (
-                          <tr>
-                            <td colSpan={17} className="insights-sessions-cell">
-                              <div className="insights-sessions">
-                              <p className="muted insights-sum-note">{t.sumNote}</p>
-                              <table className="data-table">
-                                <thead>
-                                  <tr>
-                                    <th>{t.session}</th>
-                                    <th>{t.status}</th>
-                                    <th>{t.files}</th>
-                                    <th>{t.copied}</th>
-                                    <th title={t.untrackedHint}>{t.untracked}</th>
-                                    <th>{t.duplicates}</th>
-                                    <th>{t.staged}</th>
-                                    <th>{t.failed}</th>
-                                    <th>{t.indexed}</th>
-                                    <th>{t.size}</th>
-                                    <th>{t.started}</th>
-                                    <th>{t.lastActivity}</th>
-                                    <th>{t.minutes}</th>
-                                    <th>{t.folders}</th>
-                                  </tr>
-                                </thead>
-                                <tbody>{g.sessionList.map(sessionRow)}</tbody>
-                              </table>
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    );
-                  })}
-                  {/* A body row, not <tfoot>: on phones each body row becomes a card. */}
-                  <tr className="totals-row">
-                    <td className="sticky-c1" data-label={t.club}>
-                      <strong>{t.total}</strong>
-                    </td>
-                    <td className="sticky-c2" data-label={t.tag}>—</td>
-                    <td className="sticky-c3" data-label={t.uploader}>—</td>
-                    {cells(data.totals)}
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            <>
+              <div className="insights-toolbar">
+                <div className="insights-dims" role="group" aria-label={t.rows}>
+                  <span className="insights-toolbar-label">{t.rows}</span>
+                  {dims.map((d, i) => (
+                    <span key={d} className="insights-dim-chip">
+                      {i > 0 && (
+                        <button
+                          type="button"
+                          aria-label={t.moveEarlier(t.dim[d])}
+                          onClick={() => {
+                            const next = [...dims];
+                            next.splice(i - 1, 2, d, dims[i - 1] as Dim);
+                            setLayout({ ...layout, dims: next });
+                          }}
+                        >
+                          ←
+                        </button>
+                      )}
+                      <span className="insights-dim-name">{t.dim[d]}</span>
+                      {dims.length > 1 && (
+                        <button
+                          type="button"
+                          aria-label={t.removeDim(t.dim[d])}
+                          onClick={() => setLayout({ ...layout, dims: dims.filter((x) => x !== d) })}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                  {missing.map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      className="insights-dim-add"
+                      aria-label={t.addDim(t.dim[d])}
+                      onClick={() => setLayout({ ...layout, dims: [...dims, d] })}
+                    >
+                      + {t.dim[d]}
+                    </button>
+                  ))}
+                </div>
+                <div className="insights-toolbar-actions">
+                  {dims.length > 1 && (
+                    <>
+                      <button type="button" className="btn btn-light btn-sm" onClick={() => setCollapsed(new Set())}>
+                        {t.expandAll}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-light btn-sm"
+                        onClick={() => {
+                          setCollapsed(new Set(allGroupKeys(pivot.children)));
+                          setSessionsOpen(new Set());
+                        }}
+                      >
+                        {t.collapseAll}
+                      </button>
+                    </>
+                  )}
+                  <InsightsColumnPicker
+                    t={t}
+                    selected={columns}
+                    onChange={(next) => setLayout({ ...layout, columns: next })}
+                    onReset={() => setLayout(defaultLayout())}
+                  />
+                </div>
+              </div>
+
+              <div className="table-wrap insights-table-wrap" ref={tableBox}>
+                <table className="data-table insights-table">
+                  <thead>
+                    <tr>
+                      {dims.map((d, i) => sortHeader('label', t.dim[d], { className: dimClass(i), style: dimStyle(i) }))}
+                      {columns.map((c) =>
+                        sortHeader(c, t.col[c], { className: NUMERIC.has(c) ? 'num' : undefined, hint: t.hint[c] }),
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(row)}
+                    {row(pivot)}
+                  </tbody>
+                </table>
+              </div>
+              <p className="muted insights-note">
+                {data.indexCountsAt ? t.indexCountsAt(fmtTime(data.indexCountsAt)) : t.noIndexCounts}
+              </p>
+            </>
           )}
         </>
+      )}
+
+      {panelOpen && (
+        <UploadInsightsDetail
+          t={t}
+          stack={detail}
+          onOpen={(n) => setDetail((s) => [...s, n])}
+          onBack={() => setDetail((s) => s.slice(0, -1))}
+          onClose={closeDetail}
+        />
       )}
     </div>
   );
