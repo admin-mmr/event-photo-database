@@ -5,6 +5,8 @@ import { useAuth } from './lib/useAuth.js';
 import { useSession } from './lib/useSession.js';
 import { LangToggle, useStrings } from './lib/i18n.js';
 import { clearStoredName, setStoredName } from './lib/userName.js';
+import { clearAllResults } from './lib/findmeCache.js';
+import type { AccountScope } from './lib/accountScope.js';
 import { isInAppBrowser } from './lib/inAppBrowser.js';
 import { isSignInCancelled } from './lib/signInErrors.js';
 import { reportClientError } from './lib/reportError.js';
@@ -219,10 +221,11 @@ export function App(): JSX.Element {
   const closeMenu = (): void => setMenuOpen(false);
   const guestNameOk = guestName.trim().length > 0;
 
-  // Sign out / exit guest: also forget the remembered searcher name so the next
-  // person on a shared device starts fresh.
+  // Sign out / exit guest: also forget the remembered searcher name and any
+  // cached Find-Me matches so the next person on a shared device starts fresh.
   function signOutAndForget(): void {
     clearStoredName();
+    clearAllResults();
     void signOutUser();
   }
 
@@ -411,7 +414,9 @@ export function App(): JSX.Element {
         <p className="muted">{t.loading}</p>
       ) : user ? (
         <>
-          <Outlet />
+          {/* Keyed by uid: an account switch in this tab remounts the page
+              rather than leaving the last person's state on it (accountScope.ts). */}
+          <Outlet key={user.uid} context={{ uid: user.uid } satisfies AccountScope} />
           {/* Bot-check fallback: a blocked guest gets "sign in to continue". */}
           <GuestSignInPrompt isGuest={isGuest} />
         </>

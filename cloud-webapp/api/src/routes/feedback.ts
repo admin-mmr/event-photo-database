@@ -10,7 +10,7 @@
  * it never deletes photos or vectors.
  */
 
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import {
   FeedbackBatchRequestSchema,
   FeedbackReasonSchema,
@@ -48,13 +48,15 @@ const ADMIN_FEEDBACK_DEFAULT = 100;
 const ADMIN_FEEDBACK_THUMBS_MAX = 200;
 
 interface RunContext {
+  /** Who ran the search; null for a missing run or one written before runs carried it. */
+  ownerUid: string | null;
   searchVersion: string | null;
   algo: SearchAlgo | null;
   /** Which band a photo was shown in for this run; null if in neither. */
   tierOf: (photoId: string) => MatchTier | null;
 }
 
-const NO_RUN: RunContext = { searchVersion: null, algo: null, tierOf: () => null };
+const NO_RUN: RunContext = { ownerUid: null, searchVersion: null, algo: null, tierOf: () => null };
 
 /**
  * Resolve what a vote needs from its search run, so the label is
@@ -76,6 +78,7 @@ async function resolveRun(runId: string | undefined): Promise<RunContext> {
     const shown = new Set(Array.isArray(data.resultPhotoIds) ? (data.resultPhotoIds as string[]) : []);
     const expanded = new Set(Array.isArray(data.expandedPhotoIds) ? (data.expandedPhotoIds as string[]) : []);
     return {
+      ownerUid: typeof data.uid === 'string' && data.uid ? data.uid : null,
       searchVersion: parsed.success ? parsed.data.version : null,
       algo: parsed.success ? parsed.data : null,
       tierOf: (photoId) => (shown.has(photoId) ? 'default' : expanded.has(photoId) ? 'expanded' : null),
@@ -84,6 +87,30 @@ async function resolveRun(runId: string | undefined): Promise<RunContext> {
     logger.warn({ err, runId }, 'feedback run lookup failed (non-fatal)');
   }
   return NO_RUN;
+}
+
+/**
+ * A vote is a label on the voter's OWN search ("is this me?"), so one cast on
+ * another account's run is refused rather than filed. It happened on 2026-11-03:
+ * a tab switched accounts with a guest's results still on screen and the new
+ * account cast 45 verdicts on the guest's run — labels the eval loop would have
+ * read as that search's ground truth. A run with no recorded owner (or no run)
+ * still records, as before: a vote must not be lost to missing bookkeeping.
+ */
+function refuseForeignRun(
+  run: RunContext,
+  uid: string,
+  runId: string | undefined,
+  res: Response,
+): boolean {
+  if (!run.ownerUid || run.ownerUid === uid) return false;
+  logger.warn({ runId, uid }, 'feedback refused: the search belongs to another account');
+  res.status(403).json({
+    ok: false,
+    error: 'not_your_search',
+    message: 'These results belong to another account. Search again to mark your own.',
+  });
+  return true;
 }
 
 /** A reason only means something on "that's me"; an omitted one is the UI's
@@ -110,6 +137,7 @@ feedbackRouter.post('/feedback', requireAuth, async (req, res, next) => {
     // the eval feedback loop can separate current-pipeline labels (§1.1–1.3)
     // from pre-improvement ones. Denormalized from the run at click time.
     const run = await resolveRun(runId);
+    if (refuseForeignRun(run, user.uid, runId, res)) return;
     const { searchVersion, algo } = run;
 
     // No email copy: the uid identifies the member, and the admin screens look
@@ -173,6 +201,7 @@ feedbackRouter.post('/feedback/batch', requireAuth, async (req, res, next) => {
     const unique = [...new Set(photoIds)];
 
     const run = await resolveRun(runId);
+    if (refuseForeignRun(run, user.uid, runId, res)) return;
     const { searchVersion, algo } = run;
     const createdAt = new Date().toISOString();
     const row = {

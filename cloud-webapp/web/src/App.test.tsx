@@ -1,13 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { User } from 'firebase/auth';
 
 // Mock the firebase module so tests never load the real SDK / network.
 const authState: { user: User | null } = { user: null };
+/** The App's auth listener, so a test can switch accounts mid-session. */
+let emitAuth: (u: User | null) => void = () => undefined;
 
 const signInWithGoogle = vi.fn();
 vi.mock('./lib/firebase.js', () => ({
   watchAuth: (cb: (u: User | null) => void) => {
+    emitAuth = cb;
     cb(authState.user);
     return () => undefined;
   },
@@ -229,5 +232,36 @@ describe('<App />', () => {
     // No admin items at all.
     expect(screen.queryByRole('link', { name: 'Users' })).toBeNull();
     expect(screen.queryByRole('link', { name: 'Events' })).toBeNull();
+  });
+});
+
+// 2026-11-03: a tab switched accounts with Find-Me results on screen; the new
+// account voted on the old one's search and its saved selfies 404'd.
+describe('<App /> account switch', () => {
+  function eventsFetches(): number {
+    return vi.mocked(fetch).mock.calls.filter(([u]) => String(u) === '/api/events').length;
+  }
+
+  it('remounts the page for a different account, not for the same one', async () => {
+    authState.user = { uid: 'guest-1', isAnonymous: true } as User;
+    render(<App />);
+    await waitFor(() => expect(screen.getByText(/Spring Run 2026/)).toBeTruthy());
+    const before = eventsFetches();
+
+    // Same uid (a guest linked to Google keeps it): the page stays put.
+    act(() => emitAuth({ uid: 'guest-1', isAnonymous: false, email: 'a@x.org' } as User));
+    expect(eventsFetches()).toBe(before);
+
+    // A different uid: the page starts over, holding nothing of the last account.
+    act(() => emitAuth({ uid: 'google-2', isAnonymous: false, email: 'b@x.org' } as User));
+    await waitFor(() => expect(eventsFetches()).toBe(before + 1));
+  });
+
+  it('forgets cached Find-Me matches on sign-out', async () => {
+    authState.user = { uid: 'guest-1', isAnonymous: true } as User;
+    sessionStorage.setItem('findme:results:guest-1:ev1', '{}');
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /Exit guest/i }));
+    expect(sessionStorage.getItem('findme:results:guest-1:ev1')).toBeNull();
   });
 });
