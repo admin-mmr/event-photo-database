@@ -50,6 +50,10 @@ const STR = {
     status: 'Status',
     folders: 'Drive folder',
     copied: 'Copied',
+    untracked: 'Not counted',
+    untrackedHint:
+      'No copy result was recorded for these files. Almost always a retried copy: the first attempt copied them to Drive, then died before saving its counts, and the retry skipped them. Indexed / Index % confirms they are in Drive.',
+    sumNote: 'Files = copied + not counted + duplicates + in staging. Failed counts failed copy attempts; those files stay in staging or were copied later.',
     failed: 'Failed',
     indexed: 'Indexed',
     started: 'Started',
@@ -104,6 +108,10 @@ const STR = {
     status: '状态',
     folders: 'Drive 文件夹',
     copied: '已复制',
+    untracked: '未计数',
+    untrackedHint:
+      '这些文件没有记录复制结果。几乎都是重试的复制：首次尝试已将它们复制到 Drive，但在保存计数前中断，重试时跳过了它们。已索引 / 索引 % 可确认它们在 Drive 中。',
+    sumNote: '文件 = 已复制 + 未计数 + 重复 + 暂存中。失败为复制失败的尝试次数；这些文件仍在暂存中或稍后已复制。',
     failed: '失败',
     indexed: '已索引',
     started: '开始',
@@ -194,13 +202,13 @@ export function AdminUploadInsights(): JSX.Element {
   function downloadCsv(): void {
     if (!data) return;
     const head = [
-      'club', 'tag', 'uploader', 'sessions', 'files', 'copied', 'duplicates', 'failed', 'staged',
+      'club', 'tag', 'uploader', 'sessions', 'files', 'copied', 'notCounted', 'duplicates', 'failed', 'staged',
       'copiedBytes', 'stagedBytes', 'minutes', 'indexed', 'indexPct', 'mbPerSec', 'filesPerMin',
       'inProgress', 'stuck', 'errors', 'neverCompleted', 'recovered', 'firstSessionAt', 'lastSessionAt', 'lastActivityAt',
     ];
     const line = (r: UploadInsightsRow, label?: string): string =>
       [
-        label ?? r.clubName, label ? '' : r.tag, label ? '' : r.uploader, r.sessions, r.files, r.copied,
+        label ?? r.clubName, label ? '' : r.tag, label ? '' : r.uploader, r.sessions, r.files, r.copied, r.untracked,
         r.skippedDuplicates, r.failed, r.staged, r.copiedBytes ?? '', r.stagedBytes, r.minutes, r.indexed ?? '',
         r.indexRatio === null ? '' : Math.round(r.indexRatio * 100), r.mbPerSec?.toFixed(2) ?? '',
         r.filesPerMin?.toFixed(1) ?? '', r.inProgress, r.stuck, r.errors, r.neverCompleted, r.recovered,
@@ -232,8 +240,12 @@ export function AdminUploadInsights(): JSX.Element {
     );
   }
 
-  const header = (key: SortKey, label: string): JSX.Element => (
-    <th aria-sort={sort.key === key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+  const header = (key: SortKey, label: string, className?: string, hint?: string): JSX.Element => (
+    <th
+      className={className}
+      title={hint}
+      aria-sort={sort.key === key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
       <button type="button" className="btn-inline-link" onClick={() => toggleSort(key)}>
         {label}
         {sort.key === key ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
@@ -253,18 +265,20 @@ export function AdminUploadInsights(): JSX.Element {
 
   const cells = (r: UploadInsightsRow): JSX.Element => (
     <>
+      <td data-label={t.attention}>{badges(r)}</td>
       <td data-label={t.sessions}>{r.sessions}</td>
       <td data-label={t.files}>{r.files}</td>
+      <td data-label={t.copied}>{r.copied}</td>
+      <td data-label={t.untracked} title={r.untracked > 0 ? t.untrackedHint : undefined}>{r.untracked}</td>
+      <td data-label={t.duplicates}>{r.skippedDuplicates}</td>
+      <td data-label={t.staged}>{r.staged > 0 ? `${r.staged} (${fmtBytes(r.stagedBytes)})` : 0}</td>
+      <td data-label={t.indexPct}>{fmtPct(r.indexRatio)}</td>
       <td data-label={t.size}>{fmtBytes(sizeOf(r))}</td>
       <td data-label={t.minutes}>{fmtMinutes(r.minutes)}</td>
-      <td data-label={t.indexPct}>{fmtPct(r.indexRatio)}</td>
       <td data-label={t.first}>{fmtTime(r.firstSessionAt)}</td>
       <td data-label={t.last}>{fmtTime(r.lastSessionAt)}</td>
-      <td data-label={t.staged}>{r.staged > 0 ? `${r.staged} (${fmtBytes(r.stagedBytes)})` : 0}</td>
-      <td data-label={t.duplicates}>{r.skippedDuplicates}</td>
       <td data-label={t.rate}>{fmtRate(r.mbPerSec, 2)}</td>
       <td data-label={t.filesPerMin}>{fmtRate(r.filesPerMin, 1)}</td>
-      <td data-label={t.attention}>{badges(r)}</td>
     </>
   );
 
@@ -274,22 +288,23 @@ export function AdminUploadInsights(): JSX.Element {
       <td data-label={t.status}>
         <span className={STATUS_BADGE[s.status]}>{t.statusLabel[s.status]}</span>
       </td>
-      <td className="mono" data-label={t.folders}>{s.batchFolders.join(', ') || '—'}</td>
       <td data-label={t.files}>{s.files}</td>
       <td data-label={t.copied}>{s.copied}</td>
+      <td data-label={t.untracked} title={s.untracked > 0 ? t.untrackedHint : undefined}>{s.untracked}</td>
       <td data-label={t.duplicates}>{s.skippedDuplicates}</td>
-      <td data-label={t.failed}>{s.failed}</td>
       <td data-label={t.staged}>{s.staged}</td>
-      <td data-label={t.size}>{fmtBytes(s.copiedBytes === null ? null : s.copiedBytes + s.stagedBytes)}</td>
+      <td data-label={t.failed}>{s.failed}</td>
       <td data-label={t.indexed}>{s.indexed ?? '—'}</td>
+      <td data-label={t.size}>{fmtBytes(s.copiedBytes === null ? null : s.copiedBytes + s.stagedBytes)}</td>
       <td data-label={t.started}>{fmtTime(s.startedAt)}</td>
       <td data-label={t.lastActivity}>{fmtTime(s.lastActivityAt)}</td>
       <td data-label={t.minutes}>{fmtMinutes(s.minutes)}</td>
+      <td className="mono" data-label={t.folders}>{s.batchFolders.join(', ') || '—'}</td>
     </tr>
   );
 
   return (
-    <div>
+    <div className="insights-page">
       <div className="gallery-header">
         <h2>{t.title}</h2>
         <button className="btn btn-light btn-sm" onClick={downloadCsv} disabled={!data || data.groups.length === 0}>
@@ -341,25 +356,27 @@ export function AdminUploadInsights(): JSX.Element {
           {data.groups.length === 0 ? (
             <p className="muted">{t.noUploads}</p>
           ) : (
-            <div className="table-wrap">
-              <table className="data-table">
+            <div className="table-wrap insights-table-wrap">
+              <table className="data-table insights-table">
                 <thead>
                   <tr>
-                    {header('clubName', t.club)}
-                    {header('tag', t.tag)}
-                    {header('uploader', t.uploader)}
+                    {header('clubName', t.club, 'sticky-c1')}
+                    {header('tag', t.tag, 'sticky-c2')}
+                    {header('uploader', t.uploader, 'sticky-c3')}
+                    {header('attention', t.attention)}
                     {header('sessions', t.sessions)}
                     {header('files', t.files)}
+                    {header('copied', t.copied)}
+                    {header('untracked', t.untracked, undefined, t.untrackedHint)}
+                    {header('skippedDuplicates', t.duplicates)}
+                    {header('staged', t.staged)}
+                    {header('indexRatio', t.indexPct)}
                     {header('size', t.size)}
                     {header('minutes', t.minutes)}
-                    {header('indexRatio', t.indexPct)}
                     {header('firstSessionAt', t.first)}
                     {header('lastSessionAt', t.last)}
-                    {header('staged', t.staged)}
-                    {header('skippedDuplicates', t.duplicates)}
                     {header('mbPerSec', t.rate)}
                     {header('filesPerMin', t.filesPerMin)}
-                    {header('attention', t.attention)}
                   </tr>
                 </thead>
                 <tbody>
@@ -370,9 +387,9 @@ export function AdminUploadInsights(): JSX.Element {
                     return (
                       <Fragment key={key}>
                         <tr>
-                          <td className="mono" data-label={t.club}>{g.clubName || '—'}</td>
-                          <td data-label={t.tag}>{g.tag || '—'}</td>
-                          <td data-label={t.uploader}>
+                          <td className="mono sticky-c1" data-label={t.club} title={g.clubName}>{g.clubName || '—'}</td>
+                          <td className="sticky-c2" data-label={t.tag} title={g.tag}>{g.tag || '—'}</td>
+                          <td className="sticky-c3" data-label={t.uploader}>
                             <button
                               type="button"
                               className="btn-inline-link"
@@ -395,27 +412,31 @@ export function AdminUploadInsights(): JSX.Element {
                         </tr>
                         {isOpen && (
                           <tr>
-                            <td colSpan={15}>
+                            <td colSpan={17} className="insights-sessions-cell">
+                              <div className="insights-sessions">
+                              <p className="muted insights-sum-note">{t.sumNote}</p>
                               <table className="data-table">
                                 <thead>
                                   <tr>
                                     <th>{t.session}</th>
                                     <th>{t.status}</th>
-                                    <th>{t.folders}</th>
                                     <th>{t.files}</th>
                                     <th>{t.copied}</th>
+                                    <th title={t.untrackedHint}>{t.untracked}</th>
                                     <th>{t.duplicates}</th>
-                                    <th>{t.failed}</th>
                                     <th>{t.staged}</th>
-                                    <th>{t.size}</th>
+                                    <th>{t.failed}</th>
                                     <th>{t.indexed}</th>
+                                    <th>{t.size}</th>
                                     <th>{t.started}</th>
                                     <th>{t.lastActivity}</th>
                                     <th>{t.minutes}</th>
+                                    <th>{t.folders}</th>
                                   </tr>
                                 </thead>
                                 <tbody>{g.sessionList.map(sessionRow)}</tbody>
                               </table>
+                              </div>
                             </td>
                           </tr>
                         )}
@@ -424,11 +445,11 @@ export function AdminUploadInsights(): JSX.Element {
                   })}
                   {/* A body row, not <tfoot>: on phones each body row becomes a card. */}
                   <tr className="totals-row">
-                    <td data-label={t.club}>
+                    <td className="sticky-c1" data-label={t.club}>
                       <strong>{t.total}</strong>
                     </td>
-                    <td data-label={t.tag}>—</td>
-                    <td data-label={t.uploader}>—</td>
+                    <td className="sticky-c2" data-label={t.tag}>—</td>
+                    <td className="sticky-c3" data-label={t.uploader}>—</td>
                     {cells(data.totals)}
                   </tr>
                 </tbody>

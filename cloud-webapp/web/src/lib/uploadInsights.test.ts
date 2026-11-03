@@ -13,6 +13,7 @@ const row = (over: Partial<UploadInsightsRow>): UploadInsightsRow => ({
   skippedDuplicates: 0,
   failed: 0,
   staged: 0,
+  untracked: 0,
   copiedBytes: 0,
   stagedBytes: 0,
   minutes: 1,
