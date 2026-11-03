@@ -193,6 +193,26 @@ describe('buildUploadInsights', () => {
     expect(groups[0]).toMatchObject({ recovered: 1, stuck: 0 });
   });
 
+  it('a sweep marker that found nothing owed is done, not stuck', () => {
+    // The hourly sweep's marker for a session that never reached /complete but
+    // whose files were all already in Drive: phase `received`, recoveryObjects 0,
+    // and nothing will ever move it (2 such on the NYC Marathon event).
+    const marker = { batchId: 'm', linkId: 'link-a', phase: 'received' as const, total: 0,
+      createdAt: at(-400), updatedAt: at(-400), recoveryDispatchedAt: at(-400), recoveryObjects: 0 };
+    const { groups } = buildUploadInsights(
+      input({ batches: [marker], staged: [staged('m', { createdMs: NOW - 500 * 60_000 })] }),
+    );
+    expect(groups[0]!.sessionList[0]).toMatchObject({ status: 'ok', recovered: true });
+    expect(groups[0]).toMatchObject({ stuck: 0 });
+  });
+
+  it('a marker that DID dispatch work but never saw it run is still stuck', () => {
+    const marker = { batchId: 'm', linkId: 'link-a', phase: 'received' as const, total: 5,
+      createdAt: at(-400), updatedAt: at(-400), recoveryDispatchedAt: at(-400), recoveryObjects: 5 };
+    const { groups } = buildUploadInsights(input({ batches: [marker] }));
+    expect(groups[0]).toMatchObject({ stuck: 1 });
+  });
+
   it('files that only reached staging are a never-completed session, credited from object metadata', () => {
     const { groups } = buildUploadInsights(
       input({ staged: [staged('orphan', { photographerName: 'Sam Lee' }), staged('orphan')] }),

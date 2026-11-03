@@ -67,6 +67,8 @@ export interface BatchDocLite {
   createdAt?: string;
   updatedAt?: string;
   recoveryDispatchedAt?: string;
+  /** Objects that recovery / the sweep dispatched; 0 = it found nothing owed. */
+  recoveryObjects?: number;
 }
 
 export interface InsightsInput {
@@ -164,8 +166,15 @@ function buildSession(
         !(recovered && !isRecovery(d) && IN_PROGRESS.has(d.phase ?? 'received') &&
           input.now - parseMs(d.updatedAt) > STUCK_AFTER_MS),
     );
+    // Recovery found NOTHING owed (every staged file's content already in
+    // Drive) and dispatched nothing. When the session had no doc of its own,
+    // the marker it wrote is the only one — phase `received`, forever — and was
+    // read as stuck (2 on the NYC Marathon event, 2026-11-03). Nothing is
+    // pending, so it is done.
+    const nothingOwed = recovered && head?.recoveryObjects !== undefined && n(head.recoveryObjects) === 0;
     const phase = combinePhases((live.length > 0 ? live : workers).map((d) => d.phase ?? 'received'));
-    if (phase === 'error') status = 'error';
+    if (live.length === 0 && nothingOwed) status = 'ok';
+    else if (phase === 'error') status = 'error';
     else if (IN_PROGRESS.has(phase)) status = input.now - lastMs > STUCK_AFTER_MS ? 'stuck' : 'in_progress';
     else status = 'ok';
   }
@@ -320,6 +329,7 @@ const BATCH_FIELDS = [
   'createdAt',
   'updatedAt',
   'recoveryDispatchedAt',
+  'recoveryObjects',
 ];
 
 /**
