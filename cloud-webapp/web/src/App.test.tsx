@@ -60,6 +60,48 @@ describe('<App /> Google sign-in', () => {
     expect(await screen.findByText(/Google sign-in did not finish/i)).toBeTruthy();
   });
 
+  // A WeChat guest tapped the header button 5 times on 2026-11-03: every try
+  // was auth/popup-blocked, and the error told them to "allow pop-ups".
+  // …and whatever page a WeChat link lands on, the same "open in Safari"
+  // steps are at the top of it — never only on the sign-in screen.
+  describe.each([
+    ['signed out, on a sub-page', null, '/events/ev1/findme'],
+    ['a guest, in the gallery', { isAnonymous: true }, '/events/ev1'],
+    ['a guest, bounced off an admin link', { isAnonymous: true }, '/admin/uploads'],
+    ['a signed-in member', { email: 'member@mmrunners.org' }, '/'],
+  ])('in WeChat — %s', (_label, user, path) => {
+    it('shows the open-in-Safari steps and no Google button', async () => {
+      authState.user = user as User | null;
+      window.history.pushState({}, '', path);
+      const ua = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.79',
+      );
+      try {
+        render(<App />);
+        expect(await screen.findAllByRole('alert')).toHaveLength(1);
+        expect(screen.getByText(/Open in Safari/)).toBeTruthy();
+        expect(screen.queryByRole('button', { name: /Sign in with Google/i })).toBeNull();
+      } finally {
+        ua.mockRestore();
+        window.history.pushState({}, '', '/');
+      }
+    });
+  });
+
+  it('shows no in-app warning in a normal browser', async () => {
+    authState.user = { isAnonymous: true } as User;
+    render(<App />);
+    await waitFor(() => expect(screen.getByText(/Spring Run 2026/)).toBeTruthy());
+    expect(screen.queryByText(/Open in Safari/)).toBeNull();
+  });
+
+  it('keeps the header Google button for a guest in a normal browser', async () => {
+    authState.user = { isAnonymous: true } as User;
+    render(<App />);
+    await waitFor(() => expect(screen.getByText(/Spring Run 2026/)).toBeTruthy());
+    expect(screen.getByRole('button', { name: /Sign in with Google/i })).toBeTruthy();
+  });
+
   it('ignores a second click while the popup is open', async () => {
     authState.user = null;
     signInWithGoogle.mockReset();

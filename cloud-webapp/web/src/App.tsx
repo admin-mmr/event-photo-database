@@ -143,8 +143,7 @@ const STR = {
     loading: 'Loading…',
     guestError:
       'Could not start a guest session. Ask an admin to enable Anonymous sign-in in Firebase.',
-    googleError: 'Google sign-in did not finish. Allow pop-ups for this site and try again.',
-  },
+    googleError: 'Google sign-in did not finish. Allow pop-ups for this site and try again.',  },
   zh: {
     title: '一键找我',
     tagline: '浏览活动照片，并用人脸识别找到照片中的自己。',
@@ -178,8 +177,7 @@ const STR = {
     signOut: '退出登录',
     loading: '加载中…',
     guestError: '无法开始访客会话，请联系管理员在 Firebase 中启用匿名登录。',
-    googleError: 'Google 登录未完成。请允许本网站弹出窗口后重试。',
-  },
+    googleError: 'Google 登录未完成。请允许本网站弹出窗口后重试。',  },
 };
 import { Events } from './pages/Events.js';
 import { Gallery } from './pages/Gallery.js';
@@ -383,9 +381,14 @@ export function App(): JSX.Element {
             {isGuest ? (
               <>
                 <span className="muted">{t.guest}</span>
-                <button className="btn btn-light btn-sm" onClick={() => void google()} disabled={signingIn}>
-                  {t.signInGoogle}
-                </button>
+                {/* In an in-app webview the button could only fail ("allow
+                    pop-ups", which they can't); the page-top warning says
+                    what works instead. */}
+                {!inApp && (
+                  <button className="btn btn-light btn-sm" onClick={() => void google()} disabled={signingIn}>
+                    {t.signInGoogle}
+                  </button>
+                )}
                 {signInError && <span className="error-text">{signInError}</span>}
               </>
             ) : (
@@ -397,6 +400,12 @@ export function App(): JSX.Element {
           </nav>
         )}
       </header>
+
+      {/* WeChat & other in-app webviews: Google OAuth 403s here. The same
+          bilingual "open in Safari / Chrome" steps sit at the top of EVERY page
+          (sign-in screen, gallery, Find Me, …) — a guest who taps a sub-page
+          link inside WeChat must never land somewhere without them. */}
+      {inApp && <InAppBrowserWarning />}
 
       {loading ? (
         <p className="muted">{t.loading}</p>
@@ -412,10 +421,6 @@ export function App(): JSX.Element {
             <BrandMark className="brand-mark brand-mark-lg" />
             <h2>{t.title}</h2>
             <p className="muted">{t.tagline}</p>
-
-            {/* WeChat & other in-app webviews: Google OAuth 403s here. Always
-                bilingual. */}
-            {inApp && <InAppBrowserWarning />}
 
             {/* Name is captured once here and remembered for the session, so
                 Find Me never has to ask for it again. */}

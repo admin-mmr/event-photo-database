@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { isWeChat } from '../lib/inAppBrowser.js';
 
 /**
- * Bilingual in-app-browser warning. Sign-in screen only. Google blocks OAuth in
+ * Bilingual in-app-browser warning, shown at the top of EVERY page in the app
+ * layout (App.tsx) — not just the sign-in screen. Google blocks OAuth in
  * embedded webviews (403 disallowed_useragent), so steer the user to Safari /
  * Chrome. Intentionally **always bilingual** (中文 + English) regardless of the
  * language toggle — a stranded user hasn't necessarily picked a language, and

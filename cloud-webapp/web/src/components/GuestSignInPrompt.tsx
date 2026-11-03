@@ -27,7 +27,7 @@ const STR = {
     body:
       "We couldn't confirm this request came from a person. That sometimes happens when saving lots of photos " +
       'quickly. Sign in with Google and try again — your selfies and choices stay with you.',
-    inApp: 'To sign in with Google, open this page in Safari or Chrome, then try again.',
+    inApp: 'Google sign-in does not work in this app’s browser. Follow the steps at the top of the page to open it in Safari or Chrome, then try again.',
     signIn: 'Sign in with Google',
     notNow: 'Not now',
     busy: 'Signing in…',
@@ -38,7 +38,7 @@ const STR = {
   zh: {
     title: '请登录后继续',
     body: '我们无法确认此请求来自真人。快速保存大量照片时偶尔会出现这种情况。请使用 Google 登录后重试——您的自拍和选择都会保留。',
-    inApp: '如需使用 Google 登录，请在 Safari 或 Chrome 中打开此页面，然后重试。',
+    inApp: 'Google 登录无法在此 App 的内置浏览器中使用。请按页面顶部的步骤在 Safari 或 Chrome 中打开此页面，然后重试。',
     signIn: '使用 Google 登录',
     notNow: '暂不',
     busy: '正在登录…',
