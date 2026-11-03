@@ -22,6 +22,7 @@
 
 import { apiPost } from './api.js';
 import type { ClientErrorReport } from '@cloud-webapp/shared';
+import { isSignInCancelled } from './signInErrors.js';
 
 /** True while a report is in flight, so a failure inside reporting can't recurse. */
 let reporting = false;
@@ -167,6 +168,11 @@ export function installGlobalErrorReporting(): void {
 
   window.addEventListener('unhandledrejection', (e: PromiseRejectionEvent) => {
     const reason = e.reason as unknown;
+    // A Google popup the user closed — or Firebase cancelling one when another
+    // opens — is a choice, not a fault. The sign-in handlers already treat it
+    // so, but Firebase can also reject its own internal promise, which lands
+    // here (17:39 on 2026-11-03, after #108) and paged at ERROR.
+    if (isSignInCancelled(reason)) return;
     const message =
       reason instanceof Error ? reason.message : String(reason ?? 'unhandled rejection');
     reportClientError('unhandled_rejection', message, {

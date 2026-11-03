@@ -79,6 +79,7 @@ vi.mock('../src/services/driveService.js', () => ({
 }));
 
 const { buildServer } = await import('../src/server.js');
+const { DRIVE_WALK_INTERVAL_MS } = await import('../src/routes/events.js');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -360,6 +361,64 @@ describe('events routes', () => {
       expect(res.body.triggered).toEqual([]);
       expect(res.body.skipped).toContainEqual({ eventId: 'ev1', reason: 'already_running' });
       expect(triggerIndexJob).not.toHaveBeenCalled();
+    });
+
+    // 2026-11-03: walking the NYC Marathon's 27k Drive files every 10 minutes
+    // took ~80s a tick — more api time than the free tier — and found nothing
+    // 106 times in 107. The walk is now hourly; app-made changes don't wait.
+    const recently = () => new Date(Date.now() - 5 * 60 * 1000).toISOString();
+
+    it('does not walk Drive again within the hour of the last check', async () => {
+      fakeDb.events.set('ev1', {
+        driveFolderId: 'f',
+        indexState: { status: 'done' },
+        lastIndexSig: '1:2025-01-01T00:00:00.000Z',
+        lastDriveCheckAt: recently(),
+      });
+      const res = await request(app).post('/api/admin/index-scan').set('X-Sync-Token', 'cron-secret');
+      expect(res.body.skipped).toContainEqual({ eventId: 'ev1', reason: 'checked_recently' });
+      expect(listEventImages).not.toHaveBeenCalled();
+      expect(triggerIndexJob).not.toHaveBeenCalled();
+    });
+
+    it('walks Drive again once the hour is up, and records when it did', async () => {
+      fakeDb.events.set('ev1', {
+        driveFolderId: 'f',
+        indexState: { status: 'done' },
+        lastIndexSig: FIXED_SIG,
+        lastDriveCheckAt: new Date(Date.now() - DRIVE_WALK_INTERVAL_MS - 1000).toISOString(),
+      });
+      const res = await request(app).post('/api/admin/index-scan').set('X-Sync-Token', 'cron-secret');
+      expect(res.body.skipped).toContainEqual({ eventId: 'ev1', reason: 'unchanged' });
+      expect(listEventImages).toHaveBeenCalledTimes(1);
+      const checked = Date.parse(String(fakeDb.events.get('ev1')?.lastDriveCheckAt));
+      expect(Date.now() - checked).toBeLessThan(60_000);
+    });
+
+    it('starts a run the app owes without walking Drive, and clears the debt', async () => {
+      fakeDb.events.set('ev1', {
+        driveFolderId: 'f',
+        indexState: { status: 'done' },
+        lastIndexSig: FIXED_SIG,
+        lastDriveCheckAt: recently(),
+        indexPendingAt: recently(),
+      });
+      const res = await request(app).post('/api/admin/index-scan').set('X-Sync-Token', 'cron-secret');
+      expect(res.body.triggered).toEqual(['ev1']);
+      expect(listEventImages).not.toHaveBeenCalled();
+      expect(fakeDb.events.get('ev1')?.indexPendingAt).toBeNull();
+    });
+
+    it('re-checks Drive within the hour when the last run did not reach done', async () => {
+      fakeDb.events.set('ev1', {
+        driveFolderId: 'f',
+        indexState: { status: 'failed' },
+        lastIndexSig: FIXED_SIG,
+        lastDriveCheckAt: recently(),
+      });
+      const res = await request(app).post('/api/admin/index-scan').set('X-Sync-Token', 'cron-secret');
+      expect(res.body.triggered).toEqual(['ev1']);
+      expect(listEventImages).toHaveBeenCalledTimes(1);
     });
 
     it('triggers (does not skip) when the Drive fingerprint cannot be read', async () => {

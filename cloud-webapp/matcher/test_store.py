@@ -142,7 +142,7 @@ def azure(monkeypatch):
     blobs: dict[str, bytes] = {}
     container = FakeContainer(blobs)
     monkeypatch.setattr(store_mod, "_azure_container", lambda account_url, name: container)
-    return EmbeddingStore("az://derivatives"), blobs, container
+    return EmbeddingStore("az://derivatives", spawn=_inline), blobs, container
 
 
 def _seed(blobs: dict[str, bytes], base: str) -> None:
@@ -227,6 +227,11 @@ def test_invalidate_forces_a_reload(azure):
 # outlive many index runs. It used to serve its FIRST load forever: new photos
 # never matched and deleted ones came back. These pin the lazy version check.
 
+def _inline(fn) -> None:
+    """Run a background reload synchronously, so a test sees its result at once."""
+    fn()
+
+
 class Clock:
     def __init__(self):
         self.t = 1000.0
@@ -249,7 +254,7 @@ def _write_local_event(root, photos: int, mtime_ns: int) -> None:
 def local(tmp_path, monkeypatch):
     """A local store with a fake clock that counts full loads."""
     clock = Clock()
-    store = EmbeddingStore(str(tmp_path), check_sec=60, clock=clock)
+    store = EmbeddingStore(str(tmp_path), check_sec=60, clock=clock, spawn=_inline)
     loads = []
     real_load = store._load
     monkeypatch.setattr(store, "_load", lambda eid: loads.append(eid) or real_load(eid))
@@ -444,7 +449,7 @@ def test_gcs_reloads_on_a_new_generation_only():
         bucket.put(f"{base}/{MANIFEST}", json.dumps(_manifest(photos)).encode("utf-8"))
 
     clock = Clock()
-    store = EmbeddingStore("gs://derivs/pre", check_sec=60, clock=clock)
+    store = EmbeddingStore("gs://derivs/pre", check_sec=60, clock=clock, spawn=_inline)
     store._gcs_client = FakeGcsClient(bucket)
     index(1)
     assert len(store.load_event("e1").meta["face"]) == 1
@@ -456,3 +461,106 @@ def test_gcs_reloads_on_a_new_generation_only():
     clock.t += 61
     assert len(store.load_event("e1").meta["face"]) == 4
     assert len(bucket.downloads) == 6
+
+
+# ── a changed store reloads in the background ────────────────────────────────
+#
+# 2026-11-03, NYC Marathon: the store is ~930 MiB and the indexer rewrote it
+# every ~10 min, so the search that noticed each rewrite waited 25–51s for the
+# reload (48 of 460 searches over 15s), close to the 60s Hosting cutoff.
+
+class Deferred:
+    """A spawn that holds reloads until the test runs them."""
+
+    def __init__(self):
+        self.jobs = []
+
+    def __call__(self, fn) -> None:
+        self.jobs.append(fn)
+
+    def run(self) -> None:
+        jobs, self.jobs = self.jobs, []
+        for fn in jobs:
+            fn()
+
+
+@pytest.fixture()
+def deferred(tmp_path):
+    clock, spawn = Clock(), Deferred()
+    store = EmbeddingStore(str(tmp_path), check_sec=60, clock=clock, spawn=spawn)
+    return store, tmp_path, clock, spawn
+
+
+def test_the_search_that_notices_a_new_store_is_answered_from_the_old_one(deferred):
+    store, root, clock, spawn = deferred
+    _write_local_event(root, photos=1, mtime_ns=1_000_000_000)
+    first = store.load_event("e1")
+
+    _write_local_event(root, photos=3, mtime_ns=2_000_000_000)
+    clock.t += 61
+    assert store.load_event("e1") is first  # not made to wait for the download
+    assert len(spawn.jobs) == 1
+
+    clock.t += 61
+    assert store.load_event("e1") is first  # a reload is under way: no second one
+    assert len(spawn.jobs) == 1
+
+    spawn.run()
+    assert len(store.load_event("e1").meta["face"]) == 3
+
+
+def test_a_background_reload_that_fails_keeps_serving_and_frees_the_next_check(deferred):
+    store, root, clock, spawn = deferred
+    _write_local_event(root, photos=1, mtime_ns=1_000_000_000)
+    first = store.load_event("e1")
+    emb = root / "e1" / EMB_SUBDIR
+    (emb / MANIFEST).write_text(json.dumps(_manifest(3)), encoding="utf-8")  # vectors still 1 row
+    os.utime(emb / MANIFEST, ns=(2_000_000_000, 2_000_000_000))
+    clock.t += 61
+    store.load_event("e1")
+    spawn.run()
+    assert store.load_event("e1") is first
+
+    _write_local_event(root, photos=3, mtime_ns=3_000_000_000)  # the write completes
+    clock.t += 61
+    store.load_event("e1")  # the lock came back, so this check can start a reload
+    spawn.run()
+    assert len(store.load_event("e1").meta["face"]) == 3
+
+
+def test_a_reload_that_cannot_start_still_answers(deferred):
+    store, root, clock, _spawn = deferred
+    _write_local_event(root, photos=1, mtime_ns=1_000_000_000)
+    first = store.load_event("e1")
+
+    def no_threads(fn):
+        raise RuntimeError("can't start new thread")
+
+    store._spawn = no_threads
+    _write_local_event(root, photos=3, mtime_ns=2_000_000_000)
+    clock.t += 61
+    assert store.load_event("e1") is first
+    store._spawn = _inline
+    clock.t += 61
+    assert len(store.load_event("e1").meta["face"]) == 3  # the lock was released
+
+
+def test_a_first_load_still_waits_for_the_store(deferred):
+    store, root, _clock, spawn = deferred
+    _write_local_event(root, photos=2, mtime_ns=1_000_000_000)
+    assert len(store.load_event("e1").meta["face"]) == 2  # nothing cached to serve
+    assert spawn.jobs == []
+
+
+def test_the_default_spawn_reloads_on_a_thread(tmp_path):
+    clock = Clock()
+    store = EmbeddingStore(str(tmp_path), check_sec=60, clock=clock)
+    _write_local_event(tmp_path, photos=1, mtime_ns=1_000_000_000)
+    store.load_event("e1")
+    _write_local_event(tmp_path, photos=3, mtime_ns=2_000_000_000)
+    clock.t += 61
+    store.load_event("e1")
+    with store._lock:  # taken only once the reload thread has let go of it
+        pass
+    assert len(store.load_event("e1").meta["face"]) == 3
+

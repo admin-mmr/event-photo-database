@@ -49,6 +49,10 @@ COLD_LOAD_RETRY_SEC = 1.5
 logger = logging.getLogger(__name__)
 
 
+def _start_reload_thread(fn) -> None:
+    threading.Thread(target=fn, name="store-reload", daemon=True).start()
+
+
 def parse_root(root: str) -> tuple[str, object]:
     """Classify `root` → ("local" | "gcs" | "azure", details).
 
@@ -341,7 +345,12 @@ class EmbeddingStore:
     """
 
     def __init__(
-        self, root: str, check_sec: float | None = None, clock=time.monotonic, sleep=time.sleep
+        self,
+        root: str,
+        check_sec: float | None = None,
+        clock=time.monotonic,
+        sleep=time.sleep,
+        spawn=None,
     ):
         self.root = root.rstrip("/")
         self._cache: dict[str, _Cached] = {}
@@ -349,6 +358,9 @@ class EmbeddingStore:
         self._check_sec = STORE_CHECK_SEC if check_sec is None else check_sec
         self._clock = clock
         self._sleep = sleep
+        # Runs a reload off the request thread. Tests pass a synchronous or a
+        # deferred runner to pin the ordering.
+        self._spawn = spawn or _start_reload_thread
         self._gcs_client = None
 
     def load_event(self, event_id: str) -> EventEmbeddings:
@@ -364,68 +376,100 @@ class EmbeddingStore:
         because the indexer writes it LAST, after both .npy files.
 
         Nothing polls: the check rides on a search, so an idle instance costs
-        nothing extra (the zero-idle-cost policy). While one thread reloads,
-        the others keep answering from the old copy rather than queueing."""
+        nothing extra (the zero-idle-cost policy). A changed store is reloaded
+        in the BACKGROUND and every search — including the one that noticed —
+        answers from the copy already in memory until it lands. It used to
+        reload inline: the NYC Marathon store is ~930 MiB, so the first search
+        after each re-index (every ~10 min while uploads ran) waited 25–51s,
+        a few seconds short of the 60s Hosting cutoff (2026-11-03, 48 of 460
+        searches over 15s). Only a FIRST load, with nothing to serve, waits."""
         entry = self._cache.get(event_id)
         if entry is not None and self._clock() - entry.checked_at < self._check_sec:
             return entry.ev
-        if entry is not None:
-            # Someone is already loading/checking — serve what we have.
-            if not self._lock.acquire(blocking=False):
-                return entry.ev
-        else:
-            self._lock.acquire()
+        if entry is None:
+            with self._lock:
+                return self._first_load(event_id)
+        # Someone is already checking or reloading — serve what we have.
+        if not self._lock.acquire(blocking=False):
+            return entry.ev
+        handed_off = False
         try:
-            return self._refresh(event_id)
+            version = self._changed_version(event_id, entry)
+            if version is None:
+                return entry.ev
+            try:
+                self._spawn(lambda: self._reload(event_id, entry, version))
+                handed_off = True  # the reload releases the lock when it lands
+            except Exception:
+                logger.warning("could not start a store reload for %s; serving cached copy", event_id, exc_info=True)
+                entry.checked_at = self._clock()
+                return entry.ev
         finally:
-            self._lock.release()
+            if not handed_off:
+                self._lock.release()
+        current = self._cache.get(event_id)
+        return current.ev if current is not None else entry.ev
 
-    def _refresh(self, event_id: str) -> EventEmbeddings:
-        """load_event's slow path; the caller holds `self._lock`."""
-        now = self._clock()
+    def _first_load(self, event_id: str) -> EventEmbeddings:
+        """load_event's path with nothing cached; the caller holds `self._lock`."""
         entry = self._cache.get(event_id)
-        if entry is not None and now - entry.checked_at < self._check_sec:
-            return entry.ev  # another thread refreshed it while we waited
+        if entry is not None:
+            return entry.ev  # another thread loaded it while we waited
+        version = self._version(event_id)
+        if version is None:
+            raise FileNotFoundError(f"event '{event_id}' not indexed: no manifest")
+        # Version read BEFORE the load: if the indexer lands another write while
+        # we read, the next check sees a newer version and reloads again, rather
+        # than pinning a half-old copy under the new version.
+        ev, version = self._cold_load(event_id, version)
+        self._cache[event_id] = _Cached(ev, version, self._clock())
+        return ev
+
+    def _changed_version(self, event_id: str, entry: _Cached) -> object | None:
+        """The manifest's new version when the store changed, else None. The
+        caller holds `self._lock`. Metadata only — this runs on the request."""
+        now = self._clock()
         try:
             version = self._version(event_id)
         except Exception:
-            if entry is None:
-                raise
             # A failed metadata read must not turn a search into a 500; the
             # cached copy is at worst one re-index old. Retry next interval.
             logger.warning("store version check failed for %s; serving cached copy", event_id, exc_info=True)
             entry.checked_at = now
-            return entry.ev
+            return None
         if version is None:
             # The manifest is gone (event deleted / derivatives swept): drop it.
             self._cache.pop(event_id, None)
             raise FileNotFoundError(f"event '{event_id}' not indexed: no manifest")
-        if entry is not None and version == entry.version:
+        if version == entry.version:
             entry.checked_at = now
-            return entry.ev
-        # Version read BEFORE the load: if the indexer lands another write while
-        # we read, the next check sees a newer version and reloads again, rather
-        # than pinning a half-old copy under the new version.
+            return None
+        return version
+
+    def _reload(self, event_id: str, entry: _Cached, version: object) -> None:
+        """Replace a changed store, off the request thread. Holds the lock
+        handed over by load_event and releases it when done, so no second
+        reload of anything starts meanwhile and searches keep the old copy.
+
+        On Cloud Run CPU is only allocated while a request is in flight, so this
+        runs at full speed during traffic and crawls between searches — which
+        just means the old copy is served a little longer."""
         try:
-            if entry is None:
-                ev, version = self._cold_load(event_id, version)
-            else:
+            try:
                 ev = self._load(event_id)
-        except FileNotFoundError:
-            self._cache.pop(event_id, None)
-            raise
-        except Exception:
-            if entry is None:
-                raise
-            # e.g. a manifest/vector length mismatch read mid-write. Keep the
-            # last good copy and retry next interval.
-            logger.warning("store reload failed for %s; serving cached copy", event_id, exc_info=True)
-            entry.checked_at = now
-            return entry.ev
-        if entry is not None:
+            except FileNotFoundError:
+                self._cache.pop(event_id, None)
+                return
+            except Exception:
+                # e.g. a manifest/vector length mismatch read mid-write. Keep the
+                # last good copy and retry next interval.
+                logger.warning("store reload failed for %s; serving cached copy", event_id, exc_info=True)
+                entry.checked_at = self._clock()
+                return
             logger.info("store for %s changed (%s -> %s); reloaded", event_id, entry.version, version)
-        self._cache[event_id] = _Cached(ev, version, now)
-        return ev
+            self._cache[event_id] = _Cached(ev, version, self._clock())
+        finally:
+            self._lock.release()
 
     def _cold_load(self, event_id: str, version: object) -> tuple[EventEmbeddings, object]:
         """First load of an event, retried when it catches a write in progress.

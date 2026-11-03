@@ -398,14 +398,30 @@
     (`_write_store`: both `.npy` files, then the manifest). Reorder those writes
     and the matcher can pin a half-old store.
   - **A failed check or reload serves the cached copy**, never a 500; a missing
-    manifest drops the event (`event_not_indexed`). While one thread reloads the
-    rest keep answering from the old copy, so a reload briefly holds two copies
-    of the event in memory — size the matcher for that at 100k+ photos.
+    manifest drops the event (`event_not_indexed`). A changed store reloads on a
+    BACKGROUND thread and every search — the one that noticed included — answers
+    from the old copy until it lands, so a reload briefly holds two copies of
+    the event in memory — size the matcher for that at 100k+ photos.
+  - **Never make a search wait for a reload.** It used to reload inline: the
+    NYC Marathon store is ~930 MiB, the indexer rewrote it every ~10 min, and
+    the search that noticed waited 25–51s (48 of 460 over 15s on 2026-11-03),
+    a few seconds short of the 60s Hosting cutoff. Only a FIRST load, with
+    nothing to serve, waits. On Cloud Run the thread only gets CPU while a
+    request is in flight — between searches it just takes longer.
 - **The upload worker must not start the indexer while a run is in flight**
   (`services/indexTrigger.ts`, a transactional claim on `indexState`). It used to
   trigger after every batch; with batches running concurrently that stacks 8-vCPU
   executions on one event, all embedding the same photos and racing to write one
   manifest. A skipped trigger is picked up by the next index-scan tick.
+- **index-scan walks Drive at most hourly per event** (`DRIVE_WALK_INTERVAL_MS`
+  in `routes/events.ts`). Listing the NYC Marathon's 27k files every 10-min tick
+  took ~80s — ~14,000s/day of 2-vCPU api time, more than the whole Cloud Run
+  free tier — and found nothing 106 times in 107. App-made changes don't wait
+  for the walk: a trigger that finds a run in flight stamps `indexPendingAt` in
+  its claim transaction (`indexTrigger.ts`), the next tick starts a run for it
+  without listing Drive, and a successful claim clears it. The hourly walk only
+  backstops files changed in Drive by hand. Keep the stamp inside the claim
+  transaction, or a skip can be lost between the read and the write.
 - **`STALE_INDEX_MS` is 60 min** (`lib/indexState.ts`, shared by index-scan,
   "Index now" and the worker). The indexer only heartbeats inside its embedding
   loop; at 100k+ photos the un-beaten stretches around it (Drive listing, store
