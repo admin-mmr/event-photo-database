@@ -33,6 +33,12 @@ export const ClientErrorReportSchema = z.object({
   userAgent: z.string().max(1000).optional(),
   /** Small free-form bag of extra diagnostics (counts, sample statuses, …). */
   context: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Set only on the one follow-up a page sends when the same error keeps
+   * recurring: how many times it has happened so far. The api logs these at
+   * WARN — the first report already raised the alert.
+   */
+  repeatCount: z.number().int().min(1).max(1_000_000).optional(),
 });
 
 export type ClientErrorReport = z.infer<typeof ClientErrorReportSchema>;

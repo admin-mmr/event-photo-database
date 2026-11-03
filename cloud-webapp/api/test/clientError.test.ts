@@ -22,8 +22,17 @@ vi.mock('../src/middleware/auth.js', () => ({
 // (severity>=ERROR).
 const { logger } = await import('../src/lib/logger.js');
 const { buildServer } = await import('../src/server.js');
+const { resetClientErrorRepeats, REPEAT_WINDOW_MS } = await import('../src/routes/telemetry.js');
 
 const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => true as never);
+const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => true as never);
+
+/** Only the route's own lines — pino-http also logs through the logger. */
+function clientErrorCalls(spy: typeof errorSpy): Array<[Record<string, unknown>, string]> {
+  return (spy.mock.calls as Array<[Record<string, unknown>, string]>).filter(
+    ([f]) => f && typeof f === 'object' && f.clientError === true,
+  );
+}
 
 const USER = JSON.stringify({ uid: 'u1', email: 'member@mmrunners.org', emailVerified: true });
 
@@ -32,6 +41,9 @@ describe('POST /api/client-errors', () => {
 
   beforeEach(() => {
     errorSpy.mockClear();
+    warnSpy.mockClear();
+    resetClientErrorRepeats();
+    vi.useRealTimers();
   });
 
   it('requires auth', async () => {
@@ -95,5 +107,63 @@ describe('POST /api/client-errors', () => {
     expect(res.status).toBe(202);
     const [fields] = errorSpy.mock.calls[0] as [Record<string, unknown>, string];
     expect(fields.context).toEqual({ truncated: true });
+  });
+
+  describe('repeat backstop', () => {
+    const IDB_LOST = 'Connection to Indexed Database server lost. Refresh the page to try again';
+    const OTHER = JSON.stringify({ uid: 'u2', email: 'other@mmrunners.org', emailVerified: true });
+    const send = (user: string, body: Record<string, unknown>) =>
+      request(app).post('/api/client-errors').set('x-test-user', user).send(body);
+
+    it('a flood of identical reports from one user logs ERROR once, then WARN', async () => {
+      for (let i = 0; i < 5; i += 1) {
+        const res = await send(USER, { kind: 'unhandled_rejection', message: IDB_LOST });
+        expect(res.status).toBe(202);
+      }
+      expect(clientErrorCalls(errorSpy)).toHaveLength(1);
+      const warns = clientErrorCalls(warnSpy);
+      expect(warns).toHaveLength(4);
+      expect(warns[0]?.[0].repeat).toBe(true);
+      expect(warns[0]?.[1]).toContain('repeated');
+    });
+
+    it('a different user, kind or message still logs at ERROR', async () => {
+      await send(USER, { kind: 'unhandled_rejection', message: IDB_LOST });
+      await send(OTHER, { kind: 'unhandled_rejection', message: IDB_LOST });
+      await send(USER, { kind: 'unhandled_error', message: IDB_LOST });
+      await send(USER, { kind: 'unhandled_rejection', message: 'something else' });
+      expect(clientErrorCalls(errorSpy)).toHaveLength(4);
+      expect(clientErrorCalls(warnSpy)).toHaveLength(0);
+    });
+
+    it('the same report after the window logs at ERROR again', async () => {
+      const now = vi.spyOn(Date, 'now');
+      try {
+        now.mockReturnValue(1_000_000);
+        await send(USER, { kind: 'download_failed', message: 'ZIP download failed' });
+        now.mockReturnValue(1_000_000 + REPEAT_WINDOW_MS);
+        await send(USER, { kind: 'download_failed', message: 'ZIP download failed' });
+      } finally {
+        now.mockRestore();
+      }
+      expect(clientErrorCalls(errorSpy)).toHaveLength(2);
+    });
+
+    it("the client's own follow-up (repeatCount) logs at WARN and keeps the count", async () => {
+      const res = await send(USER, {
+        kind: 'unhandled_rejection',
+        message: IDB_LOST,
+        repeatCount: 10,
+      });
+      expect(res.status).toBe(202);
+      expect(clientErrorCalls(errorSpy)).toHaveLength(0);
+      const [fields] = clientErrorCalls(warnSpy)[0] ?? [];
+      expect(fields?.repeatCount).toBe(10);
+    });
+
+    it('rejects a non-integer repeatCount', async () => {
+      const res = await send(USER, { message: 'x', repeatCount: 'lots' });
+      expect(res.status).toBe(400);
+    });
   });
 });
