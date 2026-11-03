@@ -23,6 +23,14 @@ import { tryRebuildPublicFolderIndex } from '../services/publicFolderIndexServic
 export const eventsRouter = Router();
 
 /**
+ * How often index-scan may list an event's whole Drive tree. Changes made by
+ * the app itself never wait for this — a trigger that finds a run in flight
+ * stamps `indexPendingAt` (indexTrigger.ts) and the next tick acts on it. The
+ * walk is only the backstop for files added or removed in Drive by hand.
+ */
+export const DRIVE_WALK_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
  * A cheap fingerprint of an event's Drive image set: total image count plus the
  * latest `modifiedTime` across all images (listEventImages recurses, so nested
  * upload buckets are covered). The value changes whenever a photo is added,
@@ -241,12 +249,14 @@ eventsRouter.post('/events/:id/index', allowCronOrAdmin, async (req, res, next) 
 
 /**
  * POST /api/admin/index-scan — safety-net automation (dev plan §7.1 "scheduled
- * Drive change scan"). Cloud Scheduler hits this every few minutes; it triggers
- * the indexer for every event that has a driveFolderId and isn't already
- * running. The indexer is idempotent (md5 + modelVersion diff), so an event
- * with no new photos costs only a Drive listing + a no-op store rewrite — new
- * photos that the end-of-batch trigger missed still get picked up within one
- * scan interval. Catches files added outside the gas-app upload page too.
+ * Drive change scan"). Cloud Scheduler hits this every 10 minutes; it starts
+ * the indexer for an event that isn't already running when either the app owes
+ * it a run (`indexPendingAt`: an upload/delete trigger found a run in flight —
+ * picked up on the next tick) or Drive changed. Drive is walked at most once
+ * per DRIVE_WALK_INTERVAL_MS per event, which catches files added or removed
+ * in Drive by hand within the hour. A run started for `indexPendingAt` leaves
+ * the stored fingerprint behind, so the next walk may start one more run that
+ * finds nothing new — idempotent (md5 + modelVersion diff), and at most hourly.
  *
  * Query/body params (all optional):
  *   activeWithinDays — only scan events whose `date` is within this many days
@@ -290,19 +300,38 @@ eventsRouter.post('/admin/index-scan', allowCronOrAdmin, async (req, res, next) 
         }
       }
 
+      // A run the app owes (a trigger found one in flight) starts without
+      // looking at Drive. Otherwise Drive is walked at most once per
+      // DRIVE_WALK_INTERVAL_MS per event — it is the slow part (a whole-tree
+      // listing; ~80s on a 27k-photo event) and usually finds nothing. A run
+      // that did not reach 'done' is always re-checked, so failed/never-run
+      // events still get picked up.
+      const pending = Boolean(data?.indexPendingAt);
+      const lastRunDone = data?.indexState?.status === 'done';
+      const checkedMs = Date.parse(typeof data?.lastDriveCheckAt === 'string' ? data.lastDriveCheckAt : '');
+      const walkDue =
+        !lastRunDone || !Number.isFinite(checkedMs) || Date.now() - checkedMs >= DRIVE_WALK_INTERVAL_MS;
+      if (!pending && !walkDue) {
+        skipped.push({ eventId, reason: 'checked_recently' });
+        continue;
+      }
+
       // Skip events whose Drive content is unchanged since the last completed
-      // index. We re-index only when the fingerprint differs OR the previous
-      // run didn't reach 'done' (so failed/never-run events still get picked
-      // up). A Drive read failure falls through to triggering, to be safe.
+      // index. A Drive read failure falls through to triggering, to be safe.
       let driveSig = '';
-      try {
-        driveSig = await computeDriveSig(String(data.driveFolderId));
-      } catch (err) {
-        logger.warn({ err, eventId }, 'index-scan: drive fingerprint failed; triggering to be safe');
+      if (walkDue) {
+        try {
+          driveSig = await computeDriveSig(String(data.driveFolderId));
+        } catch (err) {
+          logger.warn({ err, eventId }, 'index-scan: drive fingerprint failed; triggering to be safe');
+        }
       }
       const lastSig = typeof data?.lastIndexSig === 'string' ? data.lastIndexSig : '';
-      const lastRunDone = data?.indexState?.status === 'done';
-      if (driveSig && lastSig && driveSig === lastSig && lastRunDone) {
+      if (!pending && driveSig && lastSig && driveSig === lastSig && lastRunDone) {
+        await firestore()
+          .collection('events')
+          .doc(eventId)
+          .set({ lastDriveCheckAt: new Date().toISOString() }, { merge: true });
         skipped.push({ eventId, reason: 'unchanged' });
         continue;
       }
@@ -320,7 +349,10 @@ eventsRouter.post('/admin/index-scan', allowCronOrAdmin, async (req, res, next) 
         }
         const { execution } = out;
         if (driveSig) {
-          await firestore().collection('events').doc(eventId).set({ lastIndexSig: driveSig }, { merge: true });
+          await firestore()
+            .collection('events')
+            .doc(eventId)
+            .set({ lastIndexSig: driveSig, lastDriveCheckAt: new Date().toISOString() }, { merge: true });
         }
         triggered.push(eventId);
         logger.info({ eventId, execution }, 'index-scan triggered event');

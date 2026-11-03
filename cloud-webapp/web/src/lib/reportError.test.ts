@@ -66,6 +66,17 @@ describe('reportClientError dedupe', () => {
     expect(apiPost).toHaveBeenCalledTimes(2);
   });
 
+  it('does not report a cancelled Google sign-in popup', async () => {
+    installGlobalErrorReporting();
+    for (const code of ['auth/cancelled-popup-request', 'auth/popup-closed-by-user']) {
+      const e = new Event('unhandledrejection') as Event & { reason: unknown };
+      e.reason = Object.assign(new Error(`Firebase: Error (${code}).`), { code });
+      window.dispatchEvent(e);
+      await settle();
+    }
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
   it('keys on a normalised message: whitespace differences and text past 200 chars do not split it', async () => {
     const base = 'x'.repeat(200);
     reportClientError('unhandled_error', `${base} tail one`);

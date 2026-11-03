@@ -12,8 +12,13 @@
  * because unlike index-scan (one scheduler tick at a time) workers really do
  * finish simultaneously.
  *
- * Skipping is safe: photos copied while a run is in flight change the Drive
- * fingerprint, so the next index-scan tick (≤10 min) picks them up.
+ * Skipping is safe because a skip is RECORDED: the claim stamps
+ * `indexPendingAt` on the event in the same transaction, and index-scan starts a
+ * run for any event carrying it on its next tick (≤10 min), without walking
+ * Drive. Starting a run clears it. It used to rely on index-scan noticing the
+ * new photos by listing the whole event in Drive every tick — on the NYC
+ * Marathon (27k photos) that was ~80s per tick, ~14,000s/day of api time, more
+ * than the whole Cloud Run free tier, to find "no change" 106 times in 107.
  */
 
 import { firestore } from '../lib/firestore.js';
@@ -35,8 +40,14 @@ export async function triggerIndexJobUnlessInFlight(eventId: string): Promise<Gu
   const prior = await firestore().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const indexState = snap.data()?.indexState as Record<string, unknown> | undefined;
-    if (isIndexInFlight(indexState)) return { claimed: false as const };
-    tx.set(ref, { indexState: { status: 'queued', updatedAt: now } }, { merge: true });
+    if (isIndexInFlight(indexState)) {
+      // A run was wanted but one is already going: owe another after it, since
+      // the running one may have listed Drive before these changes landed.
+      tx.set(ref, { indexPendingAt: now }, { merge: true });
+      return { claimed: false as const };
+    }
+    // This run lists Drive after the claim, so it covers everything owed so far.
+    tx.set(ref, { indexState: { status: 'queued', updatedAt: now }, indexPendingAt: null }, { merge: true });
     return { claimed: true as const, indexState };
   });
 
@@ -55,7 +66,8 @@ export async function triggerIndexJobUnlessInFlight(eventId: string): Promise<Gu
       const restored = prior.indexState
         ? prior.indexState
         : { status: 'failed', error: `index trigger failed: ${String((err as Error)?.message ?? err)}`, updatedAt: now };
-      await ref.set({ indexState: restored }, { merge: true });
+      // The claim cleared any owed run; put it back so the next scan retries.
+      await ref.set({ indexState: restored, indexPendingAt: now }, { merge: true });
     } catch (releaseErr) {
       logger.warn({ err: releaseErr, eventId }, 'index claim release failed (index-scan will retry after the stale window)');
     }

@@ -78,4 +78,23 @@ describe('triggerIndexJobUnlessInFlight', () => {
     // …so the very next caller is allowed to try again.
     await expect(triggerIndexJobUnlessInFlight('ev')).resolves.toMatchObject({ triggered: true });
   });
+
+  // A skipped trigger is a run still owed: index-scan acts on `indexPendingAt`
+  // next tick instead of walking the event's whole Drive tree to notice.
+  it('records a run as owed when one is already in flight, and a claim clears it', async () => {
+    events.set('ev', { indexState: { status: 'running', updatedAt: new Date().toISOString() } });
+    await triggerIndexJobUnlessInFlight('ev');
+    expect(events.get('ev')?.indexPendingAt).toEqual(expect.any(String));
+
+    events.set('ev', { ...events.get('ev'), indexState: { status: 'done' } });
+    await expect(triggerIndexJobUnlessInFlight('ev')).resolves.toMatchObject({ triggered: true });
+    expect(events.get('ev')?.indexPendingAt).toBeNull();
+  });
+
+  it('leaves the run owed when the trigger fails', async () => {
+    events.set('ev', { indexState: { status: 'done', updatedAt: '2026-01-01T00:00:00Z' } });
+    triggerIndexJob.mockRejectedValueOnce(new Error('jobs api 503'));
+    await expect(triggerIndexJobUnlessInFlight('ev')).rejects.toThrow();
+    expect(events.get('ev')?.indexPendingAt).toEqual(expect.any(String));
+  });
 });
