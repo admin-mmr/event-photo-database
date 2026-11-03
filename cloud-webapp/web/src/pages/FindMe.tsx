@@ -16,7 +16,12 @@ import type {
   FeedbackReason,
   ExpandResultsResponse,
 } from '@cloud-webapp/shared';
-import { SelfieFaceReasonSchema, WEAK_SELFIE_SCORE } from '@cloud-webapp/shared';
+import {
+  FINDME_MAX_FILE_BYTES,
+  FINDME_MAX_REFERENCE_IMAGES,
+  SelfieFaceReasonSchema,
+  WEAK_SELFIE_SCORE,
+} from '@cloud-webapp/shared';
 import {
   apiGet,
   apiUpload,
@@ -76,6 +81,9 @@ const STR = {
     confirmGuardianHint: 'Confirm guardian consent to continue.',
     savedLabel: 'Saved',
     searchFailed: 'Search failed',
+    photoTooLarge: (mb: number) =>
+      `That photo is too big to upload (the limit is ${mb} MB). Try a different photo, or a screenshot of this one.`,
+    tooManyPhotos: (n: number) => `You can use at most ${n} photos per search.`,
     outfitLabel: 'Outfit',
     photoLabel: 'Photo',
     anchoredLabel: 'Refined',
@@ -273,6 +281,8 @@ const STR = {
     confirmGuardianHint: '请确认监护人同意后继续。',
     savedLabel: '已存',
     searchFailed: '搜索失败',
+    photoTooLarge: (mb: number) => `照片太大，无法上传（上限 ${mb} MB）。请换一张照片，或改用这张照片的截图。`,
+    tooManyPhotos: (n: number) => `每次搜索最多使用 ${n} 张照片。`,
     outfitLabel: '服装',
     photoLabel: '照片',
     anchoredLabel: '优化',
@@ -445,8 +455,10 @@ const STR = {
 
 type Phase = 'consent' | 'pick' | 'searching' | 'results';
 
-/** Client-side cap on selfies per search; mirrors the api's MAX_REFERENCE_IMAGES. */
-const MAX_REFERENCE_IMAGES = 5;
+/** Client-side cap on selfies per search; the api enforces the same number. */
+const MAX_REFERENCE_IMAGES = FINDME_MAX_REFERENCE_IMAGES;
+/** The api's per-file cap in whole MB, for the "photo too big" message. */
+const MAX_SELFIE_MB = Math.round(FINDME_MAX_FILE_BYTES / (1024 * 1024));
 
 
 /** How a result set was queried, kept so an anchored re-search can repeat the
@@ -1125,6 +1137,13 @@ export function FindMe(): JSX.Element {
       // eslint-disable-next-line no-await-in-loop
       files.push(await shrinkForUpload(file));
     }
+    // Still over the api's cap (the browser couldn't decode it to shrink it):
+    // say so now rather than after a long upload that ends in a 413.
+    if (files.some((f) => f.size > FINDME_MAX_FILE_BYTES)) {
+      setCheckingPhoto(false);
+      setError(t.photoTooLarge(MAX_SELFIE_MB));
+      return;
+    }
     // Multiple selfies are averaged into one centroid query (§1.1). We quality-
     // check them all and only warn if EVERY one is poor — a single sharp shot in
     // the set is enough to search well.
@@ -1435,6 +1454,14 @@ export function FindMe(): JSX.Element {
         setPhase('pick');
       } else if (e instanceof ApiError && e.code === 'rate_limited') {
         setError(e.message);
+        setPhase('pick');
+      } else if (e instanceof ApiError && e.code === 'too_many_files') {
+        setError(t.tooManyPhotos(MAX_REFERENCE_IMAGES));
+        setPhase('pick');
+      } else if (e instanceof ApiError && (e.code === 'file_too_large' || e.status === 413)) {
+        // A bare 413 (no code) is Cloud Run's own 32 MiB request cap, which a
+        // set of big picks the browser couldn't shrink can still hit.
+        setError(t.photoTooLarge(MAX_SELFIE_MB));
         setPhase('pick');
       } else {
         setError(e instanceof Error ? e.message : t.searchFailed);
