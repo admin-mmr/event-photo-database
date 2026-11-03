@@ -461,6 +461,97 @@ export const SummaryResponseSchema = z.object({
 });
 export type SummaryResponse = z.infer<typeof SummaryResponseSchema>;
 
+// ── Upload insights (per club / tag / uploader) ───────────────────────────────
+
+/**
+ * Where one upload session stands. `stuck` = still copying with no activity for
+ * an hour; `never_completed` = files in staging and no `/complete` on record
+ * (the hourly upload sweep normally files these).
+ */
+export const UploadSessionStatusSchema = z.enum(['ok', 'in_progress', 'stuck', 'error', 'never_completed']);
+export type UploadSessionStatus = z.infer<typeof UploadSessionStatusSchema>;
+
+const count = z.number().int().nonnegative();
+
+/** One volunteer upload session (the client's batchId, its copy chunks folded in). */
+export const UploadInsightsSessionSchema = z.object({
+  batchId: z.string(),
+  status: UploadSessionStatusSchema,
+  /** Drive batch folder(s); a recovery re-dispatch can add a second one. */
+  batchFolders: z.array(z.string()),
+  files: count,
+  copied: count,
+  skippedDuplicates: count,
+  failed: count,
+  /** Objects still in the staging bucket (not yet copied, or kept as an unproven duplicate). */
+  staged: count,
+  /** Bytes copied to Drive (Upload_Log), null when the log could not be read. */
+  copiedBytes: z.number().nonnegative().nullable(),
+  stagedBytes: z.number().nonnegative(),
+  /** Indexed photos in this session's batch folders; null = no index counts yet. */
+  indexed: count.nullable(),
+  startedAt: z.string(),
+  lastActivityAt: z.string(),
+  minutes: z.number().nonnegative(),
+  recovered: z.boolean(),
+});
+export type UploadInsightsSession = z.infer<typeof UploadInsightsSessionSchema>;
+
+/** Sessions rolled up per (club, tag, uploader). Also the shape of the totals. */
+export const UploadInsightsRowSchema = z.object({
+  clubName: z.string(),
+  tag: z.string(),
+  /** The uploader segment of the batch folder name (`YYYYMMDD-HHMMSS_<uploader>`). */
+  uploader: z.string(),
+  sessions: count,
+  files: count,
+  copied: count,
+  skippedDuplicates: count,
+  failed: count,
+  staged: count,
+  copiedBytes: z.number().nonnegative().nullable(),
+  stagedBytes: z.number().nonnegative(),
+  /** Sum of per-session (first contact → last activity) durations. */
+  minutes: z.number().nonnegative(),
+  indexed: count.nullable(),
+  /** indexed / copied, 0..1; null when unknown or nothing was copied. */
+  indexRatio: z.number().nonnegative().nullable(),
+  /** Copied bytes per second of session time. */
+  mbPerSec: z.number().nonnegative().nullable(),
+  filesPerMin: z.number().nonnegative().nullable(),
+  inProgress: count,
+  stuck: count,
+  errors: count,
+  neverCompleted: count,
+  recovered: count,
+  firstSessionAt: z.string(),
+  lastSessionAt: z.string(),
+  lastActivityAt: z.string(),
+});
+export type UploadInsightsRow = z.infer<typeof UploadInsightsRowSchema>;
+
+export const UploadInsightsGroupSchema = UploadInsightsRowSchema.extend({
+  sessionList: z.array(UploadInsightsSessionSchema),
+});
+export type UploadInsightsGroup = z.infer<typeof UploadInsightsGroupSchema>;
+
+/** GET /api/admin/upload-insights/:eventId */
+export const UploadInsightsResponseSchema = z.object({
+  ok: z.literal(true),
+  eventId: z.string(),
+  generatedAt: z.string(),
+  /** When the indexer last wrote per-folder counts; null = never (re-index the event). */
+  indexCountsAt: z.string().nullable(),
+  /** False when the staging listing failed — staged counts then read 0. */
+  stagingListed: z.boolean(),
+  /** True when the session scan hit its cap and older sessions are missing. */
+  truncated: z.boolean(),
+  warnings: z.array(z.string()),
+  totals: UploadInsightsRowSchema,
+  groups: z.array(UploadInsightsGroupSchema),
+});
+export type UploadInsightsResponse = z.infer<typeof UploadInsightsResponseSchema>;
+
 // ── Partner REST API (dev plan G5.3) ──────────────────────────────────────────
 
 export const PartnerEventSchema = z.object({

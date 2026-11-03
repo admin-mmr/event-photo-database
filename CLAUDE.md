@@ -325,7 +325,8 @@
      as `orphans`, never deleted), so dropping the Firestore doc while the row
      survives just means the next `findme-drive-sync` tick recreates the event.
   5. **Firestore** → `events`, `photos`, `uploadLinks`, `upload_batches`,
-     `upload_dedup`, `match_runs`, `match_feedback`, `specialFolders`.
+     `upload_dedup`, `match_runs`, `match_feedback`, `upload_folder_counts`,
+     `specialFolders`.
 - **The tool:** `GET /api/admin/events/:eventId/delete-preview` reports the
   inventory; `POST /api/admin/events/:eventId/delete` is a dry run by default and,
   with `apply: true`, does the work. Admin UI: the Delete column on
@@ -598,6 +599,13 @@
 - The menus come from `events.galleryFolders` (per-(club, tag) counts, written at
   the end of each index run). Existing events show no menus until re-indexed;
   that run backfills the fields without re-embedding.
+- **Per-uploader index counts live in `upload_folder_counts/<eventId>`, NOT on
+  the events doc.** The indexer writes indexed photos per batch folder (the
+  third `relPath` segment) at the end of each run, for the admin upload-insights
+  page's index % (`/admin/uploads`, `uploadInsightsService.ts`). It is its own
+  doc because the gallery reads the events doc on every page load and a big
+  event has thousands of upload sessions; keep it off `events`. An event shows
+  no index % until its next index run writes the doc.
 - Each filtered query shape has its own composite indexes
   (`eventId, clubName[, tag], <sort field>`); a new sort or filter needs new ones
   in `firestore.indexes.json` (and `generate-cosmos-indexes.mjs`).

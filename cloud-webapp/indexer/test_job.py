@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from blobs import BlobStore
-from job import EMB_DIR, FILES, MANIFEST, Config, folder_scope, run
+from job import EMB_DIR, FILES, MANIFEST, Config, folder_scope, run, upload_folders
 
 MODEL_V = "test-model@1"
 DIM = 8
@@ -59,6 +59,7 @@ class FakeFS:
         self.photos: dict[str, dict] = {}
         self.states: list[dict] = []
         self.gallery_folders: list[dict] | None = None
+        self.upload_folders: dict | None = None
 
     def get_event(self, event_id):
         return self.events.get(event_id)
@@ -75,6 +76,9 @@ class FakeFS:
 
     def set_gallery_folders(self, event_id, folders):
         self.gallery_folders = folders
+
+    def set_upload_folders(self, event_id, doc):
+        self.upload_folders = doc
 
     def upsert_photo(self, photo_id, doc):
         self.photos[photo_id] = {**self.photos.get(photo_id, {}), **doc}
@@ -579,6 +583,27 @@ def test_photos_carry_club_and_tag_and_event_gets_folder_counts(tmp_path):
         {"clubName": "MMR", "tag": "10K", "count": 2},
         {"clubName": "MMR", "tag": "5K", "count": 1},
     ]
+    # Upload insights: per batch folder, and a hand-placed root photo is no batch.
+    assert fs.upload_folders["eventId"] == "ev1"
+    assert fs.upload_folders["truncated"] is False
+    assert fs.upload_folders["folders"] == [
+        {"clubName": "Harriers", "tag": "ALL", "batchFolder": "b3", "count": 1},
+        {"clubName": "MMR", "tag": "10K", "batchFolder": "b1", "count": 2},
+        {"clubName": "MMR", "tag": "5K", "batchFolder": "b2", "count": 1},
+    ]
+
+
+def test_upload_folders_skips_shallow_paths():
+    photos = {
+        "a": {"relPath": "Club/tag/batch/a.jpg"},
+        "b": {"relPath": "Club/tag/batch/b.jpg"},
+        "c": {"relPath": "Club/batch/c.jpg"},
+        "d": {"relPath": "d.jpg"},
+        "e": {},
+    }
+    assert upload_folders(photos) == [
+        {"clubName": "Club", "tag": "tag", "batchFolder": "batch", "count": 2},
+    ]
 
 
 def test_reused_photo_is_backfilled_and_follows_a_move(env):
@@ -610,5 +635,6 @@ def test_gallery_folders_write_failure_does_not_fail_the_run(env):
         raise RuntimeError("firestore down")
 
     fs.set_gallery_folders = boom
+    fs.set_upload_folders = boom
     _run(drive, fs, blobs)
     assert fs.states[-1]["status"] == "done"

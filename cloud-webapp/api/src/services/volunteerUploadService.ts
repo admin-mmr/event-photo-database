@@ -73,9 +73,13 @@ export function batchTimestamp(date: Date): string {
  * stripped. Always starts with a letter so it satisfies the Layer-3 convention.
  */
 export function buildBatchFolderName(photographerName: string, now: Date = new Date()): string {
+  return `${batchTimestamp(now)}_${batchFolderUsername(photographerName)}`;
+}
+
+/** The `<username>` segment of a batch folder name, from the typed photographer name. */
+export function batchFolderUsername(photographerName: string): string {
   const safe = (photographerName || '').toLowerCase().replace(/[^a-z0-9._-]/g, '');
-  const username = /^[a-z]/.test(safe) ? safe : `volunteer${safe ? `_${safe}` : ''}`;
-  return `${batchTimestamp(now)}_${username}`;
+  return /^[a-z]/.test(safe) ? safe : `volunteer${safe ? `_${safe}` : ''}`;
 }
 
 // Upload_Links column indices — mirror gas-app constants.ts SheetColumns.UPLOAD_LINKS.

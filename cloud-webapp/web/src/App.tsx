@@ -120,6 +120,7 @@ const STR = {
       verdicts: 'Verdict batches',
       metrics: 'Metrics',
       report: 'Report',
+      uploads: 'Uploads by uploader',
       trash: 'Trash',
       audit: 'Audit',
       folders: 'Folders',
@@ -154,6 +155,7 @@ const STR = {
       verdicts: '结论批次',
       metrics: '指标',
       report: '报告',
+      uploads: '按上传者统计',
       trash: '回收站',
       audit: '审计',
       folders: '文件夹',
@@ -187,6 +189,7 @@ import { AdminLinks } from './pages/AdminLinks.js';
 import { AdminAudit } from './pages/AdminAudit.js';
 import { EmailPrefs } from './pages/EmailPrefs.js';
 import { AdminSummary } from './pages/AdminSummary.js';
+import { AdminUploadInsights } from './pages/AdminUploadInsights.js';
 import { AdminManagedFolders } from './pages/AdminManagedFolders.js';
 import { AdminDuplicates } from './pages/AdminDuplicates.js';
 import { DeletedFiles } from './pages/DeletedFiles.js';
@@ -319,11 +322,14 @@ export function App(): JSX.Element {
                   </Link>
                 </NavMenu>
 
-                {/* Read-only oversight grouped under "Insights": Report for any
+                {/* Read-only oversight grouped under "Insights": Report + Uploads for any
                     admin; Metrics / Feedback / Audit for super_admins only. */}
                 <NavMenu label={t.nav.insights}>
                   <Link to="/admin/summary" className="nav-link" onClick={closeMenu}>
                     {t.nav.report}
+                  </Link>
+                  <Link to="/admin/uploads" className="nav-link" onClick={closeMenu}>
+                    {t.nav.uploads}
                   </Link>
                   {isSuperAdmin && (
                     <>
@@ -455,6 +461,7 @@ export function App(): JSX.Element {
           <Route path="/admin/audit" element={isGuest ? <Navigate to="/" replace /> : <AdminAudit />} />
           <Route path="/admin/metrics" element={isGuest ? <Navigate to="/" replace /> : <AdminMetrics />} />
           <Route path="/admin/summary" element={isGuest ? <Navigate to="/" replace /> : <AdminSummary />} />
+          <Route path="/admin/uploads" element={isGuest ? <Navigate to="/" replace /> : <AdminUploadInsights />} />
           <Route path="/admin/deleted" element={isGuest ? <Navigate to="/" replace /> : <DeletedFiles />} />
           <Route path="/admin/folders" element={isGuest ? <Navigate to="/" replace /> : <AdminManagedFolders />} />
           <Route path="/admin/duplicates" element={isGuest ? <Navigate to="/" replace /> : <AdminDuplicates />} />
