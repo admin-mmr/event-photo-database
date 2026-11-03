@@ -140,6 +140,9 @@ function buildSession(
   const totals = (original.length > 0 ? original : workers).reduce((a, d) => a + n(d.total), 0);
   // Files staged after a chunked session's last flush are in no doc's total yet.
   const files = Math.max(totals, copied + skippedDuplicates + staged.length);
+  // `failed` is per attempt (a failed file stays staged, or a later attempt copies
+  // it), so it is not part of this sum — counting it would count files twice.
+  const untracked = files - copied - skippedDuplicates - staged.length;
 
   const batchFolders = [...new Set(docs.map((d) => (d.batchFolderName ?? '').trim()).filter(Boolean))].sort();
 
@@ -198,6 +201,7 @@ function buildSession(
     skippedDuplicates,
     failed,
     staged: staged.length,
+    untracked,
     copiedBytes: copiedMb ? Math.round(batchFolders.reduce((a, f) => a + (copiedMb.get(f) ?? 0), 0) * MB) : null,
     stagedBytes: staged.reduce((a, o) => a + n(o.size), 0),
     indexed: indexedBy ? batchFolders.reduce((a, f) => a + (indexedBy.get(f) ?? 0), 0) : null,
@@ -222,6 +226,7 @@ function emptyRow(clubName: string, tag: string, uploader: string, known: Insigh
     skippedDuplicates: 0,
     failed: 0,
     staged: 0,
+    untracked: 0,
     copiedBytes: known.copiedMbByFolder ? 0 : null,
     stagedBytes: 0,
     minutes: 0,
@@ -247,6 +252,7 @@ function addSession(row: UploadInsightsRow, s: UploadInsightsSession): void {
   row.skippedDuplicates += s.skippedDuplicates;
   row.failed += s.failed;
   row.staged += s.staged;
+  row.untracked += s.untracked;
   if (row.copiedBytes !== null && s.copiedBytes !== null) row.copiedBytes += s.copiedBytes;
   row.stagedBytes += s.stagedBytes;
   row.minutes += s.minutes;
@@ -264,7 +270,10 @@ function addSession(row: UploadInsightsRow, s: UploadInsightsSession): void {
 /** Ratios last, once the sums are final. */
 function finishRow(row: UploadInsightsRow): void {
   row.minutes = Math.round(row.minutes * 10) / 10;
-  row.indexRatio = row.indexed !== null && row.copied > 0 ? row.indexed / row.copied : null;
+  // Untracked files are in Drive too (see the schema), so they count as copied
+  // here — otherwise a retried session reads well over 100% once indexed.
+  const inDrive = row.copied + row.untracked;
+  row.indexRatio = row.indexed !== null && inDrive > 0 ? row.indexed / inDrive : null;
   const seconds = row.minutes * 60;
   row.mbPerSec = row.copiedBytes !== null && seconds > 0 ? row.copiedBytes / MB / seconds : null;
   row.filesPerMin = row.minutes > 0 ? row.copied / row.minutes : null;

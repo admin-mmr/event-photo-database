@@ -485,6 +485,12 @@ export const UploadInsightsSessionSchema = z.object({
   failed: count,
   /** Objects still in the staging bucket (not yet copied, or kept as an unproven duplicate). */
   staged: count,
+  /**
+   * files − copied − duplicates − staged: files no copy result was recorded for.
+   * Almost always copied by an earlier attempt of a retried chunk — a retry resets
+   * the counters and skips files whose staged bytes are already gone (into Drive).
+   */
+  untracked: count,
   /** Bytes copied to Drive (Upload_Log), null when the log could not be read. */
   copiedBytes: z.number().nonnegative().nullable(),
   stagedBytes: z.number().nonnegative(),
@@ -509,12 +515,13 @@ export const UploadInsightsRowSchema = z.object({
   skippedDuplicates: count,
   failed: count,
   staged: count,
+  untracked: count,
   copiedBytes: z.number().nonnegative().nullable(),
   stagedBytes: z.number().nonnegative(),
   /** Sum of per-session (first contact → last activity) durations. */
   minutes: z.number().nonnegative(),
   indexed: count.nullable(),
-  /** indexed / copied, 0..1; null when unknown or nothing was copied. */
+  /** indexed / (copied + untracked); null when unknown or nothing reached Drive. */
   indexRatio: z.number().nonnegative().nullable(),
   /** Copied bytes per second of session time. */
   mbPerSec: z.number().nonnegative().nullable(),

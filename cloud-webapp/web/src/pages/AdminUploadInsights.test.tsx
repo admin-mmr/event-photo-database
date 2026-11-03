@@ -21,6 +21,7 @@ const base = {
   skippedDuplicates: 0,
   failed: 0,
   staged: 0,
+  untracked: 0,
   copiedBytes: 10 * 1024 * 1024,
   stagedBytes: 0,
   minutes: 12,
@@ -38,7 +39,7 @@ const base = {
   lastActivityAt: '2026-11-01T14:12:00.000Z',
 };
 
-const session = (batchId: string, status: string) => ({
+const session = (batchId: string, status: string, over: Record<string, unknown> = {}) => ({
   batchId,
   status,
   batchFolders: ['20261101-140000_jane'],
@@ -47,6 +48,7 @@ const session = (batchId: string, status: string) => ({
   skippedDuplicates: 0,
   failed: 0,
   staged: 0,
+  untracked: 0,
   copiedBytes: 10 * 1024 * 1024,
   stagedBytes: 0,
   indexed: 10,
@@ -54,6 +56,7 @@ const session = (batchId: string, status: string) => ({
   lastActivityAt: '2026-11-01T14:12:00.000Z',
   minutes: 12,
   recovered: false,
+  ...over,
 });
 
 const INSIGHTS = {
@@ -75,7 +78,11 @@ const INSIGHTS = {
       files: 200,
       stuck: 1,
       indexRatio: 0.25,
-      sessionList: [session('bbbbbbbb-2', 'stuck')],
+      sessionList: [
+        session('bbbbbbbb-2', 'stuck'),
+        // A retried session: the parts must add up to Files on screen.
+        session('cccccccc-3', 'ok', { files: 5133, copied: 3755, skippedDuplicates: 142, untracked: 1236 }),
+      ],
     },
   ],
 };
@@ -149,6 +156,17 @@ describe('<AdminUploadInsights />', () => {
     const sessionRow = cell.closest('tr') as HTMLElement;
     expect(within(sessionRow).getByText('stuck')).toBeTruthy();
     expect(within(sessionRow).getByText('20261101-140000_jane')).toBeTruthy();
+    const retried = screen.getByTitle('cccccccc-3').closest('tr') as HTMLElement;
+    expect(within(retried).getByText('1236')).toBeTruthy();
+    expect(screen.getByText(/Files = copied \+ not counted \+ duplicates \+ in staging/)).toBeTruthy();
+  });
+
+  it('pins club, tag and uploader as the sticky first three columns', async () => {
+    mockApi(() => json(INSIGHTS));
+    await pickEvent();
+    const toggle = await screen.findByRole('button', { name: /show sessions for jane/i });
+    const cells = Array.from((toggle.closest('tr') as HTMLElement).children);
+    expect(cells.slice(0, 3).map((c) => c.className)).toEqual(['mono sticky-c1', 'sticky-c2', 'sticky-c3']);
   });
 
   it('says when index counts have not been written yet', async () => {

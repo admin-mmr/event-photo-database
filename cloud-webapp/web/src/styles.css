@@ -2562,3 +2562,98 @@ pre.error {
   gap: 8px;
   margin-top: 4px;
 }
+
+/* Upload insights (/admin/uploads) is a wide table, so on desktop: the page
+   breaks out of the 960px column; the table scrolls inside a viewport-high box,
+   which keeps its horizontal scrollbar on screen instead of below the last row;
+   and the header row plus club / tag / uploader stay put while it scrolls.
+   Phones keep the shared card layout. */
+@media (min-width: 768px) {
+  .insights-page {
+    width: min(calc(100vw - 48px), 1800px);
+    margin-left: calc(50% - min(calc(50vw - 24px), 900px));
+  }
+
+  .insights-table-wrap {
+    max-height: calc(100vh - 240px);
+    min-height: 240px;
+    overflow: auto;
+  }
+
+  .insights-table > thead > tr > th {
+    z-index: 2;
+  }
+
+  .insights-table > thead > tr > th.sticky-c1,
+  .insights-table > thead > tr > th.sticky-c2,
+  .insights-table > thead > tr > th.sticky-c3 {
+    z-index: 3;
+  }
+
+  .insights-table .sticky-c1,
+  .insights-table .sticky-c2,
+  .insights-table .sticky-c3 {
+    position: sticky;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .insights-table > tbody > tr > .sticky-c1,
+  .insights-table > tbody > tr > .sticky-c2,
+  .insights-table > tbody > tr > .sticky-c3 {
+    z-index: 1;
+    background: var(--surface);
+  }
+
+  .insights-table > tbody > tr:nth-child(even) > .sticky-c1,
+  .insights-table > tbody > tr:nth-child(even) > .sticky-c2,
+  .insights-table > tbody > tr:nth-child(even) > .sticky-c3 {
+    background: var(--surface-2);
+  }
+
+  .insights-table > tbody > tr:hover > .sticky-c1,
+  .insights-table > tbody > tr:hover > .sticky-c2,
+  .insights-table > tbody > tr:hover > .sticky-c3 {
+    background: var(--primary-weak);
+  }
+
+  .insights-table .sticky-c1 {
+    left: 0;
+    width: 150px;
+    min-width: 150px;
+    max-width: 150px;
+  }
+
+  .insights-table .sticky-c2 {
+    left: 150px;
+    width: 110px;
+    min-width: 110px;
+    max-width: 110px;
+  }
+
+  .insights-table .sticky-c3 {
+    left: 260px;
+    width: 170px;
+    min-width: 170px;
+    max-width: 170px;
+    box-shadow: inset -1px 0 0 var(--border);
+  }
+
+  /* The expanded sessions stay in view while the outer table scrolls sideways,
+     with their own scroll for what does not fit. */
+  .insights-sessions {
+    position: sticky;
+    left: 14px;
+    width: calc(min(calc(100vw - 48px), 1800px) - 32px);
+    overflow-x: auto;
+  }
+
+  .insights-sessions .data-table thead th {
+    position: static;
+  }
+
+  .insights-sum-note {
+    margin: 4px 0 8px;
+    white-space: normal;
+  }
+}

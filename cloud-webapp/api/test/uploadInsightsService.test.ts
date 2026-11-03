@@ -244,6 +244,31 @@ describe('buildUploadInsights', () => {
     expect(groups[0]).toMatchObject({ files: 103, copied: 100, staged: 3 });
   });
 
+  // A real NYC Marathon session (2026-11-02) had chunks reading "total 100,
+  // copied 22, dup 1". The first attempt copied most of the chunk, then died
+  // before writing its counts; the retry reset them and skipped the files whose
+  // staged bytes were already gone. Those files are in Drive but in no counter.
+  it('reports files no copy result was recorded for, and indexes against them', () => {
+    const folder = '20261102-131640_volunteer';
+    const { groups } = buildUploadInsights(
+      input({
+        batches: [
+          { batchId: 's4', chunked: true, linkId: 'link-a', batchFolderName: folder, createdAt: at(-60), updatedAt: at(-60) },
+          { batchId: 's4-p0000000000000004', parentBatchId: 's4', linkId: 'link-a', phase: 'indexing', total: 100,
+            copied: 22, skippedDuplicates: 1, batchFolderName: folder, createdAt: at(-60), updatedAt: at(-20) },
+          { batchId: 's4-p0000000000000005', parentBatchId: 's4', linkId: 'link-a', phase: 'indexing', total: 100,
+            copied: 100, batchFolderName: folder, createdAt: at(-50), updatedAt: at(-40) },
+        ],
+        indexedByFolder: new Map([[folder, 199]]),
+      }),
+    );
+    const g = groups[0]!;
+    expect(g).toMatchObject({ files: 200, copied: 122, skippedDuplicates: 1, staged: 0, untracked: 77 });
+    expect(g.sessionList[0]).toMatchObject({ untracked: 77 });
+    // 199 indexed of the 199 that reached Drive — not 163% of the 122 counted.
+    expect(g.indexRatio).toBe(1);
+  });
+
   it('a club scope drops every other club', () => {
     const { groups, totals } = buildUploadInsights(
       input({

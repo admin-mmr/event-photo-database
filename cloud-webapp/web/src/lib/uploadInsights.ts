@@ -34,6 +34,8 @@ export type SortKey =
   | 'uploader'
   | 'sessions'
   | 'files'
+  | 'copied'
+  | 'untracked'
   | 'size'
   | 'minutes'
   | 'indexRatio'
