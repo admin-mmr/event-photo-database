@@ -267,7 +267,10 @@ function addSession(row: UploadInsightsRow, s: UploadInsightsSession): void {
   if (s.lastActivityAt > row.lastActivityAt) row.lastActivityAt = s.lastActivityAt;
 }
 
-/** Ratios last, once the sums are final. */
+/**
+ * Ratios last, once the sums are final. The admin page re-rolls sessions into
+ * any grouping with `rollUp` in `web/src/lib/uploadInsights.ts` — change both.
+ */
 function finishRow(row: UploadInsightsRow): void {
   row.minutes = Math.round(row.minutes * 10) / 10;
   // Untracked files are in Drive too (see the schema), so they count as copied

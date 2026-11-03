@@ -2567,97 +2567,651 @@ pre.error {
   margin-top: 4px;
 }
 
-/* Upload insights (/admin/uploads) is a wide table, so on desktop: the page
-   breaks out of the 960px column; the table scrolls inside a viewport-high box,
-   which keeps its horizontal scrollbar on screen instead of below the last row;
-   and the header row plus club / tag / uploader stay put while it scrolls.
-   Phones keep the shared card layout. */
+/* ── Upload insights (/admin/uploads) ─────────────────────────────────────────
+   A pivot: grouping chips + column picker above a table whose grouping columns
+   and header stay put while it scrolls, and a detail panel for the picked row.
+   Phones keep the shared card layout (one card per row, sessions indented). */
+
+.insights-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin: 4px 0 12px;
+}
+
+.insights-dims,
+.insights-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.insights-toolbar-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.insights-dim-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  background: var(--primary-weak);
+  color: var(--primary);
+  border-radius: var(--r-full);
+  padding: 2px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* "Club › Tag › Uploader": the chips read as the grouping order. */
+.insights-dim-chip + .insights-dim-chip {
+  margin-left: 12px;
+}
+
+.insights-dim-chip + .insights-dim-chip::before {
+  content: '›';
+  position: absolute;
+  left: -14px;
+  color: var(--text-subtle);
+  font-weight: 400;
+}
+
+.insights-dim-name {
+  padding: 4px 8px;
+}
+
+.insights-dim-chip button {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--r-full);
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.insights-dim-chip button:hover {
+  background: rgba(79, 70, 229, 0.12);
+}
+
+.insights-dim-add {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--text-muted);
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.insights-dim-add:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.insights-picker {
+  position: relative;
+}
+
+.insights-picker-panel {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  top: 18vh;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 18px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.insights-picker-panel fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.insights-picker-panel legend {
+  padding: 0;
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.insights-picker-panel label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.insights-picker-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.pivot-row {
+  cursor: pointer;
+}
+
+.pivot-row:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.pivot-label-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pivot-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pivot-group .pivot-text,
+.pivot-total .pivot-text {
+  font-weight: 700;
+}
+
+.pivot-session-mark {
+  flex: none;
+  width: 24px;
+  text-align: center;
+  color: var(--text-subtle);
+}
+
+.pivot-session-text {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.pivot-toggle {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pivot-toggle:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.pivot-sort {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pivot-sort:hover {
+  color: var(--primary);
+}
+
+.insights-warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.insights-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.insights-note {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+
+/* Detail panel: a bottom sheet on phones, a right-hand panel on desktop. */
+.insights-detail {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  max-height: 85vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border-top-left-radius: var(--r-lg);
+  border-top-right-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+.insights-detail-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 12px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.insights-detail-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 32px;
+}
+
+.insights-detail-close {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.insights-detail-close:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.insights-detail-kicker {
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--primary);
+}
+
+.insights-detail h3 {
+  margin: 2px 0 4px;
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+
+.insights-detail h3:focus {
+  outline: none;
+}
+
+.insights-detail-crumbs {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.insights-detail-section {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--surface-2);
+}
+
+.insights-detail-section h4 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.insights-bar {
+  display: flex;
+  height: 12px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  border-radius: var(--r-full);
+  background: var(--surface-2);
+}
+
+.insights-bar > span {
+  display: block;
+  min-width: 3px;
+  height: 100%;
+}
+
+.insights-bar-copied {
+  background: var(--primary);
+}
+
+/* Lighter indigo: these files reached Drive too, they just were not counted. */
+.insights-bar-untracked {
+  background: #a5b4fc;
+}
+
+.insights-bar-dups {
+  background: var(--border-strong);
+}
+
+.insights-bar-staged {
+  background: #f59e0b;
+}
+
+.insights-legend {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.insights-legend li {
+  display: grid;
+  grid-template-columns: 12px 1fr auto 3.5em;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.insights-legend li .muted {
+  text-align: right;
+}
+
+.insights-swatch {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.insights-equation {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.insights-big {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.insights-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 14px;
+}
+
+.insights-facts dt {
+  color: var(--text-muted);
+}
+
+.insights-facts dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.insights-facts-stacked {
+  grid-template-columns: 1fr;
+  gap: 2px;
+}
+
+.insights-facts-stacked dd {
+  margin-bottom: 8px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.insights-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.insights-session-list button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.insights-session-list button:hover {
+  border-color: var(--primary);
+  background: var(--primary-weak);
+}
+
+.insights-session-who {
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 767px) {
+  /* A card shows its own label; the empty grouping cells are table-only. */
+  .insights-table .pivot-dim-empty {
+    display: none;
+  }
+
+  .insights-table .pivot-group {
+    border-left: 4px solid var(--primary);
+  }
+
+  .insights-table .pivot-session {
+    margin-left: 16px;
+    background: var(--surface-2);
+  }
+
+  .insights-table .pivot-total {
+    border-color: var(--border-strong);
+  }
+
+  .insights-table .is-selected {
+    border-color: var(--primary);
+  }
+}
+
 @media (min-width: 768px) {
+  /* The page breaks out of the 960px column; with the detail panel open it
+     stops short of it, so no row hides behind the panel. */
   .insights-page {
     width: min(calc(100vw - 48px), 1800px);
     margin-left: calc(50% - min(calc(50vw - 24px), 900px));
   }
 
+  .insights-picker-panel {
+    position: absolute;
+    left: auto;
+    right: 0;
+    top: calc(100% + 6px);
+    width: 420px;
+  }
+
+  .insights-detail {
+    top: 0;
+    left: auto;
+    max-height: none;
+    width: 420px;
+    border-radius: 0;
+    border-left: 1px solid var(--border);
+  }
+
+  /* The table scrolls inside a viewport-high box, so both of its scrollbars
+     are on screen, and they are drawn even where the OS hides them until
+     you scroll (macOS overlay scrollbars). */
   .insights-table-wrap {
-    max-height: calc(100vh - 240px);
-    min-height: 240px;
+    max-height: var(--fit-height, calc(100vh - 280px));
+    min-height: 280px;
     overflow: auto;
   }
 
-  .insights-table > thead > tr > th {
-    z-index: 2;
+  .insights-table-wrap::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
   }
 
-  .insights-table > thead > tr > th.sticky-c1,
-  .insights-table > thead > tr > th.sticky-c2,
-  .insights-table > thead > tr > th.sticky-c3 {
-    z-index: 3;
-  }
-
-  .insights-table .sticky-c1,
-  .insights-table .sticky-c2,
-  .insights-table .sticky-c3 {
-    position: sticky;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .insights-table > tbody > tr > .sticky-c1,
-  .insights-table > tbody > tr > .sticky-c2,
-  .insights-table > tbody > tr > .sticky-c3 {
-    z-index: 1;
-    background: var(--surface);
-  }
-
-  .insights-table > tbody > tr:nth-child(even) > .sticky-c1,
-  .insights-table > tbody > tr:nth-child(even) > .sticky-c2,
-  .insights-table > tbody > tr:nth-child(even) > .sticky-c3 {
+  .insights-table-wrap::-webkit-scrollbar-track,
+  .insights-table-wrap::-webkit-scrollbar-corner {
     background: var(--surface-2);
   }
 
-  .insights-table > tbody > tr:hover > .sticky-c1,
-  .insights-table > tbody > tr:hover > .sticky-c2,
-  .insights-table > tbody > tr:hover > .sticky-c3 {
-    background: var(--primary-weak);
+  .insights-table-wrap::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border: 3px solid var(--surface-2);
+    border-radius: var(--r-full);
   }
 
-  .insights-table .sticky-c1 {
-    left: 0;
-    width: 150px;
-    min-width: 150px;
-    max-width: 150px;
+  .insights-table-wrap::-webkit-scrollbar-thumb:hover {
+    background: var(--text-subtle);
   }
 
-  .insights-table .sticky-c2 {
-    left: 150px;
-    width: 110px;
-    min-width: 110px;
-    max-width: 110px;
+  @supports not selector(::-webkit-scrollbar) {
+    .insights-table-wrap {
+      scrollbar-width: auto;
+      scrollbar-color: var(--border-strong) var(--surface-2);
+    }
   }
 
-  .insights-table .sticky-c3 {
-    left: 260px;
-    width: 170px;
-    min-width: 170px;
-    max-width: 170px;
-    box-shadow: inset -1px 0 0 var(--border);
+  .insights-table {
+    width: max-content;
+    min-width: 100%;
   }
 
-  /* The expanded sessions stay in view while the outer table scrolls sideways,
-     with their own scroll for what does not fit. */
-  .insights-sessions {
+  .insights-table th,
+  .insights-table td {
+    padding: 8px 12px;
+  }
+
+  .insights-table th.num,
+  .insights-table td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Every cell paints its row's colour, so the frozen cells stay opaque over
+     the columns scrolling beneath them. Depth reads as shade: groups darker,
+     sessions lightest. */
+  .insights-table > tbody > tr,
+  .insights-table > tbody > tr:nth-child(even),
+  .insights-table > tbody > tr:hover {
+    background: transparent;
+  }
+
+  .insights-table > tbody > tr > td {
+    background: var(--row-bg, var(--surface));
+  }
+
+  .insights-table > tbody > tr.pivot-l0.pivot-group {
+    --row-bg: #eceff6;
+  }
+
+  .insights-table > tbody > tr.pivot-l1.pivot-group {
+    --row-bg: #f5f6fa;
+  }
+
+  .insights-table > tbody > tr.pivot-session {
+    --row-bg: #fcfcfe;
+    font-size: 13px;
+  }
+
+  .insights-table > tbody > tr.pivot-row:hover {
+    --row-bg: var(--primary-weak);
+  }
+
+  .insights-table > tbody > tr.pivot-row.is-selected {
+    --row-bg: #e0e7ff;
+  }
+
+  .insights-table > tbody > tr.is-selected > td:first-child {
+    box-shadow: inset 3px 0 0 var(--primary);
+  }
+
+  .insights-table > thead > tr > th {
+    z-index: 3;
+  }
+
+  .insights-table .pivot-dim {
     position: sticky;
-    left: 14px;
-    width: calc(min(calc(100vw - 48px), 1800px) - 32px);
-    overflow-x: auto;
+    left: var(--pivot-left);
+    z-index: 1;
+    width: var(--pivot-w);
+    min-width: var(--pivot-w);
+    max-width: var(--pivot-w);
+    overflow: hidden;
   }
 
-  .insights-sessions .data-table thead th {
-    position: static;
+  .insights-table > thead > tr > th.pivot-dim {
+    z-index: 4;
   }
 
-  .insights-sum-note {
-    margin: 4px 0 8px;
-    white-space: normal;
+  .insights-table .pivot-dim-last {
+    box-shadow: inset -1px 0 0 var(--border-strong);
+  }
+
+  .insights-table > tbody > tr.is-selected > td.pivot-dim-last:first-child {
+    box-shadow: inset 3px 0 0 var(--primary), inset -1px 0 0 var(--border-strong);
+  }
+
+  /* The total stays pinned to the bottom of the box. */
+  .insights-table > tbody > tr.pivot-total > td {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    --row-bg: var(--surface-2);
+    font-weight: 700;
+    border-top: 2px solid var(--border-strong);
+  }
+
+  .insights-table > tbody > tr.pivot-total > td.pivot-dim {
+    z-index: 3;
+  }
+}
+
+@media (min-width: 1100px) {
+  .insights-page.has-detail {
+    width: calc(100vw - 436px - (100vw - min(calc(100vw - 48px), 1800px)) / 2);
   }
 }
