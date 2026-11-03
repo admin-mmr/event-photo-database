@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
-import { SEARCH_ALGO_VERSION } from '@cloud-webapp/shared';
+import { FINDME_MAX_FILE_BYTES, FINDME_MAX_REFERENCE_IMAGES, SEARCH_ALGO_VERSION } from '@cloud-webapp/shared';
 import type { Request, Response, NextFunction } from 'express';
 
 // ── mocks (must precede the server import) ──────────────────────────────────
@@ -711,4 +711,69 @@ describe('POST /api/findme/selfie-check', () => {
     expect(res.status).toBe(502);
     expect(res.body.error).toBe('matcher_unreachable');
   });
+});
+
+// Multer's limit errors used to reach the error handler as a generic 500 —
+// nine of them on the NYC Marathon event day, all shown as "search failed".
+describe('Find Me upload limits', () => {
+  const app = buildServer();
+  const TOO_BIG = Buffer.alloc(FINDME_MAX_FILE_BYTES + 1, 0xff);
+
+  beforeEach(() => {
+    fakeDb.events.clear();
+    fakeDb.added.length = 0;
+    matcherSearch.mockReset();
+    matcherQualityCheck.mockReset();
+    createReference.mockClear();
+    fakeDb.events.set('ev1', { name: 'Spring Run 2026' });
+  });
+
+  for (const path of ['/api/findme/search', '/api/findme/selfie-check']) {
+    it(`${path}: an oversized photo is a 413 file_too_large naming the limit`, async () => {
+      const res = await request(app)
+        .post(path)
+        .set('x-test-user', USER)
+        .field('eventId', 'ev1')
+        .field('name', 'Test Runner')
+        .field('consent', 'true')
+        .attach('file', TOO_BIG, { filename: 'big.jpg', contentType: 'image/jpeg' });
+      expect(res.status).toBe(413);
+      expect(res.body).toMatchObject({
+        ok: false,
+        error: 'file_too_large',
+        maxFileBytes: FINDME_MAX_FILE_BYTES,
+      });
+      expect(res.body.message).toContain('15 MB');
+      expect(matcherSearch).not.toHaveBeenCalled();
+      expect(matcherQualityCheck).not.toHaveBeenCalled();
+      expect(fakeDb.added).toHaveLength(0);
+    });
+
+    it(`${path}: more than the max photos is a 413 too_many_files`, async () => {
+      let req = request(app)
+        .post(path)
+        .set('x-test-user', USER)
+        .field('eventId', 'ev1')
+        .field('name', 'Test Runner')
+        .field('consent', 'true');
+      for (let i = 0; i <= FINDME_MAX_REFERENCE_IMAGES; i++) {
+        req = req.attach('file', JPEG, { filename: `s${i}.jpg`, contentType: 'image/jpeg' });
+      }
+      const res = await req;
+      expect(res.status).toBe(413);
+      expect(res.body).toMatchObject({ error: 'too_many_files', maxFiles: FINDME_MAX_REFERENCE_IMAGES });
+      expect(matcherSearch).not.toHaveBeenCalled();
+      expect(matcherQualityCheck).not.toHaveBeenCalled();
+    });
+
+    it(`${path}: a file under the wrong field name is a 400, not a 500`, async () => {
+      const res = await request(app)
+        .post(path)
+        .set('x-test-user', USER)
+        .field('consent', 'true')
+        .attach('photo', JPEG, { filename: 's.jpg', contentType: 'image/jpeg' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('bad_upload');
+    });
+  }
 });

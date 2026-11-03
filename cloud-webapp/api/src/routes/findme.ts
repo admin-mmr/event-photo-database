@@ -22,6 +22,8 @@ import { Router } from 'express';
 import multer from 'multer';
 import type { Response } from 'express';
 import {
+  FINDME_MAX_FILE_BYTES,
+  FINDME_MAX_REFERENCE_IMAGES,
   SearchByUploadRequestSchema,
   SearcherNameSchema,
   SEARCH_ALGO_VERSION,
@@ -46,6 +48,7 @@ import type { AuthedUser } from '../middleware/auth.js';
 import { requireAuth } from '../middleware/auth.js';
 import { findmeSearchIpRateLimit, findmeSearchRateLimit } from '../middleware/rateLimit.js';
 import { requireRecaptcha } from '../middleware/recaptcha.js';
+import { withUploadLimits } from '../middleware/uploadLimits.js';
 import { matcherQualityCheck, matcherSearch } from '../services/matcherClient.js';
 import { confirmedPhotoIdsForUser } from '../services/feedback.js';
 import { expansionCandidates, parseNearMisses } from '../services/expandResults.js';
@@ -68,13 +71,18 @@ export const findmeRouter = Router();
 
 const ALLOWED_MIMES = new Set(['image/jpeg', 'image/png', 'image/heic', 'image/heif', 'image/webp']);
 
-/** Max reference selfies per search (§1.1 centroid query). Bounds the matcher
- *  work and the multipart payload; the client caps its picker to match. */
-const MAX_REFERENCE_IMAGES = 5;
+const MAX_REFERENCE_IMAGES = FINDME_MAX_REFERENCE_IMAGES;
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024, files: MAX_REFERENCE_IMAGES },
+  limits: { fileSize: FINDME_MAX_FILE_BYTES, files: MAX_REFERENCE_IMAGES },
+});
+
+/** The selfie parser for both multipart routes. A too-big photo is a 413
+ *  `file_too_large` the page can explain, never a 500 "search failed". */
+const acceptSelfies = withUploadLimits(upload.array('file', MAX_REFERENCE_IMAGES), {
+  maxFileBytes: FINDME_MAX_FILE_BYTES,
+  maxFiles: MAX_REFERENCE_IMAGES,
 });
 
 /** Max anchor photos per search. One is the product flow ("search again with
@@ -526,7 +534,7 @@ findmeRouter.post(
   findmeSearchRateLimit(),
   findmeSearchIpRateLimit(),
   requireRecaptcha('findme_search'),
-  upload.array('file', MAX_REFERENCE_IMAGES),
+  acceptSelfies,
   async (req, res, next) => {
     try {
       const eventId = String(req.body?.eventId ?? '').trim();
@@ -620,7 +628,7 @@ findmeRouter.post(
   requireAuth,
   findmeSearchRateLimit(),
   findmeSearchIpRateLimit(),
-  upload.array('file', MAX_REFERENCE_IMAGES),
+  acceptSelfies,
   async (req, res, next) => {
     try {
       const files = (req.files as Express.Multer.File[] | undefined) ?? [];

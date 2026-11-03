@@ -148,6 +148,21 @@ export const SearcherNameSchema = z
 
 // ── Search (POST /api/findme/search, multipart) ──────────────────────────────
 
+/** Max reference selfies per search (§1.1 centroid query). Bounds the matcher
+ *  work and the multipart payload; the client caps its picker to match. */
+export const FINDME_MAX_REFERENCE_IMAGES = 5;
+
+/**
+ * Per-file cap on a reference selfie, enforced by the api on `/findme/search`
+ * and `/findme/selfie-check` (413 `file_too_large` past it).
+ *
+ * Deliberately NOT raised to fit 48 MP phone photos: multer holds uploads in
+ * memory, so this × FINDME_MAX_REFERENCE_IMAGES × the api's concurrency is a
+ * memory bound, and Cloud Run caps a whole HTTP/1 request at 32 MiB anyway. The
+ * web client downscales big picks instead — a face needs nowhere near this.
+ */
+export const FINDME_MAX_FILE_BYTES = 15 * 1024 * 1024;
+
 /**
  * Where a result came from: the normal set above the cutoff, or the one bounded
  * "see more" step just below it (EVAL_FEEDBACK_LOOP.md §4b). Recorded on each
