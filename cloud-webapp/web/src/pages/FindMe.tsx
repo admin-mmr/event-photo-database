@@ -36,6 +36,7 @@ import {
   type OriginalEntry,
 } from '../lib/originals.js';
 import { getRecaptchaToken } from '../lib/recaptcha.js';
+import { retryWhileWarming } from '../lib/warmRetry.js';
 import { useSelection } from '../lib/selection.js';
 import {
   combineReferences,
@@ -216,6 +217,7 @@ const STR = {
     matchWithSelected: (count: number) => `Match this event with selected (${count})`,
     searchingTitle: 'Searching the event photos…',
     searchingHint: 'The first search can take a few seconds to warm up.',
+    warmingUpHint: 'Search is still warming up — trying again automatically…',
     referencePhotos: 'Reference photos',
     combined: '★ Combined',
     yourReferenceAlt: 'Your reference photo',
@@ -398,6 +400,7 @@ const STR = {
     matchWithSelected: (count: number) => `用所选照片匹配（${count}）`,
     searchingTitle: '正在搜索活动照片…',
     searchingHint: '首次搜索可能需要几秒钟来预热。',
+    warmingUpHint: '搜索仍在预热，正在自动重试…',
     referencePhotos: '参考照片',
     combined: '★ 合并',
     yourReferenceAlt: '您的参考照片',
@@ -582,6 +585,8 @@ export function FindMe(): JSX.Element {
   const { eventId = '' } = useParams();
   const uid = useAccountUid();
   const [phase, setPhase] = useState<Phase>('consent');
+  // The matcher was still loading and the search is being retried (warmRetry.ts).
+  const [warmingUp, setWarmingUp] = useState(false);
   const [agreed, setAgreed] = useState(false);
   // Required: Find Me is open to guests, so we capture who is searching (feeds
   // the admin alert). Captured once per session — at guest sign-in or here on
@@ -1039,11 +1044,16 @@ export function FindMe(): JSX.Element {
       guardianAttested: guardianOk,
       ...(anchorPhotoIds.length ? { anchorPhotoId: anchorPhotoIds.join(',') } : {}),
     };
-    const recaptchaToken = await getRecaptchaToken('findme_search');
-    const res = await apiPost<SearchResponse, SearchByUploadRequest>(
-      `/api/findme/uploads/${encodeURIComponent(u.uploadId)}/search`,
-      body,
-      recaptchaToken ? { headers: { 'X-Recaptcha-Token': recaptchaToken } } : undefined,
+    const res = await retryWhileWarming(
+      async () => {
+        const recaptchaToken = await getRecaptchaToken('findme_search');
+        return apiPost<SearchResponse, SearchByUploadRequest>(
+          `/api/findme/uploads/${encodeURIComponent(u.uploadId)}/search`,
+          body,
+          recaptchaToken ? { headers: { 'X-Recaptcha-Token': recaptchaToken } } : undefined,
+        );
+      },
+      { onWait: () => setWarmingUp(true) },
     );
     pushReference(res, u.url, anchorPhotoIds.length ? t.anchoredLabel : t.savedLabel, {
       kind: 'upload',
@@ -1055,6 +1065,7 @@ export function FindMe(): JSX.Element {
     const chosen = (pastUploads ?? []).filter((u) => selectedPast.has(u.uploadId));
     if (chosen.length === 0) return;
     setPhase('searching');
+    setWarmingUp(false);
     setError(null);
     setFaceAlert(null);
     try {
@@ -1382,6 +1393,7 @@ export function FindMe(): JSX.Element {
       return;
     }
     setPhase('searching');
+    setWarmingUp(false);
     setError(null);
     try {
       await searchByUpload(ref.origin.upload, [photoId]);
@@ -1401,6 +1413,7 @@ export function FindMe(): JSX.Element {
   ): Promise<void> {
     if (files.length === 0) return;
     setPhase('searching');
+    setWarmingUp(false);
     setError(null);
     setNoFaceFiles([]);
     setNoFaceReasons([]);
@@ -1421,11 +1434,16 @@ export function FindMe(): JSX.Element {
     if (mode === 'person') form.set('mode', 'person');
     if (anchorPhotoIds.length) form.set('anchorPhotoId', anchorPhotoIds.join(','));
     try {
-      const recaptchaToken = await getRecaptchaToken('findme_search');
-      const res = await apiUpload<SearchResponse>(
-        '/api/findme/search',
-        form,
-        recaptchaToken ? { headers: { 'X-Recaptcha-Token': recaptchaToken } } : undefined,
+      const res = await retryWhileWarming(
+        async () => {
+          const recaptchaToken = await getRecaptchaToken('findme_search');
+          return apiUpload<SearchResponse>(
+            '/api/findme/search',
+            form,
+            recaptchaToken ? { headers: { 'X-Recaptcha-Token': recaptchaToken } } : undefined,
+          );
+        },
+        { onWait: () => setWarmingUp(true) },
       );
       // Preview the first selfie — it's the one persisted for reuse.
       const labelPrefix = anchorPhotoIds.length
@@ -2239,7 +2257,7 @@ export function FindMe(): JSX.Element {
           <span className="spinner" aria-hidden="true" />
           <div>
             <p className="searching-title">{t.searchingTitle}</p>
-            <p className="muted">{t.searchingHint}</p>
+            <p className="muted">{warmingUp ? t.warmingUpHint : t.searchingHint}</p>
           </div>
         </div>
       )}

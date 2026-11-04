@@ -402,6 +402,15 @@
     BACKGROUND thread and every search — the one that noticed included — answers
     from the old copy until it lands, so a reload briefly holds two copies of
     the event in memory — size the matcher for that at 100k+ photos.
+  - **A cold start must never outlast the 60s Hosting cutoff silently.** The
+    first search after scale-to-zero waits for the whole store; on 2026-11-04
+    12:27 that took the api to 81.6s and the user saw "search failed". Two
+    halves, keep both: the matcher fetches each file's ranges in PARALLEL
+    (`GCS_DOWNLOAD_PARALLEL`, 8), and the api stops waiting at
+    `MATCHER_SEARCH_TIMEOUT_MS` (50s) with 503 `matcher_warming_up`, keeping
+    NOTHING from that attempt (no selfie, run or alert) because the page retries
+    it once on its own (`web/src/lib/warmRetry.ts`). The matcher's load is not
+    tied to the request, so the retry finds the store in memory.
   - **Download the store in ranged pieces, pinned to one generation**
     (`GCS_DOWNLOAD_CHUNK_BYTES`, `bucket.get_blob` in `store._read_gcs`). One
     ~440 MB response broke at exactly 256 MiB on every retry and each retry

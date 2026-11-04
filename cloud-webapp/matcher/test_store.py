@@ -404,15 +404,21 @@ class FakeGcsBlob:
     def generation(self):
         return self._bucket.generations[self.name]
 
+    @property
+    def size(self):
+        return len(self._bucket.objects[self.name])
+
     def exists(self) -> bool:
         return self.name in self._bucket.objects
 
-    def download_as_bytes(self, **kwargs) -> bytes:
-        self._bucket.downloads.append(self.name)
+    def download_as_bytes(self, start=None, end=None, **kwargs) -> bytes:
+        if start is None:
+            self._bucket.downloads.append(self.name)
         self._bucket.download_kwargs.append(
-            {**kwargs, "chunk_size": getattr(self, "chunk_size", None), "generation": self.generation}
+            {**kwargs, "name": self.name, "start": start, "end": end, "generation": self.generation}
         )
-        return self._bucket.objects[self.name]
+        data = self._bucket.objects[self.name]
+        return data if start is None else data[start : end + 1]
 
 
 class FakeBucket:
@@ -587,9 +593,9 @@ def test_gcs_downloads_get_a_long_retry_deadline():
 
 
 # 2026-11-04 03:55: one ~440 MB response broke at exactly 256 MiB on every retry
-# and each retry restarted from byte 0. Downloads are ranged pieces now, all
-# pinned to the generation the metadata read saw.
-def test_gcs_downloads_are_chunked_and_pinned_to_one_generation():
+# and each retry restarted from byte 0. Downloads are pinned to the generation
+# the metadata read saw.
+def test_gcs_downloads_are_pinned_to_one_generation():
     bucket = FakeBucket("derivs")
     base = f"pre/e1/{EMB_SUBDIR}"
     bucket.put(f"{base}/{FILES['face']}", _npy(1))
@@ -599,8 +605,6 @@ def test_gcs_downloads_are_chunked_and_pinned_to_one_generation():
     store._gcs_client = FakeGcsClient(bucket)
     store.load_event("e1")
     for kw in bucket.download_kwargs:
-        assert kw["chunk_size"] == store_mod.GCS_DOWNLOAD_CHUNK_BYTES
-        assert kw["chunk_size"] % (256 * 1024) == 0
         assert kw["generation"] is not None
         assert kw["checksum"] is None
 
@@ -612,5 +616,51 @@ def test_a_missing_gcs_file_is_not_indexed():
     store = EmbeddingStore("gs://derivs/pre", check_sec=60, clock=Clock(), spawn=_inline)
     store._gcs_client = FakeGcsClient(bucket)
     with pytest.raises(FileNotFoundError, match="not indexed"):
+        store.load_event("e1")
+
+
+# 2026-11-04 12:27: a cold start loaded the ~930 MB store piece after piece and
+# the search took 81.6s at the api — past the 60s Hosting cutoff. Large files are
+# now fetched as parallel ranges and reassembled in order.
+def test_a_large_gcs_file_is_fetched_as_parallel_ranges_and_reassembled(monkeypatch):
+    monkeypatch.setattr(store_mod, "GCS_DOWNLOAD_CHUNK_BYTES", 64)
+    bucket = FakeBucket("derivs")
+    base = f"pre/e1/{EMB_SUBDIR}"
+    faces = _npy(5)
+    bucket.put(f"{base}/{FILES['face']}", faces)
+    bucket.put(f"{base}/{FILES['person']}", _npy(5))
+    bucket.put(f"{base}/{MANIFEST}", json.dumps(_manifest(5)).encode("utf-8"))
+    store = EmbeddingStore("gs://derivs/pre", check_sec=60, clock=Clock(), spawn=_inline)
+    store._gcs_client = FakeGcsClient(bucket)
+
+    ev = store.load_event("e1")
+    assert len(ev.meta["face"]) == 5
+    face_ranges = sorted(
+        (k["start"], k["end"]) for k in bucket.download_kwargs if k["name"].endswith(FILES["face"]) and k["start"] is not None
+    )
+    assert len(face_ranges) > 1  # the file really was split
+    # Contiguous, inclusive, no gaps or overlaps, covering the whole file.
+    assert face_ranges[0][0] == 0 and face_ranges[-1][1] == len(faces) - 1
+    for (_, b), (c, _) in zip(face_ranges, face_ranges[1:]):
+        assert c == b + 1
+
+
+def test_a_short_range_fails_the_load_rather_than_corrupting_it(monkeypatch):
+    monkeypatch.setattr(store_mod, "GCS_DOWNLOAD_CHUNK_BYTES", 64)
+    bucket = FakeBucket("derivs")
+    base = f"pre/e1/{EMB_SUBDIR}"
+    bucket.put(f"{base}/{FILES['face']}", _npy(5))
+    bucket.put(f"{base}/{FILES['person']}", _npy(5))
+    bucket.put(f"{base}/{MANIFEST}", json.dumps(_manifest(5)).encode("utf-8"))
+    real = FakeGcsBlob.download_as_bytes
+
+    def truncated(self, start=None, end=None, **kw):
+        data = real(self, start=start, end=end, **kw)
+        return data[:-1] if start not in (None, 0) else data
+
+    monkeypatch.setattr(FakeGcsBlob, "download_as_bytes", truncated)
+    store = EmbeddingStore("gs://derivs/pre", check_sec=60, clock=Clock(), sleep=lambda s: None, spawn=_inline)
+    store._gcs_client = FakeGcsClient(bucket)
+    with pytest.raises(IOError, match="returned"):
         store.load_event("e1")
 

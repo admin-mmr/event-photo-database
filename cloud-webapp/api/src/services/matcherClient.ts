@@ -172,6 +172,17 @@ function authHeaders(url: string): Promise<Record<string, string>> {
 }
 
 /**
+ * How long a search waits for the matcher. Users reach the api through Firebase
+ * Hosting, which gives up at 60s with an opaque error; a matcher scaling from
+ * zero loads the whole event store before it can answer, and on 2026-11-04 12:27
+ * that took the api to 81.6s — the user saw "search failed" and had to retry.
+ * Stopping short of the cutoff lets the api answer 503 `matcher_warming_up`,
+ * which the page retries on its own. The matcher keeps loading regardless (the
+ * load is not tied to the request), so the retry finds the store in memory.
+ */
+export const MATCHER_SEARCH_TIMEOUT_MS = 50_000;
+
+/**
  * POST /search on the matcher: reference image + event → fused ranking.
  * Network/5xx errors are surfaced as { ok: false } with the upstream error
  * string preserved (lesson from CODE_QUALITY_ASSESSMENT §1.4 — don't
@@ -197,6 +208,8 @@ export async function matcherSearch(opts: {
   anchorPhotoIds?: string[];
   /** Apply T-norm cohort score normalization (§1.3). */
   normalize?: boolean;
+  /** Override MATCHER_SEARCH_TIMEOUT_MS (tests). */
+  timeoutMs?: number;
 }): Promise<MatcherSearchResult> {
   if (!env.MATCHER_URL) {
     return {
@@ -229,10 +242,24 @@ export async function matcherSearch(opts: {
   if (opts.anchorPhotoIds?.length) form.set('anchor_photo_ids', opts.anchorPhotoIds.join(','));
   if (opts.normalize) form.set('normalize', '1');
 
+  const signal = AbortSignal.timeout(opts.timeoutMs ?? MATCHER_SEARCH_TIMEOUT_MS);
   let res: Response;
+  let body: Record<string, unknown>;
   try {
-    res = await fetch(url, { method: 'POST', headers: await authHeaders(url), body: form });
+    res = await fetch(url, { method: 'POST', headers: await authHeaders(url), body: form, signal });
+    body = (await res.json().catch((err: unknown) => {
+      if (signal.aborted) throw err; // timed out while the body was still arriving
+      return {};
+    })) as Record<string, unknown>;
   } catch (err) {
+    if (signal.aborted) {
+      return {
+        ok: false,
+        status: 503,
+        error: 'matcher_warming_up',
+        message: 'Search is warming up — please try again in a moment',
+      };
+    }
     return {
       ok: false,
       status: 502,
@@ -241,7 +268,6 @@ export async function matcherSearch(opts: {
     };
   }
 
-  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     const faceReasons = parseFaceReasons(body);
     return {

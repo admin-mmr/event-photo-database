@@ -170,6 +170,17 @@ describe('POST /api/findme/search', () => {
     expect(sent[0]?.contentType).toBe('image/heic');
   });
 
+  // The page retries a warming-up search on its own, so this attempt must keep
+  // nothing: no stored selfie, no run, no alert — the retry records it once.
+  it('answers 503 matcher_warming_up and records no selfie or run', async () => {
+    matcherSearch.mockResolvedValue({ ok: false, status: 503, error: 'matcher_warming_up', message: 'warming' });
+    const res = await search(app, { eventId: 'ev1', consent: 'true' });
+    expect(res.status).toBe(503);
+    expect(res.body).toMatchObject({ ok: false, error: 'matcher_warming_up', retryAfterSec: expect.any(Number) });
+    expect(createReference).not.toHaveBeenCalled();
+    expect(fakeDb.added.filter((a) => a.collection === 'match_runs')).toHaveLength(0);
+  });
+
   it('happy path: records consent + run, returns signed results', async () => {
     matcherSearch.mockResolvedValue({
       ok: true,
