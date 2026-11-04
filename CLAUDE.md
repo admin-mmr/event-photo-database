@@ -537,6 +537,16 @@
     tick's chunks never overlap the next's.
   - Idle = one staging listing. A late `/complete` after a sweep is harmless: the
     swept files are gone from staging or caught by the md5 claim.
+  - **The sweep also deletes PROVEN leftovers — and nothing else.** The worker
+    keeps a staged copy whenever it can't prove a duplicate, and nothing went
+    back for them: on 2026-11-04 the bucket held 503 objects / 4.37 GB, all empty
+    or already in the gallery (cleared by hand). Now an object at least
+    `LEFTOVER_MIN_AGE_MS` (24h) old is removed only when it is empty or its md5
+    matches a `photos` doc **of its own event** (`contentIndexed`, one indexed
+    lookup per object — never the whole index, so a tick with nothing old reads
+    nothing). Unknown age, an empty `md5Hex` or no matching doc KEEPS it, and it
+    stays a filing candidate as before. The 24h keeps clear of live sessions,
+    queued copies and recovery chunks scheduled ~50 min out; don't shorten it.
   - What the volunteer page may promise follows from this: finished files survive
     a closed tab; a file mid-upload does not (`VolunteerUpload.tsx` copy).
 
