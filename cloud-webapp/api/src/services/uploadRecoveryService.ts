@@ -214,7 +214,7 @@ export async function listStaged(eventId: string): Promise<StagedObject[]> {
  * work; the worker's own claim remains the authoritative duplicate check, so a
  * stale index here can never cause a double copy.
  */
-async function hashesInDrive(eventId: string): Promise<Set<string>> {
+export async function hashesInDrive(eventId: string): Promise<Set<string>> {
   const snap = await firestore().collection('photos').where('eventId', '==', eventId).select('contentHash').get();
   const out = new Set<string>();
   for (const doc of snap.docs) {

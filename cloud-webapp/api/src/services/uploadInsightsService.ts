@@ -35,7 +35,7 @@ import { logger } from '../lib/logger.js';
 import { listLinks } from './linkStore.js';
 import { copiedMbByBatchFolder } from './summaryService.js';
 import { combinePhases } from './uploadBatchService.js';
-import { listStaged, type StagedObject } from './uploadRecoveryService.js';
+import { hashesInDrive, listStaged, type StagedObject } from './uploadRecoveryService.js';
 import { batchFolderUsername } from './volunteerUploadService.js';
 
 /**
@@ -81,6 +81,8 @@ export interface InsightsInput {
   copiedMbByFolder: ReadonlyMap<string, number> | null;
   /** Batch folder → indexed photos; null = the indexer has not written counts. */
   indexedByFolder: ReadonlyMap<string, number> | null;
+  /** md5s of the event's indexed photos (lowercase hex); null = not read. */
+  indexedHashes?: ReadonlySet<string> | null;
   /** A club_admin's club (or a masquerade); undefined = every club. */
   clubScope?: string | undefined;
 }
@@ -144,6 +146,15 @@ function buildSession(
   // it), so it is not part of this sum — counting it would count files twice.
   const untracked = files - copied - skippedDuplicates - staged.length;
 
+  // Staged files that need nothing — see `stagedInGallery` in the schema. The
+  // orange "in staging" figure used to count them as if they were owed: 498 of
+  // 619 staged objects on the NYC Marathon (2026-11-03) were already in the
+  // gallery, which made a healthy bucket look like a backlog.
+  const hashes = input.indexedHashes;
+  const inGallery = staged.filter(
+    (o) => n(o.size) === 0 || (o.md5Hex !== '' && hashes != null && hashes.has(o.md5Hex.toLowerCase())),
+  );
+
   const batchFolders = [...new Set(docs.map((d) => (d.batchFolderName ?? '').trim()).filter(Boolean))].sort();
 
   const startCandidates = [
@@ -204,6 +215,8 @@ function buildSession(
     untracked,
     copiedBytes: copiedMb ? Math.round(batchFolders.reduce((a, f) => a + (copiedMb.get(f) ?? 0), 0) * MB) : null,
     stagedBytes: staged.reduce((a, o) => a + n(o.size), 0),
+    stagedInGallery: inGallery.length,
+    stagedInGalleryBytes: inGallery.reduce((a, o) => a + n(o.size), 0),
     indexed: indexedBy ? batchFolders.reduce((a, f) => a + (indexedBy.get(f) ?? 0), 0) : null,
     startedAt: iso(startMs),
     lastActivityAt: iso(lastMs),
@@ -229,6 +242,8 @@ function emptyRow(clubName: string, tag: string, uploader: string, known: Insigh
     untracked: 0,
     copiedBytes: known.copiedMbByFolder ? 0 : null,
     stagedBytes: 0,
+    stagedInGallery: 0,
+    stagedInGalleryBytes: 0,
     minutes: 0,
     indexed: known.indexedByFolder ? 0 : null,
     indexRatio: null,
@@ -255,6 +270,8 @@ function addSession(row: UploadInsightsRow, s: UploadInsightsSession): void {
   row.untracked += s.untracked;
   if (row.copiedBytes !== null && s.copiedBytes !== null) row.copiedBytes += s.copiedBytes;
   row.stagedBytes += s.stagedBytes;
+  row.stagedInGallery = (row.stagedInGallery ?? 0) + (s.stagedInGallery ?? 0);
+  row.stagedInGalleryBytes = (row.stagedInGalleryBytes ?? 0) + (s.stagedInGalleryBytes ?? 0);
   row.minutes += s.minutes;
   if (row.indexed !== null && s.indexed !== null) row.indexed += s.indexed;
   if (s.status === 'in_progress') row.inProgress += 1;
@@ -418,6 +435,19 @@ export async function loadUploadInsights(
     warnings.push('Could not read the index counts — index % is unknown.');
   }
 
+  // Only when something is staged: it reads every photo's hash for the event
+  // (one indexed query, the same read upload recovery makes), so an event with
+  // an empty staging area costs nothing extra.
+  let indexedHashes: Set<string> | null = null;
+  if (stagedObjs.length > 0) {
+    try {
+      indexedHashes = await hashesInDrive(eventId);
+    } catch (err) {
+      fail('photo index hashes', err);
+      warnings.push('Could not read the photo index — staged files already in the gallery are counted as waiting.');
+    }
+  }
+
   const { groups, totals } = buildUploadInsights({
     now: opts.now ?? Date.now(),
     batches,
@@ -425,6 +455,7 @@ export async function loadUploadInsights(
     links: linkMap,
     copiedMbByFolder,
     indexedByFolder,
+    indexedHashes,
     clubScope: opts.clubScope,
   });
 

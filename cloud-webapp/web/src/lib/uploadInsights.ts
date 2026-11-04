@@ -35,6 +35,14 @@ export const fmtRate = (v: number | null, digits: number): string => (v === null
 export const fmtTime = (iso: string): string => (iso ? new Date(iso).toLocaleString() : '—');
 export const fmtCount = (n: number): string => n.toLocaleString();
 
+/**
+ * Staged files still waiting to be copied — `staged` minus the ones already in
+ * the gallery or empty, which only wait for the bucket's lifecycle rule. An api
+ * that predates `stagedInGallery` reports none, so every staged file waits.
+ */
+export const waitingOf = (r: Pick<UploadInsightsRow, 'staged' | 'stagedInGallery'>): number =>
+  Math.max(0, r.staged - (r.stagedInGallery ?? 0));
+
 /** Total size of a row: what reached Drive plus what is still in staging. */
 export const sizeOf = (r: UploadInsightsRow): number | null => (r.copiedBytes === null ? null : r.copiedBytes + r.stagedBytes);
 
@@ -75,6 +83,8 @@ export function rollUp(placed: ReadonlyArray<PlacedSession>, path: Partial<Recor
     untracked: 0,
     copiedBytes: 0,
     stagedBytes: 0,
+    stagedInGallery: 0,
+    stagedInGalleryBytes: 0,
     minutes: 0,
     indexed: 0,
     indexRatio: null,
@@ -99,6 +109,8 @@ export function rollUp(placed: ReadonlyArray<PlacedSession>, path: Partial<Recor
     row.untracked += s.untracked;
     row.copiedBytes = row.copiedBytes === null || s.copiedBytes === null ? null : row.copiedBytes + s.copiedBytes;
     row.stagedBytes += s.stagedBytes;
+    row.stagedInGallery = (row.stagedInGallery ?? 0) + (s.stagedInGallery ?? 0);
+    row.stagedInGalleryBytes = (row.stagedInGalleryBytes ?? 0) + (s.stagedInGalleryBytes ?? 0);
     row.minutes += s.minutes;
     row.indexed = row.indexed === null || s.indexed === null ? null : row.indexed + s.indexed;
     if (s.status === 'in_progress') row.inProgress += 1;
@@ -232,7 +244,7 @@ export type SortKey =
 
 /** Problems first when sorted by attention: stuck and errors outrank the rest. */
 export const attentionScore = (r: UploadInsightsRow): number =>
-  r.stuck * 1000 + r.errors * 1000 + r.neverCompleted * 100 + (r.staged > 0 ? 10 : 0) + r.inProgress;
+  r.stuck * 1000 + r.errors * 1000 + r.neverCompleted * 100 + (waitingOf(r) > 0 ? 10 : 0) + r.inProgress;
 
 function sortValue(n: PivotNode, key: SortKey): string | number | null {
   // A session's own label is its id; its start time is the order that means something.
