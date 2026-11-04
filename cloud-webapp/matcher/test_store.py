@@ -409,7 +409,9 @@ class FakeGcsBlob:
 
     def download_as_bytes(self, **kwargs) -> bytes:
         self._bucket.downloads.append(self.name)
-        self._bucket.download_kwargs.append(kwargs)
+        self._bucket.download_kwargs.append(
+            {**kwargs, "chunk_size": getattr(self, "chunk_size", None), "generation": self.generation}
+        )
         return self._bucket.objects[self.name]
 
 
@@ -582,4 +584,33 @@ def test_gcs_downloads_get_a_long_retry_deadline():
     assert len(bucket.download_kwargs) == 3
     for kw in bucket.download_kwargs:
         assert kw["retry"].timeout >= 600
+
+
+# 2026-11-04 03:55: one ~440 MB response broke at exactly 256 MiB on every retry
+# and each retry restarted from byte 0. Downloads are ranged pieces now, all
+# pinned to the generation the metadata read saw.
+def test_gcs_downloads_are_chunked_and_pinned_to_one_generation():
+    bucket = FakeBucket("derivs")
+    base = f"pre/e1/{EMB_SUBDIR}"
+    bucket.put(f"{base}/{FILES['face']}", _npy(1))
+    bucket.put(f"{base}/{FILES['person']}", _npy(1))
+    bucket.put(f"{base}/{MANIFEST}", json.dumps(_manifest(1)).encode("utf-8"))
+    store = EmbeddingStore("gs://derivs/pre", check_sec=60, clock=Clock(), spawn=_inline)
+    store._gcs_client = FakeGcsClient(bucket)
+    store.load_event("e1")
+    for kw in bucket.download_kwargs:
+        assert kw["chunk_size"] == store_mod.GCS_DOWNLOAD_CHUNK_BYTES
+        assert kw["chunk_size"] % (256 * 1024) == 0
+        assert kw["generation"] is not None
+        assert kw["checksum"] is None
+
+
+def test_a_missing_gcs_file_is_not_indexed():
+    bucket = FakeBucket("derivs")
+    base = f"pre/e1/{EMB_SUBDIR}"
+    bucket.put(f"{base}/{MANIFEST}", json.dumps(_manifest(1)).encode("utf-8"))
+    store = EmbeddingStore("gs://derivs/pre", check_sec=60, clock=Clock(), spawn=_inline)
+    store._gcs_client = FakeGcsClient(bucket)
+    with pytest.raises(FileNotFoundError, match="not indexed"):
+        store.load_event("e1")
 

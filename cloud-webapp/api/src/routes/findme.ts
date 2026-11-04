@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import { Router } from 'express';
 import multer from 'multer';
 import type { Response } from 'express';
@@ -41,6 +42,7 @@ import {
 } from '@cloud-webapp/shared';
 
 import { env, isFindMeEnabledForEvent } from '../lib/config.js';
+import { resolveSelfieType } from '../lib/imageType.js';
 import { firestore } from '../lib/firestore.js';
 import { deriveSearchVersion } from '../services/searchVersion.js';
 import { logger } from '../lib/logger.js';
@@ -69,7 +71,33 @@ import { deleteAllUserData } from '../services/userData.js';
 
 export const findmeRouter = Router();
 
-const ALLOWED_MIMES = new Set(['image/jpeg', 'image/png', 'image/heic', 'image/heif', 'image/webp']);
+/**
+ * Settle every selfie's type, trusting the browser's label only when it is one
+ * we accept and the file's bytes otherwise (see lib/imageType.ts). Each file's
+ * `mimetype` is rewritten to the settled type, so the matcher and the stored
+ * reference get the real one. Returns the first file that is no image we read.
+ */
+function settleSelfieTypes(files: Express.Multer.File[]): Express.Multer.File | null {
+  for (const f of files) {
+    const type = resolveSelfieType(f.mimetype, f.buffer);
+    if (!type) {
+      // What was refused, so the next report says which format to support. The
+      // first bytes identify a format and carry nothing about the person.
+      logger.warn(
+        {
+          declared: f.mimetype,
+          ext: path.extname(f.originalname || '').toLowerCase(),
+          size: f.size,
+          head: f.buffer.subarray(0, 12).toString('hex'),
+        },
+        'selfie refused: unsupported image type',
+      );
+      return f;
+    }
+    f.mimetype = type;
+  }
+  return null;
+}
 
 const MAX_REFERENCE_IMAGES = FINDME_MAX_REFERENCE_IMAGES;
 
@@ -550,7 +578,7 @@ findmeRouter.post(
         res.status(400).json({ ok: false, error: 'missing_file', message: "multipart field 'file' required" });
         return;
       }
-      const badMime = files.find((f) => !ALLOWED_MIMES.has(f.mimetype));
+      const badMime = settleSelfieTypes(files);
       if (badMime) {
         res.status(415).json({
           ok: false,
@@ -636,7 +664,7 @@ findmeRouter.post(
         res.status(400).json({ ok: false, error: 'missing_file', message: "multipart field 'file' required" });
         return;
       }
-      const badMime = files.find((f) => !ALLOWED_MIMES.has(f.mimetype));
+      const badMime = settleSelfieTypes(files);
       if (badMime) {
         res.status(415).json({
           ok: false,

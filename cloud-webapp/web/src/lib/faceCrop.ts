@@ -221,14 +221,29 @@ export const SHRINK_ABOVE_BYTES = 6 * 1024 * 1024;
 export const SHRINK_EDGES = [4096, 2560] as const;
 
 /**
- * The pick as it should be uploaded: unchanged when it is already small enough,
- * otherwise re-encoded as a JPEG no larger than SHRINK_EDGES allow. Never throws
- * and never blocks a search — a pick that cannot be decoded (e.g. HEIC outside
- * Safari) or shrunk goes up as-is, and the api answers a too-large one with a
- * readable 413. Like a crop, the output carries no EXIF (see renderCropToFile).
+ * Types the api accepts as labelled (api/src/lib/imageType.ts). Anything else —
+ * AVIF, GIF, BMP, a Windows `.jfif`, or no label at all — is re-encoded to JPEG
+ * when the browser can decode it. When it can't (an iPhone HEIC on Windows
+ * Chrome) it goes up as picked and the api recognises it from its bytes.
+ */
+const UPLOADABLE_TYPES: ReadonlySet<string> = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+]);
+
+/**
+ * The pick as it should be uploaded: unchanged when it is already small enough
+ * and of a type the api accepts, otherwise re-encoded as a JPEG no larger than
+ * SHRINK_EDGES allow. Never throws and never blocks a search — a pick that
+ * cannot be decoded (e.g. HEIC outside Safari) or shrunk goes up as-is, and the
+ * api answers a too-large one with a readable 413. Like a crop, the output
+ * carries no EXIF (see renderCropToFile).
  */
 export async function shrinkForUpload(file: File): Promise<File> {
-  if (file.size <= SHRINK_ABOVE_BYTES) return file;
+  if (file.size <= SHRINK_ABOVE_BYTES && UPLOADABLE_TYPES.has(file.type)) return file;
   const whole: CropRect = { x: 0, y: 0, width: Number.MAX_SAFE_INTEGER, height: Number.MAX_SAFE_INTEGER };
   for (const edge of SHRINK_EDGES) {
     // eslint-disable-next-line no-await-in-loop

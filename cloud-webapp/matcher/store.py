@@ -53,6 +53,13 @@ COLD_LOAD_RETRY_SEC = 1.5
 # started over from zero — new photos took ~50 min to become searchable.
 GCS_DOWNLOAD_DEADLINE_SEC = float(os.environ.get("MATCHER_GCS_DOWNLOAD_DEADLINE_SEC", "900"))
 
+# Store files are downloaded in ranged pieces of this size, not one stream. A
+# single ~440 MB response broke at exactly 256 MiB every time and each retry
+# started over from byte 0 (2026-11-03 19:24 and 2026-11-04 03:55, the second
+# after 900s of retries); a piece that breaks is retried on its own. Must be a
+# multiple of 256 KiB (the storage client's rule).
+GCS_DOWNLOAD_CHUNK_BYTES = 32 * 1024 * 1024
+
 logger = logging.getLogger(__name__)
 
 
@@ -590,12 +597,21 @@ class EmbeddingStore:
         bucket_name = bucket.name
         out = {}
         for name in (MANIFEST, FILES["face"], FILES["person"]):
-            blob = bucket.blob(f"{base}/{name}")
-            if not blob.exists():
+            # get_blob reads the metadata, which pins the download to that
+            # GENERATION: every ranged piece then comes from the same object. If
+            # the indexer replaces the file mid-download the next piece 404s and
+            # the reload is retried next interval — never a file stitched from
+            # two different index runs.
+            blob = bucket.get_blob(f"{base}/{name}")
+            if blob is None:
                 raise FileNotFoundError(
                     f"event '{event_id}' not indexed: gs://{bucket_name}/{base}/{name} missing"
                 )
-            out[name] = blob.download_as_bytes(retry=self._download_retry())
+            blob.chunk_size = GCS_DOWNLOAD_CHUNK_BYTES
+            # A ranged download cannot be checksummed as a whole (the client
+            # would log that on every file); np.load and the manifest/vector
+            # length check in EventEmbeddings reject a damaged store instead.
+            out[name] = blob.download_as_bytes(retry=self._download_retry(), checksum=None)
         return out
 
     @staticmethod
