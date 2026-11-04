@@ -27,7 +27,9 @@ vi.mock('../src/services/uploadDispatch.js', () => ({
   isUploadDispatchConfigured: () => isUploadDispatchConfigured(),
 }));
 
-const { sweepNeverCompletedUploads, DEFAULT_MIN_AGE_MS } = await import('../src/services/uploadSweepService.js');
+const { sweepNeverCompletedUploads, DEFAULT_MIN_AGE_MS, LEFTOVER_MIN_AGE_MS } = await import(
+  '../src/services/uploadSweepService.js'
+);
 
 const NOW = Date.parse('2026-11-02T12:00:00Z');
 const HOUR = 60 * 60 * 1000;
@@ -174,7 +176,7 @@ describe('sweepNeverCompletedUploads', () => {
     expect(out.nothingOwed).toBe(1);
     // b1 is marked so the next tick does not re-read the event's photo index.
     expect(db.peek('upload_batches', 'b1')).toMatchObject({ recoveryObjects: 0 });
-    // And nothing was deleted from staging — only the worker ever deletes.
+    // And nothing under a day old was deleted, proven or not.
     expect(storage.removed).toEqual([]);
   });
 
@@ -243,4 +245,65 @@ describe('sweepNeverCompletedUploads', () => {
     await expect(sweep({ apply: true })).rejects.toThrow('firestore unavailable');
     expect(enqueueProcessBatchTask).not.toHaveBeenCalled();
   });
+
+  // 2026-11-04: 503 staged objects / 4.37 GB sat in staging, every one empty
+  // or the same content as a photo already in the gallery — the copies the
+  // worker keeps when it cannot prove a duplicate. Nothing ever went back.
+  describe('proven leftovers', () => {
+    const DAY = LEFTOVER_MIN_AGE_MS;
+
+    it('deletes an old object whose content is in its event\'s photo index, and an old empty one', async () => {
+      db.seed('photos', { p1: { eventId: 'ev1', contentHash: hex('dup') } });
+      stage('ev1', 'b1', 'dup', { md5: 'dup', ageMs: DAY + HOUR });
+      stage('ev1', 'b1', 'empty', { size: 0, ageMs: DAY + HOUR });
+      const out = await sweep({ apply: true });
+
+      expect(storage.removed.sort()).toEqual([
+        'volunteer_uploads/ev1/b1/dup.jpg',
+        'volunteer_uploads/ev1/b1/empty.jpg',
+      ]);
+      expect(out).toMatchObject({ leftoversRemoved: 2, leftoverBytes: 1000 });
+      // Cleared leftovers are neither filed nor marked.
+      expect(enqueueProcessBatchTask).not.toHaveBeenCalled();
+      expect(db.ids('upload_batches')).toEqual([]);
+    });
+
+    it('keeps anything not proven: too young, content not indexed, another event\'s photo, or no hash', async () => {
+      db.seed('photos', {
+        p1: { eventId: 'ev1', contentHash: hex('young') },
+        p2: { eventId: 'ev2', contentHash: hex('elsewhere') },
+      });
+      stage('ev1', 'b1', 'young', { md5: 'young', ageMs: DAY - HOUR });
+      stage('ev1', 'b1', 'owed', { ageMs: DAY + HOUR });
+      stage('ev1', 'b1', 'elsewhere', { md5: 'elsewhere', ageMs: DAY + HOUR });
+      storage.seed('staging-bucket', 'volunteer_uploads/ev1/b1/nohash.jpg', {
+        md5Hex: '',
+        size: 1000,
+        createdMs: NOW - DAY - HOUR,
+        custom: { eventId: 'ev1', linkId: 'link-1', batchId: 'b1' },
+      });
+      const out = await sweep({ apply: true });
+
+      expect(storage.removed).toEqual([]);
+      expect(out.leftoversRemoved).toBe(0);
+      // The genuinely owed ones are still filed, exactly as before.
+      expect(dispatchedObjects()).toContain('volunteer_uploads/ev1/b1/owed.jpg');
+    });
+
+    it('a dry run reports the leftovers and deletes nothing', async () => {
+      db.seed('photos', { p1: { eventId: 'ev1', contentHash: hex('dup') } });
+      stage('ev1', 'b1', 'dup', { md5: 'dup', ageMs: DAY + HOUR });
+      const out = await sweep();
+      expect(out.leftoversRemoved).toBe(1);
+      expect(storage.removed).toEqual([]);
+    });
+
+    it('an idle tick with nothing old reads no photo index at all', async () => {
+      stage('ev1', 'b1', 'a', { ageMs: HOUR });
+      const where = vi.spyOn(db, 'collection');
+      await sweep({ apply: true });
+      expect(where.mock.calls.map((c) => c[0])).not.toContain('photos');
+    });
+  });
 });
+

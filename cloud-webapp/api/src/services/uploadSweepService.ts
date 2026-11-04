@@ -43,13 +43,22 @@
  * sweep already filed are gone from staging (the worker deletes after copying)
  * or caught by the md5 claim, so they are skipped, never copied twice.
  *
- * Staged bytes are never deleted here — only the worker deletes, and only on a
- * proven duplicate or a successful copy.
+ * PROVEN LEFTOVERS ARE DELETED HERE, AND NOTHING ELSE. The worker keeps a
+ * staged copy whenever it cannot prove a duplicate (CLAUDE.md: never delete on
+ * an unproven one), and nothing went back for them: on 2026-11-04 the bucket
+ * held 503 objects / 4.37 GB, every one either empty or the same content as a
+ * photo already in the gallery. An object at least `LEFTOVER_MIN_AGE_MS` old is
+ * removed only when it is empty or its md5 matches a `photos` doc of its event
+ * — the same proof the worker uses, read from the index the gallery serves.
+ * Unknown age, unknown md5 or no matching doc keeps it; it is then still a
+ * candidate for filing below, as before.
  */
 
 import { env } from '../lib/config.js';
+import { firestore } from '../lib/firestore.js';
 import { logger } from '../lib/logger.js';
 import { objectStore } from '../lib/storage.js';
+import type { StoredObject } from '../lib/storage/types.js';
 import { hasUploadBatchRecord, markRecoveryDispatched } from './uploadBatchService.js';
 import { isUploadDispatchConfigured } from './uploadDispatch.js';
 import { dispatchStagedRecovery, type RecoveryDispatch } from './uploadRecoveryService.js';
@@ -72,6 +81,16 @@ export const MIN_AGE_FLOOR_MS = 60 * 60 * 1000;
  * deferred batch is simply picked up next tick (it has no marker yet).
  */
 export const MAX_PLANNED_MS = 50 * 60 * 1000;
+
+/**
+ * A staged object proven to need nothing (see the header) is deleted once it is
+ * this old. A day keeps clear of anything a live session, a queued copy task or
+ * a recovery chunk scheduled ~50 min out could still be holding.
+ */
+export const LEFTOVER_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Parallel photo-index lookups / deletes while clearing leftovers. */
+const LEFTOVER_CONCURRENCY = 10;
 
 /** Per-tick object cap — the recovery tool's own `MAX_DISPATCH`. */
 const MAX_OBJECTS_PER_TICK = 5000;
@@ -109,6 +128,9 @@ export interface UploadSweepResult {
   /** Candidates whose content was all already indexed — marked, nothing to do. */
   nothingOwed: number;
   estimatedMinutes: number;
+  /** Old staged objects proven to need nothing (empty, or content already indexed): deleted, or on a dry run would be. */
+  leftoversRemoved: number;
+  leftoverBytes: number;
   /** Per-event recovery result, as the admin tool reports it. */
   events: RecoveryDispatch[];
   warnings: string[];
@@ -163,6 +185,8 @@ export async function sweepNeverCompletedUploads(
     notDispatched: 0,
     nothingOwed: 0,
     estimatedMinutes: 0,
+    leftoversRemoved: 0,
+    leftoverBytes: 0,
     events: [],
     warnings: [],
   };
@@ -178,9 +202,13 @@ export async function sweepNeverCompletedUploads(
 
   // The one query an idle tick makes.
   const prefix = `${env.VOLUNTEER_STAGING_PREFIX}/`;
-  const staged = await objectStore().list(env.VOLUNTEER_STAGING_BUCKET, { prefix });
-  result.stagedObjects = staged.length;
-  if (staged.length === 0) return result;
+  const listed = await objectStore().list(env.VOLUNTEER_STAGING_BUCKET, { prefix });
+  result.stagedObjects = listed.length;
+  if (listed.length === 0) return result;
+
+  // Clear proven leftovers first, so they are neither filed nor marked below.
+  const cleared = await clearProvenLeftovers(listed, { apply, now, result });
+  const staged = listed.filter((o) => !cleared.has(o.key));
 
   // `<prefix>/<eventId>/<batchId>/<uploadId>.<ext>` — the api chooses the key,
   // so (unlike custom metadata on Azure) it is never client-controlled.
@@ -289,10 +317,84 @@ export async function sweepNeverCompletedUploads(
       objects: result.objects,
       tasks: result.tasks,
       notDispatched: result.notDispatched,
+      leftoversRemoved: result.leftoversRemoved,
     },
     'never-completed upload sweep',
   );
   return result;
+}
+
+/** Does `eventId`'s photo index hold this content? One indexed lookup, ≤1 doc read. */
+async function contentIndexed(eventId: string, md5Hex: string): Promise<boolean> {
+  const snap = await firestore()
+    .collection('photos')
+    .where('eventId', '==', eventId)
+    .where('contentHash', '==', md5Hex)
+    .limit(1)
+    .get();
+  return !snap.empty;
+}
+
+/**
+ * Delete (on apply) the staged objects that are old enough and proven to need
+ * nothing; returns their keys. Each object's own content is looked up — not the
+ * event's whole index — so a tick with nothing old costs nothing, and one with
+ * a few unproven old objects costs a few reads. A failed lookup or delete keeps
+ * the object and is retried next tick.
+ */
+async function clearProvenLeftovers(
+  staged: ReadonlyArray<StoredObject>,
+  opts: { apply: boolean; now: number; result: UploadSweepResult },
+): Promise<Set<string>> {
+  const old = staged.filter(
+    (o) => o.metadata.createdMs > 0 && opts.now - o.metadata.createdMs >= LEFTOVER_MIN_AGE_MS,
+  );
+  const proven = new Set<string>();
+  if (old.length === 0) return proven;
+
+  // The api chose the key, `<prefix>/<eventId>/<batchId>/<file>` (see above).
+  const eventOf = (o: StoredObject): string => o.key.split('/')[1] ?? '';
+  const known = new Map<string, Promise<boolean>>();
+  const verdicts = await mapLimit(old, LEFTOVER_CONCURRENCY, async (o) => {
+    if (o.metadata.size === 0) return true;
+    const md5 = o.metadata.md5Hex;
+    const eventId = eventOf(o);
+    // '' = the provider reported no hash: unknown, never "already indexed".
+    if (!md5 || !eventId) return false;
+    const k = `${eventId}/${md5}`;
+    if (!known.has(k)) known.set(k, contentIndexed(eventId, md5));
+    try {
+      return await known.get(k)!;
+    } catch (err) {
+      opts.result.warnings.push(`Could not check ${o.key} against the photo index — kept (${String(err)})`);
+      return false;
+    }
+  });
+
+  const doomed = old.filter((_, i) => verdicts[i]);
+  const removed = await mapLimit(doomed, LEFTOVER_CONCURRENCY, async (o) => {
+    if (!opts.apply) return true;
+    try {
+      await objectStore().remove(env.VOLUNTEER_STAGING_BUCKET, o.key);
+      return true;
+    } catch (err) {
+      opts.result.warnings.push(`Could not delete leftover ${o.key} — kept (${String(err)})`);
+      return false;
+    }
+  });
+  doomed.forEach((o, i) => {
+    if (!removed[i]) return;
+    proven.add(o.key);
+    opts.result.leftoversRemoved += 1;
+    opts.result.leftoverBytes += o.metadata.size;
+  });
+  if (proven.size > 0) {
+    logger.info(
+      { apply: opts.apply, objects: opts.result.leftoversRemoved, bytes: opts.result.leftoverBytes },
+      'staged leftovers already in the gallery cleared',
+    );
+  }
+  return proven;
 }
 
 async function markQuietly(result: UploadSweepResult, b: BatchAcc, objects: number, skipped?: string): Promise<void> {
