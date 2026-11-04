@@ -402,6 +402,11 @@
     BACKGROUND thread and every search — the one that noticed included — answers
     from the old copy until it lands, so a reload briefly holds two copies of
     the event in memory — size the matcher for that at 100k+ photos.
+  - **Download the store in ranged pieces, pinned to one generation**
+    (`GCS_DOWNLOAD_CHUNK_BYTES`, `bucket.get_blob` in `store._read_gcs`). One
+    ~440 MB response broke at exactly 256 MiB on every retry and each retry
+    restarted from byte 0; pinning means a file the indexer replaces mid-download
+    404s (retried next interval) instead of being stitched from two runs.
   - **Never make a search wait for a reload.** It used to reload inline: the
     NYC Marathon store is ~930 MiB, the indexer rewrote it every ~10 min, and
     the search that noticed waited 25–51s (48 of 460 over 15s on 2026-11-03),

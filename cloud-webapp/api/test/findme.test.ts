@@ -153,6 +153,23 @@ describe('POST /api/findme/search', () => {
     expect(res.body.error).toBe('unsupported_format');
   });
 
+  // 2026-11-04: a Windows Chrome user had five selfies refused with 415 — an
+  // iPhone HEIC on a PC without the HEIF extension carries no image label.
+  it('accepts an unlabelled iPhone HEIC by its bytes and tells the matcher what it is', async () => {
+    matcherSearch.mockResolvedValue({ ok: true, eventId: 'ev1', mode: 'fused', modelVersion: 'm', results: [] });
+    const heic = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypheic'), Buffer.alloc(16)]);
+    const res = await request(app)
+      .post('/api/findme/search')
+      .set('x-test-user', USER)
+      .field('eventId', 'ev1')
+      .field('consent', 'true')
+      .field('name', 'Test Runner')
+      .attach('file', heic, { filename: 'IMG_0001.HEIC', contentType: 'application/octet-stream' });
+    expect(res.status).toBe(200);
+    const sent = (matcherSearch.mock.calls[0]?.[0] as { images: Array<{ contentType: string }> }).images;
+    expect(sent[0]?.contentType).toBe('image/heic');
+  });
+
   it('happy path: records consent + run, returns signed results', async () => {
     matcherSearch.mockResolvedValue({
       ok: true,

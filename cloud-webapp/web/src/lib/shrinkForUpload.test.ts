@@ -103,4 +103,23 @@ describe('shrinkForUpload', () => {
     const f = pick(18 * MB, 'IMG_0002.HEIC');
     expect(await shrinkForUpload(f)).toBe(f);
   });
+
+  // 2026-11-04: a Windows Chrome user's picks were refused as unsupported.
+  // A type the api does not take is re-encoded even when it is small.
+  it('re-encodes a small pick of a type the api does not take', async () => {
+    decode = { width: 1200, height: 1600 };
+    blobSizes = [400 * 1024];
+    const avif = new File([new Uint8Array(900 * 1024)], 'selfie.avif', { type: 'image/avif' });
+    const out = await shrinkForUpload(avif);
+    expect(out.type).toBe('image/jpeg');
+    expect(out.name).toBe('selfie.jpg');
+    expect(drawn).toEqual([{ width: 1200, height: 1600 }]); // never upscaled
+  });
+
+  it('sends an unlabelled pick it cannot decode as picked, for the api to identify', async () => {
+    decode = 'fail';
+    const heic = new File([new Uint8Array(2 * MB)], 'IMG_0003.HEIC', { type: '' });
+    expect(await shrinkForUpload(heic)).toBe(heic);
+  });
 });
+
