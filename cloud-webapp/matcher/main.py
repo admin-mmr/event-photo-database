@@ -24,11 +24,12 @@ import numpy as np
 from flask import Flask, jsonify, request
 
 import fusion as fusion_mod
+import logjson
 import quality
 from pipeline import assess_faces, decode_image, embed_image, face_in_person, read_capture_time_ms
 from store import EmbeddingStore
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
+logjson.configure()  # one entry per record at its own severity — see logjson.py
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)

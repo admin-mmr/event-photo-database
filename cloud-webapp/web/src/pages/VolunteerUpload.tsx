@@ -440,6 +440,13 @@ export function VolunteerUpload(): JSX.Element {
   // Closing the tab or quitting mid-upload: send what has uploaded but not been
   // flushed, so those photos still reach the gallery. sendBeacon survives the
   // page going away, where a fetch would be cancelled.
+  //
+  // Also on the page going HIDDEN: iOS often never fires `pagehide` when the
+  // user switches apps or locks the phone — the page is frozen, then discarded
+  // without notice. On 2026-11-03 an iPhone session staged 17 photos and its
+  // /complete never came, so they waited ~2h for the hourly sweep. Sending what
+  // is done so far is safe mid-session: it is exactly a FLUSH_EVERY flush, and
+  // the rest still goes with the next flush or the final /complete.
   useEffect(() => {
     const onHide = (): void => {
       const waiting = unflushed(resultsRef.current, confirmedRef.current);
@@ -457,8 +464,15 @@ export function VolunteerUpload(): JSX.Element {
         /* best-effort: the bytes stay staged and recoverable */
       }
     };
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'hidden') onHide();
+    };
     window.addEventListener('pagehide', onHide);
-    return () => window.removeEventListener('pagehide', onHide);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', onHide);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [token, batchId, fileNameOf]);
 
   const cancel = useCallback(() => {

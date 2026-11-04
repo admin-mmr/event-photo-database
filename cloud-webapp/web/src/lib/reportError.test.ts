@@ -77,6 +77,17 @@ describe('reportClientError dedupe', () => {
     expect(apiPost).not.toHaveBeenCalled();
   });
 
+  it('does not report an opaque cross-origin "Script error."', async () => {
+    installGlobalErrorReporting();
+    window.dispatchEvent(new ErrorEvent('error', { message: 'Script error.', lineno: 0, colno: 0 }));
+    await settle();
+    expect(apiPost).not.toHaveBeenCalled();
+    // One of our own errors still goes out.
+    window.dispatchEvent(new ErrorEvent('error', { message: 'boom', error: new Error('boom') }));
+    await settle();
+    expect(apiPost).toHaveBeenCalledTimes(1);
+  });
+
   it('keys on a normalised message: whitespace differences and text past 200 chars do not split it', async () => {
     const base = 'x'.repeat(200);
     reportClientError('unhandled_error', `${base} tail one`);

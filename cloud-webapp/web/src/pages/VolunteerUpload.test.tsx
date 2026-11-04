@@ -8,10 +8,22 @@
  * recoverable after the fact.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 vi.mock('../lib/firebase.js', () => ({ idToken: async () => 'fake-token' }));
+
+// Uploads are driven per test; the real module would talk to GCS.
+const uploadFileResumable = vi.fn();
+vi.mock('../lib/resumableUpload.js', () => ({
+  uploadFileResumable: (...args: unknown[]) => uploadFileResumable(...args),
+  AbortError: class AbortError extends Error {},
+}));
+const apiPost = vi.fn(async () => ({ ok: true, message: 'ok' }));
+vi.mock('../lib/api.js', () => ({
+  apiGet: vi.fn(async () => ({ ok: true })),
+  apiPost: (...args: unknown[]) => apiPost(...(args as [])),
+}));
 
 const { VolunteerUpload } = await import('./VolunteerUpload.js');
 
@@ -89,3 +101,58 @@ describe('<VolunteerUpload /> photographer name', () => {
     expect(nameInput().value).toBe('Jane');
   });
 });
+
+// 2026-11-03: an iPhone session staged 17 photos and never sent /complete —
+// iOS froze the page on an app switch without firing `pagehide`, so they sat in
+// staging ~2h until the hourly sweep. Going hidden now sends what is done.
+describe('<VolunteerUpload /> page hidden mid-upload', () => {
+  function setVisibility(state: 'hidden' | 'visible'): void {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }
+
+  afterEach(() => {
+    setVisibility('visible');
+    uploadFileResumable.mockReset();
+  });
+
+  it('beacons the finished files to /complete when the page goes hidden', async () => {
+    const sendBeacon = vi.fn(() => true);
+    vi.stubGlobal('navigator', { ...navigator, sendBeacon });
+    uploadFileResumable
+      .mockResolvedValueOnce({ uploadId: 'up-1', objectName: 'vol/ev/b/1.jpg', bytes: 3 })
+      .mockReturnValue(new Promise(() => undefined)); // the second is still uploading
+    const { container } = render(
+      <MemoryRouter initialEntries={['/upload/tok-1']}>
+        <Routes>
+          <Route path="/upload/:token" element={<VolunteerUpload />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const files = [
+      new File(['abc'], '1.jpg', { type: 'image/jpeg' }),
+      new File(['def'], '2.jpg', { type: 'image/jpeg' }),
+    ];
+    fireEvent.change(input, { target: { files } });
+    await waitFor(() => expect(uploadFileResumable).toHaveBeenCalledTimes(2));
+
+    setVisibility('hidden');
+    expect(sendBeacon).toHaveBeenCalledTimes(1);
+    const [url, blob] = sendBeacon.mock.calls[0] as unknown as [string, Blob];
+    expect(url).toBe('/api/volunteer/upload/complete');
+    const text = await new Promise<string>((resolve) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.readAsText(blob);
+    });
+    const body = JSON.parse(text) as { items: Array<{ objectName: string }> };
+    expect(body.items.map((i) => i.objectName)).toEqual(['vol/ev/b/1.jpg']);
+
+    // Coming back and hiding again does not re-send what already went.
+    setVisibility('visible');
+    setVisibility('hidden');
+    expect(sendBeacon).toHaveBeenCalledTimes(1);
+  });
+});
+
