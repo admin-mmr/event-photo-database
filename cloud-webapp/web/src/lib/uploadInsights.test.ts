@@ -5,6 +5,7 @@ import {
   ALL_DIMS,
   DEFAULT_COLUMNS,
   allGroupKeys,
+  attentionScore,
   buildPivot,
   fmtBytes,
   fmtMinutes,
@@ -14,6 +15,7 @@ import {
   saveLayout,
   sortNodes,
   visibleRows,
+  waitingOf,
   type Dim,
   type PivotNode,
 } from './uploadInsights.js';
@@ -106,6 +108,33 @@ describe('rollUp', () => {
     expect(r.indexed).toBeNull();
     expect(r.indexRatio).toBeNull();
     expect(r.mbPerSec).toBeNull();
+  });
+});
+
+describe('staged files already in the gallery', () => {
+  // 2026-11-03: 498 of 619 staged objects were leftovers already in the gallery.
+  it('rolls up the leftovers and leaves only the rest as waiting', () => {
+    const r = rollUp(
+      placeSessions([
+        group('MMR', 'NYC', 'a', [
+          session('x', { staged: 407, stagedBytes: 2900 * MB, stagedInGallery: 407, stagedInGalleryBytes: 2900 * MB }),
+          session('y', { staged: 17, stagedBytes: 126 * MB, stagedInGallery: 0, stagedInGalleryBytes: 0 }),
+        ]),
+      ]),
+    );
+    expect(r).toMatchObject({ staged: 424, stagedInGallery: 407, stagedInGalleryBytes: 2900 * MB });
+    expect(waitingOf(r)).toBe(17);
+  });
+
+  it('treats every staged file as waiting when the api predates the split', () => {
+    expect(waitingOf({ staged: 5 })).toBe(5);
+  });
+
+  it('does not flag a session whose staged files are all leftovers', () => {
+    const leftovers = rollUp(placeSessions([group('C', 'ALL', 'z', [session('z', { staged: 3, stagedInGallery: 3 })])]));
+    const waiting = rollUp(placeSessions([group('C', 'ALL', 'w', [session('w', { staged: 3, stagedInGallery: 1 })])]));
+    expect(attentionScore(leftovers)).toBe(0);
+    expect(attentionScore(waiting)).toBeGreaterThan(0);
   });
 });
 

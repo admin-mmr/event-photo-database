@@ -24,6 +24,7 @@ import {
   type InsightsLayout,
   type PivotNode,
   type SortKey,
+  waitingOf,
 } from '../lib/uploadInsights.js';
 import { INSIGHTS_STRINGS, nodeTitle, type InsightsStrings } from '../lib/uploadInsightsStrings.js';
 import { InsightsColumnPicker } from '../components/InsightsColumnPicker.js';
@@ -44,14 +45,25 @@ function cell(c: ColumnId, n: PivotNode, t: InsightsStrings): JSX.Element | stri
   switch (c) {
     case 'attention':
       return n.session ? <StatusBadge t={t} status={n.session.status} /> : <AttentionBadges t={t} row={m} />;
-    case 'staged':
-      return m.staged > 0 ? (
-        <span className="insights-warn">
-          {fmtCount(m.staged)} <span className="muted">({fmtBytes(m.stagedBytes)})</span>
+    case 'staged': {
+      // Only what is still waiting is a warning; leftovers already in the
+      // gallery are shown muted beside it (see waitingOf).
+      const waiting = waitingOf(m);
+      const leftover = m.stagedInGallery ?? 0;
+      if (m.staged === 0) return '0';
+      return (
+        <span>
+          {waiting > 0 ? (
+            <span className="insights-warn">
+              {fmtCount(waiting)} <span className="muted">({fmtBytes(m.stagedBytes - (m.stagedInGalleryBytes ?? 0))})</span>
+            </span>
+          ) : (
+            '0'
+          )}
+          {leftover > 0 && <span className="muted"> {t.stagedLeftover(fmtCount(leftover))}</span>}
         </span>
-      ) : (
-        '0'
       );
+    }
     case 'indexed':
       return m.indexed === null ? '—' : fmtCount(m.indexed);
     case 'indexRatio':
@@ -190,7 +202,8 @@ export function AdminUploadInsights(): JSX.Element {
     };
     walk(pivot.children);
     const metrics = [
-      'sessions', 'files', 'copied', 'untracked', 'skippedDuplicates', 'staged', 'failed', 'copiedBytes', 'stagedBytes',
+      'sessions', 'files', 'copied', 'untracked', 'skippedDuplicates', 'staged', 'stagedInGallery', 'failed',
+      'copiedBytes', 'stagedBytes', 'stagedInGalleryBytes',
       'minutes', 'indexed', 'indexRatio', 'mbPerSec', 'filesPerMin', 'inProgress', 'stuck', 'errors', 'neverCompleted',
       'recovered', 'firstSessionAt', 'lastSessionAt', 'lastActivityAt',
     ] as const;
@@ -199,7 +212,7 @@ export function AdminUploadInsights(): JSX.Element {
         ...dims.map((d, i) => (label ? (i === 0 ? label : '') : (n.path[d] ?? ''))),
         ...metrics.map((k) => {
           const v = n.metrics[k];
-          if (v === null) return '';
+          if (v === null || v === undefined) return '';
           if (k === 'indexRatio') return Math.round((v as number) * 100);
           if (k === 'mbPerSec') return (v as number).toFixed(2);
           if (k === 'filesPerMin') return (v as number).toFixed(1);

@@ -283,6 +283,34 @@ describe('buildUploadInsights', () => {
     expect(totals.files).toBe(3);
   });
 
+  // 2026-11-03: 498 of 619 staged objects on the NYC Marathon were already in
+  // the gallery, so the orange "in staging" figure made a healthy bucket look
+  // like a backlog. Only what is NOT already in the gallery is still waiting.
+  it('splits staged files into waiting and already in the gallery (or empty)', () => {
+    const { groups, totals } = buildUploadInsights(
+      input({
+        staged: [
+          staged('s1', { md5Hex: 'aa', size: 3 * MB }), // content already indexed
+          staged('s1', { md5Hex: 'BB', size: 5 * MB }), // already indexed, other case
+          staged('s1', { md5Hex: '', size: 0 }), // empty
+          staged('s1', { md5Hex: 'cc', size: 7 * MB }), // genuinely waiting
+          staged('s1', { md5Hex: '', size: 1 * MB }), // no hash: cannot be proven done
+        ],
+        indexedHashes: new Set(['aa', 'bb']),
+      }),
+    );
+    expect(groups[0]!.sessionList[0]).toMatchObject({ staged: 5, stagedInGallery: 3, stagedInGalleryBytes: 8 * MB });
+    expect(groups[0]).toMatchObject({ staged: 5, stagedInGallery: 3 });
+    expect(totals).toMatchObject({ staged: 5, stagedInGallery: 3, stagedInGalleryBytes: 8 * MB });
+  });
+
+  it('without the photo index only empty files count as needing nothing', () => {
+    const { totals } = buildUploadInsights(
+      input({ staged: [staged('s1', { md5Hex: 'aa' }), staged('s1', { size: 0 })], indexedHashes: null }),
+    );
+    expect(totals).toMatchObject({ staged: 2, stagedInGallery: 1 });
+  });
+
   it('unknown sizes and index counts stay null rather than reading as zero', () => {
     const { groups } = buildUploadInsights(
       input({
@@ -333,6 +361,19 @@ describe('loadUploadInsights', () => {
       indexRatio: 0.8,
     });
     expect(listLinks).toHaveBeenCalledWith('sheet1', { eventId: EV });
+  });
+
+  it('reads the photo index to tell staged leftovers from files still waiting', async () => {
+    db.seed('photos', {
+      p1: { eventId: EV, contentHash: 'a1b2' },
+      p9: { eventId: 'ev2', contentHash: 'c3d4' }, // another event's photo is not ours
+    });
+    const meta = { createdMs: NOW - 3 * 60 * 60_000, custom: { linkId: 'link-a', clubName: 'MMR', tag: 'NYC' } };
+    storage.seed('staging-bucket', `volunteer_uploads/${EV}/s/1.jpg`, { ...meta, size: 100, md5Hex: 'a1b2' });
+    storage.seed('staging-bucket', `volunteer_uploads/${EV}/s/2.jpg`, { ...meta, size: 200, md5Hex: 'c3d4' });
+
+    const r = await loadUploadInsights(EV, { spreadsheetId: 'sheet1', now: NOW });
+    expect(r.totals).toMatchObject({ staged: 2, stagedInGallery: 1, stagedInGalleryBytes: 100 });
   });
 
   it('degrades a failed Sheet read to warnings, and no counts doc to a null index', async () => {

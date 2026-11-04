@@ -168,6 +168,14 @@ export function UploadInsightsDetail(props: {
           <dd>{fmtBytes(m.copiedBytes)}</dd>
           <dt>{t.stagedSize}</dt>
           <dd>{fmtBytes(m.stagedBytes)}</dd>
+          {(m.stagedInGallery ?? 0) > 0 && (
+            <>
+              <dt>{t.stagedLeftoverSize}</dt>
+              <dd>
+                {t.stagedLeftoverFact(fmtCount(m.stagedInGallery ?? 0), fmtBytes(m.stagedInGalleryBytes ?? 0))}
+              </dd>
+            </>
+          )}
           <dt>{t.col.size}</dt>
           <dd>{fmtBytes(sizeOf(m))}</dd>
         </dl>

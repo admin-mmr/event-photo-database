@@ -494,6 +494,16 @@ export const UploadInsightsSessionSchema = z.object({
   /** Bytes copied to Drive (Upload_Log), null when the log could not be read. */
   copiedBytes: z.number().nonnegative().nullable(),
   stagedBytes: z.number().nonnegative(),
+  /**
+   * The part of `staged` that needs nothing: its content is already in the
+   * gallery (an unproven duplicate the worker kept, or a re-upload of photos
+   * copied from another session) or the object is empty. The bucket's lifecycle
+   * rule deletes these; only `staged - stagedInGallery` is still waiting to be
+   * copied. Optional: absent from an api that predates it, or 0 when the photo
+   * index could not be read.
+   */
+  stagedInGallery: count.optional(),
+  stagedInGalleryBytes: z.number().nonnegative().optional(),
   /** Indexed photos in this session's batch folders; null = no index counts yet. */
   indexed: count.nullable(),
   startedAt: z.string(),
@@ -518,6 +528,9 @@ export const UploadInsightsRowSchema = z.object({
   untracked: count,
   copiedBytes: z.number().nonnegative().nullable(),
   stagedBytes: z.number().nonnegative(),
+  /** See the session field: the staged files already in the gallery or empty. */
+  stagedInGallery: count.optional(),
+  stagedInGalleryBytes: z.number().nonnegative().optional(),
   /** Sum of per-session (first contact → last activity) durations. */
   minutes: z.number().nonnegative(),
   indexed: count.nullable(),

@@ -214,6 +214,37 @@ describe('<AdminUploadInsights />', () => {
     expect(screen.queryByRole('complementary')).toBeNull();
   });
 
+  it('shows leftovers already in the gallery apart from files still waiting', async () => {
+    mockApi(() =>
+      json({
+        ...INSIGHTS,
+        groups: [
+          {
+            ...base,
+            clubName: 'Misty',
+            tag: 'mile14',
+            uploader: 'dannyzeng',
+            files: 407,
+            sessionList: [
+              session('dddddddd-4', 'ok', {
+                files: 407,
+                staged: 407,
+                stagedBytes: 2900 * 1024 * 1024,
+                stagedInGallery: 407,
+                stagedInGalleryBytes: 2900 * 1024 * 1024,
+              }),
+            ],
+          },
+        ],
+      }),
+    );
+    await pickEvent();
+    const row = await screen.findByRole('row', { name: /details for dannyzeng/i });
+    expect(within(row).getByText('+407 in gallery')).toBeTruthy();
+    // Nothing waiting, so nothing in the warning colour.
+    expect(row.querySelector('.insights-warn')).toBeNull();
+  });
+
   it('hides a column from the picker and remembers it', async () => {
     mockApi(() => json(INSIGHTS));
     await pickEvent();
