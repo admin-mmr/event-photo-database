@@ -143,3 +143,38 @@ describe('matcherSearch — no_usable_face reasons', () => {
     expect(res.faceReasons).toBeUndefined();
   });
 });
+
+// 2026-11-04 12:27: a matcher scaling from zero took the api to 81.6s, past the
+// 60s Firebase Hosting cutoff, and the user saw a failed search.
+describe('matcherSearch — a matcher still warming up', () => {
+  beforeEach(() => vi.unstubAllGlobals());
+
+  function hang(): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_url: string, init: { signal: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            init.signal.addEventListener('abort', () => reject(init.signal.reason));
+          }),
+      ),
+    );
+  }
+
+  it('gives up before the Hosting cutoff and says it is warming up', async () => {
+    hang();
+    const out = await matcherSearch({ images: [IMAGE], eventId: 'ev1', timeoutMs: 20 });
+    expect(out).toMatchObject({ ok: false, status: 503, error: 'matcher_warming_up' });
+  });
+
+  it('defaults to stopping well inside the 60s Hosting limit', async () => {
+    const { MATCHER_SEARCH_TIMEOUT_MS } = await import('../src/services/matcherClient.js');
+    expect(MATCHER_SEARCH_TIMEOUT_MS).toBeLessThanOrEqual(55_000);
+  });
+
+  it('a network failure is still matcher_unreachable, not warming up', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('fetch failed'))));
+    const out = await matcherSearch({ images: [IMAGE], eventId: 'ev1' });
+    expect(out).toMatchObject({ ok: false, status: 502, error: 'matcher_unreachable' });
+  });
+});

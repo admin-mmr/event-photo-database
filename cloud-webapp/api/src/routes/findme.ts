@@ -245,6 +245,16 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
     ...(env.FINDME_TNORM ? { normalize: true } : {}),
   });
 
+  // The matcher is still loading after scaling from zero. Answer before the
+  // 60s Hosting cutoff and keep NOTHING from this attempt — no stored selfie,
+  // no run, no alert — because the page retries the same search on its own
+  // (matcherClient.MATCHER_SEARCH_TIMEOUT_MS) and that retry records it once.
+  if (!match.ok && match.error === 'matcher_warming_up') {
+    logger.warn({ eventId, uid: user.uid }, 'Find Me search: matcher still warming up — asked the page to retry');
+    res.status(503).json({ ok: false, error: 'matcher_warming_up', retryAfterSec: 3, message: match.message });
+    return;
+  }
+
   // Outcome derived once, used for persistence, the alert, and the response.
   const outcome = match.ok ? 'matched' : match.error;
   const storedMode: 'fused' | 'person' | null = match.ok

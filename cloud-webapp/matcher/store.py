@@ -60,6 +60,12 @@ GCS_DOWNLOAD_DEADLINE_SEC = float(os.environ.get("MATCHER_GCS_DOWNLOAD_DEADLINE_
 # multiple of 256 KiB (the storage client's rule).
 GCS_DOWNLOAD_CHUNK_BYTES = 32 * 1024 * 1024
 
+# Pieces of one file fetched at once. Sequential pieces made a cold start — the
+# search that scales the matcher from zero waits for the whole ~930 MB store —
+# take 64s after model load on 2026-11-04 12:27, so the api answered at 81.6s,
+# past the 60s Hosting cutoff, and the user saw a failed search.
+GCS_DOWNLOAD_PARALLEL = int(os.environ.get("MATCHER_GCS_DOWNLOAD_PARALLEL", "8"))
+
 logger = logging.getLogger(__name__)
 
 
@@ -607,12 +613,33 @@ class EmbeddingStore:
                 raise FileNotFoundError(
                     f"event '{event_id}' not indexed: gs://{bucket_name}/{base}/{name} missing"
                 )
-            blob.chunk_size = GCS_DOWNLOAD_CHUNK_BYTES
-            # A ranged download cannot be checksummed as a whole (the client
-            # would log that on every file); np.load and the manifest/vector
-            # length check in EventEmbeddings reject a damaged store instead.
-            out[name] = blob.download_as_bytes(retry=self._download_retry(), checksum=None)
+            out[name] = self._download_pinned(blob)
         return out
+
+    def _download_pinned(self, blob) -> bytes:
+        """The whole of `blob` (generation already pinned by get_blob), fetched as
+        GCS_DOWNLOAD_CHUNK_BYTES ranges, GCS_DOWNLOAD_PARALLEL at a time, each
+        retried on its own. A ranged download cannot be checksummed as a whole;
+        np.load and the manifest/vector length check in EventEmbeddings reject a
+        damaged store instead."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        retry = self._download_retry()
+        size = int(blob.size or 0)
+        if size <= GCS_DOWNLOAD_CHUNK_BYTES:
+            return blob.download_as_bytes(retry=retry, checksum=None)
+        buf = bytearray(size)
+
+        def fetch(start: int) -> None:
+            end = min(start + GCS_DOWNLOAD_CHUNK_BYTES, size) - 1  # inclusive, as GCS ranges are
+            piece = blob.download_as_bytes(start=start, end=end, retry=retry, checksum=None)
+            if len(piece) != end - start + 1:
+                raise IOError(f"{blob.name}: range {start}-{end} returned {len(piece)} bytes")
+            buf[start : end + 1] = piece
+
+        with ThreadPoolExecutor(max_workers=max(1, GCS_DOWNLOAD_PARALLEL)) as pool:
+            list(pool.map(fetch, range(0, size, GCS_DOWNLOAD_CHUNK_BYTES)))
+        return bytes(buf)
 
     @staticmethod
     def _download_retry():
