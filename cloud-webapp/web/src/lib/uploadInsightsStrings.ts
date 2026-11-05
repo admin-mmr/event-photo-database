@@ -54,6 +54,10 @@ export interface InsightsStrings {
   legend: { copied: string; untracked: string; dups: string; staged: string };
   untrackedNote: string;
   failedNote: (n: string) => string;
+  /** Every failed attempt's file has since been copied. */
+  failedResolvedNote: (n: string) => string;
+  /** Beside the open-failures count: `+N recovered`. */
+  failedRecovered: (n: string) => string;
   indexBlock: string;
   indexedOf: (indexed: string, inDrive: string) => string;
   sizeBlock: string;
@@ -120,7 +124,8 @@ const en: InsightsStrings = {
   hint: {
     untracked:
       'No copy result was recorded for these files. Almost always a retried copy: the first attempt copied them to Drive, then died before saving its counts, and the retry skipped them. Index % confirms they are in Drive.',
-    failed: 'Failed copy attempts. Those files stay in staging or were copied later, so they are not part of Files.',
+    failed:
+      'Failed copy attempts whose file is still waiting in staging. "+N recovered" failed once but were copied later (by a retry or upload recovery) and are in Drive — nothing to do.',
     staged:
       'Files waiting in staging to be copied to Drive. "+N in gallery" are leftover copies whose photo is already in the gallery (or empty files): nothing is owed, and the bucket deletes them after 30 days.',
     indexRatio: 'Indexed photos ÷ files in Drive (copied + not counted). Videos are never indexed.',
@@ -151,6 +156,8 @@ const en: InsightsStrings = {
   untrackedNote:
     'Not counted: copied by an earlier attempt of a retried chunk, which died before saving its counts. They are in Drive.',
   failedNote: (n) => `${n} failed copy attempts — those files stay in staging or were copied later.`,
+  failedResolvedNote: (n) => `${n} failed copy attempts, all since copied to Drive — nothing to do.`,
+  failedRecovered: (n) => `+${n} recovered`,
   indexBlock: 'Find-Me index',
   indexedOf: (i, d) => `${i} of ${d} files in Drive are indexed`,
   sizeBlock: 'Size',
@@ -215,7 +222,7 @@ const zh: InsightsStrings = {
   hint: {
     untracked:
       '这些文件没有记录复制结果。几乎都是重试的复制：首次尝试已将它们复制到 Drive，但在保存计数前中断，重试时跳过了它们。索引 % 可确认它们在 Drive 中。',
-    failed: '复制失败的尝试次数。这些文件仍在暂存中或稍后已复制，因此不计入文件数。',
+    failed: '仍在暂存中等待的复制失败次数。“+N 已恢复”表示曾失败但之后已复制到 Drive（重试或上传恢复），无需处理。',
     staged: '暂存中等待复制到 Drive 的文件。“+N 已在相册”是照片已在相册中的残留副本（或空文件）：无需处理，30 天后自动删除。',
     indexRatio: '已索引照片 ÷ Drive 中的文件（已复制 + 未计数）。视频不会被索引。',
     size: '已复制到 Drive + 仍在暂存中。',
@@ -244,6 +251,8 @@ const zh: InsightsStrings = {
   legend: { copied: '已复制到 Drive', untracked: '未计数', dups: '跳过的重复', staged: '仍在暂存中' },
   untrackedNote: '未计数：由重试分块的首次尝试复制，该尝试在保存计数前中断。这些文件在 Drive 中。',
   failedNote: (n) => `${n} 次复制失败 — 这些文件仍在暂存中或稍后已复制。`,
+  failedResolvedNote: (n) => `${n} 次复制失败，之后均已复制到 Drive — 无需处理。`,
+  failedRecovered: (n) => `+${n} 已恢复`,
   indexBlock: 'Find-Me 索引',
   indexedOf: (i, d) => `Drive 中 ${d} 个文件已索引 ${i} 个`,
   sizeBlock: '大小',

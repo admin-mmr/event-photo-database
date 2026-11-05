@@ -237,6 +237,21 @@ describe('<App />', () => {
 
 // 2026-11-03: a tab switched accounts with Find-Me results on screen; the new
 // account voted on the old one's search and its saved selfies 404'd.
+describe('<App /> Safari storage loss', () => {
+  it('a sign-in that fails because Safari lost its database says "reload", and is not reported', async () => {
+    authState.user = null;
+    signInWithGoogle.mockReset();
+    signInWithGoogle.mockRejectedValue(
+      new Error('Connection to Indexed Database server lost. Refresh the page to try again'),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: /Sign in with Google/i }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringMatching(/Reload the page/));
+    expect(screen.getByRole('button', { name: /^Reload$/ })).toBeTruthy();
+    expect(screen.queryByText(/Allow pop-ups/)).toBeNull();
+  });
+});
+
 describe('<App /> account switch', () => {
   function eventsFetches(): number {
     return vi.mocked(fetch).mock.calls.filter(([u]) => String(u) === '/api/events').length;

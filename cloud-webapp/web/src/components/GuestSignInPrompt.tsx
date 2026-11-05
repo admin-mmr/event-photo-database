@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { GUEST_BLOCKED_EVENT } from '../lib/api.js';
 import { upgradeGuestToGoogle } from '../lib/firebase.js';
+import { announceStorageLost, isStorageLost } from '../lib/storageLost.js';
 import { useStrings } from '../lib/i18n.js';
 import { isInAppBrowser } from '../lib/inAppBrowser.js';
 
@@ -71,6 +72,7 @@ export function GuestSignInPrompt({ isGuest }: { isGuest: boolean }): JSX.Elemen
       setPhase('done');
     } catch (err) {
       console.error('guest upgrade to Google failed', err);
+      if (isStorageLost(err)) announceStorageLost(); // the App's banner says "reload"
       setPhase('error');
     }
   }

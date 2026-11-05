@@ -57,9 +57,10 @@ describe('reportClientError dedupe', () => {
 
   it('the same flood through the real unhandledrejection handler is deduped too', async () => {
     installGlobalErrorReporting();
+    // Not IDB_LOST: that one is now answered with a reload banner, never reported.
     for (let i = 0; i < 60; i += 1) {
       const e = new Event('unhandledrejection') as Event & { reason: unknown };
-      e.reason = new Error(IDB_LOST);
+      e.reason = new Error('Network request failed');
       window.dispatchEvent(e);
       await settle();
     }
@@ -75,6 +76,21 @@ describe('reportClientError dedupe', () => {
       await settle();
     }
     expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  // 2026-11-04: Safari dropped its IndexedDB connection for one user for ~1.5h;
+  // the repeats paged at ERROR although only a reload could fix it.
+  it('does not report Safari losing its local database, and asks the App to show "reload"', async () => {
+    installGlobalErrorReporting();
+    const shown = vi.fn();
+    window.addEventListener('app:storage-lost', shown);
+    const e = new Event('unhandledrejection') as Event & { reason: unknown };
+    e.reason = new Error('Connection to Indexed Database server lost. Refresh the page to try again');
+    window.dispatchEvent(e);
+    await settle();
+    expect(apiPost).not.toHaveBeenCalled();
+    expect(shown).toHaveBeenCalled(); // once per installed handler
+    window.removeEventListener('app:storage-lost', shown);
   });
 
   it('does not report an opaque cross-origin "Script error."', async () => {
