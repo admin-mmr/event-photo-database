@@ -43,6 +43,14 @@ export const fmtCount = (n: number): string => n.toLocaleString();
 export const waitingOf = (r: Pick<UploadInsightsRow, 'staged' | 'stagedInGallery'>): number =>
   Math.max(0, r.staged - (r.stagedInGallery ?? 0));
 
+/**
+ * Failed copy attempts whose file is still waiting in staging — the only ones
+ * that need anything. An api that predates `failedUnresolved` reports none, so
+ * every failure reads as open, as it always did.
+ */
+export const unresolvedFailedOf = (r: Pick<UploadInsightsRow, 'failed' | 'failedUnresolved'>): number =>
+  Math.min(r.failed, r.failedUnresolved ?? r.failed);
+
 /** Total size of a row: what reached Drive plus what is still in staging. */
 export const sizeOf = (r: UploadInsightsRow): number | null => (r.copiedBytes === null ? null : r.copiedBytes + r.stagedBytes);
 
@@ -85,6 +93,7 @@ export function rollUp(placed: ReadonlyArray<PlacedSession>, path: Partial<Recor
     stagedBytes: 0,
     stagedInGallery: 0,
     stagedInGalleryBytes: 0,
+    failedUnresolved: 0,
     minutes: 0,
     indexed: 0,
     indexRatio: null,
@@ -111,6 +120,7 @@ export function rollUp(placed: ReadonlyArray<PlacedSession>, path: Partial<Recor
     row.stagedBytes += s.stagedBytes;
     row.stagedInGallery = (row.stagedInGallery ?? 0) + (s.stagedInGallery ?? 0);
     row.stagedInGalleryBytes = (row.stagedInGalleryBytes ?? 0) + (s.stagedInGalleryBytes ?? 0);
+    row.failedUnresolved = (row.failedUnresolved ?? 0) + (s.failedUnresolved ?? s.failed);
     row.minutes += s.minutes;
     row.indexed = row.indexed === null || s.indexed === null ? null : row.indexed + s.indexed;
     if (s.status === 'in_progress') row.inProgress += 1;

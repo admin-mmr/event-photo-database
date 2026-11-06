@@ -24,6 +24,7 @@ import {
   type InsightsLayout,
   type PivotNode,
   type SortKey,
+  unresolvedFailedOf,
   waitingOf,
 } from '../lib/uploadInsights.js';
 import { INSIGHTS_STRINGS, nodeTitle, type InsightsStrings } from '../lib/uploadInsightsStrings.js';
@@ -61,6 +62,19 @@ function cell(c: ColumnId, n: PivotNode, t: InsightsStrings): JSX.Element | stri
             '0'
           )}
           {leftover > 0 && <span className="muted"> {t.stagedLeftover(fmtCount(leftover))}</span>}
+        </span>
+      );
+    }
+    case 'failed': {
+      // Only failures whose file is still waiting are a problem; the rest were
+      // re-copied and are shown muted (see unresolvedFailedOf).
+      if (m.failed === 0) return '0';
+      const open = unresolvedFailedOf(m);
+      const recovered = m.failed - open;
+      return (
+        <span>
+          {open > 0 ? <span className="insights-warn">{fmtCount(open)}</span> : '0'}
+          {recovered > 0 && <span className="muted"> {t.failedRecovered(fmtCount(recovered))}</span>}
         </span>
       );
     }
@@ -202,7 +216,7 @@ export function AdminUploadInsights(): JSX.Element {
     };
     walk(pivot.children);
     const metrics = [
-      'sessions', 'files', 'copied', 'untracked', 'skippedDuplicates', 'staged', 'stagedInGallery', 'failed',
+      'sessions', 'files', 'copied', 'untracked', 'skippedDuplicates', 'staged', 'stagedInGallery', 'failed', 'failedUnresolved',
       'copiedBytes', 'stagedBytes', 'stagedInGalleryBytes',
       'minutes', 'indexed', 'indexRatio', 'mbPerSec', 'filesPerMin', 'inProgress', 'stuck', 'errors', 'neverCompleted',
       'recovered', 'firstSessionAt', 'lastSessionAt', 'lastActivityAt',

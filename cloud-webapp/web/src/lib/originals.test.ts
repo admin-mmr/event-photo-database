@@ -199,6 +199,53 @@ describe('OriginalsFetcher', () => {
     ]);
   });
 
+  // 2026-11-04/05: saves on phones lost 3 of 3, 2 of 47 and 2 of 3 photos to
+  // "Failed to fetch" / "Load failed" — a dropped connection a retry survives.
+  it('retries a dropped transfer once and keeps the photo', async () => {
+    stubBatch();
+    const real = globalThis.fetch;
+    let dropped = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith('/p2') && !dropped) {
+          dropped = true;
+          throw new TypeError('Failed to fetch');
+        }
+        return real(input, init);
+      }),
+    );
+    const res = await new OriginalsFetcher('ev1', 0).fetch(['p1', 'p2']);
+    expect(res.failed).toBe(0);
+    expect(res.entries).toHaveLength(2);
+  });
+
+  it('gives up after the second try', async () => {
+    stubBatch();
+    const real = globalThis.fetch;
+    const tries = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith('/p2')) {
+          tries();
+          throw new TypeError('Load failed');
+        }
+        return real(input, init);
+      }),
+    );
+    const res = await new OriginalsFetcher('ev1', 0).fetch(['p1', 'p2']);
+    expect(res.failed).toBe(1);
+    expect(tries).toHaveBeenCalledTimes(2);
+  });
+
+  it('never retries an expired or refused URL', async () => {
+    const stub = stubBatch({ failUrl: (url) => url.endsWith('p2') });
+    const res = await new OriginalsFetcher('ev1', 0).fetch(['p2']);
+    expect(res.failed).toBe(1);
+    expect(stub.byteReads.filter((u) => u.endsWith('p2'))).toHaveLength(1);
+  });
+
   it('reports every id as failed when signing itself fails', async () => {
     const s = stubBatch({ signFails: true });
     const res = await new OriginalsFetcher('ev1').fetch(['p1', 'p2']);

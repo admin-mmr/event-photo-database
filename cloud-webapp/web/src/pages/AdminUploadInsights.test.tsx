@@ -245,6 +245,33 @@ describe('<AdminUploadInsights />', () => {
     expect(row.querySelector('.insights-warn')).toBeNull();
   });
 
+  it('shows failures recovery re-copied as recovered, not as a problem', async () => {
+    // "Failed" is off by default; turn it on the way the column picker would.
+    localStorage.setItem(
+      'admin.uploadInsights.layout',
+      JSON.stringify({ dims: ['club', 'tag', 'uploader'], columns: ['attention', 'files', 'failed'] }),
+    );
+    mockApi(() =>
+      json({
+        ...INSIGHTS,
+        groups: [
+          {
+            ...base,
+            clubName: 'Bergen',
+            tag: 'mile22',
+            uploader: 'tonyzhang',
+            files: 276,
+            sessionList: [session('eeeeeeee-5', 'ok', { files: 276, copied: 276, failed: 255, failedUnresolved: 0 })],
+          },
+        ],
+      }),
+    );
+    await pickEvent();
+    const row = await screen.findByRole('row', { name: /details for tonyzhang/i });
+    expect(within(row).getByText('+255 recovered')).toBeTruthy();
+    expect(row.querySelector('.insights-warn')).toBeNull();
+  });
+
   it('hides a column from the picker and remembers it', async () => {
     mockApi(() => json(INSIGHTS));
     await pickEvent();

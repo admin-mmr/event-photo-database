@@ -311,6 +311,35 @@ describe('buildUploadInsights', () => {
     expect(totals).toMatchObject({ staged: 2, stagedInGallery: 1 });
   });
 
+  // NYC Marathon, 2026-11-02: a Drive token expired mid-copy and 379 copies
+  // failed; upload recovery re-copied every one that morning, yet the page kept
+  // showing 379 "failed". A failure is open only while its file still waits.
+  it('a failure is resolved once its file is no longer waiting in staging', () => {
+    const recovered = buildUploadInsights(
+      input({
+        batches: [
+          { batchId: 's1', linkId: 'link-a', phase: 'indexing', total: 276, copied: 21, failed: 255,
+            batchFolderName: '20261102-022412_tony', createdAt: at(-60), updatedAt: at(-55) },
+          { batchId: 's1-rec1', linkId: 'link-a', phase: 'indexing', total: 255, copied: 255, failed: 0,
+            batchFolderName: '20261102-045710_tony', createdAt: at(-30), updatedAt: at(-20) },
+        ],
+      }),
+    );
+    expect(recovered.groups[0]!.sessionList[0]).toMatchObject({ failed: 255, failedUnresolved: 0 });
+    expect(recovered.totals).toMatchObject({ failed: 255, failedUnresolved: 0 });
+
+    const stillWaiting = buildUploadInsights(
+      input({
+        batches: [{ batchId: 's2', linkId: 'link-a', phase: 'indexing', total: 5, copied: 2, failed: 3,
+          createdAt: at(-60), updatedAt: at(-55) }],
+        staged: [staged('s2', { md5Hex: 'w1' }), staged('s2', { md5Hex: 'w2' }), staged('s2', { md5Hex: 'in' })],
+        indexedHashes: new Set(['in']),
+      }),
+    );
+    // 3 failed, 2 still waiting (the third is already in the gallery): 2 open.
+    expect(stillWaiting.groups[0]!.sessionList[0]).toMatchObject({ failed: 3, failedUnresolved: 2 });
+  });
+
   it('unknown sizes and index counts stay null rather than reading as zero', () => {
     const { groups } = buildUploadInsights(
       input({

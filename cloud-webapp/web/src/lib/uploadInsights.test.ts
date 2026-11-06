@@ -15,6 +15,7 @@ import {
   saveLayout,
   sortNodes,
   visibleRows,
+  unresolvedFailedOf,
   waitingOf,
   type Dim,
   type PivotNode,
@@ -135,6 +136,22 @@ describe('staged files already in the gallery', () => {
     const waiting = rollUp(placeSessions([group('C', 'ALL', 'w', [session('w', { staged: 3, stagedInGallery: 1 })])]));
     expect(attentionScore(leftovers)).toBe(0);
     expect(attentionScore(waiting)).toBeGreaterThan(0);
+  });
+});
+
+describe('failures recovery already re-copied', () => {
+  it('rolls up open failures apart from the total, and reads an older api as all open', () => {
+    const r = rollUp(
+      placeSessions([
+        group('MMR', 'NYC', 'a', [
+          session('x', { failed: 255, failedUnresolved: 0 }),
+          session('y', { failed: 3, failedUnresolved: 2 }),
+        ]),
+      ]),
+    );
+    expect(r).toMatchObject({ failed: 258, failedUnresolved: 2 });
+    expect(unresolvedFailedOf(r)).toBe(2);
+    expect(unresolvedFailedOf({ failed: 7 })).toBe(7);
   });
 });
 

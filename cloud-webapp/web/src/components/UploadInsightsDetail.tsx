@@ -12,6 +12,7 @@ import {
   sessionNodes,
   sizeOf,
   type PivotNode,
+  unresolvedFailedOf,
 } from '../lib/uploadInsights.js';
 import { nodeTitle, type InsightsStrings } from '../lib/uploadInsightsStrings.js';
 
@@ -150,7 +151,11 @@ export function UploadInsightsDetail(props: {
         </ul>
         <p className="insights-equation">{equation}</p>
         {m.untracked > 0 && <p className="muted insights-note">{t.untrackedNote}</p>}
-        {m.failed > 0 && <p className="muted insights-note">{t.failedNote(fmtCount(m.failed))}</p>}
+        {m.failed > 0 && (
+          <p className="muted insights-note">
+            {unresolvedFailedOf(m) === 0 ? t.failedResolvedNote(fmtCount(m.failed)) : t.failedNote(fmtCount(m.failed))}
+          </p>
+        )}
       </section>
 
       <section className="insights-detail-section">

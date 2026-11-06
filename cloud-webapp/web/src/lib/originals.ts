@@ -99,6 +99,23 @@ export const PREFETCH_MAX_PHOTOS = 30;
  *  one by one produces a single batched signing call rather than one per tick. */
 export const PREFETCH_DEBOUNCE_MS = 400;
 
+/**
+ * Tries per original. A phone on a weak connection drops a transfer now and
+ * then — "Failed to fetch" (Chrome) / "Load failed" (Safari): 3 of 3, 2 of 47
+ * and 2 of 3 saves on 2026-11-04/05 — and a second try usually succeeds. Only a
+ * network error or a 5xx/429 is retried; a 403 (expired signature) or 404 would
+ * fail again, and a cancel is never retried.
+ */
+const FETCH_ATTEMPTS = 2;
+const RETRY_DELAY_MS = 1000;
+
+/** A transfer worth trying again: the network dropped, or the server was busy. */
+function isRetryable(err: unknown): boolean {
+  if (err instanceof TypeError) return true; // fetch()'s network failure
+  const status = (err as { status?: unknown } | null)?.status;
+  return typeof status === 'number' && (status >= 500 || status === 429);
+}
+
 /** An aborted transfer is a cancellation, not a failure to report. */
 function isAbort(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError';
@@ -118,7 +135,11 @@ export class OriginalsFetcher {
   private active = 0;
   private readonly waiting: (() => void)[] = [];
 
-  constructor(private readonly eventId: string) {}
+  constructor(
+    private readonly eventId: string,
+    /** Pause before a retry; tests pass 0. */
+    private readonly retryDelayMs: number = RETRY_DELAY_MS,
+  ) {}
 
   /** The cached original for `photoId`, if it has already been fetched. */
   get(photoId: string): OriginalEntry | undefined {
@@ -263,14 +284,30 @@ export class OriginalsFetcher {
     try {
       // Queued behind the cap long enough for the selection to change.
       if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-      const res = await fetch(file.url, { signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const entry: OriginalEntry = { blob: await res.blob(), filename: file.filename };
+      const entry: OriginalEntry = { blob: await this.download(file.url, signal), filename: file.filename };
       this.cache.set(photoId, entry);
       return entry;
     } finally {
       this.inflight.delete(photoId);
       this.release();
+    }
+  }
+
+  /** The bytes at `url`, tried up to FETCH_ATTEMPTS times (see isRetryable). */
+  private async download(url: string, signal: AbortSignal): Promise<Blob> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const res = await fetch(url, { signal });
+        if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
+        // eslint-disable-next-line no-await-in-loop
+        return await res.blob(); // a connection dropped mid-body is a TypeError too
+      } catch (err) {
+        if (signal.aborted || isAbort(err) || attempt >= FETCH_ATTEMPTS || !isRetryable(err)) throw err;
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, this.retryDelayMs));
+        if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      }
     }
   }
 

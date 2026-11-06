@@ -217,6 +217,9 @@ function buildSession(
     stagedBytes: staged.reduce((a, o) => a + n(o.size), 0),
     stagedInGallery: inGallery.length,
     stagedInGalleryBytes: inGallery.reduce((a, o) => a + n(o.size), 0),
+    // A failed copy leaves its file staged; once nothing is waiting, every
+    // failure was re-copied (by a retry or recovery) — see the schema field.
+    failedUnresolved: Math.min(failed, staged.length - inGallery.length),
     indexed: indexedBy ? batchFolders.reduce((a, f) => a + (indexedBy.get(f) ?? 0), 0) : null,
     startedAt: iso(startMs),
     lastActivityAt: iso(lastMs),
@@ -244,6 +247,7 @@ function emptyRow(clubName: string, tag: string, uploader: string, known: Insigh
     stagedBytes: 0,
     stagedInGallery: 0,
     stagedInGalleryBytes: 0,
+    failedUnresolved: 0,
     minutes: 0,
     indexed: known.indexedByFolder ? 0 : null,
     indexRatio: null,
@@ -272,6 +276,7 @@ function addSession(row: UploadInsightsRow, s: UploadInsightsSession): void {
   row.stagedBytes += s.stagedBytes;
   row.stagedInGallery = (row.stagedInGallery ?? 0) + (s.stagedInGallery ?? 0);
   row.stagedInGalleryBytes = (row.stagedInGalleryBytes ?? 0) + (s.stagedInGalleryBytes ?? 0);
+  row.failedUnresolved = (row.failedUnresolved ?? 0) + (s.failedUnresolved ?? s.failed);
   row.minutes += s.minutes;
   if (row.indexed !== null && s.indexed !== null) row.indexed += s.indexed;
   if (s.status === 'in_progress') row.inProgress += 1;

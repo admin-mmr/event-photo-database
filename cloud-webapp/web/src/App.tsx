@@ -9,6 +9,7 @@ import { clearAllResults } from './lib/findmeCache.js';
 import type { AccountScope } from './lib/accountScope.js';
 import { isInAppBrowser } from './lib/inAppBrowser.js';
 import { isSignInCancelled } from './lib/signInErrors.js';
+import { STORAGE_LOST_EVENT, announceStorageLost, isStorageLost } from './lib/storageLost.js';
 import { reportClientError } from './lib/reportError.js';
 import { InAppBrowserWarning } from './components/InAppBrowserWarning.js';
 import { Footer } from './components/Footer.js';
@@ -145,7 +146,10 @@ const STR = {
     loading: 'Loading…',
     guestError:
       'Could not start a guest session. Ask an admin to enable Anonymous sign-in in Firebase.',
-    googleError: 'Google sign-in did not finish. Allow pop-ups for this site and try again.',  },
+    googleError: 'Google sign-in did not finish. Allow pop-ups for this site and try again.',
+    storageLost: 'Your browser lost its connection to this site’s saved data. Reload the page to continue.',
+    reload: 'Reload',
+  },
   zh: {
     title: '一键找我',
     tagline: '浏览活动照片，并用人脸识别找到照片中的自己。',
@@ -179,7 +183,10 @@ const STR = {
     signOut: '退出登录',
     loading: '加载中…',
     guestError: '无法开始访客会话，请联系管理员在 Firebase 中启用匿名登录。',
-    googleError: 'Google 登录未完成。请允许本网站弹出窗口后重试。',  },
+    googleError: 'Google 登录未完成。请允许本网站弹出窗口后重试。',
+    storageLost: '浏览器与本网站保存的数据断开了连接。请重新加载页面后继续。',
+    reload: '重新加载',
+  },
 };
 import { Events } from './pages/Events.js';
 import { Gallery } from './pages/Gallery.js';
@@ -204,6 +211,13 @@ import { VolunteerUpload } from './pages/VolunteerUpload.js';
 export function App(): JSX.Element {
   const { user, loading } = useAuth();
   const [signInError, setSignInError] = useState<string | null>(null);
+  // Safari dropped its local database (storageLost.ts): only a reload helps.
+  const [storageLost, setStorageLost] = useState(false);
+  useEffect(() => {
+    const onLost = (): void => setStorageLost(true);
+    window.addEventListener(STORAGE_LOST_EVENT, onLost);
+    return () => window.removeEventListener(STORAGE_LOST_EVENT, onLost);
+  }, []);
   const [signingIn, setSigningIn] = useState(false);
   const [inApp] = useState(() => isInAppBrowser());
   const [menuOpen, setMenuOpen] = useState(false);
@@ -276,7 +290,9 @@ export function App(): JSX.Element {
     try {
       await signInWithGoogle();
     } catch (err) {
-      if (!isSignInCancelled(err)) {
+      if (isStorageLost(err)) {
+        announceStorageLost();
+      } else if (!isSignInCancelled(err)) {
         setSignInError(t.googleError);
         reportClientError('client_error', `Google sign-in failed: ${err instanceof Error ? err.message : String(err)}`, {
           context: { code: (err as { code?: unknown } | null)?.code },
@@ -403,6 +419,15 @@ export function App(): JSX.Element {
           </nav>
         )}
       </header>
+
+      {storageLost && (
+        <div className="storage-lost" role="alert">
+          <span>{t.storageLost}</span>
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => window.location.reload()}>
+            {t.reload}
+          </button>
+        </div>
+      )}
 
       {/* WeChat & other in-app webviews: Google OAuth 403s here. The same
           bilingual "open in Safari / Chrome" steps sit at the top of EVERY page

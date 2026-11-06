@@ -504,6 +504,15 @@ export const UploadInsightsSessionSchema = z.object({
    */
   stagedInGallery: count.optional(),
   stagedInGalleryBytes: z.number().nonnegative().optional(),
+  /**
+   * The part of `failed` that still needs something: a failed copy leaves its
+   * file in staging, so a failure is open only while that file is still waiting
+   * there (min(failed, staged − stagedInGallery)). Recovery re-copying the file
+   * resolves it. On the NYC Marathon all 379 failed attempts (a Drive token
+   * expiring mid-copy, 2026-11-02) had been re-copied the same morning, yet the
+   * page showed 379 "failed" for days. Optional: absent from an older api.
+   */
+  failedUnresolved: count.optional(),
   /** Indexed photos in this session's batch folders; null = no index counts yet. */
   indexed: count.nullable(),
   startedAt: z.string(),
@@ -531,6 +540,8 @@ export const UploadInsightsRowSchema = z.object({
   /** See the session field: the staged files already in the gallery or empty. */
   stagedInGallery: count.optional(),
   stagedInGalleryBytes: z.number().nonnegative().optional(),
+  /** See the session field: failed attempts whose file is still waiting in staging. */
+  failedUnresolved: count.optional(),
   /** Sum of per-session (first contact → last activity) durations. */
   minutes: z.number().nonnegative(),
   indexed: count.nullable(),

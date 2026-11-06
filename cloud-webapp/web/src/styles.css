@@ -3215,3 +3215,17 @@ pre.error {
     width: calc(100vw - 436px - (100vw - min(calc(100vw - 48px), 1800px)) / 2);
   }
 }
+
+/* Safari lost its local database (lib/storageLost.ts): a reload is the only fix. */
+.storage-lost {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  background: var(--warn-bg);
+}
+
