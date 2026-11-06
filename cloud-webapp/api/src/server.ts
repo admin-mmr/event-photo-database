@@ -1,6 +1,7 @@
 import express from 'express';
 import type { Request } from 'express';
 import { pinoHttp } from 'pino-http';
+import { requestLogLevel } from './lib/requestLogLevel.js';
 import { logger } from './lib/logger.js';
 import { env, isProd } from './lib/config.js';
 import { healthRouter } from './routes/health.js';
@@ -52,11 +53,8 @@ export function buildServer(): express.Express {
     pinoHttp({
       logger,
       // Cloud Run sets X-Cloud-Trace-Context; pino-http will pick it up.
-      customLogLevel: (_req, res, err) => {
-        if (err || (res.statusCode ?? 0) >= 500) return 'error';
-        if ((res.statusCode ?? 0) >= 400) return 'warn';
-        return 'info';
-      },
+      // 5xx → ERROR (which alerts), unless the route marked it expected.
+      customLogLevel: (_req, res, err) => requestLogLevel(res, err),
       // Don't log health probes at info level — they spam the log.
       autoLogging: {
         ignore: (req: Request) => req.url === '/api/health',

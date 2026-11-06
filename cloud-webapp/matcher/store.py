@@ -574,18 +574,35 @@ class EmbeddingStore:
 
     def _load(self, event_id: str) -> EventEmbeddings:
         backend, details = parse_root(self.root)
+        started = time.monotonic()
         if backend == "gcs":
             blobs = self._read_gcs(event_id)
         elif backend == "azure":
             blobs = self._read_azure(event_id, details)  # type: ignore[arg-type]
         else:
             blobs = self._read_local(event_id)
+        downloaded = time.monotonic()
         import io
 
         manifest = json.loads(blobs[MANIFEST].decode("utf-8"))
         faces = np.load(io.BytesIO(blobs[FILES["face"]]))
         persons = np.load(io.BytesIO(blobs[FILES["person"]]))
-        return EventEmbeddings(manifest, faces, persons)
+        ev = EventEmbeddings(manifest, faces, persons)
+        # Where a load's time goes. Cold starts took 40–70s on Cloud Run while
+        # the same ~1 GB store downloads in ~33s and parses in ~2s from a
+        # laptop (2026-11-06); this line tells the next one which half is slow.
+        done = time.monotonic()
+        size = sum(len(b) for b in blobs.values())
+        logger.info(
+            "store for %s loaded: %.0f MB in %.1fs (download %.1fs = %.0f MB/s, parse %.1fs)",
+            event_id,
+            size / 1e6,
+            done - started,
+            downloaded - started,
+            size / 1e6 / max(downloaded - started, 1e-6),
+            done - downloaded,
+        )
+        return ev
 
     def _read_local(self, event_id: str) -> dict[str, bytes]:
         emb_dir = os.path.join(self.root, event_id, EMB_SUBDIR)

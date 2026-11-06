@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 
 import numpy as np
@@ -663,4 +664,16 @@ def test_a_short_range_fails_the_load_rather_than_corrupting_it(monkeypatch):
     store._gcs_client = FakeGcsClient(bucket)
     with pytest.raises(IOError, match="returned"):
         store.load_event("e1")
+
+
+# 2026-11-06: cold starts took 40–70s on Cloud Run with no record of which half
+# of the load was slow. Every load now logs its size and both durations.
+def test_every_load_logs_its_size_and_where_the_time_went(tmp_path, caplog):
+    _write_local_event(tmp_path, photos=2, mtime_ns=1_000_000_000)
+    with caplog.at_level(logging.INFO, logger=store_mod.logger.name):
+        EmbeddingStore(str(tmp_path)).load_event("e1")
+    lines = [r.getMessage() for r in caplog.records if "loaded:" in r.getMessage()]
+    assert len(lines) == 1
+    assert "store for e1 loaded:" in lines[0]
+    assert "download" in lines[0] and "parse" in lines[0] and "MB/s" in lines[0]
 

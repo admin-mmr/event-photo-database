@@ -411,6 +411,11 @@
     NOTHING from that attempt (no selfie, run or alert) because the page retries
     it once on its own (`web/src/lib/warmRetry.ts`). The matcher's load is not
     tied to the request, so the retry finds the store in memory.
+    That 503 sets `res.locals.expectedFailure`, so the request logger records it
+    at WARN (`api/src/lib/requestLogLevel.ts`); as an ERROR it paged on every
+    cold start. Use the same mark for any other 5xx a route answers on purpose.
+    Each store load logs its size and download/parse seconds
+    ("store for … loaded: …") — read those before tuning cold starts.
   - **Download the store in ranged pieces, pinned to one generation**
     (`GCS_DOWNLOAD_CHUNK_BYTES`, `bucket.get_blob` in `store._read_gcs`). One
     ~440 MB response broke at exactly 256 MiB on every retry and each retry
