@@ -251,6 +251,7 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
   // (matcherClient.MATCHER_SEARCH_TIMEOUT_MS) and that retry records it once.
   if (!match.ok && match.error === 'matcher_warming_up') {
     logger.warn({ eventId, uid: user.uid }, 'Find Me search: matcher still warming up — asked the page to retry');
+    res.locals.expectedFailure = true; // logged at WARN, not paged (lib/requestLogLevel.ts)
     res.status(503).json({ ok: false, error: 'matcher_warming_up', retryAfterSec: 3, message: match.message });
     return;
   }
