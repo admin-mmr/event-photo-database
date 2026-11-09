@@ -250,6 +250,19 @@ describe('<App /> Safari storage loss', () => {
     expect(screen.getByRole('button', { name: /^Reload$/ })).toBeTruthy();
     expect(screen.queryByText(/Allow pop-ups/)).toBeNull();
   });
+
+  // 2026-11-08: a signed-in iPhone's requests all came back 401 (no token) and
+  // the user only saw searches fail.
+  it('a signed-in page whose requests come back 401 says "reload"', async () => {
+    authState.user = { uid: 'u1', email: 'member@mmrunners.org' } as User;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ ok: false, error: 'unauthorized' }), { status: 401 })),
+    );
+    render(<App />);
+    expect(await screen.findByText(/Your sign-in on this page was lost/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Reload$/ })).toBeTruthy();
+  });
 });
 
 describe('<App /> account switch', () => {

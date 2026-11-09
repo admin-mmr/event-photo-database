@@ -164,7 +164,7 @@ describe('matcherSearch — a matcher still warming up', () => {
   it('gives up before the Hosting cutoff and says it is warming up', async () => {
     hang();
     const out = await matcherSearch({ images: [IMAGE], eventId: 'ev1', timeoutMs: 20 });
-    expect(out).toMatchObject({ ok: false, status: 503, error: 'matcher_warming_up' });
+    expect(out).toMatchObject({ ok: false, status: 429, error: 'matcher_warming_up' });
   });
 
   it('defaults to stopping well inside the 60s Hosting limit', async () => {

@@ -251,8 +251,12 @@ async function runSearch(res: Response, opts: RunSearchOpts): Promise<void> {
   // (matcherClient.MATCHER_SEARCH_TIMEOUT_MS) and that retry records it once.
   if (!match.ok && match.error === 'matcher_warming_up') {
     logger.warn({ eventId, uid: user.uid }, 'Find Me search: matcher still warming up — asked the page to retry');
-    res.locals.expectedFailure = true; // logged at WARN, not paged (lib/requestLogLevel.ts)
-    res.status(503).json({ ok: false, error: 'matcher_warming_up', retryAfterSec: 3, message: match.message });
+    // 429 + Retry-After, not 503: Cloud Run's own request log files every 5xx
+    // at ERROR whatever the app logs, and the severity>=ERROR alert emailed on
+    // each cold start (5 on 2026-11-06/07, after #123 had quieted the app's
+    // line). A 4xx is WARNING there. The page retries either (warmRetry.ts).
+    res.set('Retry-After', '3');
+    res.status(429).json({ ok: false, error: 'matcher_warming_up', retryAfterSec: 3, message: match.message });
     return;
   }
 
