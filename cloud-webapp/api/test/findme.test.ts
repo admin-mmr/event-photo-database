@@ -172,10 +172,13 @@ describe('POST /api/findme/search', () => {
 
   // The page retries a warming-up search on its own, so this attempt must keep
   // nothing: no stored selfie, no run, no alert — the retry records it once.
-  it('answers 503 matcher_warming_up and records no selfie or run', async () => {
-    matcherSearch.mockResolvedValue({ ok: false, status: 503, error: 'matcher_warming_up', message: 'warming' });
+  // 429, not 503: Cloud Run logs every 5xx at ERROR itself, and that paged on
+  // every cold start even after the app's own line was quieted.
+  it('answers 429 matcher_warming_up with Retry-After and records no selfie or run', async () => {
+    matcherSearch.mockResolvedValue({ ok: false, status: 429, error: 'matcher_warming_up', message: 'warming' });
     const res = await search(app, { eventId: 'ev1', consent: 'true' });
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(429);
+    expect(res.headers['retry-after']).toBe('3');
     expect(res.body).toMatchObject({ ok: false, error: 'matcher_warming_up', retryAfterSec: expect.any(Number) });
     expect(createReference).not.toHaveBeenCalled();
     expect(fakeDb.added.filter((a) => a.collection === 'match_runs')).toHaveLength(0);

@@ -6,8 +6,8 @@ import { retryWhileWarming } from './warmRetry.js';
 // 2026-11-04 12:27: the first search after the matcher scaled from zero took
 // 81.6s at the api and the user saw "search failed". The api now answers 503
 // matcher_warming_up before the 60s Hosting cutoff, and the page retries once.
-const warming = (retryAfterSec?: number) =>
-  new ApiError(503, 'matcher_warming_up', 'warming', retryAfterSec === undefined ? {} : { retryAfterSec });
+const warming = (retryAfterSec?: number, status = 429) =>
+  new ApiError(status, 'matcher_warming_up', 'warming', retryAfterSec === undefined ? {} : { retryAfterSec });
 
 describe('retryWhileWarming', () => {
   it('retries once, after the wait the api asked for, and returns the second answer', async () => {
@@ -35,4 +35,18 @@ describe('retryWhileWarming', () => {
     });
     expect(attempt).toHaveBeenCalledTimes(1);
   });
+
+  it('still retries the 503 an older api sends', async () => {
+    const attempt = vi.fn().mockRejectedValueOnce(warming(3, 503)).mockResolvedValueOnce('results');
+    await expect(retryWhileWarming(attempt, { sleep: async () => undefined })).resolves.toBe('results');
+  });
+
+  it('never retries a rate limit', async () => {
+    const attempt = vi.fn().mockRejectedValue(new ApiError(429, 'rate_limited', 'slow down'));
+    await expect(retryWhileWarming(attempt, { sleep: async () => undefined })).rejects.toMatchObject({
+      code: 'rate_limited',
+    });
+    expect(attempt).toHaveBeenCalledTimes(1);
+  });
 });
+

@@ -176,7 +176,7 @@ function authHeaders(url: string): Promise<Record<string, string>> {
  * Hosting, which gives up at 60s with an opaque error; a matcher scaling from
  * zero loads the whole event store before it can answer, and on 2026-11-04 12:27
  * that took the api to 81.6s — the user saw "search failed" and had to retry.
- * Stopping short of the cutoff lets the api answer 503 `matcher_warming_up`,
+ * Stopping short of the cutoff lets the api answer 429 `matcher_warming_up`,
  * which the page retries on its own. The matcher keeps loading regardless (the
  * load is not tied to the request), so the retry finds the store in memory.
  */
@@ -255,7 +255,7 @@ export async function matcherSearch(opts: {
     if (signal.aborted) {
       return {
         ok: false,
-        status: 503,
+        status: 429,
         error: 'matcher_warming_up',
         message: 'Search is warming up — please try again in a moment',
       };

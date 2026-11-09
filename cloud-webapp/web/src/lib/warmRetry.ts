@@ -3,7 +3,7 @@
  *
  * The matcher scales to zero, and the first search after a quiet spell waits for
  * it to load the whole event store. The api stops waiting before Firebase
- * Hosting's 60s cutoff and answers 503 `matcher_warming_up` (it keeps nothing
+ * Hosting's 60s cutoff and answers 429 `matcher_warming_up` (it keeps nothing
  * from that attempt); the matcher keeps loading, so a retry a few seconds later
  * finds it ready. On 2026-11-04 12:27 the user had to do that retry by hand,
  * after an opaque "search failed".
@@ -16,7 +16,9 @@ export const MATCHER_WARMING_UP = 'matcher_warming_up';
 const DEFAULT_WAIT_SEC = 3;
 
 export function isWarmingUp(err: unknown): err is ApiError {
-  return err instanceof ApiError && err.status === 503 && err.code === MATCHER_WARMING_UP;
+  // 429 since 2026-11-09 (a 5xx paged via Cloud Run's request log); 503 from
+  // an api deployed before that.
+  return err instanceof ApiError && (err.status === 429 || err.status === 503) && err.code === MATCHER_WARMING_UP;
 }
 
 /**

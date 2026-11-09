@@ -6,6 +6,7 @@
  */
 
 import { idToken } from './firebase.js';
+import { announceStorageLost, isStorageLost } from './storageLost.js';
 
 export class ApiError extends Error {
   constructor(
@@ -24,7 +25,10 @@ async function authHeader(): Promise<Record<string, string>> {
   try {
     const token = await idToken();
     return token ? { Authorization: `Bearer ${token}` } : {};
-  } catch {
+  } catch (err) {
+    // Still sent without a token (a public route doesn't need one), but if
+    // Safari lost its database the user must reload — say so (storageLost.ts).
+    if (isStorageLost(err)) announceStorageLost('storage');
     return {};
   }
 }
@@ -52,6 +56,10 @@ async function parseError(res: Response, fallback: string): Promise<ApiError> {
   if (isGuestBlock(err.status, err.code) && typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(GUEST_BLOCKED_EVENT, { detail: { code: err.code } }));
   }
+  // The api's requireAuth answers 401 `unauthorized` when the token is missing
+  // or invalid. The page only calls those routes while signed in, so the
+  // session in this tab is gone and every call will fail until a reload.
+  if (err.status === 401 && err.code === 'unauthorized') announceStorageLost('session');
   return err;
 }
 

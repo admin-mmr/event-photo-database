@@ -24,7 +24,21 @@ export function isStorageLost(err: unknown): boolean {
   return /Indexed ?Database server lost/i.test(message);
 }
 
+/**
+ * Why the page needs a reload: Safari lost its database (`storage`), or the api
+ * rejected a request as signed-out (`session`). The second is what the first
+ * usually looks like from the server: on 2026-11-08 an iPhone sent six requests
+ * with no token at all — the token read failed and api.ts went on without one —
+ * and the user just saw searches fail.
+ */
+export type LostReason = 'storage' | 'session';
+
 /** Tell the App to show its "reload the page" banner. */
-export function announceStorageLost(): void {
-  if (typeof window !== 'undefined') window.dispatchEvent(new Event(STORAGE_LOST_EVENT));
+export function announceStorageLost(reason: LostReason = 'storage'): void {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(STORAGE_LOST_EVENT, { detail: { reason } }));
+}
+
+/** The reason an event carries; `storage` for one without (older senders). */
+export function lostReasonOf(e: Event): LostReason {
+  return (e as CustomEvent<{ reason?: LostReason }>).detail?.reason === 'session' ? 'session' : 'storage';
 }

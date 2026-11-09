@@ -407,13 +407,15 @@
     12:27 that took the api to 81.6s and the user saw "search failed". Two
     halves, keep both: the matcher fetches each file's ranges in PARALLEL
     (`GCS_DOWNLOAD_PARALLEL`, 8), and the api stops waiting at
-    `MATCHER_SEARCH_TIMEOUT_MS` (50s) with 503 `matcher_warming_up`, keeping
+    `MATCHER_SEARCH_TIMEOUT_MS` (50s) with **429** `matcher_warming_up` +
+    `Retry-After` — NOT a 5xx: Cloud Run's own request log files every 5xx at
+    ERROR whatever the app logs, so a 503 here paged on every cold start — keeping
     NOTHING from that attempt (no selfie, run or alert) because the page retries
     it once on its own (`web/src/lib/warmRetry.ts`). The matcher's load is not
     tied to the request, so the retry finds the store in memory.
-    That 503 sets `res.locals.expectedFailure`, so the request logger records it
-    at WARN (`api/src/lib/requestLogLevel.ts`); as an ERROR it paged on every
-    cold start. Use the same mark for any other 5xx a route answers on purpose.
+    `res.locals.expectedFailure` (`api/src/lib/requestLogLevel.ts`) quiets only
+    the APP's line for a 5xx answered on purpose — Cloud Run's request log still
+    files it at ERROR — so prefer a 4xx for anything the client is meant to retry.
     Each store load logs its size and download/parse seconds
     ("store for … loaded: …") — read those before tuning cold starts.
   - **Download the store in ranged pieces, pinned to one generation**
